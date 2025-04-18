@@ -1,9 +1,9 @@
 <?php
 class Database {
     private $host = "localhost";
-    private $db_name = "u262074081_bugfixer";  // This matches your XAMPP database name
-    private $username = "u262074081_bugfixer";  // Keep root for local development
-    private $password = "CodoMail@8848";      // Keep empty for local XAMPP
+    private $db_name = "u262074081_bugfixer";
+    private $username = "u262074081_bugfixer";
+    private $password = "CodoMail@8848";
     public $conn;
 
     public function getConnection() {
