@@ -1,10 +1,27 @@
 <?php
 class Database {
-    private $host = "localhost";
-    private $db_name = "u262074081_bugfixer";
-    private $username = "u262074081_bugfixer";
-    private $password = "CodoMail@8848";
+    private $host;
+    private $db_name;
+    private $username;
+    private $password;
     public $conn;
+
+    public function __construct() {
+        // Check if running locally
+        if ($_SERVER['HTTP_HOST'] === 'localhost' || $_SERVER['SERVER_NAME'] === 'localhost') {
+            // Local database configuration
+            $this->host = "localhost";
+            $this->db_name = "u262074081_bugfixer_db";
+            $this->username = "root";
+            $this->password = "";
+        } else {
+            // Production database configuration
+            $this->host = "auth-db1555.hstgr.io";
+            $this->db_name = "u262074081_bugfixer";
+            $this->username = "u262074081_bugfixer";
+            $this->password = "CodoMail@8848";
+        }
+    }
 
     public function getConnection() {
         $this->conn = null;
