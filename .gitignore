@@ -1,0 +1,30 @@
+# Logs
+logs/
+*.log
+
+# Environment files
+.env
+.env.local
+
+# Uploads directory content but keep the directory
+uploads/*
+!uploads/.gitkeep
+
+# Composer
+vendor/
+composer.lock
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db 
