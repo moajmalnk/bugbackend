@@ -449,7 +449,7 @@ class BugController extends BaseAPI {
     }
     
     public function update($id) {
-        if ($_SERVER['REQUEST_METHOD'] !== 'PUT') {
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
             $this->sendJsonResponse(405, "Method not allowed");
             return;
         }
@@ -627,6 +627,10 @@ class BugController extends BaseAPI {
     }
 
     public function updateBug($data) {
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            $this->sendJsonResponse(405, "Method not allowed");
+            return;
+        }
         try {
             $this->log("Starting bug update with data: " . json_encode($data));
 
@@ -713,43 +717,5 @@ class BugController extends BaseAPI {
             }
             throw $e;
         }
-    }
-}
-
-// Handle the request
-$controller = new BugController();
-$action = basename($_SERVER['PHP_SELF'], '.php');
-$id = isset($_GET['id']) ? $_GET['id'] : null;
-
-if ($id) {
-    switch ($action) {
-        case 'get':
-            $controller->getById($id);
-            break;
-        case 'update':
-            $controller->update($id);
-            break;
-        case 'delete':
-            $controller->delete($id);
-            break;
-        default:
-            $controller->sendJsonResponse(404, "Endpoint not found");
-    }
-} else {
-    switch ($action) {
-        case 'getAll':
-            $controller->getAll();
-            break;
-        case 'create':
-            $controller->create();
-            break;
-        case 'getAllBugs':
-            $projectId = isset($_GET['project_id']) ? $_GET['project_id'] : null;
-            $page = isset($_GET['page']) ? $_GET['page'] : 1;
-            $limit = isset($_GET['limit']) ? $_GET['limit'] : 10;
-            $controller->getAllBugs($projectId, $page, $limit);
-            break;
-        default:
-            $controller->sendJsonResponse(404, "Endpoint not found");
     }
 } 

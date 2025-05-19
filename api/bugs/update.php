@@ -7,9 +7,6 @@ error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
 header('Content-Type: application/json');
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: POST, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, Authorization');
 
 // Handle preflight requests
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
@@ -63,4 +60,6 @@ try {
         'success' => false,
         'message' => $e->getMessage()
     ]);
-} 
+}
+
+file_put_contents('D:/xampp/htdocs/debug.log', date('Y-m-d H:i:s') . " - Accessed update.php\n", FILE_APPEND); 
