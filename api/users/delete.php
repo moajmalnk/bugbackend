@@ -1,32 +1,26 @@
 <?php
-require_once '../config/headers.php';
+header('Content-Type: application/json');
 require_once 'UserController.php';
 
-header('Content-Type: application/json');
-
 try {
-    if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-        http_response_code(200);
-        exit();
-    }
+    $controller = new UserController();
 
     if ($_SERVER['REQUEST_METHOD'] !== 'DELETE') {
-        http_response_code(405);
-        echo json_encode(['success' => false, 'message' => 'Method not allowed']);
-        exit();
+        throw new Exception('Method not allowed', 405);
     }
 
-    if (!isset($_GET['id'])) {
-        http_response_code(400);
-        echo json_encode(['success' => false, 'message' => 'User ID is required']);
-        exit();
+    $controller->validateToken();
+
+    $userId = $_GET['id'] ?? null;
+    if (!$userId) {
+        throw new Exception('User ID is required', 400);
     }
 
-    $controller = new UserController();
-    $controller->delete($_GET['id']);
+    $controller->delete($userId);
 } catch (Exception $e) {
-    error_log("Delete user error: " . $e->getMessage());
-    http_response_code(500);
-    echo json_encode(['success' => false, 'message' => 'Server error: ' . $e->getMessage()]);
-    exit();
+    http_response_code($e->getCode() ?: 500);
+    echo json_encode([
+        'success' => false,
+        'message' => $e->getMessage() ?: 'An unexpected error occurred'
+    ]);
 }

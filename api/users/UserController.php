@@ -151,49 +151,111 @@ class UserController extends BaseAPI {
 
     public function delete($userId) {
         try {
-            // Validate token (if your API requires it)
-            try {
-                $this->validateToken();
-            } catch (Exception $e) {
-                error_log("Token validation failed: " . $e->getMessage());
-                $this->sendJsonResponse(401, "Authentication failed");
-                return;
-            }
-
             if (!$this->conn) {
-                error_log("Database connection failed in delete");
+                error_log("Database connection failed in delete()");
                 $this->sendJsonResponse(500, "Database connection failed");
                 return;
             }
-
-            // Validate user ID
             if (!$userId || !$this->utils->isValidUUID($userId)) {
                 $this->sendJsonResponse(400, "Invalid user ID format");
                 return;
             }
-
-            // Check if user exists
-            $checkQuery = "SELECT id FROM users WHERE id = ?";
-            $checkStmt = $this->conn->prepare($checkQuery);
-            $checkStmt->execute([$userId]);
-            if ($checkStmt->rowCount() === 0) {
+            $stmt = $this->conn->prepare("DELETE FROM users WHERE id = ?");
+            $stmt->execute([$userId]);
+            if ($stmt->rowCount() > 0) {
+                $this->sendJsonResponse(200, "User deleted successfully");
+            } else {
                 $this->sendJsonResponse(404, "User not found");
-                return;
             }
-
-            // Delete user
-            $query = "DELETE FROM users WHERE id = ?";
-            $stmt = $this->conn->prepare($query);
-            if (!$stmt->execute([$userId])) {
-                error_log("Failed to delete user: " . implode(", ", $stmt->errorInfo()));
-                $this->sendJsonResponse(500, "Failed to delete user");
-                return;
-            }
-
-            $this->sendJsonResponse(200, "User deleted successfully");
         } catch (Exception $e) {
-            error_log("Error in delete user: " . $e->getMessage());
+            error_log("Delete error: " . $e->getMessage());
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
         }
+    }
+
+    public function createUser($data) {
+        try {
+            $username = $data['username'] ?? '';
+            $email = $data['email'] ?? '';
+            $password = $data['password'] ?? '';
+            $role = $data['role'] ?? '';
+
+            // Validate required fields
+            if (!$username || !$email || !$password || !$role) {
+                $this->sendJsonResponse(400, "All fields are required.");
+                return;
+            }
+
+            // Generate UUID for id
+            $id = $this->utils->generateUUID(); // Make sure you have a UUID generator in your utils
+
+            // Hash password
+            $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
+
+            // Insert user (add id column)
+            $query = "INSERT INTO users (id, username, email, password, role) VALUES (?, ?, ?, ?, ?)";
+            $stmt = $this->conn->prepare($query);
+            if (!$stmt->execute([$id, $username, $email, $hashedPassword, $role])) {
+                $errorInfo = $stmt->errorInfo();
+                if (strpos($errorInfo[2], 'username') !== false) {
+                    $this->sendJsonResponse(409, "Username already exists.");
+                } elseif (strpos($errorInfo[2], 'email') !== false) {
+                    $this->sendJsonResponse(409, "Email already exists.");
+                } else {
+                    $this->sendJsonResponse(500, "Failed to create user.");
+                }
+                return;
+            }
+
+            $this->sendJsonResponse(201, "User created successfully", [
+                "id" => $id,
+                "username" => $username,
+                "email" => $email,
+                "role" => $role
+            ]);
+        } catch (Exception $e) {
+            $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
+        }
+    }
+
+    public function updateUser($id, $data) {
+        try {
+            $conn = $this->getConnection();
+            $fields = [];
+            $params = [];
+            if (isset($data['username'])) {
+                $fields[] = "username = ?";
+                $params[] = $data['username'];
+            }
+            if (isset($data['email'])) {
+                $fields[] = "email = ?";
+                $params[] = $data['email'];
+            }
+            if (isset($data['role'])) {
+                $fields[] = "role = ?";
+                $params[] = $data['role'];
+            }
+            // Add more fields as needed
+
+            if (empty($fields)) {
+                $this->sendJsonResponse(400, "No fields to update");
+                return;
+            }
+
+            $params[] = $id;
+            $sql = "UPDATE users SET " . implode(", ", $fields) . " WHERE id = ?";
+            $stmt = $conn->prepare($sql);
+            if ($stmt->execute($params)) {
+                $this->sendJsonResponse(200, "User updated successfully");
+            } else {
+                $this->sendJsonResponse(500, "Failed to update user");
+            }
+        } catch (Exception $e) {
+            $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
+        }
+    }
+
+    public function getConnection() {
+        return $this->conn;
     }
 }
