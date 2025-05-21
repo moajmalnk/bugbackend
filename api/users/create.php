@@ -19,6 +19,9 @@ try {
         throw new Exception('Invalid request data', 400);
     }
 
+    // Remove 'name' from request data if present
+    unset($data['name']);
+
     // Create user
     $controller->createUser($data);
 } catch (Exception $e) {
@@ -28,4 +31,4 @@ try {
         'success' => false,
         'message' => $e->getMessage() ?: 'An unexpected error occurred'
     ]);
-} 
+}

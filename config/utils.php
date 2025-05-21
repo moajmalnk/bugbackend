@@ -16,6 +16,10 @@ class Utils {
         );
     }
     
+    public static function isValidUUID($uuid) {
+        return preg_match('/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/', $uuid) === 1;
+    }
+    
     public static function hashPassword($password) {
         return password_hash($password, PASSWORD_BCRYPT);
     }
@@ -67,4 +71,4 @@ class Utils {
         return $missing_fields;
     }
 }
-?> 
+?>
