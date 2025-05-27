@@ -38,7 +38,11 @@ class BaseAPI {
         }
     }
     
-    protected function getRequestData() {
+    public function getConnection() {
+        return $this->conn;
+    }
+    
+    public function getRequestData() {
         try {
             $contentType = isset($_SERVER["CONTENT_TYPE"]) ? trim($_SERVER["CONTENT_TYPE"]) : '';
             
@@ -119,5 +123,37 @@ class BaseAPI {
         
         return $headers;
     }
+
+    protected function handleRequest($callback) {
+        // Ensure proper content type is set
+        header('Content-Type: application/json');
+        
+        // Handle CORS
+        header('Access-Control-Allow-Origin: *');
+        header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
+        header('Access-Control-Allow-Headers: Content-Type, Authorization');
+        
+        if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+            http_response_code(200);
+            exit;
+        }
+        
+        // Start output buffering to catch any unwanted output
+        ob_start();
+        
+        try {
+            // Execute the callback (controller method)
+            $callback();
+        } catch (Exception $e) {
+            // Clean buffer and send error response
+            ob_end_clean();
+            
+            $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
+        }
+    }
+
+    protected function sendCorsHeaders() {
+        // Let individual API endpoints handle CORS
+    }
 }
-?> 
+?>

@@ -1,10 +1,8 @@
 <?php
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: POST, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type');
 header('Content-Type: application/json');
 
-require_once __DIR__ . '/BaseAPI.php';
+require_once __DIR__ . '/users/UserController.php';
+
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit;
@@ -16,18 +14,32 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit;
 }
 
-$data = json_decode(file_get_contents('php://input'), true);
-$token = $data['token'] ?? null;
+try {
+    $controller = new UserController();
 
-// TODO: Get user ID from session or authentication
-$userId = 1; // Replace with actual user ID logic
+    // Validate token and get user object or ID
+    $user = $controller->validateToken();
+    $userId = is_object($user) ? $user->user_id : $user;
 
-if ($token && $userId) {
-    $pdo = new PDO('mysql:host=localhost;dbname=u262074081_bugfixer', 'u262074081_bugfixer', 'CodoMail@8848');
-    $stmt = $pdo->prepare("UPDATE users SET fcm_token = ? WHERE id = ?");
+
+    $data = json_decode(file_get_contents('php://input'), true);
+    $token = $data['token'] ?? null;
+
+    if (!$token || !$userId) {
+        throw new Exception('Missing token or user', 400);
+    }
+
+    $conn = $controller->getConnection();
+    if (!$conn) {
+        throw new Exception('Database connection failed', 500);
+    }
+
+    $stmt = $conn->prepare("UPDATE users SET fcm_token = ? WHERE id = ?");
     $stmt->execute([$token, $userId]);
+
     echo json_encode(['success' => true]);
-} else {
-    echo json_encode(['success' => false, 'error' => 'Missing token or user']);
+} catch (Exception $e) {
+    http_response_code($e->getCode() ?: 500);
+    echo json_encode(['success' => false, 'error' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
 }
 ?>

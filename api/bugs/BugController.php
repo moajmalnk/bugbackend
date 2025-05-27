@@ -19,6 +19,15 @@ class BugController extends BaseAPI {
     }
 
     private function getFullPath($path) {
+        // Check if path already has 'bugricer/backend/' in it
+        if (strpos($path, 'bugricer/backend/') === false) {
+            // If path starts with 'uploads/', add 'bugricer/backend/' before it
+            if (strpos($path, 'uploads/') === 0) {
+                $path = 'bugricer/backend/' . $path;
+            }
+        }
+        
+        // Add base URL
         return $this->baseUrl . '/' . $path;
     }
 
@@ -273,10 +282,12 @@ class BugController extends BaseAPI {
             $stmt = $this->conn->prepare("
                 SELECT b.*, 
                        p.name as project_name,
-                       u.username as reporter_name
+                       reporter.username as reporter_name,
+                       updater.username as updated_by_name
                 FROM bugs b
                 LEFT JOIN projects p ON b.project_id = p.id
-                LEFT JOIN users u ON b.reported_by = u.id
+                LEFT JOIN users reporter ON b.reported_by = reporter.id
+                LEFT JOIN users updater ON b.updated_by = updater.id
                 WHERE b.id = ?
             ");
             
@@ -301,9 +312,14 @@ class BugController extends BaseAPI {
             $bug['screenshots'] = [];
             $bug['files'] = [];
             foreach ($attachments as $attachment) {
-                // Remove any duplicate 'uploads/' in the path
-                $path = preg_replace('/uploads\/uploads\//', 'uploads/', $attachment['file_path']);
+                // Ensure path has the correct prefix
+                $path = $attachment['file_path'];
+                if (strpos($path, 'bugricer/backend/') === false && strpos($path, 'uploads/') === 0) {
+                    $path = 'bugricer/backend/' . $path;
+                }
+                
                 $fullPath = $this->getFullPath($path);
+                
                 if (strpos($attachment['file_type'], 'image/') === 0) {
                     $bug['screenshots'][] = [
                         'id' => $attachment['id'],
@@ -377,6 +393,7 @@ class BugController extends BaseAPI {
                     
                     if (move_uploaded_file($tmp_name, $filePath)) {
                         $attachmentId = Utils::generateUUID();
+                        $relativePath = str_replace(__DIR__ . '/../../', 'bugricer/backend/', $filePath);
                         $stmt = $this->conn->prepare(
                             "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by) 
                              VALUES (?, ?, ?, ?, ?, ?)"
@@ -385,7 +402,7 @@ class BugController extends BaseAPI {
                             $attachmentId,
                             $id,
                             $fileName,
-                            str_replace(__DIR__ . '/../../', '', $filePath), // Store relative path
+                            $relativePath, // Store relative path
                             $fileType,
                             $decoded->user_id
                         ]);
@@ -407,6 +424,7 @@ class BugController extends BaseAPI {
                     
                     if (move_uploaded_file($tmp_name, $filePath)) {
                         $attachmentId = Utils::generateUUID();
+                        $relativePath = str_replace(__DIR__ . '/../../', 'bugricer/backend/', $filePath);
                         $stmt = $this->conn->prepare(
                             "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by) 
                              VALUES (?, ?, ?, ?, ?, ?)"
@@ -415,7 +433,7 @@ class BugController extends BaseAPI {
                             $attachmentId,
                             $id,
                             $fileName,
-                            str_replace(__DIR__ . '/../../', '', $filePath), // Store relative path
+                            $relativePath, // Store relative path
                             $fileType,
                             $decoded->user_id
                         ]);
@@ -667,6 +685,12 @@ class BugController extends BaseAPI {
                 $updateFields[] = "status = ?";
                 $params[] = $data['status'];
             }
+            
+            // Always include updated_by if it's provided
+            if (isset($data['updated_by'])) {
+                $updateFields[] = "updated_by = ?";
+                $params[] = $data['updated_by'];
+            }
 
             if (empty($updateFields)) {
                 throw new Exception("No fields to update");
@@ -690,12 +714,16 @@ class BugController extends BaseAPI {
                 throw new Exception("Failed to update bug: " . implode(", ", $error));
             }
 
-            // Get updated bug data
+            // Get updated bug data with updated_by_name
             $stmt = $this->conn->prepare("
-                SELECT b.*, p.name as project_name, u.username as reporter_name
+                SELECT b.*, 
+                       p.name as project_name, 
+                       reporter.username as reporter_name,
+                       updater.username as updated_by_name
                 FROM bugs b
                 LEFT JOIN projects p ON b.project_id = p.id
-                LEFT JOIN users u ON b.reported_by = u.id
+                LEFT JOIN users reporter ON b.reported_by = reporter.id
+                LEFT JOIN users updater ON b.updated_by = updater.id
                 WHERE b.id = ?
             ");
             $stmt->execute([$data['id']]);
@@ -718,4 +746,4 @@ class BugController extends BaseAPI {
             throw $e;
         }
     }
-} 
+}
