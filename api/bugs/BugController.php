@@ -19,16 +19,27 @@ class BugController extends BaseAPI {
     }
 
     private function getFullPath($path) {
-        // Check if path already has 'bugricer/backend/' in it
-        if (strpos($path, 'bugricer/backend/') === false) {
-            // If path starts with 'uploads/', add 'bugricer/backend/' before it
-            if (strpos($path, 'uploads/') === 0) {
-                $path = 'bugricer/backend/' . $path;
-            }
-        }
-        
-        // Add base URL
-        return $this->baseUrl . '/' . $path;
+        // Assuming the domain/subdomain points to the directory containing the 'uploads' folder
+        // Remove any leading 'bugricer/backend/' or 'uploads/' if present and construct the URL
+        $path = str_replace('bugricer/backend/', '', $path);
+        $path = str_replace('uploads/', '', $path);
+
+        // Construct the full URL. You might need to configure the base URL if it's not the document root.
+        // For a Hostinger setup where the domain points to bugbackend, the path is relative to bugbackend.
+        // If your domain points to public_html, you might need '/bugbackend/' here.
+        // Let's assume the domain points directly to bugbackend for now.
+        // If your uploads folder is directly under bugbackend and accessible at /uploads/, this should work.
+        // If it's under public_html/bugbackend/uploads/, and your domain points to public_html, you need /bugbackend/uploads/.
+        // Based on your previous screenshot of the 404, it seems bugbackend.moajmalnk.com points to something ABOVE bugbackend.
+        // Let's try to construct the path relative to the web root, assuming uploads is directly under the web root.
+        // This might require your subdomain to point directly to the directory containing 'uploads'.
+        // If uploads is at /public_html/bugbackend/uploads and your subdomain is bugbackend.moajmalnk.com pointing to public_html,
+        // the web path is /bugbackend/uploads/.
+        // If your subdomain points directly to /public_html/bugbackend/, the web path is /uploads/.
+        // Let's try the latter first, as it's cleaner.
+
+        // Assuming subdomain points to the directory containing 'uploads'
+        return $this->baseUrl . '/uploads/' . $path;
     }
 
     public function handleError($message, $code = 400) {
@@ -393,7 +404,8 @@ class BugController extends BaseAPI {
                     
                     if (move_uploaded_file($tmp_name, $filePath)) {
                         $attachmentId = Utils::generateUUID();
-                        $relativePath = str_replace(__DIR__ . '/../../', 'bugricer/backend/', $filePath);
+                        // Store path relative to the 'uploads' directory
+                        $relativePath = str_replace(__DIR__ . '/../../uploads/', 'uploads/', $filePath);
                         $stmt = $this->conn->prepare(
                             "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by) 
                              VALUES (?, ?, ?, ?, ?, ?)"
@@ -402,7 +414,7 @@ class BugController extends BaseAPI {
                             $attachmentId,
                             $id,
                             $fileName,
-                            $relativePath, // Store relative path
+                            $relativePath,
                             $fileType,
                             $decoded->user_id
                         ]);
@@ -424,7 +436,8 @@ class BugController extends BaseAPI {
                     
                     if (move_uploaded_file($tmp_name, $filePath)) {
                         $attachmentId = Utils::generateUUID();
-                        $relativePath = str_replace(__DIR__ . '/../../', 'bugricer/backend/', $filePath);
+                        // Store path relative to the 'uploads' directory
+                        $relativePath = str_replace(__DIR__ . '/../../uploads/', 'uploads/', $filePath);
                         $stmt = $this->conn->prepare(
                             "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by) 
                              VALUES (?, ?, ?, ?, ?, ?)"
@@ -433,7 +446,7 @@ class BugController extends BaseAPI {
                             $attachmentId,
                             $id,
                             $fileName,
-                            $relativePath, // Store relative path
+                            $relativePath,
                             $fileType,
                             $decoded->user_id
                         ]);
