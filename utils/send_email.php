@@ -44,8 +44,12 @@ function sendBugNotification($to, $subject, $body, $attachments = []) {
         // Add attachments
         if (!empty($attachments)) {
             foreach ($attachments as $attachment) {
-                if (file_exists($attachment)) {
-                    $mail->addAttachment($attachment);
+                // Ensure the path is correct and file exists
+                $fullPath = realpath($attachment); // Get the absolute path
+                if ($fullPath && file_exists($fullPath)) {
+                    $mail->addAttachment($fullPath, basename($fullPath)); // Attach using full path and original filename
+                } else {
+                    error_log("Attachment file not found or path invalid: " . $attachment);
                 }
             }
         }

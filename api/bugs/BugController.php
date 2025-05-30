@@ -134,6 +134,7 @@ class BugController extends BaseAPI {
                     ) VALUES (?, ?, ?, ?, ?, ?)
                 ");
 
+                $uploadedAttachments = [];
                 foreach ($data['screenshots'] as $screenshot) {
                     $attachmentId = $this->generateUUID();
                     $result = $stmt->execute([
@@ -149,6 +150,7 @@ class BugController extends BaseAPI {
                         $error = $stmt->errorInfo();
                         throw new PDOException("Failed to insert screenshot: " . $error[2]);
                     }
+                    $uploadedAttachments[] = $screenshot['file_path'];
                 }
             }
 
@@ -162,6 +164,7 @@ class BugController extends BaseAPI {
                     ) VALUES (?, ?, ?, ?, ?, ?)
                 ");
 
+                $uploadedAttachments = [];
                 foreach ($data['files'] as $file) {
                     $attachmentId = $this->generateUUID();
                     $result = $stmt->execute([
@@ -177,6 +180,7 @@ class BugController extends BaseAPI {
                         $error = $stmt->errorInfo();
                         throw new PDOException("Failed to insert file: " . $error[2]);
                     }
+                    $uploadedAttachments[] = $file['file_path'];
                 }
             }
 
@@ -202,7 +206,8 @@ class BugController extends BaseAPI {
             $this->log("Transaction committed successfully");
 
             $this->handleSuccess("Bug created successfully", [
-                'bugId' => $bugId
+                'bugId' => $bugId,
+                'uploadedAttachments' => $uploadedAttachments
             ]);
         } catch (PDOException $e) {
             $this->log("PDO Error: " . $e->getMessage());
@@ -390,6 +395,9 @@ class BugController extends BaseAPI {
                 $status
             ]);
 
+            // Initialize array to collect all uploaded file paths
+            $uploadedAttachments = [];
+
             // Handle screenshots
             if (!empty($_FILES['screenshots'])) {
                 $uploadDir = __DIR__ . '/../../uploads/screenshots/';
@@ -418,6 +426,8 @@ class BugController extends BaseAPI {
                             $fileType,
                             $decoded->user_id
                         ]);
+                        // Add the relative path to the list
+                        $uploadedAttachments[] = $relativePath;
                     }
                 }
             }
@@ -450,6 +460,8 @@ class BugController extends BaseAPI {
                             $fileType,
                             $decoded->user_id
                         ]);
+                        // Add the relative path to the list
+                        $uploadedAttachments[] = $relativePath;
                     }
                 }
             }
@@ -468,7 +480,12 @@ class BugController extends BaseAPI {
                 'updated_at' => date('Y-m-d H:i:s')
             ];
             
-            $this->sendJsonResponse(201, "Bug created successfully", $bug);
+            $this->log("Starting bug creation with data: " . json_encode($data));
+            $this->log("Starting bug creation with data: " . json_encode($uploadedAttachments));
+            $this->handleSuccess("Bug created successfully", [
+                'bug' => $bug,
+                'uploadedAttachments' => $uploadedAttachments
+            ]);
             
         } catch (Exception $e) {
             if ($this->conn->inTransaction()) {
