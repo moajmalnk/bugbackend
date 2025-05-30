@@ -11,7 +11,7 @@ class UserStatsController extends BaseAPI {
         // $this->conn is already set by BaseAPI
     }
 
-    public function handleRequest() {
+    public function handleRequest($callback = null) {
         try {
             $this->validateToken();
 
@@ -28,10 +28,19 @@ class UserStatsController extends BaseAPI {
                 throw new Exception('User not found');
             }
 
-            // Get total projects
-            $projectQuery = "SELECT COUNT(DISTINCT project_id) as total_projects FROM project_members WHERE user_id = ?";
+            // Get total projects (include projects created by the user and projects the user is a member of)
+            $projectQuery = "
+                SELECT COUNT(DISTINCT project_id) as total_projects FROM (
+                    -- Projects where the user is a member
+                    SELECT project_id FROM project_members WHERE user_id = ?
+                    UNION
+                    -- Projects created by the user
+                    SELECT id as project_id FROM projects WHERE created_by = ?
+                ) AS user_projects
+            ";
             $stmt = $this->conn->prepare($projectQuery);
-            $stmt->execute([$userId]);
+            // Pass the user ID twice for the two placeholder in the UNION query
+            $stmt->execute([$userId, $userId]);
             $projectResult = $stmt->fetch(PDO::FETCH_ASSOC);
             $totalProjects = $projectResult['total_projects'] ?? 0;
 
