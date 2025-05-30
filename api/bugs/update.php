@@ -26,24 +26,25 @@ try {
     // Validate token
     $decoded = $controller->validateToken();
     
-    // Get request body
-    $input = file_get_contents('php://input');
-    error_log("Received update data: " . $input);
-    
-    $data = json_decode($input, true);
-    if (!$data) {
-        throw new Exception('Invalid JSON data received');
-    }
+    // Use $_POST and $_FILES for multipart/form-data
+    $data = $_POST;
+    $files = $_FILES;
+
+    error_log("Received update data (POST): " . print_r($data, true));
+    error_log("Received update files (FILES): " . print_r($files, true));
 
     if (!isset($data['id'])) {
         throw new Exception('Bug ID is required');
     }
 
-    // Add user ID from token
-    $data['updated_by'] = $decoded->user_id;
+    // Add user ID from token if fixed_by is not set in form data
+    // The frontend is already sending fixed_by, but this is a safeguard
+    if (!isset($data['fixed_by'])) {
+         $data['fixed_by'] = $decoded->user_id;
+    }
 
     // Update the bug
-    $result = $controller->updateBug($data);
+    $result = $controller->updateBug($data, $files);
 
     // Send success response
     http_response_code(200);
