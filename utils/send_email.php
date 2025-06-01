@@ -28,12 +28,13 @@ function sendBugNotification($to, $subject, $body, $attachments = []) {
         $mail->setFrom('bug@codoacademy.com', 'Bug Ricer');
         
         // Add recipients
+        $mail->addAddress('noreply@codoacademy.com', 'Bug Ricer'); // Main recipient (not shown to others)
         if (is_array($to)) {
             foreach ($to as $recipient) {
-                $mail->addAddress($recipient);
+                $mail->addBCC($recipient);
             }
         } else {
-            $mail->addAddress($to);
+            $mail->addBCC($to);
         }
         
         // Content
