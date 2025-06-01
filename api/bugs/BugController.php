@@ -19,27 +19,9 @@ class BugController extends BaseAPI {
     }
 
     private function getFullPath($path) {
-        // Assuming the domain/subdomain points to the directory containing the 'uploads' folder
-        // Remove any leading 'bugricer/backend/' or 'uploads/' if present and construct the URL
-        $path = str_replace('bugricer/backend/', '', $path);
-        $path = str_replace('uploads/', '', $path);
-
-        // Construct the full URL. You might need to configure the base URL if it's not the document root.
-        // For a Hostinger setup where the domain points to bugbackend, the path is relative to bugbackend.
-        // If your domain points to public_html, you might need '/bugbackend/' here.
-        // Let's assume the domain points directly to bugbackend for now.
-        // If your uploads folder is directly under bugbackend and accessible at /uploads/, this should work.
-        // If it's under public_html/bugbackend/uploads/, and your domain points to public_html, you need /bugbackend/uploads/.
-        // Based on your previous screenshot of the 404, it seems bugbackend.moajmalnk.com points to something ABOVE bugbackend.
-        // Let's try to construct the path relative to the web root, assuming uploads is directly under the web root.
-        // This might require your subdomain to point directly to the directory containing 'uploads'.
-        // If uploads is at /public_html/bugbackend/uploads and your subdomain is bugbackend.moajmalnk.com pointing to public_html,
-        // the web path is /bugbackend/uploads/.
-        // If your subdomain points directly to /public_html/bugbackend/, the web path is /uploads/.
-        // Let's try the latter first, as it's cleaner.
-
-        // Assuming subdomain points to the directory containing 'uploads'
-        return $this->baseUrl . '/uploads/' . $path;
+        // Remove any leading slashes
+        $path = ltrim($path, '/');
+        return $this->baseUrl . '/' . $path;
     }
 
     public function handleError($message, $code = 400) {
@@ -330,10 +312,7 @@ class BugController extends BaseAPI {
             foreach ($attachments as $attachment) {
                 // Ensure path has the correct prefix
                 $path = $attachment['file_path'];
-                if (strpos($path, 'bugricer/backend/') === false && strpos($path, 'uploads/') === 0) {
-                    $path = 'bugricer/backend/' . $path;
-                }
-                
+                // Remove any unnecessary prefixing
                 $fullPath = $this->getFullPath($path);
                 
                 if (strpos($attachment['file_type'], 'image/') === 0) {
@@ -428,6 +407,7 @@ class BugController extends BaseAPI {
                         ]);
                         // Add the relative path to the list
                         $uploadedAttachments[] = $relativePath;
+                        @unlink($tmp_name);
                     }
                 }
             }
@@ -462,6 +442,7 @@ class BugController extends BaseAPI {
                         ]);
                         // Add the relative path to the list
                         $uploadedAttachments[] = $relativePath;
+                        @unlink($tmp_name);
                     }
                 }
             }
@@ -560,16 +541,19 @@ class BugController extends BaseAPI {
             $decoded = $this->validateToken();
             $this->conn->beginTransaction();
 
-            // Check if bug exists
-            $checkQuery = "SELECT id FROM bugs WHERE id = :id";
-            $checkStmt = $this->conn->prepare($checkQuery);
-            $checkStmt->bindParam(':id', $id);
-            $checkStmt->execute();
+            // Fetch all attachment file paths for this bug
+            $attachmentQuery = "SELECT file_path FROM bug_attachments WHERE bug_id = :id";
+            $attachmentStmt = $this->conn->prepare($attachmentQuery);
+            $attachmentStmt->bindParam(':id', $id);
+            $attachmentStmt->execute();
+            $attachments = $attachmentStmt->fetchAll(PDO::FETCH_ASSOC);
 
-            if (!$checkStmt->fetch()) {
-                $this->conn->rollBack();
-                $this->sendJsonResponse(404, "Bug not found");
-                return;
+            // Delete files from filesystem
+            foreach ($attachments as $attachment) {
+                $filePath = __DIR__ . '/../../' . $attachment['file_path'];
+                if (file_exists($filePath)) {
+                    @unlink($filePath);
+                }
             }
 
             // Delete bug (cascading will handle attachments and dashboard relations)
@@ -579,7 +563,7 @@ class BugController extends BaseAPI {
 
             if ($stmt->execute()) {
                 $this->conn->commit();
-                $this->sendJsonResponse(200, "Bug deleted successfully");
+                $this->sendJsonResponse(200, "Bug and attachments deleted successfully");
                 return;
             }
 
@@ -775,5 +759,33 @@ class BugController extends BaseAPI {
             }
             throw $e;
         }
+    }
+
+    function convertToWebP($sourcePath, $destinationPath, $quality = 80) {
+        $info = getimagesize($sourcePath);
+        if (!$info) return false;
+
+        switch ($info['mime']) {
+            case 'image/jpeg':
+                $image = imagecreatefromjpeg($sourcePath);
+                break;
+            case 'image/png':
+                $image = imagecreatefrompng($sourcePath);
+                // For PNG, preserve transparency
+                imagepalettetotruecolor($image);
+                imagealphablending($image, true);
+                imagesavealpha($image, true);
+                break;
+            case 'image/gif':
+                $image = imagecreatefromgif($sourcePath);
+                break;
+            default:
+                return false; // Not a supported image
+        }
+
+        // Convert and compress to WebP
+        $result = imagewebp($image, $destinationPath, $quality);
+        imagedestroy($image);
+        return $result;
     }
 }

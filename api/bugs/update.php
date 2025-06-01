@@ -30,6 +30,15 @@ try {
     $data = $_POST;
     $files = $_FILES;
 
+    // If $_POST is empty, try to get JSON input
+    if (empty($data)) {
+        $rawInput = file_get_contents('php://input');
+        $jsonData = json_decode($rawInput, true);
+        if ($jsonData) {
+            $data = $jsonData;
+        }
+    }
+
     error_log("Received update data (POST): " . print_r($data, true));
     error_log("Received update files (FILES): " . print_r($files, true));
 
