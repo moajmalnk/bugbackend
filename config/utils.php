@@ -4,7 +4,41 @@ use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
 
 class Utils {
-    private static $jwt_secret = "your_jwt_secret_key_here";
+    private static function getJwtSecret() {
+        // Environment-specific JWT secrets
+        $isLocal = self::isLocalEnvironment();
+        
+        if ($isLocal) {
+            return "local_jwt_secret_bugricer_2024";
+        } else {
+            return "prod_jwt_secret_bugricer_secure_key_2024";
+        }
+    }
+    
+    private static function isLocalEnvironment() {
+        $localHosts = ['localhost', '127.0.0.1', '::1'];
+        $httpHost = $_SERVER['HTTP_HOST'] ?? '';
+        $serverName = $_SERVER['SERVER_NAME'] ?? '';
+        
+        foreach ($localHosts as $localHost) {
+            if (strpos($httpHost, $localHost) !== false || strpos($serverName, $localHost) !== false) {
+                return true;
+            }
+        }
+        
+        if (preg_match('/:(8080|8000|3000|4000|5000)$/', $httpHost)) {
+            return true;
+        }
+        
+        if (isset($_SERVER['SERVER_SOFTWARE']) && 
+            (stripos($_SERVER['SERVER_SOFTWARE'], 'apache') !== false && 
+             (stripos($_SERVER['DOCUMENT_ROOT'], 'xampp') !== false || 
+              stripos($_SERVER['DOCUMENT_ROOT'], 'wamp') !== false))) {
+            return true;
+        }
+        
+        return false;
+    }
     
     public static function generateUUID() {
         return sprintf('%04x%04x-%04x-%04x-%04x-%04x%04x%04x',
@@ -40,13 +74,20 @@ class Utils {
             "role" => $role
         );
         
-        return JWT::encode($payload, self::$jwt_secret, 'HS256');
+        $secret = self::getJwtSecret();
+        error_log("Generating JWT for user: " . $username . " in environment: " . (self::isLocalEnvironment() ? "Local" : "Production"));
+        
+        return JWT::encode($payload, $secret, 'HS256');
     }
     
     public static function validateJWT($token) {
         try {
-            return JWT::decode($token, new Key(self::$jwt_secret, 'HS256'));
+            $secret = self::getJwtSecret();
+            $decoded = JWT::decode($token, new Key($secret, 'HS256'));
+            error_log("JWT validation successful for user_id: " . $decoded->user_id);
+            return $decoded;
         } catch(Exception $e) {
+            error_log("JWT validation failed: " . $e->getMessage());
             return false;
         }
     }

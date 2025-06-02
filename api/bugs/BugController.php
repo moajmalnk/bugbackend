@@ -246,10 +246,12 @@ class BugController extends BaseAPI {
             
             $query = "SELECT b.*, 
                             p.name as project_name,
-                            u.username as reporter_name
+                            reporter.username as reporter_name,
+                            updater.username as updated_by_name
                      FROM bugs b
                      LEFT JOIN projects p ON b.project_id = p.id
-                     LEFT JOIN users u ON b.reported_by = u.id";
+                     LEFT JOIN users reporter ON b.reported_by = reporter.id
+                     LEFT JOIN users updater ON b.updated_by = updater.id";
                      
             if ($projectId) {
                 $query .= " WHERE b.project_id = ?";
