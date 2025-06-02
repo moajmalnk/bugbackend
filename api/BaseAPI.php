@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../config/utils.php';
+require_once __DIR__ . '/../config/cors.php';
 
 class BaseAPI {
     protected $conn;
@@ -13,14 +14,14 @@ class BaseAPI {
         ini_set('log_errors', '1');
         ini_set('error_log', __DIR__ . '/../../logs/php_errors.log');
         
-        // Set JSON content type
-        header('Content-Type: application/json');
-        
-        // Handle CORS preflight
-        if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-            http_response_code(200);
-            exit();
+        // Ensure logs directory exists
+        $logDir = __DIR__ . '/../../logs';
+        if (!is_dir($logDir)) {
+            mkdir($logDir, 0777, true);
         }
+        
+        // Set content type for JSON responses
+        header('Content-Type: application/json');
         
         try {
             // Connect to database
@@ -125,19 +126,6 @@ class BaseAPI {
     }
 
     protected function handleRequest($callback) {
-        // Ensure proper content type is set
-        header('Content-Type: application/json');
-        
-        // Handle CORS
-        header('Access-Control-Allow-Origin: *');
-        header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
-        header('Access-Control-Allow-Headers: Content-Type, Authorization');
-        
-        if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-            http_response_code(200);
-            exit;
-        }
-        
         // Start output buffering to catch any unwanted output
         ob_start();
         
@@ -150,10 +138,6 @@ class BaseAPI {
             
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
         }
-    }
-
-    protected function sendCorsHeaders() {
-        // Let individual API endpoints handle CORS
     }
 }
 ?>
