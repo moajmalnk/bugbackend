@@ -2,13 +2,13 @@
 require_once __DIR__ . '/../config/cors.php';
 header('Content-Type: application/json');
 
-require_once __DIR__ . '/users/UserController.php';
-
-// Handle preflight request
+// Handle preflight request immediately after CORS
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit;
 }
+
+require_once __DIR__ . '/users/UserController.php';
 
 // Create logs directory if it doesn't exist
 $logDir = __DIR__ . '/../logs';
