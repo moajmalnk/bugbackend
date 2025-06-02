@@ -539,6 +539,26 @@ class BugController extends BaseAPI {
     public function delete($id) {
         try {
             $decoded = $this->validateToken();
+            
+            // First, get the bug to check who reported it
+            $checkQuery = "SELECT reported_by FROM bugs WHERE id = :id";
+            $checkStmt = $this->conn->prepare($checkQuery);
+            $checkStmt->bindParam(':id', $id);
+            $checkStmt->execute();
+            $bug = $checkStmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$bug) {
+                $this->sendJsonResponse(404, "Bug not found");
+                return;
+            }
+            
+            // Check if user has permission to delete
+            // Only admins and the original reporter can delete
+            if ($decoded->role !== 'admin' && $decoded->user_id !== $bug['reported_by']) {
+                $this->sendJsonResponse(403, "You don't have permission to delete this bug. Only the reporter and admins can delete bugs.");
+                return;
+            }
+            
             $this->conn->beginTransaction();
 
             // Fetch all attachment file paths for this bug
@@ -787,5 +807,22 @@ class BugController extends BaseAPI {
         $result = imagewebp($image, $destinationPath, $quality);
         imagedestroy($image);
         return $result;
+    }
+
+    /**
+     * Get basic bug information
+     * 
+     * @param string $id Bug ID
+     * @return array|false Basic bug info or false if not found
+     */
+    public function getBugBasicInfo($id) {
+        try {
+            $stmt = $this->conn->prepare("SELECT id, project_id FROM bugs WHERE id = ?");
+            $stmt->execute([$id]);
+            return $stmt->fetch(PDO::FETCH_ASSOC);
+        } catch (Exception $e) {
+            $this->log("Error getting basic bug info: " . $e->getMessage());
+            return false;
+        }
     }
 }
