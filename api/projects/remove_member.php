@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/../../config/cors.php';
 header('Content-Type: application/json');
 require_once __DIR__ . '/../../config/database.php';
 // TODO: Add your authentication check here to ensure only admins can use this endpoint
