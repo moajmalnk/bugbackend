@@ -60,7 +60,7 @@ This automatically:
 
 If you encounter CORS errors on other endpoints:
 
-1. **Identify the file** causing the error from browser console
+1. **Identify the file** causing the error from browser // console
 2. **Add CORS include** at the top: `require_once __DIR__ . '/path/to/cors.php';`
 3. **Test again**
 
