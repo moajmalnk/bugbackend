@@ -119,24 +119,20 @@ class ProjectController extends BaseAPI {
             $data = $this->getRequestData();
             
             $updateFields = [];
-            $types = "";
             $values = [];
             
             if (isset($data['name'])) {
                 $updateFields[] = "name = ?";
-                $types .= "s";
                 $values[] = $data['name'];
             }
             
             if (isset($data['description'])) {
                 $updateFields[] = "description = ?";
-                $types .= "s";
                 $values[] = $data['description'];
             }
             
             if (isset($data['status'])) {
                 $updateFields[] = "status = ?";
-                $types .= "s";
                 $values[] = $data['status'];
             }
             
@@ -150,17 +146,14 @@ class ProjectController extends BaseAPI {
             $query = "UPDATE projects SET " . implode(", ", $updateFields) . " WHERE id = ?";
             $stmt = $this->conn->prepare($query);
             
-            $types .= "s";
             $values[] = $id;
             
-            $stmt->bind_param($types, ...$values);
-            
-            if (!$stmt->execute()) {
-                throw new Exception("Failed to update project: " . $stmt->error);
+            if (!$stmt->execute($values)) {
+                throw new Exception("Failed to update project");
             }
             
-            if ($stmt->affected_rows === 0) {
-                $this->sendJsonResponse(404, "Project not found");
+            if ($stmt->rowCount() === 0) {
+                $this->sendJsonResponse(404, "Project not found or no changes made");
                 return;
             }
             
@@ -172,10 +165,19 @@ class ProjectController extends BaseAPI {
         }
     }
 
-    public function delete($id) {
+    public function delete($id, $forceDelete = false) {
         try {
+            // Convert forceDelete to boolean and log it
+            $forceDelete = (bool)$forceDelete;
+            error_log("ProjectController::delete - ID: $id, Force Delete: " . ($forceDelete ? 'YES' : 'NO'));
+            error_log("Raw forceDelete parameter value: " . var_export($forceDelete, true) . " (type: " . gettype($forceDelete) . ")");
+            
+            // Skip method check as it's already handled in delete.php
             $decoded = $this->validateToken();
+            
+            // Start transaction
             $this->conn->beginTransaction();
+            error_log("Transaction started for project deletion");
 
             // Check if project exists
             $checkQuery = "SELECT id FROM projects WHERE id = :id";
@@ -185,27 +187,135 @@ class ProjectController extends BaseAPI {
 
             if (!$checkStmt->fetch()) {
                 $this->conn->rollBack();
+                error_log("Project not found: $id");
                 $this->sendJsonResponse(404, "Project not found");
                 return;
             }
+            error_log("Project exists: $id");
 
-            // Delete project (cascading will handle related records)
+            // Check for project members
+            $memberQuery = "SELECT COUNT(*) as member_count FROM project_members WHERE project_id = :id";
+            $memberStmt = $this->conn->prepare($memberQuery);
+            $memberStmt->bindParam(':id', $id);
+            $memberStmt->execute();
+            $memberCount = $memberStmt->fetch(PDO::FETCH_ASSOC)['member_count'];
+            error_log("Project $id has $memberCount members");
+
+            // Check for bugs
+            $bugQuery = "SELECT COUNT(*) as bug_count FROM bugs WHERE project_id = :id";
+            $bugStmt = $this->conn->prepare($bugQuery);
+            $bugStmt->bindParam(':id', $id);
+            $bugStmt->execute();
+            $bugCount = $bugStmt->fetch(PDO::FETCH_ASSOC)['bug_count'];
+            error_log("Project $id has $bugCount bugs");
+
+            // If force delete is NOT enabled and there are related records, return error
+            if (!$forceDelete && ($memberCount > 0 || $bugCount > 0)) {
+                $this->conn->rollBack();
+                
+                $message = "Cannot delete project due to existing ";
+                if ($memberCount > 0 && $bugCount > 0) {
+                    $message .= "team members and bugs";
+                } else if ($memberCount > 0) {
+                    $message .= "team members";
+                } else {
+                    $message .= "bugs";
+                }
+                $message .= ". Please remove these relationships first.";
+                
+                error_log("Force delete not enabled, returning error: $message");
+                $this->sendJsonResponse(400, $message);
+                return;
+            }
+            
+            // Process with force delete if enabled or no related records
+            if ($forceDelete) {
+                error_log("Force delete enabled, removing related records");
+                
+                // Delete team members
+                if ($memberCount > 0) {
+                    error_log("Deleting $memberCount team members");
+                    $deleteMembersQuery = "DELETE FROM project_members WHERE project_id = :id";
+                    $deleteMembersStmt = $this->conn->prepare($deleteMembersQuery);
+                    $deleteMembersStmt->bindParam(':id', $id);
+                    
+                    if (!$deleteMembersStmt->execute()) {
+                        $this->conn->rollBack();
+                        error_log("Failed to delete team members: " . $deleteMembersStmt->errorInfo()[2]);
+                        $this->sendJsonResponse(500, "Failed to delete team members");
+                        return;
+                    }
+                    error_log("Team members deleted successfully");
+                }
+                
+                // Delete bugs and related fixes
+                if ($bugCount > 0) {
+                    // Get bug IDs first
+                    error_log("Fetching bug IDs for project $id");
+                    $getBugsQuery = "SELECT id FROM bugs WHERE project_id = :id";
+                    $getBugsStmt = $this->conn->prepare($getBugsQuery);
+                    $getBugsStmt->bindParam(':id', $id);
+                    $getBugsStmt->execute();
+                    $bugIds = $getBugsStmt->fetchAll(PDO::FETCH_COLUMN);
+                    error_log("Found " . count($bugIds) . " bug IDs");
+                    
+                    // Delete bug attachments first
+                    if (!empty($bugIds)) {
+                        error_log("Deleting bug attachments for " . count($bugIds) . " bugs");
+                        $placeholders = implode(',', array_fill(0, count($bugIds), '?'));
+                        $deleteBugAttachmentsQuery = "DELETE FROM bug_attachments WHERE bug_id IN ($placeholders)";
+                        $deleteBugAttachmentsStmt = $this->conn->prepare($deleteBugAttachmentsQuery);
+                        
+                        foreach ($bugIds as $i => $bugId) {
+                            $deleteBugAttachmentsStmt->bindValue($i + 1, $bugId);
+                        }
+                        
+                        if (!$deleteBugAttachmentsStmt->execute()) {
+                            $this->conn->rollBack();
+                            error_log("Failed to delete bug attachments: " . $deleteBugAttachmentsStmt->errorInfo()[2]);
+                            $this->sendJsonResponse(500, "Failed to delete bug attachments");
+                            return;
+                        }
+                        error_log("Bug attachments deleted successfully");
+                    }
+                    
+                    // Now delete all bugs
+                    error_log("Deleting $bugCount bugs");
+                    $deleteBugsQuery = "DELETE FROM bugs WHERE project_id = :id";
+                    $deleteBugsStmt = $this->conn->prepare($deleteBugsQuery);
+                    $deleteBugsStmt->bindParam(':id', $id);
+                    
+                    if (!$deleteBugsStmt->execute()) {
+                        $this->conn->rollBack();
+                        error_log("Failed to delete bugs: " . $deleteBugsStmt->errorInfo()[2]);
+                        $this->sendJsonResponse(500, "Failed to delete bugs");
+                        return;
+                    }
+                    error_log("Bugs deleted successfully");
+                }
+            }
+
+            // Finally delete the project
+            error_log("Deleting project $id");
             $query = "DELETE FROM projects WHERE id = :id";
             $stmt = $this->conn->prepare($query);
             $stmt->bindParam(':id', $id);
 
             if ($stmt->execute()) {
                 $this->conn->commit();
+                error_log("Project $id deleted successfully");
                 $this->sendJsonResponse(200, "Project deleted successfully");
                 return;
             }
 
             $this->conn->rollBack();
+            error_log("Failed to delete project: " . $stmt->errorInfo()[2]);
             $this->sendJsonResponse(500, "Failed to delete project");
         } catch (Exception $e) {
             if ($this->conn->inTransaction()) {
                 $this->conn->rollBack();
             }
+            error_log("Exception in project deletion: " . $e->getMessage());
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
         }
     }
@@ -216,6 +326,18 @@ $controller = new ProjectController();
 $action = basename($_SERVER['PHP_SELF'], '.php');
 $id = isset($_GET['id']) ? $_GET['id'] : null;
 
+// Detect force_delete parameter
+$forceDelete = false;
+if (strpos($_SERVER['QUERY_STRING'] ?? '', 'force_delete=true') !== false) {
+    $forceDelete = true;
+}
+if (isset($_GET['force_delete']) && $_GET['force_delete'] === 'true') {
+    $forceDelete = true;
+}
+
+error_log("PROJECTCONTROLLER ROUTING - Force Delete: " . ($forceDelete ? 'YES' : 'NO'));
+error_log("PROJECTCONTROLLER ROUTING - Query String: " . ($_SERVER['QUERY_STRING'] ?? ''));
+
 if ($id) {
     switch ($action) {
         case 'get':
@@ -225,7 +347,7 @@ if ($id) {
             $controller->update($id);
             break;
         case 'delete':
-            $controller->delete($id);
+            $controller->delete($id, $forceDelete);
             break;
         default:
             $controller->handleError(404, "Endpoint not found");

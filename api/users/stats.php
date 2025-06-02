@@ -51,12 +51,23 @@ class UserStatsController extends BaseAPI {
             $bugResult = $stmt->fetch(PDO::FETCH_ASSOC);
             $totalBugs = $bugResult['total_bugs'] ?? 0;
 
+            // Get total fixes (bugs that the user has updated to 'fixed' status)
+            $fixQuery = "SELECT COUNT(id) as total_fixes FROM bugs WHERE updated_by = ? AND status = 'fixed'";
+            $stmt = $this->conn->prepare($fixQuery);
+            $stmt->execute([$userId]);
+            $fixResult = $stmt->fetch(PDO::FETCH_ASSOC);
+            $totalFixes = $fixResult['total_fixes'] ?? 0;
+
             // Get recent activity
             $activityQuery = "
                 SELECT * FROM (
                     SELECT 'bug' as type, title, created_at 
                     FROM bugs 
                     WHERE reported_by = ?
+                    UNION ALL
+                    SELECT 'fix' as type, CONCAT('Fixed: ', title) as title, updated_at as created_at
+                    FROM bugs 
+                    WHERE updated_by = ? AND status = 'fixed'
                     UNION ALL
                     SELECT 'project' as type, p.name as title, pm.joined_at as created_at
                     FROM project_members pm
@@ -67,7 +78,7 @@ class UserStatsController extends BaseAPI {
                 LIMIT 5
             ";
             $stmt = $this->conn->prepare($activityQuery);
-            $stmt->execute([$userId, $userId]);
+            $stmt->execute([$userId, $userId, $userId]);
             $activityResult = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
             echo json_encode([
@@ -75,6 +86,7 @@ class UserStatsController extends BaseAPI {
                 'data' => [
                     'total_projects' => (int)$totalProjects,
                     'total_bugs' => (int)$totalBugs,
+                    'total_fixes' => (int)$totalFixes,
                     'recent_activity' => $activityResult
                 ]
             ]);

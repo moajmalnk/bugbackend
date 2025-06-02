@@ -9,7 +9,7 @@ class ActivityController extends BaseAPI {
         $this->conn = $this->getConnection();
     }
 
-    public function handleRequest() {
+    public function handleRequest($callback) {
         try {
             // Validate token
             $this->validateToken();
