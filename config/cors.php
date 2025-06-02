@@ -3,12 +3,14 @@
 function handleCORS() {
     $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
     
-    // Allowed origins
+    // Allowed origins - more comprehensive for local development
     $allowedOrigins = [
         'http://localhost:8080',
         'http://localhost:3000',
         'http://localhost:5173',
+        'http://localhost',
         'http://127.0.0.1:8080',
+        'http://127.0.0.1',
         'https://bugs.moajmalnk.in',
         'https://bugracers.vercel.app'
     ];
@@ -17,9 +19,12 @@ function handleCORS() {
     if (in_array($origin, $allowedOrigins)) {
         header("Access-Control-Allow-Origin: $origin");
     } else {
-        // For development, allow any localhost
+        // For development, allow any localhost with any port
         if (preg_match('/^https?:\/\/(localhost|127\.0\.0\.1)(:[0-9]+)?$/', $origin)) {
             header("Access-Control-Allow-Origin: $origin");
+        } else {
+            // Fallback for development
+            header("Access-Control-Allow-Origin: *");
         }
     }
     
