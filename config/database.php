@@ -46,6 +46,7 @@ class Database {
         // Log environment detection
         error_log("Environment detected: " . ($isLocal ? "Local" : "Production"));
         error_log("Database host: " . $this->host);
+        error_log("Database name: " . $this->db_name);
     }
     
     private function isLocalEnvironment() {
@@ -74,31 +75,24 @@ class Database {
             return true;
         }
         
+        // Check if running from command line (for our test script)
+        if (php_sapi_name() === 'cli') {
+            return true;
+        }
+        
         return false;
     }
 
     public function getConnection() {
         $this->conn = null;
 
-        // For production, try multiple password combinations
-        $passwordsToTry = [$this->password];
-        
-        if (!$this->isLocalEnvironment()) {
-            $passwordsToTry = [
-                "CodoMail@8848",
-                "CodoMail@88", 
-                "codomail@8848",
-                "CodoMail8848",
-                "u262074081_bugfixer"
-            ];
-        }
-
-        foreach ($passwordsToTry as $password) {
+        // For local environment, try simple connection first
+        if ($this->isLocalEnvironment()) {
             try {
                 $dsn = "mysql:host=" . $this->host . ";dbname=" . $this->db_name . ";charset=utf8";
-                error_log("Attempting connection with password variant...");
+                error_log("Attempting local connection to: " . $dsn);
                 
-                $this->conn = new PDO($dsn, $this->username, $password, [
+                $this->conn = new PDO($dsn, $this->username, $this->password, [
                     PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                     PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                     PDO::ATTR_EMULATE_PREPARES => false,
@@ -107,17 +101,68 @@ class Database {
                 
                 // Test the connection
                 $this->conn->query("SELECT 1");
-                error_log("Database connection successful!");
+                error_log("Local database connection successful!");
                 return $this->conn;
                 
             } catch(PDOException $e) {
-                error_log("Password attempt failed: " . $e->getMessage());
-                continue;
+                error_log("Local connection failed: " . $e->getMessage());
+                error_log("Trying to create database...");
+                
+                // Try to create the database if it doesn't exist
+                try {
+                    $createDbConn = new PDO("mysql:host=" . $this->host . ";charset=utf8", $this->username, $this->password);
+                    $createDbConn->exec("CREATE DATABASE IF NOT EXISTS `" . $this->db_name . "`");
+                    $createDbConn = null;
+                    
+                    // Try connecting again
+                    $this->conn = new PDO($dsn, $this->username, $this->password, [
+                        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                        PDO::ATTR_EMULATE_PREPARES => false,
+                        PDO::ATTR_TIMEOUT => 10
+                    ]);
+                    
+                    error_log("Database created and connected successfully!");
+                    return $this->conn;
+                    
+                } catch(PDOException $createE) {
+                    error_log("Failed to create database: " . $createE->getMessage());
+                }
             }
-        }
-        
-        // If localhost failed, try alternative host
-        if (!$this->isLocalEnvironment()) {
+        } else {
+            // Production connection logic (multiple password attempts)
+            $passwordsToTry = [
+                "CodoMail@8848",
+                "CodoMail@88", 
+                "codomail@8848",
+                "CodoMail8848",
+                "u262074081_bugfixer"
+            ];
+
+            foreach ($passwordsToTry as $password) {
+                try {
+                    $dsn = "mysql:host=" . $this->host . ";dbname=" . $this->db_name . ";charset=utf8";
+                    error_log("Attempting production connection with password variant...");
+                    
+                    $this->conn = new PDO($dsn, $this->username, $password, [
+                        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                        PDO::ATTR_EMULATE_PREPARES => false,
+                        PDO::ATTR_TIMEOUT => 10
+                    ]);
+                    
+                    // Test the connection
+                    $this->conn->query("SELECT 1");
+                    error_log("Production database connection successful!");
+                    return $this->conn;
+                    
+                } catch(PDOException $e) {
+                    error_log("Production password attempt failed: " . $e->getMessage());
+                    continue;
+                }
+            }
+            
+            // If localhost failed, try alternative host
             foreach ($passwordsToTry as $password) {
                 try {
                     error_log("Trying alternative host: auth-db1555.hstgr.io");
@@ -143,15 +188,21 @@ class Database {
         
         // All attempts failed
         error_log("All database connection attempts failed");
-        header('Content-Type: application/json');
-        http_response_code(500);
-        echo json_encode([
-            "success" => false,
-            "message" => "Database connection failed - please check credentials in hosting panel",
-            "error" => "All connection attempts failed",
-            "suggestion" => "Verify database credentials in your hosting control panel"
-        ]);
-        exit();
+        
+        // Only send JSON response if not running from CLI
+        if (php_sapi_name() !== 'cli') {
+            header('Content-Type: application/json');
+            http_response_code(500);
+            echo json_encode([
+                "success" => false,
+                "message" => "Database connection failed - please check credentials in hosting panel",
+                "error" => "All connection attempts failed",
+                "suggestion" => "Verify database credentials in your hosting control panel"
+            ]);
+            exit();
+        } else {
+            throw new Exception("Database connection failed");
+        }
     }
 }
 ?> 
