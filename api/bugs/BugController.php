@@ -515,7 +515,10 @@ class BugController extends BaseAPI {
                 return;
             }
             
+            // Always set updated_at and updated_by when a bug is updated
             $updateFields[] = "updated_at = CURRENT_TIMESTAMP()";
+            $updateFields[] = "updated_by = ?";
+            $values[] = $decoded->user_id; // Set the current user as the one who updated the bug
             
             $query = "UPDATE bugs SET " . implode(", ", $updateFields) . " WHERE id = ?";
             $values[] = $id;
