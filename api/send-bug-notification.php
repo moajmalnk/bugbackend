@@ -17,7 +17,7 @@ if (!file_exists($logDir)) {
 }
 
 // Log request for debugging
-$logFile = $logDir . '/email_api.log';
+// $logFile = $logDir . '/email_api.log';
 file_put_contents($logFile, date('Y-m-d H:i:s') . " - API called\n", FILE_APPEND);
 file_put_contents($logFile, "Request: " . file_get_contents('php://input') . "\n", FILE_APPEND);
 
