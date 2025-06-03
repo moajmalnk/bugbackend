@@ -22,7 +22,6 @@ try {
     $emails = $stmt->fetchAll(PDO::FETCH_COLUMN);
     echo json_encode(['success' => true, 'emails' => $emails]);
 } catch (Exception $e) {
-    error_log("Error in get_all_admins.php: " . $e->getMessage());
     http_response_code(500);
     echo json_encode(['success' => false, 'message' => $e->getMessage()]);
 }

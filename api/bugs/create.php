@@ -46,7 +46,6 @@ try {
     $controller = new BugController();
     $controller->create();
 } catch (Exception $e) {
-    error_log("Error in create.php: " . $e->getMessage());
     http_response_code(500);
     echo json_encode([
         'success' => false,
