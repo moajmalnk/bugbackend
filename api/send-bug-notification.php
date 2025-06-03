@@ -12,8 +12,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-require_once __DIR__ . '/users/UserController.php';
-
 // Create logs directory if it doesn't exist
 $logDir = __DIR__ . '/../logs';
 if (!file_exists($logDir)) {
