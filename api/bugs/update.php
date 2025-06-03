@@ -1,12 +1,33 @@
 <?php
+// Handle CORS headers first
+$allowedOrigins = [
+    'https://bugs.moajmalnk.in',
+    'http://localhost:8080',
+    'http://localhost:3000',
+    'http://127.0.0.1:8080'
+];
+
+$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+if (in_array($origin, $allowedOrigins)) {
+    header("Access-Control-Allow-Origin: $origin");
+} else if (strpos($origin, 'localhost') !== false || strpos($origin, '127.0.0.1') !== false) {
+    header("Access-Control-Allow-Origin: $origin");
+} else {
+    header("Access-Control-Allow-Origin: https://bugs.moajmalnk.in");
+}
+
+header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept");
+header("Access-Control-Allow-Credentials: true");
+header("Access-Control-Max-Age: 3600");
+header('Content-Type: application/json');
+
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/BugController.php';
 
 // Enable error reporting for debugging
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
-
-header('Content-Type: application/json');
 
 // Handle preflight requests
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
@@ -70,6 +91,4 @@ try {
         'success' => false,
         'message' => $e->getMessage()
     ]);
-}
-
-file_put_contents('D:/xampp/htdocs/debug.log', date('Y-m-d H:i:s') . " - Accessed update.php\n", FILE_APPEND); 
+} 
