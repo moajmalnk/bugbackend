@@ -8,14 +8,21 @@ class BugController extends BaseAPI {
 
     public function __construct() {
         parent::__construct();
-        // $this->logFile = __DIR__ . '/../../logs/debug.log';
+        // Create log directory if it doesn't exist
+        $logDir = __DIR__ . '/../../logs';
+        if (!file_exists($logDir)) {
+            mkdir($logDir, 0777, true);
+        }
+        $this->logFile = $logDir . '/debug.log';
         $this->baseUrl = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https://' : 'http://';
         $this->baseUrl .= $_SERVER['HTTP_HOST'];
     }
 
     private function log($message) {
-        $timestamp = date('Y-m-d H:i:s');
-        file_put_contents($this->logFile, "[$timestamp] $message\n", FILE_APPEND);
+        if ($this->logFile) {
+            $timestamp = date('Y-m-d H:i:s');
+            file_put_contents($this->logFile, "[$timestamp] $message\n", FILE_APPEND);
+        }
     }
 
     private function getFullPath($path) {

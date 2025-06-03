@@ -22,12 +22,13 @@ header("Access-Control-Allow-Credentials: true");
 header("Access-Control-Max-Age: 3600");
 header('Content-Type: application/json');
 
+// Disable HTML error output to prevent JSON corruption
+error_reporting(E_ALL);
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
+
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/BugController.php';
-
-// Enable error reporting for debugging
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
 
 // Handle preflight requests
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {

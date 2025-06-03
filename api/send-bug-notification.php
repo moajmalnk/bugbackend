@@ -2,9 +2,10 @@
 require_once __DIR__ . '/../config/cors.php';
 header('Content-Type: application/json');
 
-// Enable error reporting for debugging
+// Disable HTML error output to prevent JSON corruption
 error_reporting(E_ALL);
-ini_set('display_errors', 1);
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
 
 // Handle preflight request immediately after CORS
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
