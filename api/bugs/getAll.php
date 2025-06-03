@@ -54,7 +54,8 @@ try {
     
     // Admin users can see all bugs
     if ($user_role === 'admin') {
-        $result = $controller->getAllBugs($projectId, $page, $limit);
+        // Remove pagination limits for admin to see all bugs like other users
+        $result = $controller->getAllBugs($projectId, 1, 1000);
         http_response_code(200);
         echo json_encode([
             'success' => true,
