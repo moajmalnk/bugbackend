@@ -9,11 +9,18 @@ class BugController extends BaseAPI {
         parent::__construct();
         $this->baseUrl = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https://' : 'http://';
         $this->baseUrl .= $_SERVER['HTTP_HOST'];
+        
+        // Add the project path for local development
+        if (strpos($_SERVER['HTTP_HOST'], 'localhost') !== false || strpos($_SERVER['HTTP_HOST'], '127.0.0.1') !== false) {
+            $this->baseUrl .= '/Bugricer/backend';
+        }
     }
 
     private function getFullPath($path) {
         // Remove any leading slashes
         $path = ltrim($path, '/');
+        
+        // Use direct path for all files (uploads folder has CORS configured)
         return $this->baseUrl . '/' . $path;
     }
 
