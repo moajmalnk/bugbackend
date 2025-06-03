@@ -8,7 +8,7 @@ class BugController extends BaseAPI {
 
     public function __construct() {
         parent::__construct();
-        $this->logFile = __DIR__ . '/../../logs/debug.log';
+        // $this->logFile = __DIR__ . '/../../logs/debug.log';
         $this->baseUrl = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https://' : 'http://';
         $this->baseUrl .= $_SERVER['HTTP_HOST'];
     }
