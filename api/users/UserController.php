@@ -149,25 +149,174 @@ class UserController extends BaseAPI {
         }
     }
 
-    public function delete($userId) {
+    public function delete($userId, $force = false) {
         try {
             if (!$this->conn) {
                 error_log("Database connection failed in delete()");
                 $this->sendJsonResponse(500, "Database connection failed");
                 return;
             }
+            
             if (!$userId || !$this->utils->isValidUUID($userId)) {
                 $this->sendJsonResponse(400, "Invalid user ID format");
                 return;
             }
-            $stmt = $this->conn->prepare("DELETE FROM users WHERE id = ?");
-            $stmt->execute([$userId]);
-            if ($stmt->rowCount() > 0) {
-                $this->sendJsonResponse(200, "User deleted successfully");
+
+            // Start transaction for safe deletion
+            $this->conn->beginTransaction();
+
+            try {
+                // Check if user exists
+                $checkStmt = $this->conn->prepare("SELECT id, username FROM users WHERE id = ?");
+                $checkStmt->execute([$userId]);
+                $user = $checkStmt->fetch(PDO::FETCH_ASSOC);
+                
+                if (!$user) {
+                    $this->conn->rollback();
+                    $this->sendJsonResponse(404, "User not found");
+                    return;
+                }
+
+                // Check for dependencies and handle them
+                $dependencies = [];
+
+                // Check projects created by this user
+                $projectStmt = $this->conn->prepare("SELECT COUNT(*) as count FROM projects WHERE created_by = ?");
+                $projectStmt->execute([$userId]);
+                $projectCount = $projectStmt->fetch(PDO::FETCH_ASSOC)['count'];
+                if ($projectCount > 0) {
+                    $dependencies[] = "$projectCount projects";
+                }
+
+                // Check bugs reported by this user
+                $bugStmt = $this->conn->prepare("SELECT COUNT(*) as count FROM bugs WHERE reported_by = ?");
+                $bugStmt->execute([$userId]);
+                $bugCount = $bugStmt->fetch(PDO::FETCH_ASSOC)['count'];
+                if ($bugCount > 0) {
+                    $dependencies[] = "$bugCount bugs";
+                }
+
+                // Check project memberships
+                $memberStmt = $this->conn->prepare("SELECT COUNT(*) as count FROM project_members WHERE user_id = ?");
+                $memberStmt->execute([$userId]);
+                $memberCount = $memberStmt->fetch(PDO::FETCH_ASSOC)['count'];
+                if ($memberCount > 0) {
+                    $dependencies[] = "$memberCount project memberships";
+                }
+
+                // Check bug attachments
+                $attachmentStmt = $this->conn->prepare("SELECT COUNT(*) as count FROM bug_attachments WHERE uploaded_by = ?");
+                $attachmentStmt->execute([$userId]);
+                $attachmentCount = $attachmentStmt->fetch(PDO::FETCH_ASSOC)['count'];
+                if ($attachmentCount > 0) {
+                    $dependencies[] = "$attachmentCount file uploads";
+                }
+
+                // If there are dependencies and force is not enabled, provide options
+                if (!empty($dependencies) && !$force) {
+                    $this->conn->rollback();
+                    $dependencyText = implode(', ', $dependencies);
+                    $this->sendJsonResponse(409, "Cannot delete user '{$user['username']}'. User has associated data: $dependencyText. Please reassign or remove these items first, or use force delete.", ['canForceDelete' => true]);
+                    return;
+                }
+
+                // If force delete is enabled, handle dependencies
+                if ($force && !empty($dependencies)) {
+                    // Remove project memberships first (no foreign key dependency)
+                    if ($memberCount > 0) {
+                        $deleteMembersStmt = $this->conn->prepare("DELETE FROM project_members WHERE user_id = ?");
+                        $deleteMembersStmt->execute([$userId]);
+                    }
+
+                    // Handle bug attachments - delete files and records
+                    if ($attachmentCount > 0) {
+                        // Get attachment file paths for cleanup
+                        $getAttachmentsStmt = $this->conn->prepare("SELECT file_path FROM bug_attachments WHERE uploaded_by = ?");
+                        $getAttachmentsStmt->execute([$userId]);
+                        $attachments = $getAttachmentsStmt->fetchAll(PDO::FETCH_ASSOC);
+                        
+                        // Delete attachment records
+                        $deleteAttachmentsStmt = $this->conn->prepare("DELETE FROM bug_attachments WHERE uploaded_by = ?");
+                        $deleteAttachmentsStmt->execute([$userId]);
+                        
+                        // Note: You may want to delete actual files from filesystem here
+                        // foreach ($attachments as $attachment) {
+                        //     if (file_exists($attachment['file_path'])) {
+                        //         unlink($attachment['file_path']);
+                        //     }
+                        // }
+                    }
+
+                    // Handle bugs - set reported_by to NULL or delete
+                    if ($bugCount > 0) {
+                        // Option 1: Set reported_by to NULL (recommended for data integrity)
+                        $updateBugsStmt = $this->conn->prepare("UPDATE bugs SET reported_by = NULL WHERE reported_by = ?");
+                        $updateBugsStmt->execute([$userId]);
+                        
+                        // Option 2: Delete bugs entirely (uncomment if preferred)
+                        // $deleteBugsStmt = $this->conn->prepare("DELETE FROM bugs WHERE reported_by = ?");
+                        // $deleteBugsStmt->execute([$userId]);
+                    }
+
+                    // Handle projects - set created_by to NULL or delete  
+                    if ($projectCount > 0) {
+                        // Option 1: Set created_by to NULL (recommended for data integrity)
+                        $updateProjectsStmt = $this->conn->prepare("UPDATE projects SET created_by = NULL WHERE created_by = ?");
+                        $updateProjectsStmt->execute([$userId]);
+                        
+                        // Option 2: Delete projects entirely (uncomment if preferred) 
+                        // $deleteProjectsStmt = $this->conn->prepare("DELETE FROM projects WHERE created_by = ?");
+                        // $deleteProjectsStmt->execute([$userId]);
+                    }
+
+                    // Handle activity logs
+                    $deleteActivityStmt = $this->conn->prepare("DELETE FROM activity_log WHERE user_id = ?");
+                    $deleteActivityStmt->execute([$userId]);
+
+                    // Handle activities table if it exists
+                    $deleteActivitiesStmt = $this->conn->prepare("DELETE FROM activities WHERE user_id = ?");
+                    $deleteActivitiesStmt->execute([$userId]);
+                }
+
+                // Now safe to delete the user
+                $deleteStmt = $this->conn->prepare("DELETE FROM users WHERE id = ?");
+                $result = $deleteStmt->execute([$userId]);
+                
+                if ($result && $deleteStmt->rowCount() > 0) {
+                    $this->conn->commit();
+                    $message = $force && !empty($dependencies) 
+                        ? "User '{$user['username']}' and all associated data deleted successfully" 
+                        : "User '{$user['username']}' deleted successfully";
+                    $this->sendJsonResponse(200, $message);
+                } else {
+                    $this->conn->rollback();
+                    $this->sendJsonResponse(500, "Failed to delete user");
+                }
+
+            } catch (Exception $e) {
+                $this->conn->rollback();
+                throw $e;
+            }
+
+        } catch (PDOException $e) {
+            if ($this->conn->inTransaction()) {
+                $this->conn->rollback();
+            }
+            
+            // Check if it's a foreign key constraint error
+            if (strpos($e->getMessage(), 'foreign key constraint') !== false || 
+                strpos($e->getMessage(), 'FOREIGN KEY') !== false ||
+                $e->getCode() == '23000') {
+                error_log("Foreign key constraint error in delete(): " . $e->getMessage());
+                $this->sendJsonResponse(409, "Cannot delete user. User has associated data that must be removed first.");
             } else {
-                $this->sendJsonResponse(404, "User not found");
+                error_log("Database error in delete(): " . $e->getMessage());
+                $this->sendJsonResponse(500, "Database error occurred");
             }
         } catch (Exception $e) {
+            if ($this->conn->inTransaction()) {
+                $this->conn->rollback();
+            }
             error_log("Delete error: " . $e->getMessage());
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
         }
