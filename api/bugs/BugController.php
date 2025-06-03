@@ -684,10 +684,6 @@ class BugController extends BaseAPI {
     }
 
     public function updateBug($data) {
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            $this->sendJsonResponse(405, "Method not allowed");
-            return;
-        }
         try {
             $this->log("Starting bug update with data: " . json_encode($data));
 

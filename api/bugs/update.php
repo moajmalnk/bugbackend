@@ -67,14 +67,11 @@ try {
         throw new Exception('Bug ID is required');
     }
 
-    // Add user ID from token if fixed_by is not set in form data
-    // The frontend is already sending fixed_by, but this is a safeguard
-    if (!isset($data['fixed_by'])) {
-         $data['fixed_by'] = $decoded->user_id;
-    }
+    // Add user ID from token as updated_by
+    $data['updated_by'] = $decoded->user_id;
 
-    // Update the bug
-    $result = $controller->updateBug($data, $files);
+    // Update the bug using the correct method signature
+    $result = $controller->updateBug($data);
 
     // Send success response
     http_response_code(200);
