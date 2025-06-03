@@ -23,6 +23,10 @@ class NotificationAPI extends BaseAPI {
             error_log("Attempting to validate token...");
             $userData = $this->validateToken();
             error_log("Token validation result: " . json_encode($userData));
+            error_log("UserData type: " . gettype($userData));
+            if (is_object($userData)) {
+                error_log("UserData properties: " . json_encode(get_object_vars($userData)));
+            }
             
             if (!$userData) {
                 error_log("Token validation failed");
