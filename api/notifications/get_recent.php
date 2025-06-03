@@ -78,7 +78,7 @@ class NotificationAPI extends BaseAPI {
             }
             
             // Get notifications since the specified time
-            // Exclude notifications created by the current user to avoid self-notifications
+            // Temporarily allow self-notifications for testing
             $sql = "
                 SELECT 
                     id,
@@ -92,7 +92,6 @@ class NotificationAPI extends BaseAPI {
                     created_at as createdAt
                 FROM notifications 
                 WHERE created_at > ? 
-                AND created_by != ?
                 ORDER BY created_at DESC 
                 LIMIT 50
             ";
@@ -106,8 +105,8 @@ class NotificationAPI extends BaseAPI {
             $username = $userData->username ?? $userData->user_id ?? 'Unknown';
             
             $success = $stmt->execute([
-                $sinceDateTime->format('Y-m-d H:i:s'),
-                $username
+                $sinceDateTime->format('Y-m-d H:i:s')
+                // Removed username filter temporarily for testing
             ]);
             
             if (!$success) {
