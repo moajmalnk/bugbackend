@@ -120,7 +120,7 @@ class NotificationAPI extends BaseAPI {
                 return;
             }
             
-            $username = $userData['username'] ?? $userData['name'] ?? 'Unknown';
+            $username = $userData->username ?? $userData->name ?? 'Unknown';
             error_log("Executing query with date: " . $sinceDateTime->format('Y-m-d H:i:s') . " and username: " . $username);
             
             $success = $stmt->execute([
@@ -182,4 +182,4 @@ try {
         'success' => false,
         'message' => 'Fatal error: ' . $e->getMessage()
     ]);
-} 
+}
