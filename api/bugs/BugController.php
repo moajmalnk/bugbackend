@@ -3,26 +3,12 @@
 require_once __DIR__ . '/../BaseAPI.php';
 
 class BugController extends BaseAPI {
-    private $logFile;
     private $baseUrl;
 
     public function __construct() {
         parent::__construct();
-        // Create log directory if it doesn't exist
-        $logDir = __DIR__ . '/../../logs';
-        if (!file_exists($logDir)) {
-            mkdir($logDir, 0777, true);
-        }
-        $this->logFile = $logDir . '/debug.log';
         $this->baseUrl = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https://' : 'http://';
         $this->baseUrl .= $_SERVER['HTTP_HOST'];
-    }
-
-    private function log($message) {
-        if ($this->logFile) {
-            $timestamp = date('Y-m-d H:i:s');
-            file_put_contents($this->logFile, "[$timestamp] $message\n", FILE_APPEND);
-        }
     }
 
     private function getFullPath($path) {
@@ -32,7 +18,6 @@ class BugController extends BaseAPI {
     }
 
     public function handleError($message, $code = 400) {
-        $this->log("Error: $message");
         header('Content-Type: application/json');
         http_response_code($code);
         echo json_encode([
@@ -65,8 +50,6 @@ class BugController extends BaseAPI {
 
     public function createBug($data) {
         try {
-            $this->log("Starting bug creation with data: " . json_encode($data));
-
             // Validate required fields
             $requiredFields = ['name', 'project_id', 'reporter_id'];
             foreach ($requiredFields as $field) {
@@ -76,7 +59,6 @@ class BugController extends BaseAPI {
             }
 
             $this->conn->beginTransaction();
-            $this->log("Started transaction");
 
             $bugId = $this->generateUUID();
             
@@ -87,16 +69,6 @@ class BugController extends BaseAPI {
                     priority, status
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
             ");
-
-            $this->log("Executing bug insert with values: " . json_encode([
-                $bugId,
-                $data['name'],
-                $data['description'],
-                $data['project_id'],
-                $data['reporter_id'],
-                $data['priority'],
-                $data['status']
-            ]));
 
             $result = $stmt->execute([
                 $bugId,
@@ -113,9 +85,11 @@ class BugController extends BaseAPI {
                 throw new PDOException("Failed to insert bug: " . $error[2]);
             }
 
+            // Initialize uploadedAttachments array
+            $uploadedAttachments = [];
+
             // Insert screenshots
             if (!empty($data['screenshots'])) {
-                $this->log("Processing screenshots");
                 $stmt = $this->conn->prepare("
                     INSERT INTO bug_attachments (
                         id, bug_id, file_name, file_path, file_type,
@@ -123,7 +97,6 @@ class BugController extends BaseAPI {
                     ) VALUES (?, ?, ?, ?, ?, ?)
                 ");
 
-                $uploadedAttachments = [];
                 foreach ($data['screenshots'] as $screenshot) {
                     $attachmentId = $this->generateUUID();
                     $result = $stmt->execute([
@@ -145,7 +118,6 @@ class BugController extends BaseAPI {
 
             // Insert other files
             if (!empty($data['files'])) {
-                $this->log("Processing files");
                 $stmt = $this->conn->prepare("
                     INSERT INTO bug_attachments (
                         id, bug_id, file_name, file_path, file_type,
@@ -153,7 +125,6 @@ class BugController extends BaseAPI {
                     ) VALUES (?, ?, ?, ?, ?, ?)
                 ");
 
-                $uploadedAttachments = [];
                 foreach ($data['files'] as $file) {
                     $attachmentId = $this->generateUUID();
                     $result = $stmt->execute([
@@ -175,7 +146,6 @@ class BugController extends BaseAPI {
 
             // Insert affected dashboards
             if (!empty($data['affected_dashboards'])) {
-                $this->log("Processing dashboards");
                 $stmt = $this->conn->prepare("
                     INSERT INTO bug_dashboards (
                         bug_id, dashboard_id
@@ -192,24 +162,19 @@ class BugController extends BaseAPI {
             }
 
             $this->conn->commit();
-            $this->log("Transaction committed successfully");
 
             $this->handleSuccess("Bug created successfully", [
                 'bugId' => $bugId,
                 'uploadedAttachments' => $uploadedAttachments
             ]);
         } catch (PDOException $e) {
-            $this->log("PDO Error: " . $e->getMessage());
             if ($this->conn->inTransaction()) {
                 $this->conn->rollBack();
-                $this->log("Transaction rolled back");
             }
             $this->handleError("Database error: " . $e->getMessage(), 500);
         } catch (Exception $e) {
-            $this->log("General Error: " . $e->getMessage());
             if ($this->conn->inTransaction()) {
                 $this->conn->rollBack();
-                $this->log("Transaction rolled back");
             }
             $this->handleError("Server error: " . $e->getMessage(), 500);
         }
@@ -235,7 +200,6 @@ class BugController extends BaseAPI {
                 'bugs' => $bugs
             ]);
         } catch (Exception $e) {
-            $this->log("Error getting bugs: " . $e->getMessage());
             $this->handleError("Failed to retrieve bugs: " . $e->getMessage(), 500);
         }
     }
@@ -279,7 +243,6 @@ class BugController extends BaseAPI {
             $this->sendJsonResponse(200, "Bugs retrieved successfully", $bugs);
             
         } catch (Exception $e) {
-            error_log("Error fetching bugs: " . $e->getMessage());
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
         }
     }
@@ -470,9 +433,7 @@ class BugController extends BaseAPI {
                 'updated_at' => date('Y-m-d H:i:s')
             ];
             
-            $this->log("Starting bug creation with data: " . json_encode($data));
-            $this->log("Starting bug creation with data: " . json_encode($uploadedAttachments));
-            $this->handleSuccess("Bug created successfully", [
+            $this->sendJsonResponse(200, "Bug created successfully", [
                 'bug' => $bug,
                 'uploadedAttachments' => $uploadedAttachments
             ]);
@@ -481,7 +442,6 @@ class BugController extends BaseAPI {
             if ($this->conn->inTransaction()) {
                 $this->conn->rollBack();
             }
-            error_log("Error creating bug: " . $e->getMessage());
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
         }
     }
@@ -543,7 +503,6 @@ class BugController extends BaseAPI {
             $this->sendJsonResponse(200, "Bug updated successfully");
             
         } catch (Exception $e) {
-            error_log("Error updating bug: " . $e->getMessage());
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
         }
     }
@@ -616,7 +575,6 @@ class BugController extends BaseAPI {
 
             // Validate connection
             if (!$this->conn) {
-                error_log("Database connection failed in BugController");
                 $this->sendJsonResponse(500, "Database connection failed");
                 return;
             }
@@ -682,18 +640,14 @@ class BugController extends BaseAPI {
 
             $this->sendJsonResponse(200, "Bugs retrieved successfully", $response);
         } catch (PDOException $e) {
-            error_log("Database error in getAllBugs: " . $e->getMessage());
             $this->sendJsonResponse(500, "Failed to retrieve bugs");
         } catch (Exception $e) {
-            error_log("Error in getAllBugs: " . $e->getMessage());
             $this->sendJsonResponse(500, "An unexpected error occurred");
         }
     }
 
     public function updateBug($data) {
         try {
-            $this->log("Starting bug update with data: " . json_encode($data));
-
             if (empty($data['id'])) {
                 throw new Exception("Bug ID is required");
             }
@@ -747,9 +701,6 @@ class BugController extends BaseAPI {
             // Update bug
             $query = "UPDATE bugs SET " . implode(", ", $updateFields) . " WHERE id = ?";
             $stmt = $this->conn->prepare($query);
-            
-            $this->log("Executing query: " . $query);
-            $this->log("Parameters: " . json_encode($params));
 
             if (!$stmt->execute($params)) {
                 $error = $stmt->errorInfo();
@@ -776,12 +727,10 @@ class BugController extends BaseAPI {
             }
 
             $this->conn->commit();
-            $this->log("Bug update successful");
 
             return $updatedBug;
 
         } catch (Exception $e) {
-            $this->log("Error in updateBug: " . $e->getMessage());
             if ($this->conn->inTransaction()) {
                 $this->conn->rollBack();
             }
@@ -829,7 +778,6 @@ class BugController extends BaseAPI {
             $stmt->execute([$id]);
             return $stmt->fetch(PDO::FETCH_ASSOC);
         } catch (Exception $e) {
-            $this->log("Error getting basic bug info: " . $e->getMessage());
             return false;
         }
     }

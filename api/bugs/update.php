@@ -61,9 +61,6 @@ try {
         }
     }
 
-    error_log("Received update data (POST): " . print_r($data, true));
-    error_log("Received update files (FILES): " . print_r($files, true));
-
     if (!isset($data['id'])) {
         throw new Exception('Bug ID is required');
     }
@@ -83,7 +80,6 @@ try {
     ]);
 
 } catch (Exception $e) {
-    error_log("Error in update.php: " . $e->getMessage());
     http_response_code(500);
     echo json_encode([
         'success' => false,
