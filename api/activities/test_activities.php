@@ -39,9 +39,9 @@ class TestActivities extends BaseAPI {
                             ELSE NULL
                         END as related_title
                     FROM project_activities pa
-                    LEFT JOIN users u ON pa.user_id = u.id
-                    LEFT JOIN projects p ON pa.project_id = p.id
-                    LEFT JOIN bugs b ON pa.related_id = b.id AND pa.activity_type LIKE 'bug_%'
+                    LEFT JOIN users u ON pa.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
+                    LEFT JOIN projects p ON pa.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci
+                    LEFT JOIN bugs b ON pa.related_id COLLATE utf8mb4_unicode_ci = b.id COLLATE utf8mb4_unicode_ci AND pa.activity_type LIKE 'bug_%'
                     WHERE pa.project_id = ?
                     ORDER BY pa.created_at DESC
                     LIMIT ? OFFSET ?
@@ -64,9 +64,9 @@ class TestActivities extends BaseAPI {
                             ELSE NULL
                         END as related_title
                     FROM project_activities pa
-                    LEFT JOIN users u ON pa.user_id = u.id
-                    LEFT JOIN projects p ON pa.project_id = p.id
-                    LEFT JOIN bugs b ON pa.related_id = b.id AND pa.activity_type LIKE 'bug_%'
+                    LEFT JOIN users u ON pa.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
+                    LEFT JOIN projects p ON pa.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci
+                    LEFT JOIN bugs b ON pa.related_id COLLATE utf8mb4_unicode_ci = b.id COLLATE utf8mb4_unicode_ci AND pa.activity_type LIKE 'bug_%'
                     ORDER BY pa.created_at DESC
                     LIMIT ? OFFSET ?
                 ";

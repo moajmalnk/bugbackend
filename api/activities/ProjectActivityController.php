@@ -177,7 +177,7 @@ class ProjectActivityController extends BaseAPI {
             );
             
             $topContributors = $this->fetchCached(
-                'SELECT u.username, COUNT(*) as activity_count FROM project_activities pa JOIN users u ON pa.user_id = u.id WHERE pa.project_id = ? GROUP BY pa.user_id, u.username ORDER BY activity_count DESC LIMIT 5',
+                'SELECT u.username, COUNT(*) as activity_count FROM project_activities pa JOIN users u ON pa.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci WHERE pa.project_id = ? GROUP BY pa.user_id, u.username ORDER BY activity_count DESC LIMIT 5',
                 [$projectId],
                 "top_contributors_{$projectId}",
                 300
@@ -220,9 +220,9 @@ class ProjectActivityController extends BaseAPI {
         // Check if user is a member of the project or project owner
         $accessQuery = "
             SELECT 1 FROM (
-                SELECT 1 FROM project_members WHERE user_id = ? AND project_id = ?
+                SELECT 1 FROM project_members WHERE user_id COLLATE utf8mb4_unicode_ci = ? AND project_id COLLATE utf8mb4_unicode_ci = ?
                 UNION
-                SELECT 1 FROM projects WHERE created_by = ? AND id = ?
+                SELECT 1 FROM projects WHERE created_by COLLATE utf8mb4_unicode_ci = ? AND id COLLATE utf8mb4_unicode_ci = ?
             ) as access_check LIMIT 1
         ";
         
@@ -249,9 +249,9 @@ class ProjectActivityController extends BaseAPI {
                     ELSE NULL
                 END as related_title
             FROM project_activities pa
-            LEFT JOIN users u ON pa.user_id = u.id
-            LEFT JOIN projects p ON pa.project_id = p.id
-            LEFT JOIN bugs b ON pa.related_id = b.id AND pa.activity_type LIKE 'bug_%'
+            LEFT JOIN users u ON pa.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
+            LEFT JOIN projects p ON pa.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci
+            LEFT JOIN bugs b ON pa.related_id COLLATE utf8mb4_unicode_ci = b.id COLLATE utf8mb4_unicode_ci AND pa.activity_type LIKE 'bug_%'
             WHERE pa.project_id = ?
             ORDER BY pa.created_at DESC
             LIMIT ? OFFSET ?
@@ -277,9 +277,9 @@ class ProjectActivityController extends BaseAPI {
                         ELSE NULL
                     END as related_title
                 FROM project_activities pa
-                LEFT JOIN users u ON pa.user_id = u.id
-                LEFT JOIN projects p ON pa.project_id = p.id
-                LEFT JOIN bugs b ON pa.related_id = b.id AND pa.activity_type LIKE 'bug_%'
+                LEFT JOIN users u ON pa.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
+                LEFT JOIN projects p ON pa.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci
+                LEFT JOIN bugs b ON pa.related_id COLLATE utf8mb4_unicode_ci = b.id COLLATE utf8mb4_unicode_ci AND pa.activity_type LIKE 'bug_%'
                 ORDER BY pa.created_at DESC
                 LIMIT ? OFFSET ?
             ";
@@ -298,10 +298,10 @@ class ProjectActivityController extends BaseAPI {
                         ELSE NULL
                     END as related_title
                 FROM project_activities pa
-                LEFT JOIN users u ON pa.user_id = u.id
-                LEFT JOIN projects p ON pa.project_id = p.id
-                LEFT JOIN bugs b ON pa.related_id = b.id AND pa.activity_type LIKE 'bug_%'
-                WHERE pa.project_id IN (
+                LEFT JOIN users u ON pa.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
+                LEFT JOIN projects p ON pa.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci
+                LEFT JOIN bugs b ON pa.related_id COLLATE utf8mb4_unicode_ci = b.id COLLATE utf8mb4_unicode_ci AND pa.activity_type LIKE 'bug_%'
+                WHERE pa.project_id COLLATE utf8mb4_unicode_ci IN (
                     SELECT DISTINCT project_id FROM project_members WHERE user_id = ?
                     UNION
                     SELECT DISTINCT id FROM projects WHERE created_by = ?
