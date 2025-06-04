@@ -1,30 +1,63 @@
 <?php
 require_once __DIR__ . '/../../config/cors.php';
-header('Content-Type: application/json');
-require_once __DIR__ . '/../../config/database.php';
+require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/ProjectMemberController.php';
 
-$database = new Database();
-$pdo = $database->getConnection();
-
-$project_id = $_GET['project_id'] ?? null;
-if (!$project_id) {
-    http_response_code(400);
-    echo json_encode(['success' => false, 'message' => 'Missing project_id']);
-    exit;
+// Handle preflight requests
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
 }
 
 try {
-    // Get admins
-    $stmt = $pdo->query("SELECT id, username, email, role FROM users WHERE role = 'admin'");
-    $admins = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $api = new BaseAPI();
+    
+    $project_id = $_GET['project_id'] ?? null;
+    if (!$project_id) {
+        $api->sendJsonResponse(400, 'Missing project_id');
+        exit;
+    }
 
-    // Get project members
-    $stmt = $pdo->prepare("SELECT u.id, u.username, u.email, pm.role FROM project_members pm JOIN users u ON pm.user_id = u.id WHERE pm.project_id = ?");
-    $stmt->execute([$project_id]);
-    $members = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    // Create cache key for this project's members
+    $cacheKey = 'project_members_' . $project_id;
+    $cachedResult = $api->getCache($cacheKey);
+    
+    if ($cachedResult !== null) {
+        $api->sendJsonResponse(200, 'Project members retrieved successfully (cached)', $cachedResult);
+        exit;
+    }
 
-    echo json_encode(['success' => true, 'admins' => $admins, 'members' => $members]);
+    // Get admins with caching
+    $admins = $api->fetchCached(
+        "SELECT id, username, email, role FROM users WHERE role = 'admin'",
+        [],
+        'admin_users',
+        600 // Cache for 10 minutes
+    );
+
+    // Get project members using optimized query
+    $members = $api->fetchCached(
+        "SELECT u.id, u.username, u.email, pm.role 
+         FROM project_members pm 
+         JOIN users u ON pm.user_id = u.id 
+         WHERE pm.project_id = ?",
+        [$project_id],
+        'project_members_list_' . $project_id,
+        300 // Cache for 5 minutes
+    );
+
+    $result = [
+        'admins' => $admins,
+        'members' => $members
+    ];
+
+    // Cache the complete result
+    $api->setCache($cacheKey, $result, 300);
+
+    $api->sendJsonResponse(200, 'Project members retrieved successfully', $result);
+
 } catch (Exception $e) {
+    error_log("Error in get_members.php: " . $e->getMessage());
     http_response_code(500);
-    echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+    echo json_encode(['success' => false, 'message' => 'Internal server error']);
 }

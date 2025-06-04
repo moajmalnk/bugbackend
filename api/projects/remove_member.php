@@ -1,33 +1,49 @@
 <?php
 require_once __DIR__ . '/../../config/cors.php';
-header('Content-Type: application/json');
-require_once __DIR__ . '/../../config/database.php';
-// TODO: Add your authentication check here to ensure only admins can use this endpoint
+require_once __DIR__ . '/../BaseAPI.php';
 
-$database = new Database();
-$pdo = $database->getConnection();
-
-$data = json_decode(file_get_contents("php://input"), true);
-$project_id = $data['project_id'] ?? null;
-$user_id = $data['user_id'] ?? null;
-
-if (!$project_id || !$user_id) {
-    http_response_code(400);
-    echo json_encode(['success' => false, 'message' => 'Missing data']);
-    exit;
+// Handle preflight requests
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
 }
 
 try {
+    $api = new BaseAPI();
+    
+    // Validate token and check admin access
+    $decoded = $api->validateToken();
+    if ($decoded->role !== 'admin') {
+        $api->sendJsonResponse(403, 'Only admins can remove project members');
+        exit;
+    }
+
+    $data = $api->getRequestData();
+    $project_id = $data['project_id'] ?? null;
+    $user_id = $data['user_id'] ?? null;
+
+    if (!$project_id || !$user_id) {
+        $api->sendJsonResponse(400, 'Missing required fields: project_id, user_id');
+        exit;
+    }
+
     // Delete the member from project_members
-    $stmt = $pdo->prepare("DELETE FROM project_members WHERE project_id = ? AND user_id = ?");
+    $stmt = $api->prepare("DELETE FROM project_members WHERE project_id = ? AND user_id = ?");
     $result = $stmt->execute([$project_id, $user_id]);
     
     if ($result && $stmt->rowCount() > 0) {
-        echo json_encode(['success' => true]);
+        // Clear related cache
+        $api->clearCache('project_members_' . $project_id);
+        $api->clearCache('project_members_list_' . $project_id);
+        $api->clearCache('user_projects_' . $user_id);
+        
+        $api->sendJsonResponse(200, 'Member removed successfully from project');
     } else {
-        echo json_encode(['success' => false, 'message' => 'Member not found or already removed']);
+        $api->sendJsonResponse(404, 'Member not found in this project or already removed');
     }
+    
 } catch (Exception $e) {
+    error_log("Error in remove_member.php: " . $e->getMessage());
     http_response_code(500);
-    echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+    echo json_encode(['success' => false, 'message' => 'Internal server error']);
 } 

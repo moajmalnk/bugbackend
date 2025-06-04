@@ -49,13 +49,26 @@ try {
     $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
     $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 10;
     
+    // Create cache key for this request
+    $cacheKey = 'user_bugs_' . $user_id . '_' . ($projectId ?? 'all') . '_' . $page . '_' . $limit;
+    $cachedResult = $api->getCache($cacheKey);
+    
+    if ($cachedResult !== null) {
+        http_response_code(200);
+        echo json_encode([
+            'success' => true,
+            'message' => 'Bugs retrieved successfully (cached)',
+            'data' => $cachedResult
+        ]);
+        exit;
+    }
+    
     $controller = new BugController();
-    $memberController = new ProjectMemberController();
     
     // Admin users can see all bugs
     if ($user_role === 'admin') {
-        // Remove pagination limits for admin to see all bugs like other users
-        $result = $controller->getAllBugs($projectId, 1, 1000);
+        $result = $controller->getAllBugs($projectId, $page, $limit);
+        $api->setCache($cacheKey, $result, 300); // Cache for 5 minutes
         http_response_code(200);
         echo json_encode([
             'success' => true,
@@ -65,19 +78,13 @@ try {
         exit;
     }
     
-    // For non-admin users, we need to filter based on project membership
-    // Get all projects the user is a member of
-    $userProjects = $memberController->getUserProjects($user_id);
-    
-    // If a specific project was requested, check if user has access
+    // For non-admin users, use optimized single query approach
     if ($projectId) {
-        $hasAccess = false;
-        foreach ($userProjects as $project) {
-            if ($project['project_id'] === $projectId) {
-                $hasAccess = true;
-                break;
-            }
-        }
+        // Check project access with cached query
+        $accessQuery = "SELECT 1 FROM project_members WHERE user_id = ? AND project_id = ? 
+                       UNION SELECT 1 FROM projects WHERE created_by = ? AND id = ?";
+        $hasAccess = $api->fetchSingleCached($accessQuery, [$user_id, $projectId, $user_id, $projectId], 
+                                           'user_project_access_' . $user_id . '_' . $projectId, 600);
         
         if (!$hasAccess) {
             http_response_code(403);
@@ -87,6 +94,7 @@ try {
         
         // User has access to this specific project
         $result = $controller->getAllBugs($projectId, $page, $limit);
+        $api->setCache($cacheKey, $result, 300);
         http_response_code(200);
         echo json_encode([
             'success' => true,
@@ -96,59 +104,83 @@ try {
         exit;
     }
     
-    // No specific project requested, get bugs from all projects user has access to
-    $projectIds = array_map(function($project) {
-        return $project['project_id'];
-    }, $userProjects);
-    
-    if (empty($projectIds)) {
-        // User doesn't have access to any projects
-        http_response_code(200);
-        echo json_encode([
-            'success' => true,
-            'message' => 'No bugs found',
-            'data' => [
-                'bugs' => [],
-                'pagination' => [
-                    'currentPage' => $page,
-                    'totalPages' => 0,
-                    'totalBugs' => 0,
-                    'limit' => $limit
-                ]
-            ]
-        ]);
-        exit;
-    }
-    
-    // For now, use existing method with modified project filtering
-    // This is a workaround until getAllBugsByProjects is implemented
-    $bugs = [];
-    $totalBugs = 0;
-    
-    foreach ($projectIds as $pid) {
-        $projectResult = $controller->getAllBugs($pid, 1, 1000); // Get all bugs from this project
-        $bugs = array_merge($bugs, $projectResult['bugs']);
-        $totalBugs += $projectResult['pagination']['totalBugs'];
-    }
-    
-    // Sort by created_at
-    usort($bugs, function($a, $b) {
-        return strtotime($b['created_at']) - strtotime($a['created_at']);
-    });
-    
-    // Apply pagination manually
+    // No specific project requested - get bugs from all accessible projects in one optimized query
     $offset = ($page - 1) * $limit;
-    $paginatedBugs = array_slice($bugs, $offset, $limit);
+    
+    // Single optimized query to get bugs with project access check
+    $bugsQuery = "
+        SELECT DISTINCT b.*, 
+               u.username as reporter_name,
+               p.name as project_name
+        FROM bugs b
+        LEFT JOIN users u ON b.reported_by = u.id
+        LEFT JOIN projects p ON b.project_id = p.id
+        WHERE b.project_id IN (
+            SELECT DISTINCT project_id FROM project_members WHERE user_id = ?
+            UNION
+            SELECT DISTINCT id FROM projects WHERE created_by = ?
+        )
+        ORDER BY b.created_at DESC
+        LIMIT ? OFFSET ?
+    ";
+    
+    // Count query for pagination
+    $countQuery = "
+        SELECT COUNT(DISTINCT b.id) as total
+        FROM bugs b
+        WHERE b.project_id IN (
+            SELECT DISTINCT project_id FROM project_members WHERE user_id = ?
+            UNION
+            SELECT DISTINCT id FROM projects WHERE created_by = ?
+        )
+    ";
+    
+    // Execute queries with prepared statements
+    $stmt = $api->prepare($bugsQuery);
+    $stmt->execute([$user_id, $user_id, $limit, $offset]);
+    $bugs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    $totalBugs = $api->fetchSingleCached($countQuery, [$user_id, $user_id], 
+                                       'user_total_bugs_' . $user_id, 600)['total'];
+    
+    // Get attachments for all bugs in one query if there are bugs
+    if (!empty($bugs)) {
+        $bugIds = array_column($bugs, 'id');
+        $placeholders = str_repeat('?,', count($bugIds) - 1) . '?';
+        
+        $attachmentQuery = "SELECT bug_id, id, file_name, file_path, file_type 
+                          FROM bug_attachments 
+                          WHERE bug_id IN ($placeholders)
+                          ORDER BY bug_id, id";
+        
+        $attachmentStmt = $api->prepare($attachmentQuery);
+        $attachmentStmt->execute($bugIds);
+        $allAttachments = $attachmentStmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // Group attachments by bug_id
+        $attachmentsByBug = [];
+        foreach ($allAttachments as $attachment) {
+            $attachmentsByBug[$attachment['bug_id']][] = $attachment;
+        }
+        
+        // Assign attachments to bugs
+        foreach ($bugs as &$bug) {
+            $bug['attachments'] = $attachmentsByBug[$bug['id']] ?? [];
+        }
+    }
     
     $result = [
-        'bugs' => $paginatedBugs,
+        'bugs' => $bugs,
         'pagination' => [
             'currentPage' => $page,
             'totalPages' => ceil($totalBugs / $limit),
-            'totalBugs' => $totalBugs,
+            'totalBugs' => (int)$totalBugs,
             'limit' => $limit
         ]
     ];
+    
+    // Cache the result for 5 minutes
+    $api->setCache($cacheKey, $result, 300);
     
     http_response_code(200);
     echo json_encode([

@@ -1,6 +1,6 @@
 <?php
 require_once __DIR__ . '/../config/cors.php';
-header('Content-Type: application/json');
+require_once __DIR__ . '/BaseAPI.php';
 
 // Disable HTML error output to prevent JSON corruption
 error_reporting(E_ALL);
@@ -13,14 +13,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit();
 }
 
-require_once __DIR__ . '/../config/database.php';
-$database = new Database();
-$pdo = $database->getConnection();
-
 try {
-    $stmt = $pdo->query("SELECT email FROM users WHERE role = 'admin'");
-    $emails = $stmt->fetchAll(PDO::FETCH_COLUMN);
-    echo json_encode(['success' => true, 'emails' => $emails]);
+    $api = new BaseAPI();
+    
+    // Use cached query for better performance
+    $emails = $api->fetchCached(
+        "SELECT email FROM users WHERE role = 'admin'",
+        [],
+        'admins_emails',
+        600 // Cache for 10 minutes
+    );
+    
+    // Extract just the email values from the result
+    $emailList = array_column($emails, 'email');
+    
+    echo json_encode(['success' => true, 'emails' => $emailList]);
 } catch (Exception $e) {
     http_response_code(500);
     echo json_encode(['success' => false, 'message' => $e->getMessage()]);

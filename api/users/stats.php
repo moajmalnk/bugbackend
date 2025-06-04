@@ -20,75 +20,99 @@ class UserStatsController extends BaseAPI {
                 throw new Exception('User ID is required');
             }
 
-            // Verify user exists
-            $userQuery = "SELECT id FROM users WHERE id = ?";
-            $stmt = $this->conn->prepare($userQuery);
-            $stmt->execute([$userId]);
-            if ($stmt->rowCount() === 0) {
+            // Check cache first
+            $cacheKey = 'user_stats_' . $userId;
+            $cachedStats = $this->getCache($cacheKey);
+            
+            if ($cachedStats !== null) {
+                echo json_encode([
+                    'success' => true,
+                    'data' => $cachedStats
+                ]);
+                exit;
+            }
+
+            // Verify user exists with cached query
+            $userExists = $this->fetchSingleCached(
+                "SELECT id FROM users WHERE id = ?", 
+                [$userId], 
+                'user_exists_' . $userId, 
+                3600 // Cache for 1 hour
+            );
+            
+            if (!$userExists) {
                 throw new Exception('User not found');
             }
 
-            // Get total projects (include projects created by the user and projects the user is a member of)
-            $projectQuery = "
-                SELECT COUNT(DISTINCT project_id) as total_projects FROM (
-                    -- Projects where the user is a member
-                    SELECT project_id FROM project_members WHERE user_id = ?
-                    UNION
-                    -- Projects created by the user
-                    SELECT id as project_id FROM projects WHERE created_by = ?
-                ) AS user_projects
-            ";
-            $stmt = $this->conn->prepare($projectQuery);
-            // Pass the user ID twice for the two placeholder in the UNION query
-            $stmt->execute([$userId, $userId]);
-            $projectResult = $stmt->fetch(PDO::FETCH_ASSOC);
-            $totalProjects = $projectResult['total_projects'] ?? 0;
+            // Use optimized individual queries with caching for better performance
+            $totalProjects = $this->fetchSingleCached(
+                "SELECT COUNT(DISTINCT COALESCE(pm.project_id, p.id)) as total_projects
+                 FROM (SELECT ? as user_id) u
+                 LEFT JOIN project_members pm ON pm.user_id = u.user_id
+                 LEFT JOIN projects p ON p.created_by = u.user_id",
+                [$userId],
+                'user_projects_count_' . $userId,
+                600
+            )['total_projects'] ?? 0;
+            
+            $totalBugs = $this->fetchSingleCached(
+                "SELECT COUNT(id) as total_bugs FROM bugs WHERE reported_by = ?",
+                [$userId],
+                'user_bugs_count_' . $userId,
+                600
+            )['total_bugs'] ?? 0;
+            
+            $totalFixes = $this->fetchSingleCached(
+                "SELECT COUNT(id) as total_fixes FROM bugs WHERE updated_by = ? AND status = 'fixed'",
+                [$userId],
+                'user_fixes_count_' . $userId,
+                600
+            )['total_fixes'] ?? 0;
 
-            // Get total bugs
-            $bugQuery = "SELECT COUNT(id) as total_bugs FROM bugs WHERE reported_by = ?";
-            $stmt = $this->conn->prepare($bugQuery);
-            $stmt->execute([$userId]);
-            $bugResult = $stmt->fetch(PDO::FETCH_ASSOC);
-            $totalBugs = $bugResult['total_bugs'] ?? 0;
-
-            // Get total fixes (bugs that the user has updated to 'fixed' status)
-            $fixQuery = "SELECT COUNT(id) as total_fixes FROM bugs WHERE updated_by = ? AND status = 'fixed'";
-            $stmt = $this->conn->prepare($fixQuery);
-            $stmt->execute([$userId]);
-            $fixResult = $stmt->fetch(PDO::FETCH_ASSOC);
-            $totalFixes = $fixResult['total_fixes'] ?? 0;
-
-            // Get recent activity
+            // Optimized recent activity query using single query with UNION ALL
             $activityQuery = "
-                SELECT * FROM (
-                    SELECT 'bug' as type, title, created_at 
-                    FROM bugs 
-                    WHERE reported_by = ?
-                    UNION ALL
-                    SELECT 'fix' as type, CONCAT('Fixed: ', title) as title, updated_at as created_at
-                    FROM bugs 
-                    WHERE updated_by = ? AND status = 'fixed'
-                    UNION ALL
-                    SELECT 'project' as type, p.name as title, pm.joined_at as created_at
-                    FROM project_members pm
-                    JOIN projects p ON p.id = pm.project_id
-                    WHERE pm.user_id = ?
-                ) AS activity
+                (SELECT 'bug' as type, title, created_at, id
+                 FROM bugs 
+                 WHERE reported_by = ?
+                 ORDER BY created_at DESC
+                 LIMIT 3)
+                UNION ALL
+                (SELECT 'fix' as type, CONCAT('Fixed: ', title) as title, updated_at as created_at, id
+                 FROM bugs 
+                 WHERE updated_by = ? AND status = 'fixed'
+                 ORDER BY updated_at DESC
+                 LIMIT 3)
+                UNION ALL
+                (SELECT 'project' as type, p.name as title, pm.joined_at as created_at, pm.project_id as id
+                 FROM project_members pm
+                 JOIN projects p ON p.id = pm.project_id
+                 WHERE pm.user_id = ?
+                 ORDER BY pm.joined_at DESC
+                 LIMIT 2)
                 ORDER BY created_at DESC
                 LIMIT 5
             ";
-            $stmt = $this->conn->prepare($activityQuery);
-            $stmt->execute([$userId, $userId, $userId]);
-            $activityResult = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $activityResult = $this->fetchCached(
+                $activityQuery, 
+                [$userId, $userId, $userId],
+                'user_activity_' . $userId,
+                300 // Cache for 5 minutes
+            );
+
+            $statsData = [
+                'total_projects' => (int)$totalProjects,
+                'total_bugs' => (int)$totalBugs,
+                'total_fixes' => (int)$totalFixes,
+                'recent_activity' => $activityResult
+            ];
+
+            // Cache the final result for 10 minutes
+            $this->setCache($cacheKey, $statsData, 600);
 
             echo json_encode([
                 'success' => true,
-                'data' => [
-                    'total_projects' => (int)$totalProjects,
-                    'total_bugs' => (int)$totalBugs,
-                    'total_fixes' => (int)$totalFixes,
-                    'recent_activity' => $activityResult
-                ]
+                'data' => $statsData
             ]);
         } catch (Exception $e) {
             error_log("UserStatsController error: " . $e->getMessage());
