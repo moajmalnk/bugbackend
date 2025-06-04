@@ -43,8 +43,8 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 try {
-    $controller = new BugController();
-    $controller->create();
+$controller = new BugController();
+$controller->create(); 
 } catch (Exception $e) {
     http_response_code(500);
     echo json_encode([
