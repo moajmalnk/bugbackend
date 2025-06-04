@@ -1,39 +1,70 @@
 <?php
 require_once __DIR__ . '/../../config/cors.php';
-header('Content-Type: application/json');
-require_once __DIR__ . '/../../config/database.php';
+require_once __DIR__ . '/../BaseAPI.php';
 
-$database = new Database();
-$pdo = $database->getConnection();
-
-$project_id = $_GET['project_id'] ?? null;
-if (!$project_id) {
-    http_response_code(400);
-    echo json_encode(['success' => false, 'message' => 'Missing project_id']);
-    exit;
+// Handle preflight requests
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
 }
 
 try {
-    // Get already assigned user_ids
-    $stmt = $pdo->prepare("SELECT user_id FROM project_members WHERE project_id = ?");
-    $stmt->execute([$project_id]);
-    $assigned = $stmt->fetchAll(PDO::FETCH_COLUMN);
+    $api = new BaseAPI();
+    
+    $project_id = $_GET['project_id'] ?? null;
+    if (!$project_id) {
+        $api->sendJsonResponse(400, 'Missing project_id');
+        exit;
+    }
+
+    // Create cache key for available members
+    $cacheKey = 'available_members_' . $project_id;
+    $cachedResult = $api->getCache($cacheKey);
+    
+    if ($cachedResult !== null) {
+        $api->sendJsonResponse(200, 'Available members retrieved successfully (cached)', $cachedResult);
+        exit;
+    }
+
+    // Get already assigned user_ids with caching
+    $assigned = $api->fetchCached(
+        "SELECT user_id FROM project_members WHERE project_id = ?",
+        [$project_id],
+        'assigned_members_' . $project_id,
+        300 // Cache for 5 minutes
+    );
+    
+    $assignedIds = array_column($assigned, 'user_id');
 
     // Get all testers and developers not assigned to this project
-    $sql = "SELECT id, username, email, role FROM users WHERE (role = 'tester' OR role = 'developer')";
-    if (count($assigned) > 0) {
-        $in = implode(',', array_fill(0, count($assigned), '?'));
-        $sql .= " AND id NOT IN ($in)";
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute($assigned);
+    if (count($assignedIds) > 0) {
+        $placeholders = str_repeat('?,', count($assignedIds) - 1) . '?';
+        $sql = "SELECT id, username, email, role FROM users 
+                WHERE (role = 'tester' OR role = 'developer') 
+                AND id NOT IN ($placeholders)";
+        $params = $assignedIds;
     } else {
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute();
+        $sql = "SELECT id, username, email, role FROM users 
+                WHERE (role = 'tester' OR role = 'developer')";
+        $params = [];
     }
-    $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    echo json_encode(['success' => true, 'users' => $users]);
+    $users = $api->fetchCached(
+        $sql,
+        $params,
+        'available_users_' . md5($sql . implode('', $params)),
+        300 // Cache for 5 minutes
+    );
+
+    $result = ['users' => $users];
+    
+    // Cache the complete result
+    $api->setCache($cacheKey, $result, 300);
+
+    $api->sendJsonResponse(200, 'Available members retrieved successfully', $result);
+
 } catch (Exception $e) {
+    error_log("Error in get_available_members.php: " . $e->getMessage());
     http_response_code(500);
-    echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+    echo json_encode(['success' => false, 'message' => 'Internal server error']);
 }

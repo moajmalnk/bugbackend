@@ -5,8 +5,12 @@ class Database {
     private $username;
     private $password;
     public $conn;
+    private static $instance = null;
+    private static $connectionPool = [];
+    private static $cache = [];
+    private static $cacheTimeout = 300; // 5 minutes
 
-    public function __construct() {
+    private function __construct() {
         // More reliable environment detection
         $isLocal = $this->isLocalEnvironment();
         
@@ -49,6 +53,46 @@ class Database {
         error_log("Database name: " . $this->db_name);
     }
     
+    // Singleton pattern for database connection
+    public static function getInstance() {
+        if (self::$instance === null) {
+            self::$instance = new Database();
+        }
+        return self::$instance;
+    }
+    
+    // Cache management
+    public static function setCache($key, $value, $timeout = null) {
+        $timeout = $timeout ?? self::$cacheTimeout;
+        self::$cache[$key] = [
+            'data' => $value,
+            'expires' => time() + $timeout
+        ];
+    }
+    
+    public static function getCache($key) {
+        if (isset(self::$cache[$key])) {
+            if (self::$cache[$key]['expires'] > time()) {
+                return self::$cache[$key]['data'];
+            } else {
+                unset(self::$cache[$key]);
+            }
+        }
+        return null;
+    }
+    
+    public static function clearCache($pattern = null) {
+        if ($pattern === null) {
+            self::$cache = [];
+        } else {
+            foreach (self::$cache as $key => $value) {
+                if (strpos($key, $pattern) !== false) {
+                    unset(self::$cache[$key]);
+                }
+            }
+        }
+    }
+    
     private function isLocalEnvironment() {
         // Multiple checks for local environment
         $localHosts = ['localhost', '127.0.0.1', '::1'];
@@ -84,7 +128,20 @@ class Database {
     }
 
     public function getConnection() {
+        // Check if we already have a working connection
+        if ($this->conn && $this->testConnection($this->conn)) {
+            return $this->conn;
+        }
+
         $this->conn = null;
+        $connectionKey = $this->host . ':' . $this->db_name . ':' . $this->username;
+
+        // Check connection pool first
+        if (isset(self::$connectionPool[$connectionKey]) && 
+            $this->testConnection(self::$connectionPool[$connectionKey])) {
+            $this->conn = self::$connectionPool[$connectionKey];
+            return $this->conn;
+        }
 
         // For local environment, try simple connection first
         if ($this->isLocalEnvironment()) {
@@ -96,12 +153,18 @@ class Database {
                     PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                     PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                     PDO::ATTR_EMULATE_PREPARES => false,
-                    PDO::ATTR_TIMEOUT => 10
+                    PDO::ATTR_TIMEOUT => 10,
+                    PDO::ATTR_PERSISTENT => true, // Use persistent connections
+                    PDO::MYSQL_ATTR_USE_BUFFERED_QUERY => true,
+                    PDO::MYSQL_ATTR_INIT_COMMAND => "SET SESSION sql_mode='STRICT_TRANS_TABLES,NO_ZERO_DATE,NO_ZERO_IN_DATE,ERROR_FOR_DIVISION_BY_ZERO'"
                 ]);
                 
                 // Test the connection
                 $this->conn->query("SELECT 1");
                 error_log("Local database connection successful!");
+                
+                // Store in connection pool
+                self::$connectionPool[$connectionKey] = $this->conn;
                 return $this->conn;
                 
             } catch(PDOException $e) {
@@ -119,10 +182,13 @@ class Database {
                         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                         PDO::ATTR_EMULATE_PREPARES => false,
-                        PDO::ATTR_TIMEOUT => 10
+                        PDO::ATTR_TIMEOUT => 10,
+                        PDO::ATTR_PERSISTENT => true,
+                        PDO::MYSQL_ATTR_USE_BUFFERED_QUERY => true
                     ]);
                     
                     error_log("Database created and connected successfully!");
+                    self::$connectionPool[$connectionKey] = $this->conn;
                     return $this->conn;
                     
                 } catch(PDOException $createE) {
@@ -148,12 +214,17 @@ class Database {
                         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                         PDO::ATTR_EMULATE_PREPARES => false,
-                        PDO::ATTR_TIMEOUT => 10
+                        PDO::ATTR_TIMEOUT => 10,
+                        PDO::ATTR_PERSISTENT => true,
+                        PDO::MYSQL_ATTR_USE_BUFFERED_QUERY => true
                     ]);
                     
                     // Test the connection
                     $this->conn->query("SELECT 1");
                     error_log("Production database connection successful!");
+                    
+                    // Store in connection pool
+                    self::$connectionPool[$connectionKey] = $this->conn;
                     return $this->conn;
                     
                 } catch(PDOException $e) {
@@ -172,11 +243,13 @@ class Database {
                         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                         PDO::ATTR_EMULATE_PREPARES => false,
-                        PDO::ATTR_TIMEOUT => 10
+                        PDO::ATTR_TIMEOUT => 10,
+                        PDO::ATTR_PERSISTENT => true
                     ]);
                     
                     $this->conn->query("SELECT 1");
                     error_log("Alternative host connection successful!");
+                    self::$connectionPool[$connectionKey] = $this->conn;
                     return $this->conn;
                     
                 } catch(PDOException $altE) {
@@ -203,6 +276,65 @@ class Database {
         } else {
             throw new Exception("Database connection failed");
         }
+    }
+    
+    private function testConnection($conn) {
+        try {
+            $conn->query("SELECT 1");
+            return true;
+        } catch (PDOException $e) {
+            return false;
+        }
+    }
+    
+    // Prepared statement caching
+    private static $preparedStatements = [];
+    
+    public function prepare($query) {
+        $hash = md5($query);
+        if (!isset(self::$preparedStatements[$hash])) {
+            self::$preparedStatements[$hash] = $this->conn->prepare($query);
+        }
+        return self::$preparedStatements[$hash];
+    }
+    
+    // Optimized query methods
+    public function fetchCached($query, $params = [], $cacheKey = null, $cacheTimeout = null) {
+        if ($cacheKey) {
+            $cached = self::getCache($cacheKey);
+            if ($cached !== null) {
+                return $cached;
+            }
+        }
+        
+        $stmt = $this->prepare($query);
+        $stmt->execute($params);
+        $result = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        if ($cacheKey) {
+            self::setCache($cacheKey, $result, $cacheTimeout);
+        }
+        
+        return $result;
+    }
+    
+    public function fetchSingleCached($query, $params = [], $cacheKey = null, $cacheTimeout = null) {
+        if ($cacheKey) {
+            $cached = self::getCache($cacheKey);
+            if ($cached !== null) {
+                return $cached;
+            }
+        }
+        
+        $stmt = $this->prepare($query);
+        $stmt->execute($params);
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if ($cacheKey) {
+            self::setCache($cacheKey, $result, $cacheTimeout);
+        }
+        
+        return $result;
     }
 }
 ?> 

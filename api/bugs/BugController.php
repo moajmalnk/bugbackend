@@ -606,7 +606,16 @@ class BugController extends BaseAPI {
                 return;
             }
 
-            // Base query
+            // Create cache key for this query
+            $cacheKey = 'bugs_' . ($projectId ?? 'all') . '_' . $page . '_' . $limit;
+            $cachedResult = $this->getCache($cacheKey);
+            
+            if ($cachedResult !== null) {
+                $this->sendJsonResponse(200, "Bugs retrieved successfully (cached)", $cachedResult);
+                return;
+            }
+
+            // Optimized query using JOINs to get everything in fewer queries
             $query = "SELECT b.*, 
                      u.username as reporter_name,
                      p.name as project_name
@@ -633,26 +642,39 @@ class BugController extends BaseAPI {
             $params[] = $limit;
             $params[] = $offset;
 
-            // Get total count
-            $countStmt = $this->conn->prepare($countQuery);
-            if ($projectId) {
-                $countStmt->execute([$projectId]);
-            } else {
-                $countStmt->execute();
-            }
-            $totalBugs = $countStmt->fetch(PDO::FETCH_ASSOC)['total'];
+            // Execute both queries using prepared statements with caching
+            $countParams = $projectId ? [$projectId] : [];
+            $totalBugs = $this->fetchSingleCached($countQuery, $countParams, 'bug_count_' . ($projectId ?? 'all'), 600)['total'];
 
             // Execute main query
             $stmt = $this->conn->prepare($query);
             $stmt->execute($params);
             $bugs = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-            // Get attachments for each bug
-            foreach ($bugs as &$bug) {
-                $attachmentQuery = "SELECT id, file_name, file_path, file_type FROM bug_attachments WHERE bug_id = ?";
+            // Optimized attachment fetching - get all attachments in one query
+            if (!empty($bugs)) {
+                $bugIds = array_column($bugs, 'id');
+                $placeholders = str_repeat('?,', count($bugIds) - 1) . '?';
+                
+                $attachmentQuery = "SELECT bug_id, id, file_name, file_path, file_type 
+                                  FROM bug_attachments 
+                                  WHERE bug_id IN ($placeholders)
+                                  ORDER BY bug_id, id";
+                
                 $attachmentStmt = $this->conn->prepare($attachmentQuery);
-                $attachmentStmt->execute([$bug['id']]);
-                $bug['attachments'] = $attachmentStmt->fetchAll(PDO::FETCH_ASSOC);
+                $attachmentStmt->execute($bugIds);
+                $allAttachments = $attachmentStmt->fetchAll(PDO::FETCH_ASSOC);
+                
+                // Group attachments by bug_id
+                $attachmentsByBug = [];
+                foreach ($allAttachments as $attachment) {
+                    $attachmentsByBug[$attachment['bug_id']][] = $attachment;
+                }
+                
+                // Assign attachments to bugs
+                foreach ($bugs as &$bug) {
+                    $bug['attachments'] = $attachmentsByBug[$bug['id']] ?? [];
+                }
             }
 
             $response = [
@@ -664,6 +686,9 @@ class BugController extends BaseAPI {
                     'limit' => $limit
                 ]
             ];
+
+            // Cache the result for 5 minutes
+            $this->setCache($cacheKey, $response, 300);
 
             $this->sendJsonResponse(200, "Bugs retrieved successfully", $response);
         } catch (PDOException $e) {
