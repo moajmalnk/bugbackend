@@ -57,4 +57,4 @@ if (ob_get_level()) {
 // Output the image
 readfile($fullPath);
 exit;
-?> 
+?>

@@ -602,8 +602,7 @@ class BugController extends BaseAPI {
 
             // Validate connection
             if (!$this->conn) {
-                $this->sendJsonResponse(500, "Database connection failed");
-                return;
+                throw new Exception("Database connection failed");
             }
 
             // Create cache key for this query
@@ -611,8 +610,7 @@ class BugController extends BaseAPI {
             $cachedResult = $this->getCache($cacheKey);
             
             if ($cachedResult !== null) {
-                $this->sendJsonResponse(200, "Bugs retrieved successfully (cached)", $cachedResult);
-                return;
+                return $cachedResult;
             }
 
             // Optimized query using JOINs to get everything in fewer queries
@@ -690,11 +688,12 @@ class BugController extends BaseAPI {
             // Cache the result for 5 minutes
             $this->setCache($cacheKey, $response, 300);
 
-            $this->sendJsonResponse(200, "Bugs retrieved successfully", $response);
+            return $response;
+            
         } catch (PDOException $e) {
-            $this->sendJsonResponse(500, "Failed to retrieve bugs");
+            throw new Exception("Failed to retrieve bugs");
         } catch (Exception $e) {
-            $this->sendJsonResponse(500, "An unexpected error occurred");
+            throw new Exception("An unexpected error occurred");
         }
     }
 
