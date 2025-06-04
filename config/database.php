@@ -146,7 +146,7 @@ class Database {
         // For local environment, try simple connection first
         if ($this->isLocalEnvironment()) {
             try {
-                $dsn = "mysql:host=" . $this->host . ";dbname=" . $this->db_name . ";charset=utf8";
+                $dsn = "mysql:host=" . $this->host . ";dbname=" . $this->db_name . ";charset=utf8mb4";
                 error_log("Attempting local connection to: " . $dsn);
                 
                 $this->conn = new PDO($dsn, $this->username, $this->password, [
@@ -156,7 +156,7 @@ class Database {
                     PDO::ATTR_TIMEOUT => 10,
                     PDO::ATTR_PERSISTENT => true, // Use persistent connections
                     PDO::MYSQL_ATTR_USE_BUFFERED_QUERY => true,
-                    PDO::MYSQL_ATTR_INIT_COMMAND => "SET SESSION sql_mode='STRICT_TRANS_TABLES,NO_ZERO_DATE,NO_ZERO_IN_DATE,ERROR_FOR_DIVISION_BY_ZERO'"
+                    PDO::MYSQL_ATTR_INIT_COMMAND => "SET SESSION sql_mode='STRICT_TRANS_TABLES,NO_ZERO_DATE,NO_ZERO_IN_DATE,ERROR_FOR_DIVISION_BY_ZERO', NAMES utf8mb4 COLLATE utf8mb4_unicode_ci"
                 ]);
                 
                 // Test the connection
@@ -173,8 +173,8 @@ class Database {
                 
                 // Try to create the database if it doesn't exist
                 try {
-                    $createDbConn = new PDO("mysql:host=" . $this->host . ";charset=utf8", $this->username, $this->password);
-                    $createDbConn->exec("CREATE DATABASE IF NOT EXISTS `" . $this->db_name . "`");
+                    $createDbConn = new PDO("mysql:host=" . $this->host . ";charset=utf8mb4", $this->username, $this->password);
+                    $createDbConn->exec("CREATE DATABASE IF NOT EXISTS `" . $this->db_name . "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
                     $createDbConn = null;
                     
                     // Try connecting again
@@ -184,7 +184,8 @@ class Database {
                         PDO::ATTR_EMULATE_PREPARES => false,
                         PDO::ATTR_TIMEOUT => 10,
                         PDO::ATTR_PERSISTENT => true,
-                        PDO::MYSQL_ATTR_USE_BUFFERED_QUERY => true
+                        PDO::MYSQL_ATTR_USE_BUFFERED_QUERY => true,
+                        PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci"
                     ]);
                     
                     error_log("Database created and connected successfully!");

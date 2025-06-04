@@ -709,7 +709,9 @@ class BugController extends BaseAPI {
             // Check if bug exists
             $checkStmt = $this->conn->prepare("SELECT id FROM bugs WHERE id = ?");
             $checkStmt->execute([$data['id']]);
-            if (!$checkStmt->fetch()) {
+            $bugExists = $checkStmt->fetch();
+            
+            if (!$bugExists) {
                 throw new Exception("Bug not found");
             }
 
@@ -760,26 +762,50 @@ class BugController extends BaseAPI {
             }
 
             // Get updated bug data with updated_by_name
-            $stmt = $this->conn->prepare("
-                SELECT b.*, 
-                       p.name as project_name, 
-                       reporter.username as reporter_name,
-                       updater.username as updated_by_name
-                FROM bugs b
-                LEFT JOIN projects p ON b.project_id = p.id
-                LEFT JOIN users reporter ON b.reported_by = reporter.id
-                LEFT JOIN users updater ON b.updated_by = updater.id
-                WHERE b.id = ?
-            ");
-            $stmt->execute([$data['id']]);
-            $updatedBug = $stmt->fetch(PDO::FETCH_ASSOC);
+            // Try the complex JOIN query first, fallback to simple query if it fails
+            $updatedBug = null;
+            
+            try {
+                $fetchQuery = "
+                    SELECT b.*, 
+                           p.name as project_name, 
+                           reporter.username as reporter_name,
+                           updater.username as updated_by_name
+                    FROM bugs b
+                    LEFT JOIN projects p ON b.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci
+                    LEFT JOIN users reporter ON b.reported_by COLLATE utf8mb4_unicode_ci = reporter.id COLLATE utf8mb4_unicode_ci
+                    LEFT JOIN users updater ON b.updated_by COLLATE utf8mb4_unicode_ci = updater.id COLLATE utf8mb4_unicode_ci
+                    WHERE b.id = ?
+                ";
+                
+                $stmt = $this->conn->prepare($fetchQuery);
+                $stmt->execute([$data['id']]);
+                $updatedBug = $stmt->fetch(PDO::FETCH_ASSOC);
+                
+            } catch (Exception $joinError) {
+                // Fallback to simple query without JOINs
+                try {
+                    $fallbackQuery = "SELECT * FROM bugs WHERE id = ?";
+                    $stmt = $this->conn->prepare($fallbackQuery);
+                    $stmt->execute([$data['id']]);
+                    $updatedBug = $stmt->fetch(PDO::FETCH_ASSOC);
+                    
+                    if ($updatedBug) {
+                        // Add empty values for the missing JOIN fields
+                        $updatedBug['project_name'] = null;
+                        $updatedBug['reporter_name'] = null;
+                        $updatedBug['updated_by_name'] = null;
+                    }
+                } catch (Exception $fallbackError) {
+                    error_log("Both JOIN and fallback queries failed: " . $fallbackError->getMessage());
+                }
+            }
 
             if (!$updatedBug) {
                 throw new Exception("Failed to fetch updated bug data");
             }
 
             $this->conn->commit();
-
             return $updatedBug;
 
         } catch (Exception $e) {
