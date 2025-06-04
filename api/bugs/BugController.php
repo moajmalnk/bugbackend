@@ -10,9 +10,20 @@ class BugController extends BaseAPI {
         $this->baseUrl = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https://' : 'http://';
         $this->baseUrl .= $_SERVER['HTTP_HOST'];
         
-        // Add the project path for local development
-        if (strpos($_SERVER['HTTP_HOST'], 'localhost') !== false || strpos($_SERVER['HTTP_HOST'], '127.0.0.1') !== false) {
+        // Handle different environments
+        $host = $_SERVER['HTTP_HOST'];
+        if (strpos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false) {
+            // Local development
             $this->baseUrl .= '/Bugricer/backend';
+        } elseif (strpos($host, 'bugbackend.moajmalnk.in') !== false) {
+            // Production backend - no additional path needed
+            // Base URL is already correct
+        } else {
+            // Other environments - try to detect if we're in a subdirectory
+            $scriptPath = dirname($_SERVER['SCRIPT_NAME']);
+            if ($scriptPath !== '/' && $scriptPath !== '') {
+                $this->baseUrl .= $scriptPath;
+            }
         }
     }
 
@@ -20,8 +31,17 @@ class BugController extends BaseAPI {
         // Remove any leading slashes
         $path = ltrim($path, '/');
         
-        // Use direct path for all files (uploads folder has CORS configured)
-        return $this->baseUrl . '/' . $path;
+        // Check if this is an image file
+        $imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'];
+        $extension = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+        
+        if (in_array($extension, $imageExtensions)) {
+            // Use the image API endpoint for images to ensure CORS
+            return $this->baseUrl . '/api/image.php?path=' . urlencode($path);
+        } else {
+            // Use direct path for non-image files
+            return $this->baseUrl . '/' . $path;
+        }
     }
 
     public function handleError($message, $code = 400) {

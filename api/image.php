@@ -1,12 +1,13 @@
 <?php
+// Include CORS configuration
 require_once __DIR__ . '/../config/cors.php';
-require_once __DIR__ . '/../config/database.php';
 
 // Get the image path from query parameter
 $path = $_GET['path'] ?? '';
 
 if (empty($path)) {
     http_response_code(400);
+    header('Content-Type: application/json');
     echo json_encode(['error' => 'No image path provided']);
     exit;
 }
@@ -20,7 +21,8 @@ $fullPath = __DIR__ . '/../' . ltrim($path, '/');
 // Check if file exists
 if (!file_exists($fullPath)) {
     http_response_code(404);
-    echo json_encode(['error' => 'Image not found']);
+    header('Content-Type: application/json');
+    echo json_encode(['error' => 'Image not found', 'path' => $path]);
     exit;
 }
 
@@ -32,14 +34,20 @@ finfo_close($finfo);
 // Verify it's an image (compatible with older PHP versions)
 if (substr($mimeType, 0, 6) !== 'image/') {
     http_response_code(400);
-    echo json_encode(['error' => 'File is not an image']);
+    header('Content-Type: application/json');
+    echo json_encode(['error' => 'File is not an image', 'mime_type' => $mimeType]);
     exit;
 }
 
-// Set headers for image serving
+// Set headers for image serving with proper CORS
 header('Content-Type: ' . $mimeType);
 header('Content-Length: ' . filesize($fullPath));
-header('Cache-Control: public, max-age=3600'); // Cache for 1 hour
+header('Cache-Control: public, max-age=3600');
+
+// Additional CORS headers for images
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Methods: GET, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin');
 
 // Disable output buffering for large files
 if (ob_get_level()) {
@@ -48,4 +56,5 @@ if (ob_get_level()) {
 
 // Output the image
 readfile($fullPath);
+exit;
 ?> 
