@@ -6,8 +6,6 @@ CREATE TABLE `updates` (
   `created_by` VARCHAR(36) NOT NULL,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME DEFAULT NULL,
+  `status` ENUM('pending', 'approved', 'declined') DEFAULT 'pending',
   FOREIGN KEY (`created_by`) REFERENCES `users`(`id`)
-);
-
-
-ALTER TABLE updates ADD COLUMN status ENUM('pending', 'approved', 'declined') DEFAULT 'pending';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
