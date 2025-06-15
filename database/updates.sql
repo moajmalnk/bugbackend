@@ -1,7 +1,7 @@
 CREATE TABLE `updates` (
   `id` VARCHAR(36) NOT NULL PRIMARY KEY,
   `title` VARCHAR(255) NOT NULL,
-  `type` ENUM('feature', 'fix', 'maintenance') NOT NULL,
+  `type` ENUM('feature', 'updation', 'maintenance') NOT NULL,
   `description` TEXT NOT NULL,
   `created_by` VARCHAR(36) NOT NULL,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
