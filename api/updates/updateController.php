@@ -136,6 +136,10 @@ class UpdateController extends BaseAPI {
                 $fields[] = "description = ?";
                 $values[] = $data['description'];
             }
+            if (isset($data['status'])) {
+                $fields[] = "status = ?";
+                $values[] = $data['status'];
+            }
             if (empty($fields)) {
                 $this->sendJsonResponse(400, "No fields to update");
                 return;
