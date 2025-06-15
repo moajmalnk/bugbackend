@@ -1,39 +1,51 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
 
-class ProjectController extends BaseAPI {
-    public function __construct() {
+class ProjectController extends BaseAPI
+{
+    public function __construct()
+    {
         parent::__construct();
     }
-    
-    public function handleError($status, $message) {
+
+    public function handleError($status, $message)
+    {
         $this->sendJsonResponse($status, $message);
     }
-    
-    public function getAll() {
-        if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
-            $this->sendJsonResponse(405, "Method not allowed");
-            return;
+
+    public function getAll()
+{
+    if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+        $this->sendJsonResponse(405, "Method not allowed");
+        return;
+    }
+
+    try {
+        $decoded = $this->validateToken();
+
+        $query = "SELECT * FROM projects";
+        $stmt = $this->conn->prepare($query);
+        $stmt->execute();
+
+        $projects = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        // Add members array to each project
+        foreach ($projects as &$project) {
+            $stmt2 = $this->conn->prepare("SELECT user_id FROM project_members WHERE project_id = ?");
+            $stmt2->execute([$project['id']]);
+            $project['members'] = array_column($stmt2->fetchAll(PDO::FETCH_ASSOC), 'user_id');
         }
 
-        try {
-            $decoded = $this->validateToken();
-            
-            $query = "SELECT * FROM projects";
-            $stmt = $this->conn->prepare($query);
-            $stmt->execute();
-            
-            $projects = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            
-            $this->sendJsonResponse(200, "Projects retrieved successfully", $projects);
-            
-        } catch (Exception $e) {
-            error_log("Error fetching projects: " . $e->getMessage());
-            $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
-        }
+        $this->sendJsonResponse(200, "Projects retrieved successfully", $projects);
+
+    } catch (Exception $e) {
+        error_log("Error fetching projects: " . $e->getMessage());
+        $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
     }
-    
-    public function create() {
+}
+
+    public function create()
+    {
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
             $this->sendJsonResponse(405, "Method not allowed");
             return;
@@ -42,18 +54,18 @@ class ProjectController extends BaseAPI {
         try {
             $decoded = $this->validateToken();
             $data = $this->getRequestData();
-            
+
             if (!isset($data['name']) || !isset($data['description'])) {
                 $this->sendJsonResponse(400, "Name and description are required");
                 return;
             }
-            
+
             $id = Utils::generateUUID();
             $stmt = $this->conn->prepare(
                 "INSERT INTO projects (id, name, description, status, created_by) 
                  VALUES (?, ?, ?, ?, ?)"
             );
-            
+
             $status = 'active';
             $stmt->execute([
                 $id,
@@ -62,7 +74,7 @@ class ProjectController extends BaseAPI {
                 $status,
                 $decoded->user_id
             ]);
-            
+
             $project = [
                 'id' => $id,
                 'name' => $data['name'],
@@ -72,16 +84,17 @@ class ProjectController extends BaseAPI {
                 'created_at' => date('Y-m-d H:i:s'),
                 'updated_at' => date('Y-m-d H:i:s')
             ];
-            
+
             $this->sendJsonResponse(201, "Project created successfully", $project);
-            
+
         } catch (Exception $e) {
             error_log("Error creating project: " . $e->getMessage());
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
         }
     }
-    
-    public function getById($id) {
+
+    public function getById($id)
+    {
         if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
             $this->sendJsonResponse(405, "Method not allowed");
             return;
@@ -89,26 +102,27 @@ class ProjectController extends BaseAPI {
 
         try {
             $decoded = $this->validateToken();
-            
+
             $stmt = $this->conn->prepare("SELECT * FROM projects WHERE id = ?");
             $stmt->execute([$id]);
-            
+
             $project = $stmt->fetch(PDO::FETCH_ASSOC);
-            
+
             if (!$project) {
                 $this->sendJsonResponse(404, "Project not found");
                 return;
             }
-            
+
             $this->sendJsonResponse(200, "Project retrieved successfully", $project);
-            
+
         } catch (Exception $e) {
             error_log("Error fetching project: " . $e->getMessage());
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
         }
     }
-    
-    public function update($id) {
+
+    public function update($id)
+    {
         if ($_SERVER['REQUEST_METHOD'] !== 'PUT') {
             $this->sendJsonResponse(405, "Method not allowed");
             return;
@@ -117,64 +131,65 @@ class ProjectController extends BaseAPI {
         try {
             $decoded = $this->validateToken();
             $data = $this->getRequestData();
-            
+
             $updateFields = [];
             $values = [];
-            
+
             if (isset($data['name'])) {
                 $updateFields[] = "name = ?";
                 $values[] = $data['name'];
             }
-            
+
             if (isset($data['description'])) {
                 $updateFields[] = "description = ?";
                 $values[] = $data['description'];
             }
-            
+
             if (isset($data['status'])) {
                 $updateFields[] = "status = ?";
                 $values[] = $data['status'];
             }
-            
+
             if (empty($updateFields)) {
                 $this->sendJsonResponse(400, "No fields to update");
                 return;
             }
-            
+
             $updateFields[] = "updated_at = CURRENT_TIMESTAMP()";
-            
+
             $query = "UPDATE projects SET " . implode(", ", $updateFields) . " WHERE id = ?";
             $stmt = $this->conn->prepare($query);
-            
+
             $values[] = $id;
-            
+
             if (!$stmt->execute($values)) {
                 throw new Exception("Failed to update project");
             }
-            
+
             if ($stmt->rowCount() === 0) {
                 $this->sendJsonResponse(404, "Project not found or no changes made");
                 return;
             }
-            
+
             $this->sendJsonResponse(200, "Project updated successfully");
-            
+
         } catch (Exception $e) {
             error_log("Error updating project: " . $e->getMessage());
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
         }
     }
 
-    public function delete($id, $forceDelete = false) {
+    public function delete($id, $forceDelete = false)
+    {
         try {
             // Convert forceDelete to boolean and log it
-            $forceDelete = (bool)$forceDelete;
+            $forceDelete = (bool) $forceDelete;
             error_log("ProjectController::delete - ID: $id, Force Delete: " . ($forceDelete ? 'YES' : 'NO'));
             error_log("Raw forceDelete parameter value: " . var_export($forceDelete, true) . " (type: " . gettype($forceDelete) . ")");
-            
+
             // Skip method check as it's already handled in delete.php
             $decoded = $this->validateToken();
-            
+
             // Start transaction
             $this->conn->beginTransaction();
             error_log("Transaction started for project deletion");
@@ -212,7 +227,7 @@ class ProjectController extends BaseAPI {
             // If force delete is NOT enabled and there are related records, return error
             if (!$forceDelete && ($memberCount > 0 || $bugCount > 0)) {
                 $this->conn->rollBack();
-                
+
                 $message = "Cannot delete project due to existing ";
                 if ($memberCount > 0 && $bugCount > 0) {
                     $message .= "team members and bugs";
@@ -222,23 +237,23 @@ class ProjectController extends BaseAPI {
                     $message .= "bugs";
                 }
                 $message .= ". Please remove these relationships first.";
-                
+
                 error_log("Force delete not enabled, returning error: $message");
                 $this->sendJsonResponse(400, $message);
                 return;
             }
-            
+
             // Process with force delete if enabled or no related records
             if ($forceDelete) {
                 error_log("Force delete enabled, removing related records");
-                
+
                 // Delete team members
                 if ($memberCount > 0) {
                     error_log("Deleting $memberCount team members");
                     $deleteMembersQuery = "DELETE FROM project_members WHERE project_id = :id";
                     $deleteMembersStmt = $this->conn->prepare($deleteMembersQuery);
                     $deleteMembersStmt->bindParam(':id', $id);
-                    
+
                     if (!$deleteMembersStmt->execute()) {
                         $this->conn->rollBack();
                         error_log("Failed to delete team members: " . $deleteMembersStmt->errorInfo()[2]);
@@ -247,7 +262,7 @@ class ProjectController extends BaseAPI {
                     }
                     error_log("Team members deleted successfully");
                 }
-                
+
                 // Delete bugs and related fixes
                 if ($bugCount > 0) {
                     // Get bug IDs first
@@ -258,18 +273,18 @@ class ProjectController extends BaseAPI {
                     $getBugsStmt->execute();
                     $bugIds = $getBugsStmt->fetchAll(PDO::FETCH_COLUMN);
                     error_log("Found " . count($bugIds) . " bug IDs");
-                    
+
                     // Delete bug attachments first
                     if (!empty($bugIds)) {
                         error_log("Deleting bug attachments for " . count($bugIds) . " bugs");
                         $placeholders = implode(',', array_fill(0, count($bugIds), '?'));
                         $deleteBugAttachmentsQuery = "DELETE FROM bug_attachments WHERE bug_id IN ($placeholders)";
                         $deleteBugAttachmentsStmt = $this->conn->prepare($deleteBugAttachmentsQuery);
-                        
+
                         foreach ($bugIds as $i => $bugId) {
                             $deleteBugAttachmentsStmt->bindValue($i + 1, $bugId);
                         }
-                        
+
                         if (!$deleteBugAttachmentsStmt->execute()) {
                             $this->conn->rollBack();
                             error_log("Failed to delete bug attachments: " . $deleteBugAttachmentsStmt->errorInfo()[2]);
@@ -278,13 +293,13 @@ class ProjectController extends BaseAPI {
                         }
                         error_log("Bug attachments deleted successfully");
                     }
-                    
+
                     // Now delete all bugs
                     error_log("Deleting $bugCount bugs");
                     $deleteBugsQuery = "DELETE FROM bugs WHERE project_id = :id";
                     $deleteBugsStmt = $this->conn->prepare($deleteBugsQuery);
                     $deleteBugsStmt->bindParam(':id', $id);
-                    
+
                     if (!$deleteBugsStmt->execute()) {
                         $this->conn->rollBack();
                         error_log("Failed to delete bugs: " . $deleteBugsStmt->errorInfo()[2]);
@@ -363,4 +378,4 @@ if ($id) {
         default:
             $controller->handleError(404, "Endpoint not found");
     }
-} 
+}
