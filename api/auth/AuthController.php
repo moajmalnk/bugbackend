@@ -160,8 +160,7 @@ class AuthController extends BaseAPI {
             $this->sendJsonResponse(200, "User details retrieved successfully", $user);
 
         } catch (Exception $e) {
-            error_log("ME endpoint error: " . $e->getMessage());
-            $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
+            $this->sendJsonResponse(401, "Authentication failed: " . $e->getMessage());
         }
     }
 }
