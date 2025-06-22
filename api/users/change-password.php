@@ -80,7 +80,7 @@ try {
     }
 
     $hashedPassword = password_hash($newPassword, PASSWORD_DEFAULT);
-    $updateQuery = "UPDATE users SET password = ?, password_changed_at = NOW(), updated_at = NOW() WHERE id = ?";
+    $updateQuery = "UPDATE users SET password = ?, updated_at = NOW() WHERE id = ?";
     $updateStmt = $conn->prepare($updateQuery);
 
     if ($updateStmt->execute([$hashedPassword, $userId])) {
