@@ -130,16 +130,31 @@ class BaseAPI {
         }
 
         try {
-        $result = $this->utils->validateJWT($token);
-        
-        // Cache valid tokens for 5 minutes
-        if ($result) {
-            $this->setCache($cacheKey, $result, 300);
-        }
-        
-        return $result;
+            $decoded = $this->utils->validateJWT($token);
+            
+            // Fetch user's password_changed_at from DB
+            $userQuery = "SELECT password_changed_at FROM users WHERE id = ?";
+            $stmt = $this->conn->prepare($userQuery);
+            $stmt->execute([$decoded->user_id]);
+            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if ($user && $user['password_changed_at']) {
+                $passwordChangedAt = strtotime($user['password_changed_at']);
+                if ($decoded->iat < $passwordChangedAt) {
+                    throw new Exception('Token invalidated by subsequent password change.');
+                }
+            }
+            
+            // Cache valid tokens for 5 minutes
+            if ($decoded) {
+                $this->setCache($cacheKey, $decoded, 300);
+            }
+            
+            return $decoded;
         } catch (Exception $e) {
-            $this->sendJsonResponse(500, "Token validation failed: " . $e->getMessage());
+            // Re-throw the exception to be handled by the specific controller
+            // This allows for a more appropriate HTTP status code (e.g., 401)
+            throw $e;
         }
     }
     
