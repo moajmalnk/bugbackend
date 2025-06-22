@@ -12,62 +12,85 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit;
 }
 
+$controller = new UserController();
+
+try {
+    $decodedToken = $controller->validateToken();
+    $actorId = $decodedToken->user_id;
+    $actorRole = $decodedToken->role;
+} catch (Exception $e) {
+    http_response_code(401);
+    echo json_encode(['message' => 'Authentication failed: ' . $e->getMessage()]);
+    exit;
+}
+
 $input = json_decode(file_get_contents('php://input'), true);
 
 $userId = $input['userId'] ?? null;
-$currentPassword = $input['currentPassword'] ?? null;
 $newPassword = $input['newPassword'] ?? null;
+$currentPassword = $input['currentPassword'] ?? null;
 
-if (!$userId || !$currentPassword || !$newPassword) {
+if (!$userId || !$newPassword) {
     http_response_code(400);
-    echo json_encode(['message' => 'Missing required fields']);
+    echo json_encode(['message' => 'User ID and new password are required']);
     exit;
 }
 
 try {
-    $controller = new UserController();
-
     $conn = $controller->getConnection();
-
     if (!$conn) {
         http_response_code(500);
         echo json_encode(['message' => 'Database connection failed']);
         exit;
     }
 
-    // Fetch user by ID
-    $query = "SELECT password FROM users WHERE id = ?";
-    try {
-        $stmt = $conn->prepare($query);
-        $stmt->execute([$userId]);
-    } catch (PDOException $e) {
-        http_response_code(500);
-        echo json_encode(['message' => 'SQL error', 'error' => $e->getMessage()]);
-        exit;
-    }
-    $user = $stmt->fetch(PDO::FETCH_ASSOC);
+    $stmt = $conn->prepare("SELECT id, password FROM users WHERE id = ?");
+    $stmt->execute([$userId]);
+    $targetUser = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    if (!$user) {
+    if (!$targetUser) {
         http_response_code(404);
-        echo json_encode(['message' => 'User not found']);
+        echo json_encode(['message' => 'Target user not found']);
         exit;
     }
-
-    // Verify current password
-    if (!password_verify($currentPassword, $user['password'])) {
-        http_response_code(401);
-        echo json_encode(['message' => 'Current password is incorrect']);
-        exit;
+    
+    $isPasswordVerificationRequired = true;
+    if ($actorRole === 'admin' && $actorId !== $userId) {
+        $isPasswordVerificationRequired = false;
     }
 
-    // Update password
+    if ($isPasswordVerificationRequired) {
+        if ($actorRole !== 'admin' && $actorId !== $userId) {
+            http_response_code(403);
+            echo json_encode(['message' => 'Forbidden: You can only change your own password.']);
+            exit;
+        }
+
+        if (!$currentPassword) {
+            http_response_code(400);
+            echo json_encode(['message' => 'Current password is required.']);
+            exit;
+        }
+
+        if (!password_verify($currentPassword, $targetUser['password'])) {
+            http_response_code(401);
+            echo json_encode(['message' => 'Current password is incorrect']);
+            exit;
+        }
+    }
+
     $hashedPassword = password_hash($newPassword, PASSWORD_DEFAULT);
     $updateQuery = "UPDATE users SET password = ?, updated_at = NOW() WHERE id = ?";
     $updateStmt = $conn->prepare($updateQuery);
-    $updateStmt->execute([$hashedPassword, $userId]);
 
-    echo json_encode(['message' => 'Password changed successfully']);
+    if ($updateStmt->execute([$hashedPassword, $userId])) {
+        echo json_encode(['message' => 'Password changed successfully']);
+    } else {
+        http_response_code(500);
+        echo json_encode(['message' => 'Failed to update password.']);
+    }
+
 } catch (Exception $e) {
     http_response_code(500);
-    echo json_encode(['message' => 'Server error', 'error' => $e->getMessage()]);
+    echo json_encode(['message' => 'Server error: ' . $e->getMessage()]);
 }
