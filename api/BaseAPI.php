@@ -129,14 +129,18 @@ class BaseAPI {
             return $cachedResult;
         }
 
-        $result = $this->utils->validateJWT($token);
-        
-        // Cache valid tokens for 5 minutes
-        if ($result) {
-            $this->setCache($cacheKey, $result, 300);
+        try {
+            $result = $this->utils->validateJWT($token);
+            
+            // Cache valid tokens for 5 minutes
+            if ($result) {
+                $this->setCache($cacheKey, $result, 300);
+            }
+            
+            return $result;
+        } catch (Exception $e) {
+            $this->sendJsonResponse(500, "Token validation failed: " . $e->getMessage());
         }
-        
-        return $result;
     }
     
     protected function getBearerToken() {

@@ -55,7 +55,7 @@ function sendBugNotification($to, $subject, $body, $attachments = []) {
         }
         
         // Debug settings
-        $mail->SMTPDebug = 2; // Set to 2 for verbose debugging
+        // $mail->SMTPDebug = 2; // Set to 2 for verbose debugging
         $mail->Debugoutput = function($str, $level) {
             error_log("PHPMailer debug: $str");
         };

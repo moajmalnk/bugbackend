@@ -15,8 +15,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 
 // Include necessary files
 require_once __DIR__ . '/../utils/send_email.php';
+require_once __DIR__ . '/../api/BaseAPI.php';
 
 try {
+    $api = new BaseAPI();
+    
+    try {
+        $decoded = $api->validateToken();
+    } catch (Exception $e) {
+        $api->sendJsonResponse(401, $e->getMessage());
+        exit;
+    }
+
+    $conn = $api->getConnection();
+
+    $stmt = $conn->prepare("SELECT value FROM settings WHERE key_name = 'email_notifications_enabled' LIMIT 1");
+    $stmt->execute();
+    $setting = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if ($setting && $setting['value'] === '0') {
+        echo json_encode(['success' => true, 'message' => 'Email notifications are disabled globally.']);
+        exit;
+    }
+
     // Get request body
     $json = file_get_contents('php://input');
     $data = json_decode($json, true);
