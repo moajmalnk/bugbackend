@@ -153,11 +153,23 @@ class AnnouncementController extends BaseAPI {
             $stmt->execute($params);
     
             if ($stmt->rowCount() === 0) {
-                return $this->sendJsonResponse(404, "Announcement not found or no changes made.");
+                return $this->sendJsonResponse(404, "Announcement not found.");
             }
-    
-            $this->sendJsonResponse(200, "Announcement updated successfully.");
-    
+
+            // Fetch the announcement to get title/content
+            $stmt = $this->conn->prepare("SELECT title, content FROM announcements WHERE id = ?");
+            $stmt->execute([$id]);
+            $announcement = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$announcement) {
+                return $this->sendJsonResponse(404, "Announcement not found after update.");
+            }
+
+            // After successful database update, trigger the FCM message
+            $this->triggerFCMBroadcast($announcement['title'], $announcement['content']);
+
+            $this->sendJsonResponse(200, "Announcement broadcast scheduled successfully.");
+
         } catch (Exception $e) {
             error_log("Error updating announcement: " . $e->getMessage());
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
@@ -211,11 +223,53 @@ class AnnouncementController extends BaseAPI {
                 return $this->sendJsonResponse(404, "Announcement not found.");
             }
 
+            // Fetch the announcement to get title/content
+            $stmt = $this->conn->prepare("SELECT title, content FROM announcements WHERE id = ?");
+            $stmt->execute([$id]);
+            $announcement = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$announcement) {
+                return $this->sendJsonResponse(404, "Announcement not found after update.");
+            }
+
+            // After successful database update, trigger the FCM message
+            $this->triggerFCMBroadcast($announcement['title'], $announcement['content']);
+
             $this->sendJsonResponse(200, "Announcement broadcast scheduled successfully.");
 
         } catch (Exception $e) {
             error_log("Error broadcasting announcement: " . $e->getMessage());
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
         }
+    }
+
+    private function triggerFCMBroadcast($title, $content) {
+        $url = 'http://' . $_SERVER['SERVER_NAME'] . '/Bugricer/backend/api/send-fcm-message.php';
+
+        $payload = json_encode([
+            'title' => $title,
+            'body' => $content,
+            'data' => [
+                'type' => 'announcement_broadcast'
+            ]
+        ]);
+
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+        
+        // Set a timeout to prevent the main request from hanging
+        curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
+        
+        // Execute in a non-blocking way
+        curl_setopt($ch, CURLOPT_NOSIGNAL, 1);
+        curl_setopt($ch, CURLOPT_TIMEOUT_MS, 200);
+
+
+        curl_exec($ch);
+        curl_close($ch);
     }
 } 
