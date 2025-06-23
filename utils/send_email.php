@@ -71,3 +71,40 @@ function sendBugNotification($to, $subject, $body, $attachments = []) {
 
 $to = 'moajmalnk@gmail.com';
 // sendBugNotification($to, 'New Bug Assigned', '<b>A new bug has been assigned to you.</b>');
+
+function sendWelcomeEmail($to, $subject, $body) {
+    // Log function call
+    error_log("Sending welcome email to: $to");
+    
+    try {
+        $mail = new PHPMailer(true);
+        
+        // HOSTINGER CONFIGURATION - WORKING
+        $mail->isSMTP();
+        $mail->Host = 'smtp.hostinger.com';
+        $mail->SMTPAuth = true;
+        $mail->Username = 'bug@codoacademy.com';
+        $mail->Password = 'Codo@8848';
+        $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS;
+        $mail->Port = 465;
+        
+        // Recipients
+        $mail->setFrom('bug@codoacademy.com', 'Bug Ricer');
+        $mail->addAddress($to); // Send directly to the new user
+        
+        // Content
+        $mail->isHTML(true);
+        $mail->Subject = $subject;
+        $mail->Body    = $body;
+        
+        $mail->Debugoutput = function($str, $level) {
+            error_log("PHPMailer debug: $str");
+        };
+        
+        $mail->send();
+        return true;
+    } catch (Exception $e) {
+        error_log("Welcome mail error: " . $e->getMessage());
+        return false;
+    }
+}

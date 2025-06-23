@@ -248,89 +248,49 @@ class ProjectController extends BaseAPI
                 error_log("Force delete enabled, removing related records");
 
                 // Delete team members
-                if ($memberCount > 0) {
-                    error_log("Deleting $memberCount team members");
-                    $deleteMembersQuery = "DELETE FROM project_members WHERE project_id = :id";
-                    $deleteMembersStmt = $this->conn->prepare($deleteMembersQuery);
+                $deleteMembersStmt = $this->conn->prepare("DELETE FROM project_members WHERE project_id = :id");
                     $deleteMembersStmt->bindParam(':id', $id);
+                $deleteMembersStmt->execute();
+                error_log("Deleted " . $deleteMembersStmt->rowCount() . " project members for project $id");
 
-                    if (!$deleteMembersStmt->execute()) {
-                        $this->conn->rollBack();
-                        error_log("Failed to delete team members: " . $deleteMembersStmt->errorInfo()[2]);
-                        $this->sendJsonResponse(500, "Failed to delete team members");
-                        return;
-                    }
-                    error_log("Team members deleted successfully");
-                }
+                // Delete updates linked to the project
+                $deleteUpdatesStmt = $this->conn->prepare("DELETE FROM updates WHERE project_id = :id");
+                $deleteUpdatesStmt->bindParam(':id', $id);
+                $deleteUpdatesStmt->execute();
+                error_log("Deleted " . $deleteUpdatesStmt->rowCount() . " updates for project $id");
 
-                // Delete bugs and related fixes
-                if ($bugCount > 0) {
-                    // Get bug IDs first
-                    error_log("Fetching bug IDs for project $id");
-                    $getBugsQuery = "SELECT id FROM bugs WHERE project_id = :id";
-                    $getBugsStmt = $this->conn->prepare($getBugsQuery);
-                    $getBugsStmt->bindParam(':id', $id);
-                    $getBugsStmt->execute();
-                    $bugIds = $getBugsStmt->fetchAll(PDO::FETCH_COLUMN);
-                    error_log("Found " . count($bugIds) . " bug IDs");
-
-                    // Delete bug attachments first
-                    if (!empty($bugIds)) {
-                        error_log("Deleting bug attachments for " . count($bugIds) . " bugs");
-                        $placeholders = implode(',', array_fill(0, count($bugIds), '?'));
-                        $deleteBugAttachmentsQuery = "DELETE FROM bug_attachments WHERE bug_id IN ($placeholders)";
-                        $deleteBugAttachmentsStmt = $this->conn->prepare($deleteBugAttachmentsQuery);
-
-                        foreach ($bugIds as $i => $bugId) {
-                            $deleteBugAttachmentsStmt->bindValue($i + 1, $bugId);
-                        }
-
-                        if (!$deleteBugAttachmentsStmt->execute()) {
-                            $this->conn->rollBack();
-                            error_log("Failed to delete bug attachments: " . $deleteBugAttachmentsStmt->errorInfo()[2]);
-                            $this->sendJsonResponse(500, "Failed to delete bug attachments");
-                            return;
-                        }
-                        error_log("Bug attachments deleted successfully");
-                    }
-
-                    // Now delete all bugs
-                    error_log("Deleting $bugCount bugs");
-                    $deleteBugsQuery = "DELETE FROM bugs WHERE project_id = :id";
-                    $deleteBugsStmt = $this->conn->prepare($deleteBugsQuery);
+                // Delete bugs
+                $deleteBugsStmt = $this->conn->prepare("DELETE FROM bugs WHERE project_id = :id");
                     $deleteBugsStmt->bindParam(':id', $id);
+                $deleteBugsStmt->execute();
+                error_log("Deleted " . $deleteBugsStmt->rowCount() . " bugs for project $id");
 
-                    if (!$deleteBugsStmt->execute()) {
-                        $this->conn->rollBack();
-                        error_log("Failed to delete bugs: " . $deleteBugsStmt->errorInfo()[2]);
-                        $this->sendJsonResponse(500, "Failed to delete bugs");
-                        return;
-                    }
-                    error_log("Bugs deleted successfully");
-                }
+                // Delete project activities
+                $deleteActivitiesStmt = $this->conn->prepare("DELETE FROM project_activities WHERE project_id = :id");
+                $deleteActivitiesStmt->bindParam(':id', $id);
+                $deleteActivitiesStmt->execute();
+                error_log("Deleted " . $deleteActivitiesStmt->rowCount() . " activities for project $id");
             }
 
-            // Finally delete the project
-            error_log("Deleting project $id");
-            $query = "DELETE FROM projects WHERE id = :id";
-            $stmt = $this->conn->prepare($query);
-            $stmt->bindParam(':id', $id);
+            // Finally, delete the project
+            $deleteProjectStmt = $this->conn->prepare("DELETE FROM projects WHERE id = :id");
+            $deleteProjectStmt->bindParam(':id', $id);
+            $deleteProjectStmt->execute();
+            error_log("Deleted project $id, row count: " . $deleteProjectStmt->rowCount());
 
-            if ($stmt->execute()) {
+            // Commit transaction
                 $this->conn->commit();
-                error_log("Project $id deleted successfully");
-                $this->sendJsonResponse(200, "Project deleted successfully");
-                return;
-            }
+            error_log("Transaction committed for project deletion");
 
-            $this->conn->rollBack();
-            error_log("Failed to delete project: " . $stmt->errorInfo()[2]);
-            $this->sendJsonResponse(500, "Failed to delete project");
+                $this->sendJsonResponse(200, "Project deleted successfully");
+
         } catch (Exception $e) {
+            // Important: Rollback on any exception
             if ($this->conn->inTransaction()) {
                 $this->conn->rollBack();
+                error_log("Transaction rolled back due to an exception during project deletion.");
             }
-            error_log("Exception in project deletion: " . $e->getMessage());
+            error_log("Error deleting project: " . $e->getMessage());
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
         }
     }

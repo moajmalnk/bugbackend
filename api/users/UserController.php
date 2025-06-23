@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../../utils/send_email.php';
 
 class UserController extends BaseAPI {
     public function getUsers() {
@@ -356,7 +357,52 @@ class UserController extends BaseAPI {
                 return;
             }
 
-            $this->sendJsonResponse(201, "User created successfully", [
+            // If user created successfully, send welcome email
+            $emailSent = false;
+            if ($role === 'developer' || $role === 'tester') {
+                // NOTE: The login link should be an environment variable in a production environment.
+                $loginLink = 'http://localhost:8080/login';
+                $subject = 'Welcome to BugRacer!';
+                $body = "
+                    <div style=\"font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;\">
+                        <div style=\"max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">
+                            <div style=\"background-color: #2563eb; color: #ffffff; padding: 20px; text-align: center;\">
+                                <h1 style=\"margin: 0; font-size: 24px;\">Welcome to BugRacer!</h1>
+                                <p style=\"margin: 5px 0 0 0; font-size: 16px;\">Your account has been created.</p>
+                            </div>
+                            <div style=\"padding: 20px; border-bottom: 1px solid #e2e8f0;\">
+                                <h3 style=\"margin-top: 0; color: #1e293b; font-size: 18px;\">Hello {$username},</h3>
+                                <p>Welcome to the team! Your BugRacer account is ready. You can now log in to collaborate on projects, report bugs, and track updates.</p>
+                                <p>Here are your login details:</p>
+                                <div style=\"background-color: #f8fafc; padding: 15px; border-radius: 5px; margin-bottom: 15px;\">
+                                    <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Username:</strong> {$username}</p>
+                                    <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Email:</strong> {$email}</p>
+                                    <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Password:</strong> {$password}</p>
+                                </div>
+                                <p style=\"text-align: center;\">
+                                    <a href=\"{$loginLink}\" style=\"background-color: #2563eb; color: #ffffff; padding: 12px 25px; text-decoration: none; border-radius: 5px; display: inline-block;\">Log in to BugRacer</a>
+                                </p>
+                            </div>
+                            <div style=\"background-color: #f8fafc; color: #64748b; padding: 20px; text-align: center; font-size: 12px;\">
+                                <p style=\"margin: 0;\">This is an automated notification. Please do not reply to this email.</p>
+                                <p style=\"margin: 5px 0 0 0;\">&copy; " . date('Y') . " Bug Ricer. All rights reserved.</p>
+                            </div>
+                        </div>
+                    </div>
+                ";
+                $emailSent = sendWelcomeEmail($email, $subject, $body);
+            }
+
+            $message = "User '{$username}' created successfully";
+            if ($role === 'developer' || $role === 'tester') {
+                if ($emailSent) {
+                    $message .= " and a welcome email has been sent.";
+                } else {
+                    $message .= ", but the welcome email could not be sent.";
+                }
+            }
+
+            $this->sendJsonResponse(201, $message, [
                 "id" => $id,
                 "username" => $username,
                 "email" => $email,
