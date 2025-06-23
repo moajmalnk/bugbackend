@@ -15,7 +15,7 @@ class AnnouncementController extends BaseAPI {
         try {
             $this->validateToken(); // All authenticated users can see announcements
 
-            $query = "SELECT * FROM announcements 
+            $query = "SELECT id, title, content, is_active, expiry_date, created_at, last_broadcast_at FROM announcements 
                       WHERE is_active = 1 
                       AND (expiry_date IS NULL OR expiry_date > NOW())
                       ORDER BY created_at DESC 
@@ -188,6 +188,33 @@ class AnnouncementController extends BaseAPI {
 
         } catch (Exception $e) {
             error_log("Error deleting announcement: " . $e->getMessage());
+            $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
+        }
+    }
+
+    public function broadcast($id) {
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            return $this->sendJsonResponse(405, "Method not allowed");
+        }
+
+        try {
+            $decoded = $this->validateToken();
+            if ($decoded->role !== 'admin') {
+                return $this->sendJsonResponse(403, "Forbidden: You are not authorized.");
+            }
+
+            $query = "UPDATE announcements SET last_broadcast_at = NOW() WHERE id = ?";
+            $stmt = $this->conn->prepare($query);
+            $stmt->execute([$id]);
+
+            if ($stmt->rowCount() === 0) {
+                return $this->sendJsonResponse(404, "Announcement not found.");
+            }
+
+            $this->sendJsonResponse(200, "Announcement broadcast scheduled successfully.");
+
+        } catch (Exception $e) {
+            error_log("Error broadcasting announcement: " . $e->getMessage());
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
         }
     }
