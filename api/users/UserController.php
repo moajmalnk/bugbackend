@@ -360,8 +360,19 @@ class UserController extends BaseAPI {
             // If user created successfully, send welcome email
             $emailSent = false;
             if ($role === 'developer' || $role === 'tester') {
-                // NOTE: The login link should be an environment variable in a production environment.
-                $loginLink = 'http://localhost:8080/login';
+                // Generate role-based login URL
+                $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
+                $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+                
+                // Determine if we're in development or production
+                if (strpos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false) {
+                    // Development - use localhost with role-based routing
+                    $loginLink = "http://localhost:8080/{$role}/projects";
+                } else {
+                    // Production - use the bug tracker domain with role-based routing
+                    $loginLink = "https://bugs.moajmalnk.in/{$role}/projects";
+                }
+                
                 $subject = 'Welcome to BugRacer!';
                 $body = "
                     <div style=\"font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;\">
@@ -378,9 +389,13 @@ class UserController extends BaseAPI {
                                     <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Username:</strong> {$username}</p>
                                     <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Email:</strong> {$email}</p>
                                     <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Password:</strong> {$password}</p>
+                                    <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Role:</strong> " . ucfirst($role) . "</p>
                                 </div>
                                 <p style=\"text-align: center;\">
-                                    <a href=\"{$loginLink}\" style=\"background-color: #2563eb; color: #ffffff; padding: 12px 25px; text-decoration: none; border-radius: 5px; display: inline-block;\">Log in to BugRacer</a>
+                                    <a href=\"{$loginLink}\" style=\"background-color: #2563eb; color: #ffffff; padding: 12px 25px; text-decoration: none; border-radius: 5px; display: inline-block;\">Access Your Dashboard</a>
+                                </p>
+                                <p style=\"font-size: 14px; color: #64748b; text-align: center; margin-top: 15px;\">
+                                    <strong>Note:</strong> You'll be redirected to your role-specific dashboard after login.
                                 </p>
                             </div>
                             <div style=\"background-color: #f8fafc; color: #64748b; padding: 20px; text-align: center; font-size: 12px;\">

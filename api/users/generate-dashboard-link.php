@@ -107,14 +107,15 @@ try {
     
     // Determine if we're in development or production
     if (strpos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false) {
-        // Point to the Vite dev server URL
+        // Development - use localhost with role-based routing
         $frontendUrl = 'http://localhost:8080';
     } else {
         // Production - use the bug tracker domain
         $frontendUrl = 'https://bugs.moajmalnk.in';
     }
     
-    $dashboardUrl = $frontendUrl . '/projects?token=' . urlencode($token);
+    // Generate role-based dashboard URL
+    $dashboardUrl = $frontendUrl . '/' . $targetUser['role'] . '/projects?token=' . urlencode($token);
     
     echo json_encode([
         'success' => true,
