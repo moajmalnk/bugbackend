@@ -64,8 +64,11 @@ class Utils {
     
     public static function generateJWT($user_id, $username, $role) {
         $issued_at = time();
-        $expiration = $issued_at + (60 * 60 * 24); // 24 hours
-        
+        if ($role === 'admin') {
+            $expiration = $issued_at + (7 * 24 * 60 * 60); // 7 days
+        } else {
+            $expiration = $issued_at + 420; // 7 minutes
+        }
         $payload = array(
             "iat" => $issued_at,
             "exp" => $expiration,
@@ -73,10 +76,8 @@ class Utils {
             "username" => $username,
             "role" => $role
         );
-        
         $secret = self::getJwtSecret();
-        error_log("Generating JWT for user: " . $username . " in environment: " . (self::isLocalEnvironment() ? "Local" : "Production"));
-        
+        error_log("Generating JWT for user: " . $username . " in environment: " . (self::isLocalEnvironment() ? "Local" : "Production") . ", role: " . $role . ", exp: " . date('c', $expiration));
         return JWT::encode($payload, $secret, 'HS256');
     }
     

@@ -50,7 +50,13 @@ try {
     
     // Generate a secure token for the dashboard link with custom payload
     $issuedAt = time();
-    $expiration = $issuedAt + (5 * 60); // 5 minutes TTL
+    $role = $targetUser['role'];
+    
+    if ($role === 'admin') {
+        $expiration = $issuedAt + (7 * 24 * 60 * 60); // 7 days
+    } else {
+        $expiration = $issuedAt + 420; // 7 minutes
+    }
     
     // Use the existing JWT generation method but with custom payload
     $payload = [
