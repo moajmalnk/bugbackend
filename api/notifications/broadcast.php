@@ -56,6 +56,7 @@ class BroadcastAPI extends BaseAPI {
             $this->conn->exec($createTableSQL);
             
             // Insert the notification
+            $bugId = isset($data['bugId']) ? (int)$data['bugId'] : null;
             $sql = "
                 INSERT INTO notifications (type, title, message, bug_id, bug_title, status, created_by)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -66,7 +67,7 @@ class BroadcastAPI extends BaseAPI {
                 $data['type'],
                 $data['title'],
                 $data['message'],
-                $data['bugId'],
+                $bugId,
                 $data['bugTitle'],
                 $data['status'] ?? null,
                 $data['createdBy']
