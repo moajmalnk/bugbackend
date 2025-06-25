@@ -39,7 +39,7 @@ class BroadcastAPI extends BaseAPI {
             $createTableSQL = "
                 CREATE TABLE IF NOT EXISTS notifications (
                     id INT AUTO_INCREMENT PRIMARY KEY,
-                    type ENUM('new_bug', 'status_change') NOT NULL,
+                    type ENUM('new_bug', 'status_change', 'new_update') NOT NULL,
                     title VARCHAR(255) NOT NULL,
                     message TEXT NOT NULL,
                     bug_id INT NOT NULL,
