@@ -67,7 +67,7 @@ class Utils {
         if ($role === 'admin') {
             $expiration = $issued_at + (7 * 24 * 60 * 60); // 7 days
         } else {
-            $expiration = $issued_at + 420; // 7 minutes
+            $expiration = $issued_at + (7 * 24 * 60 * 60); // 7 days
         }
         $payload = array(
             "iat" => $issued_at,
