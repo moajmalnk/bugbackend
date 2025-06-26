@@ -367,10 +367,10 @@ class UserController extends BaseAPI {
                 // Determine if we're in development or production
                 if (strpos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false) {
                     // Development - use localhost with role-based routing
-                    $loginLink = "http://localhost:8080/{$role}/projects";
+                    $loginLink = "http://localhost:8080/login";
                 } else {
                     // Production - use the bug tracker domain with role-based routing
-                    $loginLink = "https://bugs.moajmalnk.in/{$role}/projects";
+                    $loginLink = "https://bugs.moajmalnk.in/login";
                 }
                 
                 $subject = 'Welcome to BugRacer!';

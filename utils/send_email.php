@@ -18,13 +18,13 @@ function sendBugNotification($to, $subject, $body, $attachments = []) {
         $mail->isSMTP();
         $mail->Host = 'smtp.hostinger.com';
         $mail->SMTPAuth = true;
-        $mail->Username = 'bug@codoacademy.com';
+        $mail->Username = 'bugs@moajmalnk.in';
         $mail->Password = 'Codo@8848';
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS;
         $mail->Port = 465;
         
         // Recipients
-        $mail->setFrom('bug@codoacademy.com', 'Bug Ricer');
+        $mail->setFrom('bugs@moajmalnk.in', 'Bug Ricer');
         
         // Add recipients
         $mail->addAddress('noreply@codoacademy.com', 'Bug Ricer'); // Main recipient (not shown to others)
@@ -83,13 +83,13 @@ function sendWelcomeEmail($to, $subject, $body) {
         $mail->isSMTP();
         $mail->Host = 'smtp.hostinger.com';
         $mail->SMTPAuth = true;
-        $mail->Username = 'bug@codoacademy.com';
+        $mail->Username = 'bugs@moajmalnk.in';
         $mail->Password = 'Codo@8848';
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS;
         $mail->Port = 465;
         
         // Recipients
-        $mail->setFrom('bug@codoacademy.com', 'Bug Ricer');
+        $mail->setFrom('bugs@moajmalnk.in', 'Bug Ricer');
         $mail->addAddress($to); // Send directly to the new user
         
         // Content
