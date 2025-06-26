@@ -27,35 +27,44 @@ try {
     }
 
     $cacheKey = 'notification_recipients_' . $project_id;
-    $cachedEmails = $api->getCache($cacheKey);
-    if ($cachedEmails !== null) {
-        echo json_encode(['success' => true, 'emails' => $cachedEmails]);
+    $cachedRecipients = $api->getCache($cacheKey);
+    if ($cachedRecipients !== null) {
+        echo json_encode(['success' => true, 'recipients' => $cachedRecipients]);
         exit;
     }
 
     $pdo = $api->getConnection();
 
-    // Get all admins
-    $adminStmt = $pdo->prepare("SELECT email FROM users WHERE role = 'admin'");
+    // Get all admins with role information
+    $adminStmt = $pdo->prepare("SELECT email, role FROM users WHERE role = 'admin'");
     $adminStmt->execute();
-    $adminEmails = $adminStmt->fetchAll(PDO::FETCH_COLUMN);
+    $adminRecipients = $adminStmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // Get project members (developers and testers)
+    // Get project members (developers and testers) with role information
     $memberStmt = $pdo->prepare("
-        SELECT u.email 
+        SELECT u.email, u.role 
         FROM project_members pm
         JOIN users u ON pm.user_id = u.id
         WHERE pm.project_id = ? AND (u.role = 'developer' OR u.role = 'tester')
     ");
     $memberStmt->execute([$project_id]);
-    $memberEmails = $memberStmt->fetchAll(PDO::FETCH_COLUMN);
+    $memberRecipients = $memberStmt->fetchAll(PDO::FETCH_ASSOC);
 
-    $allEmails = array_unique(array_merge($adminEmails, $memberEmails));
-    $emailList = array_values($allEmails);
+    // Combine and remove duplicates based on email
+    $allRecipients = array_merge($adminRecipients, $memberRecipients);
+    $uniqueRecipients = [];
+    $seenEmails = [];
+    
+    foreach ($allRecipients as $recipient) {
+        if (!in_array($recipient['email'], $seenEmails)) {
+            $uniqueRecipients[] = $recipient;
+            $seenEmails[] = $recipient['email'];
+        }
+    }
 
-    $api->setCache($cacheKey, $emailList, 600); // Cache for 10 minutes
+    $api->setCache($cacheKey, $uniqueRecipients, 600); // Cache for 10 minutes
 
-    echo json_encode(['success' => true, 'emails' => $emailList]);
+    echo json_encode(['success' => true, 'recipients' => $uniqueRecipients]);
 
 } catch (Exception $e) {
     error_log("Error in get_notification_recipients.php: " . $e->getMessage());
