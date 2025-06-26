@@ -169,13 +169,17 @@ try {
         }
     }
     
+    $pendingCountQuery = "SELECT COUNT(*) as pending FROM bugs WHERE status IN ('pending', 'in_progress')";
+    $pendingCount = $api->fetchSingleCached($pendingCountQuery, [], 'pending_bugs_count', 300)['pending'];
+    
     $result = [
         'bugs' => $bugs,
         'pagination' => [
             'currentPage' => $page,
             'totalPages' => ceil($totalBugs / $limit),
             'totalBugs' => (int)$totalBugs,
-            'limit' => $limit
+            'limit' => $limit,
+            'pendingBugsCount' => (int)$pendingCount
         ]
     ];
     
