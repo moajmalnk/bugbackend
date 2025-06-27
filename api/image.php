@@ -49,6 +49,12 @@ header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin');
 
+// If ?download=1 is present, force download
+if (isset($_GET['download']) && $_GET['download'] == '1') {
+    $filename = basename($fullPath);
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
+}
+
 // Disable output buffering for large files
 if (ob_get_level()) {
     ob_end_clean();
