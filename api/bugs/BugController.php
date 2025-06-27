@@ -280,11 +280,13 @@ class BugController extends BaseAPI {
                 SELECT b.*, 
                        p.name as project_name,
                        reporter.username as reporter_name,
-                       updater.username as updated_by_name
+                       updater.username as updated_by_name,
+                       fixer.username as fixed_by_name
                 FROM bugs b
                 LEFT JOIN projects p ON b.project_id = p.id
                 LEFT JOIN users reporter ON b.reported_by = reporter.id
                 LEFT JOIN users updater ON b.updated_by = updater.id
+                LEFT JOIN users fixer ON b.fixed_by = fixer.id
                 WHERE b.id = ?
             ");
             
@@ -504,6 +506,16 @@ class BugController extends BaseAPI {
             if (isset($data['status'])) {
                 $updateFields[] = "status = ?";
                 $values[] = $data['status'];
+            }
+            
+            if (isset($data['fix_description'])) {
+                $updateFields[] = "fix_description = ?";
+                $values[] = $data['fix_description'];
+            }
+            
+            if (isset($data['fixed_by'])) {
+                $updateFields[] = "fixed_by = ?";
+                $values[] = $data['fixed_by'];
             }
             
             if (empty($updateFields)) {
@@ -734,6 +746,14 @@ class BugController extends BaseAPI {
                 $updateFields[] = "status = ?";
                 $params[] = $data['status'];
             }
+            if (isset($data['fix_description'])) {
+                $updateFields[] = "fix_description = ?";
+                $params[] = $data['fix_description'];
+            }
+            if (isset($data['fixed_by'])) {
+                $updateFields[] = "fixed_by = ?";
+                $params[] = $data['fixed_by'];
+            }
             
             // Always include updated_by if it's provided
             if (isset($data['updated_by'])) {
@@ -769,11 +789,13 @@ class BugController extends BaseAPI {
                     SELECT b.*, 
                            p.name as project_name, 
                            reporter.username as reporter_name,
-                           updater.username as updated_by_name
+                           updater.username as updated_by_name,
+                           fixer.username as fixed_by_name
                     FROM bugs b
                     LEFT JOIN projects p ON b.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci
                     LEFT JOIN users reporter ON b.reported_by COLLATE utf8mb4_unicode_ci = reporter.id COLLATE utf8mb4_unicode_ci
                     LEFT JOIN users updater ON b.updated_by COLLATE utf8mb4_unicode_ci = updater.id COLLATE utf8mb4_unicode_ci
+                    LEFT JOIN users fixer ON b.fixed_by COLLATE utf8mb4_unicode_ci = fixer.id COLLATE utf8mb4_unicode_ci
                     WHERE b.id = ?
                 ";
                 
@@ -794,6 +816,7 @@ class BugController extends BaseAPI {
                         $updatedBug['project_name'] = null;
                         $updatedBug['reporter_name'] = null;
                         $updatedBug['updated_by_name'] = null;
+                        $updatedBug['fixed_by_name'] = null;
                     }
                 } catch (Exception $fallbackError) {
                     error_log("Both JOIN and fallback queries failed: " . $fallbackError->getMessage());
