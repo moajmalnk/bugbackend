@@ -68,7 +68,3 @@ try {
     http_response_code(500);
     echo json_encode(['success' => false, 'message' => 'Server error: ' . $e->getMessage()]);
 }
-
-file_put_contents('debug_email.txt', print_r($data, true), FILE_APPEND);
-
-error_log("send-bug-notification called: " . json_encode($data));
