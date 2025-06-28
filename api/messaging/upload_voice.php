@@ -44,19 +44,17 @@ class VoiceUploadController extends BaseAPI {
                 return;
             }
             
-            // Create upload directory if it doesn't exist
-            $uploadDir = realpath(__DIR__ . '/../../../uploads/voice_messages/');
-            if (!$uploadDir) {
-                $uploadDir = __DIR__ . '/../../../uploads/voice_messages/';
-                if (!is_dir($uploadDir)) {
-                    mkdir($uploadDir, 0755, true);
-                }
+            // Get the absolute path to the web root
+            $webRoot = $_SERVER['DOCUMENT_ROOT'];
+            $uploadDir = $webRoot . '/uploads/voice_messages/';
+            if (!is_dir($uploadDir)) {
+                mkdir($uploadDir, 0755, true);
             }
             
             // Generate unique filename
             $extension = 'webm';
             $filename = $this->utils->generateUUID() . '.' . $extension;
-            $filepath = $uploadDir . '/' . $filename;
+            $filepath = $uploadDir . $filename;
             
             // Move uploaded file
             if (!move_uploaded_file($file['tmp_name'], $filepath)) {
