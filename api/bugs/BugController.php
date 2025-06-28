@@ -581,7 +581,7 @@ class BugController extends BaseAPI {
             // Delete files from filesystem
             foreach ($attachments as $attachment) {
                 $filePath = __DIR__ . '/../../' . $attachment['file_path'];
-                if (file_exists($filePath)) {
+                if (file_exists(filename: $filePath)) {
                     @unlink($filePath);
                 }
             }
