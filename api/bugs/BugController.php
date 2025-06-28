@@ -607,7 +607,7 @@ class BugController extends BaseAPI {
         }
     }
 
-    public function getAllBugs($projectId = null, $page = 1, $limit = 10) {
+    public function getAllBugs($projectId = null, $page = 1, $limit = 10, $status = null, $userId = null) {
         try {
             // Validate token
             $this->validateToken();
@@ -618,7 +618,7 @@ class BugController extends BaseAPI {
             }
 
             // Create cache key for this query
-            $cacheKey = 'bugs_' . ($projectId ?? 'all') . '_' . $page . '_' . $limit;
+            $cacheKey = 'bugs_' . ($projectId ?? 'all') . '_' . $page . '_' . $limit . '_' . ($status ?? 'all') . '_' . ($userId ?? 'all');
             $cachedResult = $this->getCache($cacheKey);
             
             if ($cachedResult !== null) {
@@ -643,6 +643,20 @@ class BugController extends BaseAPI {
                 $params[] = $projectId;
             }
 
+            // Add status filter if specified
+            if ($status) {
+                $query .= " AND b.status = ?";
+                $countQuery .= " AND b.status = ?";
+                $params[] = $status;
+            }
+
+            // Add user filter if specified
+            if ($userId) {
+                $query .= " AND b.reported_by = ?";
+                $countQuery .= " AND b.reported_by = ?";
+                $params[] = $userId;
+            }
+
             // Add sorting
             $query .= " ORDER BY b.created_at DESC";
 
@@ -654,7 +668,7 @@ class BugController extends BaseAPI {
 
             // Execute both queries using prepared statements with caching
             $countParams = $projectId ? [$projectId] : [];
-            $totalBugs = $this->fetchSingleCached($countQuery, $countParams, 'bug_count_' . ($projectId ?? 'all'), 600)['total'];
+            $totalBugs = $this->fetchSingleCached($countQuery, $countParams, 'bug_count_' . ($projectId ?? 'all') . '_' . ($status ?? 'all') . '_' . ($userId ?? 'all'), 600)['total'];
 
             // Execute main query
             $stmt = $this->conn->prepare($query);
