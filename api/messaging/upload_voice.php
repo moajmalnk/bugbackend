@@ -45,15 +45,18 @@ class VoiceUploadController extends BaseAPI {
             }
             
             // Create upload directory if it doesn't exist
-            $uploadDir = __DIR__ . '/../../uploads/voice_messages/';
-            if (!is_dir($uploadDir)) {
-                mkdir($uploadDir, 0755, true);
+            $uploadDir = realpath(__DIR__ . '/../../../uploads/voice_messages/');
+            if (!$uploadDir) {
+                $uploadDir = __DIR__ . '/../../../uploads/voice_messages/';
+                if (!is_dir($uploadDir)) {
+                    mkdir($uploadDir, 0755, true);
+                }
             }
             
             // Generate unique filename
             $extension = 'webm';
             $filename = $this->utils->generateUUID() . '.' . $extension;
-            $filepath = $uploadDir . $filename;
+            $filepath = $uploadDir . '/' . $filename;
             
             // Move uploaded file
             if (!move_uploaded_file($file['tmp_name'], $filepath)) {
@@ -69,7 +72,7 @@ class VoiceUploadController extends BaseAPI {
             $host = $_SERVER['HTTP_HOST'];
             $basePath = str_replace('/api/messaging', '', dirname($_SERVER['SCRIPT_NAME']));
             $publicPath = str_replace('/backend', '', $basePath);
-            $publicUrl = $protocol . $host . $publicPath . '/backend/uploads/voice_messages/' . $filename;
+            $publicUrl = $protocol . $host . '/uploads/voice_messages/' . $filename;
             
             // Return file info
             $this->sendJsonResponse(200, "Voice message uploaded successfully", [
