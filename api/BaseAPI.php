@@ -1,4 +1,6 @@
 <?php
+date_default_timezone_set('UTC');
+
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../config/utils.php';
 require_once __DIR__ . '/../config/cors.php';
@@ -11,11 +13,11 @@ class BaseAPI {
     public function __construct() {
         
         // Ensure logs directory exists
-        $logDir = __DIR__ . '/../../logs';
-        if (!is_dir($logDir)) {
-            mkdir($logDir, 0777, true);
-        }
-        
+        // $logDir = __DIR__ . '/../../logs';
+        // if (!is_dir($logDir)) {
+        //     mkdir($logDir, 0777, true);
+        // }
+                
         // Set content type for JSON responses
         header('Content-Type: application/json');
         

@@ -458,8 +458,8 @@ class BugController extends BaseAPI {
                 'reported_by' => $decoded->user_id,
                 'priority' => $priority,
                 'status' => $status,
-                'created_at' => date('Y-m-d H:i:s'),
-                'updated_at' => date('Y-m-d H:i:s')
+                'created_at' => gmdate('Y-m-d H:i:s'),
+                'updated_at' => gmdate('Y-m-d H:i:s')
             ];
             
             $this->sendJsonResponse(200, "Bug created successfully", [
