@@ -31,6 +31,9 @@ CREATE TABLE `chat_messages` (
   `reply_to_message_id` varchar(36) DEFAULT NULL,
   `is_deleted` tinyint(1) NOT NULL DEFAULT 0,
   `deleted_at` timestamp NULL DEFAULT NULL,
+  `is_pinned` tinyint(1) NOT NULL DEFAULT 0,
+  `pinned_at` timestamp NULL DEFAULT NULL,
+  `pinned_by` varchar(36) DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
   PRIMARY KEY (`id`),
@@ -39,9 +42,11 @@ CREATE TABLE `chat_messages` (
   KEY `idx_chat_messages_created_at` (`created_at`),
   KEY `idx_chat_messages_reply_to` (`reply_to_message_id`),
   KEY `idx_chat_messages_is_deleted` (`is_deleted`),
+  KEY `idx_chat_messages_is_pinned` (`is_pinned`),
   CONSTRAINT `chat_messages_ibfk_1` FOREIGN KEY (`group_id`) REFERENCES `chat_groups` (`id`) ON DELETE CASCADE,
   CONSTRAINT `chat_messages_ibfk_2` FOREIGN KEY (`sender_id`) REFERENCES `users` (`id`),
-  CONSTRAINT `chat_messages_ibfk_3` FOREIGN KEY (`reply_to_message_id`) REFERENCES `chat_messages` (`id`) ON DELETE SET NULL
+  CONSTRAINT `chat_messages_ibfk_3` FOREIGN KEY (`reply_to_message_id`) REFERENCES `chat_messages` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `chat_messages_ibfk_4` FOREIGN KEY (`pinned_by`) REFERENCES `users` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- Chat Group Members Table
@@ -50,6 +55,9 @@ CREATE TABLE `chat_group_members` (
   `user_id` varchar(36) NOT NULL,
   `joined_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `last_read_at` timestamp NULL DEFAULT NULL,
+  `is_muted` tinyint(1) NOT NULL DEFAULT 0,
+  `muted_until` timestamp NULL DEFAULT NULL,
+  `show_read_receipts` tinyint(1) NOT NULL DEFAULT 1,
   PRIMARY KEY (`group_id`, `user_id`),
   KEY `idx_chat_group_members_user_id` (`user_id`),
   KEY `idx_chat_group_members_group_id` (`group_id`),
@@ -76,7 +84,7 @@ CREATE TABLE `typing_indicators` (
   `user_id` varchar(36) NOT NULL,
   `is_typing` tinyint(1) NOT NULL DEFAULT 1,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
-  `expires_at` timestamp NOT NULL,
+  `expires_at` timestamp NULL DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `idx_typing_indicators_group_id` (`group_id`),
   KEY `idx_typing_indicators_user_id` (`user_id`),
@@ -85,11 +93,40 @@ CREATE TABLE `typing_indicators` (
   CONSTRAINT `typing_indicators_ibfk_2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+-- Emoji Reactions Table
+CREATE TABLE `message_reactions` (
+  `id` varchar(36) NOT NULL,
+  `message_id` varchar(36) NOT NULL,
+  `user_id` varchar(36) NOT NULL,
+  `emoji` varchar(10) NOT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `unique_user_message_emoji` (`message_id`, `user_id`, `emoji`),
+  KEY `idx_message_reactions_message_id` (`message_id`),
+  KEY `idx_message_reactions_user_id` (`user_id`),
+  CONSTRAINT `message_reactions_ibfk_1` FOREIGN KEY (`message_id`) REFERENCES `chat_messages` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `message_reactions_ibfk_2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Message Mentions Table (for @mentions)
+CREATE TABLE `message_mentions` (
+  `id` varchar(36) NOT NULL,
+  `message_id` varchar(36) NOT NULL,
+  `mentioned_user_id` varchar(36) NOT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_message_mentions_message_id` (`message_id`),
+  KEY `idx_message_mentions_user_id` (`mentioned_user_id`),
+  CONSTRAINT `message_mentions_ibfk_1` FOREIGN KEY (`message_id`) REFERENCES `chat_messages` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `message_mentions_ibfk_2` FOREIGN KEY (`mentioned_user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
 -- Indexes for better performance
 CREATE INDEX `idx_chat_messages_group_created` ON `chat_messages` (`group_id`, `created_at`);
 CREATE INDEX `idx_chat_messages_sender_created` ON `chat_messages` (`sender_id`, `created_at`);
 CREATE INDEX `idx_chat_groups_project_active` ON `chat_groups` (`project_id`, `is_active`);
 CREATE INDEX `idx_chat_group_members_user_group` ON `chat_group_members` (`user_id`, `group_id`);
+CREATE INDEX `idx_message_reactions_emoji` ON `message_reactions` (`emoji`);
 
 -- Triggers for automatic cleanup
 DELIMITER $$
@@ -116,3 +153,9 @@ BEGIN
 END$$
 
 DELIMITER ; 
+
+
+
+
+
+
