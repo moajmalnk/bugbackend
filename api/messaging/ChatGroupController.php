@@ -82,6 +82,13 @@ class ChatGroupController extends BaseAPI {
             ");
             $creatorStmt->execute([$groupId, $projectId]);
             
+            // Always add the admin (group creator) as a member of the group
+            $addAdminStmt = $this->conn->prepare("
+                INSERT IGNORE INTO chat_group_members (group_id, user_id)
+                VALUES (?, ?)
+            ");
+            $addAdminStmt->execute([$groupId, $userId]);
+            
             $this->conn->commit();
             
             // Get the created group with member count

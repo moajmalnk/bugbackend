@@ -66,6 +66,8 @@ class ChatMessageController extends BaseAPI {
             
             $messageId = $this->utils->generateUUID();
             
+            $this->conn->beginTransaction();
+            
             $stmt = $this->conn->prepare("
                 INSERT INTO chat_messages (
                     id, group_id, sender_id, message_type, content, 
@@ -84,12 +86,22 @@ class ChatMessageController extends BaseAPI {
                 $replyToMessageId
             ]);
             
+            // Process @mentions if content is provided
+            if ($content && $messageType === 'text') {
+                $this->processMentions($messageId, $content, $groupId);
+            }
+            
+            $this->conn->commit();
+            
             // Get the created message with sender details
             $message = $this->getMessageWithDetails($messageId);
             
             $this->sendJsonResponse(201, "Message sent successfully", $message);
             
         } catch (Exception $e) {
+            if ($this->conn->inTransaction()) {
+                $this->conn->rollback();
+            }
             error_log("Error sending message: " . $e->getMessage());
             $this->sendJsonResponse(500, "Failed to send message: " . $e->getMessage());
         }
@@ -322,6 +334,150 @@ class ChatMessageController extends BaseAPI {
     }
     
     /**
+     * Pin a message
+     */
+    public function pinMessage($messageId) {
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            $this->sendJsonResponse(405, "Method not allowed");
+            return;
+        }
+        
+        try {
+            $decoded = $this->validateToken();
+            $userId = $decoded->user_id;
+            $userRole = $decoded->role;
+            
+            // Only admins can pin messages
+            if ($userRole !== 'admin') {
+                $this->sendJsonResponse(403, "Only admins can pin messages");
+                return;
+            }
+            
+            // Get message details
+            $message = $this->getMessageWithDetails($messageId);
+            if (!$message) {
+                $this->sendJsonResponse(404, "Message not found");
+                return;
+            }
+            
+            // Check if user has access to the group
+            if (!$this->validateGroupAccess($message['group_id'], $userId, $userRole)) {
+                $this->sendJsonResponse(403, "Access denied to this chat group");
+                return;
+            }
+            
+            $stmt = $this->conn->prepare("
+                UPDATE chat_messages 
+                SET is_pinned = 1, pinned_at = CURRENT_TIMESTAMP, pinned_by = ?
+                WHERE id = ?
+            ");
+            
+            $stmt->execute([$userId, $messageId]);
+            
+            $this->sendJsonResponse(200, "Message pinned successfully");
+            
+        } catch (Exception $e) {
+            error_log("Error pinning message: " . $e->getMessage());
+            $this->sendJsonResponse(500, "Failed to pin message: " . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Unpin a message
+     */
+    public function unpinMessage($messageId) {
+        if ($_SERVER['REQUEST_METHOD'] !== 'DELETE') {
+            $this->sendJsonResponse(405, "Method not allowed");
+            return;
+        }
+        
+        try {
+            $decoded = $this->validateToken();
+            $userId = $decoded->user_id;
+            $userRole = $decoded->role;
+            
+            // Only admins can unpin messages
+            if ($userRole !== 'admin') {
+                $this->sendJsonResponse(403, "Only admins can unpin messages");
+                return;
+            }
+            
+            // Get message details
+            $message = $this->getMessageWithDetails($messageId);
+            if (!$message) {
+                $this->sendJsonResponse(404, "Message not found");
+                return;
+            }
+            
+            // Check if user has access to the group
+            if (!$this->validateGroupAccess($message['group_id'], $userId, $userRole)) {
+                $this->sendJsonResponse(403, "Access denied to this chat group");
+                return;
+            }
+            
+            $stmt = $this->conn->prepare("
+                UPDATE chat_messages 
+                SET is_pinned = 0, pinned_at = NULL, pinned_by = NULL
+                WHERE id = ?
+            ");
+            
+            $stmt->execute([$messageId]);
+            
+            $this->sendJsonResponse(200, "Message unpinned successfully");
+            
+        } catch (Exception $e) {
+            error_log("Error unpinning message: " . $e->getMessage());
+            $this->sendJsonResponse(500, "Failed to unpin message: " . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Get pinned messages for a group
+     */
+    public function getPinnedMessages($groupId) {
+        if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+            $this->sendJsonResponse(405, "Method not allowed");
+            return;
+        }
+        
+        try {
+            $decoded = $this->validateToken();
+            $userId = $decoded->user_id;
+            $userRole = $decoded->role;
+            
+            // Check if user has access to the group
+            if (!$this->validateGroupAccess($groupId, $userId, $userRole)) {
+                $this->sendJsonResponse(403, "Access denied to this chat group");
+                return;
+            }
+            
+            $query = "
+                SELECT 
+                    cm.*,
+                    u.username as sender_name,
+                    u.email as sender_email,
+                    u.role as sender_role,
+                    pu.username as pinned_by_name
+                FROM chat_messages cm
+                JOIN users u ON cm.sender_id = u.id
+                LEFT JOIN users pu ON cm.pinned_by = pu.id
+                WHERE cm.group_id = ? AND cm.is_pinned = 1 AND cm.is_deleted = 0
+                ORDER BY cm.pinned_at DESC
+            ";
+            
+            $stmt = $this->conn->prepare($query);
+            $stmt->execute([$groupId]);
+            $pinnedMessages = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            $this->sendJsonResponse(200, "Pinned messages retrieved successfully", $pinnedMessages);
+            
+        } catch (Exception $e) {
+            error_log("Error fetching pinned messages: " . $e->getMessage());
+            $this->sendJsonResponse(500, "Failed to retrieve pinned messages: " . $e->getMessage());
+        }
+    }
+    
+    /**
      * Helper methods
      */
     private function validateGroupAccess($groupId, $userId, $userRole) {
@@ -359,17 +515,88 @@ class ChatMessageController extends BaseAPI {
                 u.role as sender_role,
                 rm.content as reply_content,
                 rm.message_type as reply_type,
-                ru.username as reply_sender_name
+                ru.username as reply_sender_name,
+                pu.username as pinned_by_name
             FROM chat_messages cm
             JOIN users u ON cm.sender_id = u.id
             LEFT JOIN chat_messages rm ON cm.reply_to_message_id = rm.id
             LEFT JOIN users ru ON rm.sender_id = ru.id
+            LEFT JOIN users pu ON cm.pinned_by = pu.id
             WHERE cm.id = ?
         ";
         
         $stmt = $this->conn->prepare($query);
         $stmt->execute([$messageId]);
-        return $stmt->fetch(PDO::FETCH_ASSOC);
+        $message = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if ($message) {
+            // Get reactions for this message
+            $reactionsQuery = "
+                SELECT 
+                    mr.*,
+                    u.username as user_name
+                FROM message_reactions mr
+                JOIN users u ON mr.user_id = u.id
+                WHERE mr.message_id = ?
+                ORDER BY mr.created_at ASC
+            ";
+            
+            $reactionsStmt = $this->conn->prepare($reactionsQuery);
+            $reactionsStmt->execute([$messageId]);
+            $message['reactions'] = $reactionsStmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            // Get mentions for this message
+            $mentionsQuery = "
+                SELECT 
+                    mm.*,
+                    u.username as mentioned_user_name
+                FROM message_mentions mm
+                JOIN users u ON mm.mentioned_user_id = u.id
+                WHERE mm.message_id = ?
+                ORDER BY mm.created_at ASC
+            ";
+            
+            $mentionsStmt = $this->conn->prepare($mentionsQuery);
+            $mentionsStmt->execute([$messageId]);
+            $message['mentions'] = $mentionsStmt->fetchAll(PDO::FETCH_ASSOC);
+        }
+        
+        return $message;
+    }
+    
+    private function processMentions($messageId, $content, $groupId) {
+        // Extract @mentions from content
+        preg_match_all('/@(\w+)/', $content, $matches);
+        
+        if (empty($matches[1])) {
+            return;
+        }
+        
+        $usernames = $matches[1];
+        
+        // Get user IDs for mentioned usernames in this group
+        $placeholders = str_repeat('?,', count($usernames) - 1) . '?';
+        $query = "
+            SELECT u.id, u.username 
+            FROM users u
+            JOIN chat_group_members cgm ON u.id = cgm.user_id
+            WHERE cgm.group_id = ? AND u.username IN ($placeholders)
+        ";
+        
+        $params = array_merge([$groupId], $usernames);
+        $stmt = $this->conn->prepare($query);
+        $stmt->execute($params);
+        $mentionedUsers = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // Insert mentions
+        foreach ($mentionedUsers as $user) {
+            $mentionId = $this->utils->generateUUID();
+            $mentionStmt = $this->conn->prepare("
+                INSERT INTO message_mentions (id, message_id, mentioned_user_id)
+                VALUES (?, ?, ?)
+            ");
+            $mentionStmt->execute([$mentionId, $messageId, $user['id']]);
+        }
     }
     
     private function markMessagesAsRead($groupId, $userId, $messages) {
