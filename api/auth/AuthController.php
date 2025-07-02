@@ -2,6 +2,20 @@
 require_once __DIR__ . '/../BaseAPI.php';
 
 class AuthController extends BaseAPI {
+    protected $pdo;
+
+    public function __construct($pdo = null) {
+        if ($pdo) {
+            $this->pdo = $pdo;
+        } elseif (property_exists($this, 'conn') && $this->conn) {
+            $this->pdo = $this->conn;
+        } else {
+            // fallback for legacy code
+            $this->pdo = null;
+        }
+        parent::__construct();
+    }
+
     public function register() {
         // Handle CORS preflight
         if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
@@ -163,23 +177,41 @@ class AuthController extends BaseAPI {
             $this->sendJsonResponse(401, "Authentication failed: " . $e->getMessage());
         }
     }
+
+    public function loginWithIdentifier($identifier, $password) {
+        $stmt = $this->pdo->prepare("SELECT * FROM users WHERE username = ? OR email = ? LIMIT 1");
+        $stmt->execute([$identifier, $identifier]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($user && password_verify($password, $user['password'])) {
+            // Remove sensitive info before returning
+            unset($user['password']);
+            // Generate JWT token (assuming you have a Utils::generateJWT method)
+            $token = Utils::generateJWT($user['id'], $user['username'], $user['role']);
+            return [
+                'success' => true,
+                'user' => $user,
+                'token' => $token
+            ];
+        }
+        return ['success' => false, 'message' => 'Invalid credentials'];
+    }
 }
 
 // Handle the request
-$controller = new AuthController();
-$action = basename($_SERVER['PHP_SELF'], '.php');
-
-switch($action) {
-    case 'register':
-        $controller->register();
-        break;
-    case 'login':
-        $controller->login();
-        break;
-    case 'me':
-        $controller->me();
-        break;
-    default:
-        Utils::sendResponse(404, "Endpoint not found");
-}
+// $controller = new AuthController();
+// $action = basename($_SERVER['PHP_SELF'], '.php');
+// switch($action) {
+//     case 'register':
+//         $controller->register();
+//         break;
+//     case 'login':
+//         $controller->login();
+//         break;
+//     case 'me':
+//         $controller->me();
+//         break;
+//     default:
+//         Utils::sendResponse(404, "Endpoint not found");
+// }
 ?> 
