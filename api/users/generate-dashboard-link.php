@@ -55,7 +55,7 @@ try {
     if ($role === 'admin') {
         $expiration = $issuedAt + (7 * 24 * 60 * 60); // 7 days
     } else {
-        $expiration = $issuedAt + 420; // 7 minutes
+        $expiration = $issuedAt + (7 * 24 * 60 * 60); // 7 days
     }
     
     // Use the existing JWT generation method but with custom payload
