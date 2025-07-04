@@ -21,7 +21,7 @@ class UserController extends BaseAPI {
             }
 
             // Get all users
-            $query = "SELECT id, username, email, role, created_at, updated_at FROM users ORDER BY created_at DESC";
+            $query = "SELECT id, username, email, phone, role, created_at, updated_at FROM users ORDER BY created_at DESC";
             $stmt = $this->conn->prepare($query);
             
             if (!$stmt) {
@@ -71,7 +71,7 @@ class UserController extends BaseAPI {
             }
 
             // Prepare and execute query
-            $query = "SELECT id, username, email, role, created_at, updated_at FROM users WHERE id = ?";
+            $query = "SELECT id, username, email, phone, role, created_at, updated_at FROM users WHERE id = ?";
             $stmt = $this->conn->prepare($query);
             
             if (!$stmt) {
@@ -121,7 +121,7 @@ class UserController extends BaseAPI {
             $totalUsers = $countStmt->fetch(PDO::FETCH_ASSOC)['total'];
 
             // Get users with pagination
-            $query = "SELECT id, username, email, role, created_at, updated_at 
+            $query = "SELECT id, username, email, phone, role, created_at, updated_at 
                      FROM users 
                      ORDER BY created_at DESC 
                      LIMIT ? OFFSET ?";
@@ -329,10 +329,19 @@ class UserController extends BaseAPI {
             $email = $data['email'] ?? '';
             $password = $data['password'] ?? '';
             $role = $data['role'] ?? '';
+            $phone = $data['phone'] ?? null;
 
             // Validate required fields
             if (!$username || !$email || !$password || !$role) {
                 $this->sendJsonResponse(400, "All fields are required.");
+                return;
+            }
+
+            // Check if username, email, or phone exists
+            $stmt = $this->conn->prepare("SELECT id FROM users WHERE username = ? OR email = ? OR phone = ?");
+            $stmt->execute([$username, $email, $phone]);
+            if ($stmt->rowCount() > 0) {
+                $this->sendJsonResponse(400, "Username, email, or phone already exists");
                 return;
             }
 
@@ -343,9 +352,9 @@ class UserController extends BaseAPI {
             $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
 
             // Insert user (add id column)
-            $query = "INSERT INTO users (id, username, email, password, role) VALUES (?, ?, ?, ?, ?)";
+            $query = "INSERT INTO users (id, username, email, phone, password, role) VALUES (?, ?, ?, ?, ?, ?)";
             $stmt = $this->conn->prepare($query);
-            if (!$stmt->execute([$id, $username, $email, $hashedPassword, $role])) {
+            if (!$stmt->execute([$id, $username, $email, $phone, $hashedPassword, $role])) {
                 $errorInfo = $stmt->errorInfo();
                 if (strpos($errorInfo[2], 'username') !== false) {
                     $this->sendJsonResponse(409, "Username already exists.");
@@ -421,6 +430,7 @@ class UserController extends BaseAPI {
                 "id" => $id,
                 "username" => $username,
                 "email" => $email,
+                "phone" => $phone,
                 "role" => $role
             ]);
         } catch (Exception $e) {
@@ -444,6 +454,17 @@ class UserController extends BaseAPI {
             if (isset($data['role'])) {
                 $fields[] = "role = ?";
                 $params[] = $data['role'];
+            }
+            if (isset($data['phone'])) {
+                // Check for duplicate phone (exclude current user)
+                $stmt = $conn->prepare("SELECT id FROM users WHERE phone = ? AND id != ?");
+                $stmt->execute([$data['phone'], $id]);
+                if ($stmt->rowCount() > 0) {
+                    $this->sendJsonResponse(409, "Phone number already exists for another user.");
+                    return;
+                }
+                $fields[] = "phone = ?";
+                $params[] = $data['phone'];
             }
             // Add more fields as needed
 
