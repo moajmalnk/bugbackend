@@ -437,3 +437,7 @@ CREATE TABLE IF NOT EXISTS user_otps (
   INDEX idx_user_otps_email (email),
   INDEX idx_user_otps_phone (phone)
 );
+ALTER TABLE users
+ADD COLUMN phone VARCHAR(20) NULL
+AFTER email;
+CREATE INDEX idx_users_phone ON users(phone);
