@@ -19,7 +19,7 @@ function logDebug($message) {
 }
 
 // Log the incoming request
-logDebug("Login request received from: " . ($_SERVER['HTTP_HOST'] ?? 'unknown'));
+// logDebug("Login request received from: " . ($_SERVER['HTTP_HOST'] ?? 'unknown'));
 logDebug("Request method: " . $_SERVER['REQUEST_METHOD']);
 logDebug("Origin: " . ($_SERVER['HTTP_ORIGIN'] ?? 'no origin'));
 logDebug("User Agent: " . ($_SERVER['HTTP_USER_AGENT'] ?? 'no user agent'));
