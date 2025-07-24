@@ -108,3 +108,26 @@ function sendWelcomeEmail($to, $subject, $body) {
         return false;
     }
 }
+
+function sendOtpEmail($to, $otp) {
+    try {
+        $mail = new PHPMailer(true);
+        $mail->isSMTP();
+        $mail->Host = 'smtp.hostinger.com';
+        $mail->SMTPAuth = true;
+        $mail->Username = 'bugs@moajmalnk.in';
+        $mail->Password = 'Codo@8848';
+        $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS;
+        $mail->Port = 465;
+        $mail->setFrom('bugs@moajmalnk.in', 'Bug Ricer');
+        $mail->addAddress($to);
+        $mail->isHTML(true);
+        $mail->Subject = 'Your BugRacer OTP';
+        $mail->Body = "<b>Your OTP is: $otp</b><br>This OTP is valid for 5 minutes.<br><br>🐞 _Sent from BugRacer_";
+        $mail->send();
+        return true;
+    } catch (Exception $e) {
+        error_log("OTP mail error: " . $mail->ErrorInfo);
+        return false;
+    }
+}
