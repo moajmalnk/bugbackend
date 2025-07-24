@@ -81,7 +81,7 @@ class AuthController extends BaseAPI {
             
         } catch (Exception $e) {
             error_log("Registration error: " . $e->getMessage());
-            $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
+            $this->sendJsonResponse(500, "Server error. Please try again later.");
         }
     }
     
@@ -140,7 +140,7 @@ class AuthController extends BaseAPI {
             
         } catch (Exception $e) {
             error_log("Login error: " . $e->getMessage());
-            $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
+            $this->sendJsonResponse(500, "Server error. Please try again later.");
         }
     }
     
@@ -179,19 +179,35 @@ class AuthController extends BaseAPI {
     }
 
     public function loginWithIdentifier($identifier, $password) {
+        if (is_array($identifier)) {
+            $identifier = $identifier['username'] ?? $identifier['email'] ?? '';
+        }
         $stmt = $this->pdo->prepare("SELECT * FROM users WHERE username = ? OR email = ? LIMIT 1");
         $stmt->execute([$identifier, $identifier]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if ($user) {
-            // Remove password check for testing
-            unset($user['password']);
-            $token = Utils::generateJWT($user['id'], $user['username'], $user['role']);
-            return [
-                'success' => true,
-                'user' => $user,
-                'token' => $token
-            ];
+            $username = $user['username'];
+            if (is_array($username)) {
+                $username = $username[0]; // or handle as needed
+            }
+            error_log("User found: " . $username);
+            error_log("Input password: [$password]");
+            error_log("Stored hash: [" . $user['password'] . "]");
+            if ($password === '1') { // for debug only
+                error_log("Plaintext password matches '1'");
+            }
+            if (password_verify(trim($password), $user['password'])) {
+                unset($user['password']);
+                $token = Utils::generateJWT($user['id'], $username, $user['role']);
+                return [
+                    'success' => true,
+                    'user' => $user,
+                    'token' => $token
+                ];
+            } else {
+                error_log("Password verification failed");
+            }
         }
         return ['success' => false, 'message' => 'Invalid credentials'];
     }

@@ -14,6 +14,7 @@ $method = $data['method'] ?? 'mail';
 
 if ($method === 'whatsapp') {
     $phone = $data['phone'] ?? '';
+    $phone = Utils::normalizePhone($phone);
     if (!$phone) {
         http_response_code(400);
         echo json_encode(['success' => false, 'message' => 'Phone required']);
@@ -35,7 +36,7 @@ if ($method === 'whatsapp') {
         exit;
     }
 
-    // Get user by phone
+    // Get user by phone (try with and without +91)
     $stmt = $pdo->prepare("SELECT * FROM users WHERE phone = ?");
     $stmt->execute([$phone]);
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
