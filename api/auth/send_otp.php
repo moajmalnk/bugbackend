@@ -47,7 +47,13 @@ if ($method === 'whatsapp') {
     $url = "http://148.251.129.118/whatsapp/api/send?mobile=$phone&msg=" . urlencode($msg) . "&apikey=$apikey";
     $response = file_get_contents($url);
     error_log('WhatsApp API response: ' . $response);
-    echo json_encode(['success' => true, 'message' => 'OTP sent via WhatsApp']);
+    echo json_encode([
+        'success' => true, 
+        'message' => 'OTP sent via WhatsApp',
+        'otp' => $otp,
+        'phone' => $phone,
+        'expires_at' => $expires_at
+    ]);
 } else {
     $email = $data['email'] ?? '';
     if (!$email) {
@@ -97,7 +103,13 @@ if ($method === 'whatsapp') {
 </div>';
         $mail->AltBody = 'Your BugRacer OTP is: ' . $otp . '. This OTP is valid for 5 minutes. Do not share this code with anyone.';
         $mail->send();
-        echo json_encode(['success' => true, 'message' => 'OTP sent via Email']);
+        echo json_encode([
+            'success' => true, 
+            'message' => 'OTP sent via Email',
+            'otp' => $otp,
+            'email' => $email,
+            'expires_at' => $expires_at
+        ]);
     } catch (Exception $e) {
         error_log("OTP mail error: " . $mail->ErrorInfo);
         http_response_code(500);

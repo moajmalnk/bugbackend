@@ -360,6 +360,89 @@ class ChatGroupController extends BaseAPI {
             $this->sendJsonResponse(500, "Failed to add member: " . $e->getMessage());
         }
     }
+
+    /**
+     * Add multiple members to a chat group
+     */
+    public function addMembers($groupId, $userIds) {
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            $this->sendJsonResponse(405, "Method not allowed");
+            return;
+        }
+        
+        try {
+            $decoded = $this->validateToken();
+            $userId = $decoded->user_id;
+            $userRole = $decoded->role;
+            
+            // Only admins can add members
+            if ($userRole !== 'admin') {
+                $this->sendJsonResponse(403, "Only admins can add members to groups");
+                return;
+            }
+            
+            if (!$userIds || !is_array($userIds) || empty($userIds)) {
+                $this->sendJsonResponse(400, "user_ids array is required");
+                return;
+            }
+            
+            // Check if group exists and user has access
+            $group = $this->getGroupWithAccess($groupId, $userId, $userRole);
+            if (!$group) {
+                $this->sendJsonResponse(404, "Chat group not found or access denied");
+                return;
+            }
+            
+            $this->conn->beginTransaction();
+            
+            $addedCount = 0;
+            $errors = [];
+            
+            foreach ($userIds as $memberId) {
+                try {
+                    // Check if user is already a member
+                    $checkStmt = $this->conn->prepare("SELECT 1 FROM chat_group_members WHERE group_id = ? AND user_id = ?");
+                    $checkStmt->execute([$groupId, $memberId]);
+                    if ($checkStmt->fetch()) {
+                        $errors[] = "User $memberId is already a member of this group";
+                        continue;
+                    }
+                    
+                    // Check if user exists and has access to the project
+                    if (!$this->validateProjectAccess($memberId, 'user', $group['project_id'])) {
+                        $errors[] = "User $memberId does not have access to this project";
+                        continue;
+                    }
+                    
+                    $stmt = $this->conn->prepare("INSERT INTO chat_group_members (group_id, user_id) VALUES (?, ?)");
+                    $stmt->execute([$groupId, $memberId]);
+                    $addedCount++;
+                    
+                } catch (Exception $e) {
+                    $errors[] = "Failed to add user $memberId: " . $e->getMessage();
+                }
+            }
+            
+            $this->conn->commit();
+            
+            $message = "Successfully added $addedCount member(s) to the group";
+            if (!empty($errors)) {
+                $message .= ". Errors: " . implode(", ", $errors);
+            }
+            
+            $this->sendJsonResponse(200, $message, [
+                'added_count' => $addedCount,
+                'errors' => $errors
+            ]);
+            
+        } catch (Exception $e) {
+            if ($this->conn->inTransaction()) {
+                $this->conn->rollBack();
+            }
+            error_log("Error adding members: " . $e->getMessage());
+            $this->sendJsonResponse(500, "Failed to add members: " . $e->getMessage());
+        }
+    }
     
     /**
      * Remove member from group
@@ -410,6 +493,89 @@ class ChatGroupController extends BaseAPI {
         } catch (Exception $e) {
             error_log("Error removing member: " . $e->getMessage());
             $this->sendJsonResponse(500, "Failed to remove member: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Remove multiple members from a chat group
+     */
+    public function removeMembers($groupId, $userIds) {
+        if ($_SERVER['REQUEST_METHOD'] !== 'DELETE') {
+            $this->sendJsonResponse(405, "Method not allowed");
+            return;
+        }
+        
+        try {
+            $decoded = $this->validateToken();
+            $userId = $decoded->user_id;
+            $userRole = $decoded->role;
+            
+            // Only admins can remove members
+            if ($userRole !== 'admin') {
+                $this->sendJsonResponse(403, "Only admins can remove members from groups");
+                return;
+            }
+            
+            if (!$userIds || !is_array($userIds) || empty($userIds)) {
+                $this->sendJsonResponse(400, "user_ids array is required");
+                return;
+            }
+            
+            // Check if group exists and user has access
+            $group = $this->getGroupWithAccess($groupId, $userId, $userRole);
+            if (!$group) {
+                $this->sendJsonResponse(404, "Chat group not found or access denied");
+                return;
+            }
+            
+            $this->conn->beginTransaction();
+            
+            $removedCount = 0;
+            $errors = [];
+            
+            foreach ($userIds as $memberId) {
+                try {
+                    // Cannot remove the group creator
+                    if ($group['created_by'] === $memberId) {
+                        $errors[] = "Cannot remove the group creator ($memberId)";
+                        continue;
+                    }
+                    
+                    // Check if user is actually a member
+                    $checkStmt = $this->conn->prepare("SELECT 1 FROM chat_group_members WHERE group_id = ? AND user_id = ?");
+                    $checkStmt->execute([$groupId, $memberId]);
+                    if (!$checkStmt->fetch()) {
+                        $errors[] = "User $memberId is not a member of this group";
+                        continue;
+                    }
+                    
+                    $stmt = $this->conn->prepare("DELETE FROM chat_group_members WHERE group_id = ? AND user_id = ?");
+                    $stmt->execute([$groupId, $memberId]);
+                    $removedCount++;
+                    
+                } catch (Exception $e) {
+                    $errors[] = "Failed to remove user $memberId: " . $e->getMessage();
+                }
+            }
+            
+            $this->conn->commit();
+            
+            $message = "Successfully removed $removedCount member(s) from the group";
+            if (!empty($errors)) {
+                $message .= ". Errors: " . implode(", ", $errors);
+            }
+            
+            $this->sendJsonResponse(200, $message, [
+                'removed_count' => $removedCount,
+                'errors' => $errors
+            ]);
+            
+        } catch (Exception $e) {
+            if ($this->conn->inTransaction()) {
+                $this->conn->rollBack();
+            }
+            error_log("Error removing members: " . $e->getMessage());
+            $this->sendJsonResponse(500, "Failed to remove members: " . $e->getMessage());
         }
     }
     

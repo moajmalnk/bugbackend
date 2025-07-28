@@ -300,23 +300,39 @@ class BugController extends BaseAPI {
 
             // Get attachments
             $attachStmt = $this->conn->prepare("
-                SELECT id, file_name, file_path, file_type
+                SELECT id, file_name, file_path, file_type, uploaded_by, created_at
                 FROM bug_attachments
                 WHERE bug_id = ?
+                ORDER BY created_at ASC
             ");
             $attachStmt->execute([$id]);
             $attachments = $attachStmt->fetchAll(PDO::FETCH_ASSOC);
 
-            // Separate screenshots and other files
+            // Process attachments and add them to the bug object
+            $bug['attachments'] = [];
             $bug['screenshots'] = [];
             $bug['files'] = [];
+            
             foreach ($attachments as $attachment) {
                 // Ensure path has the correct prefix
                 $path = $attachment['file_path'];
-                // Remove any unnecessary prefixing
                 $fullPath = $this->getFullPath($path);
                 
-                if (strpos($attachment['file_type'], 'image/') === 0) {
+                // Create attachment object for frontend
+                $attachmentObj = [
+                    'id' => $attachment['id'],
+                    'file_name' => $attachment['file_name'],
+                    'file_path' => $attachment['file_path'], // Keep original path for frontend
+                    'file_type' => $attachment['file_type'],
+                    'uploaded_by' => $attachment['uploaded_by'],
+                    'created_at' => $attachment['created_at']
+                ];
+                
+                $bug['attachments'][] = $attachmentObj;
+                
+                // Also categorize them for backward compatibility
+                if (strpos($attachment['file_type'], 'image/') === 0 || 
+                    preg_match('/\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i', $attachment['file_name'])) {
                     $bug['screenshots'][] = [
                         'id' => $attachment['id'],
                         'name' => $attachment['file_name'],
@@ -423,6 +439,41 @@ class BugController extends BaseAPI {
                 foreach ($_FILES['files']['tmp_name'] as $key => $tmp_name) {
                     $fileName = $_FILES['files']['name'][$key];
                     $fileType = $_FILES['files']['type'][$key];
+                    $filePath = $uploadDir . uniqid() . '_' . $fileName;
+                    
+                    if (move_uploaded_file($tmp_name, $filePath)) {
+                        $attachmentId = Utils::generateUUID();
+                        // Store path relative to the 'uploads' directory
+                        $relativePath = str_replace(__DIR__ . '/../../uploads/', 'uploads/', $filePath);
+                        $stmt = $this->conn->prepare(
+                            "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by) 
+                             VALUES (?, ?, ?, ?, ?, ?)"
+                        );
+                        $stmt->execute([
+                            $attachmentId,
+                            $id,
+                            $fileName,
+                            $relativePath,
+                            $fileType,
+                            $decoded->user_id
+                        ]);
+                        // Add the relative path to the list
+                        $uploadedAttachments[] = $relativePath;
+                        @unlink($tmp_name);
+                    }
+                }
+            }
+
+            // Handle voice notes
+            if (!empty($_FILES['voice_notes'])) {
+                $uploadDir = __DIR__ . '/../../uploads/voice_notes/';
+                if (!file_exists($uploadDir)) {
+                    mkdir($uploadDir, 0777, true);
+                }
+
+                foreach ($_FILES['voice_notes']['tmp_name'] as $key => $tmp_name) {
+                    $fileName = $_FILES['voice_notes']['name'][$key];
+                    $fileType = $_FILES['voice_notes']['type'][$key];
                     $filePath = $uploadDir . uniqid() . '_' . $fileName;
                     
                     if (move_uploaded_file($tmp_name, $filePath)) {
