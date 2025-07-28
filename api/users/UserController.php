@@ -20,8 +20,17 @@ class UserController extends BaseAPI {
                 return;
             }
 
-            // Get all users
-            $query = "SELECT id, username, email, phone, role, created_at, updated_at FROM users ORDER BY created_at DESC";
+            // Check if phone column exists
+            $checkPhoneColumn = $this->conn->query("SHOW COLUMNS FROM users LIKE 'phone'");
+            $phoneColumnExists = $checkPhoneColumn->rowCount() > 0;
+
+            // Get all users with phone field if it exists
+            if ($phoneColumnExists) {
+                $query = "SELECT id, username, email, phone, role, created_at, updated_at FROM users ORDER BY created_at DESC";
+            } else {
+                $query = "SELECT id, username, email, role, created_at, updated_at FROM users ORDER BY created_at DESC";
+            }
+            
             $stmt = $this->conn->prepare($query);
             
             if (!$stmt) {
@@ -37,6 +46,15 @@ class UserController extends BaseAPI {
             }
 
             $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            // Add name field and ensure phone field exists
+            foreach ($users as &$user) {
+                $user['name'] = $user['username']; // Use username as name
+                if (!isset($user['phone'])) {
+                    $user['phone'] = null; // Set phone to null if column doesn't exist
+                }
+            }
+
             $this->sendJsonResponse(200, "Users retrieved successfully", $users);
         } catch (PDOException $e) {
             error_log("Database error in getUsers: " . $e->getMessage());
