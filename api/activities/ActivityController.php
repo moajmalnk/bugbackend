@@ -9,7 +9,7 @@ class ActivityController extends BaseAPI {
         $this->conn = $this->getConnection();
     }
 
-    public function handleRequest() {
+    public function handleRequest($callback) {
         try {
             // Validate token
             $this->validateToken();
@@ -18,16 +18,17 @@ class ActivityController extends BaseAPI {
             $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 10;
             $offset = isset($_GET['offset']) ? (int)$_GET['offset'] : 0;
 
+            // Ensure limit and offset are non-negative integers
+            $limit = max(1, $limit);
+            $offset = max(0, $offset);
+
             $query = "SELECT a.*, u.name as user_name 
                      FROM activities a 
                      LEFT JOIN users u ON a.user_id = u.id 
                      ORDER BY a.created_at DESC
-                     LIMIT :limit OFFSET :offset";
+                     LIMIT $limit OFFSET $offset";
 
             $stmt = $this->conn->prepare($query);
-            $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
-            $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
-            
             if (!$stmt->execute()) {
                 throw new Exception("Failed to execute query");
             }
@@ -41,7 +42,7 @@ class ActivityController extends BaseAPI {
             // Send response
             $this->sendJsonResponse(200, [
                 'success' => true,
-                'activities' => $activities,
+                'data' => $activities,
                 'total' => $total
             ]);
             
