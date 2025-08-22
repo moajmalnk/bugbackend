@@ -50,9 +50,7 @@ if ($method === 'whatsapp') {
     echo json_encode([
         'success' => true, 
         'message' => 'OTP sent via WhatsApp',
-        'otp' => $otp,
-        'phone' => $phone,
-        'expires_at' => $expires_at
+        'phone' => $phone
     ]);
 } else {
     $email = $data['email'] ?? '';
@@ -106,9 +104,7 @@ if ($method === 'whatsapp') {
         echo json_encode([
             'success' => true, 
             'message' => 'OTP sent via Email',
-            'otp' => $otp,
-            'email' => $email,
-            'expires_at' => $expires_at
+            'email' => $email
         ]);
     } catch (Exception $e) {
         error_log("OTP mail error: " . $mail->ErrorInfo);
