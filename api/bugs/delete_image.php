@@ -30,7 +30,7 @@ ini_set('log_errors', 1);
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/BugController.php';
 
-if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+if ($_SERVER['REQUEST_METHOD'] !== 'DELETE') {
     http_response_code(405);
     echo json_encode(['success' => false, 'message' => 'Method not allowed']);
     exit();
@@ -67,25 +67,37 @@ try {
         exit();
     }
 
+    // Get file path from database before deleting
+    $fileStmt = $api->getConnection()->prepare("SELECT file_path FROM bug_attachments WHERE bug_id = ? AND id = ?");
+    $fileStmt->execute([$bugId, $attachmentId]);
+    $attachment = $fileStmt->fetch(PDO::FETCH_ASSOC);
+    
+    if (!$attachment) {
+        http_response_code(404);
+        echo json_encode(['success' => false, 'message' => 'Attachment not found']);
+        exit();
+    }
+    
+    // Delete file from filesystem
+    $filePath = __DIR__ . '/../../' . ltrim($attachment['file_path'], '/');
+    if (file_exists($filePath)) {
+        if (!@unlink($filePath)) {
+            // Log the error but don't fail the request
+            error_log("Warning: Could not delete file: $filePath");
+        }
+    }
+    
     // Delete from bug_attachments
     $delStmt = $api->getConnection()->prepare("DELETE FROM bug_attachments WHERE bug_id = ? AND id = ?");
     $delStmt->execute([$bugId, $attachmentId]);
 
-    // Delete file from filesystem
-    $filePath = __DIR__ . '/../../' . ltrim($imagePath, '/');
-    if (file_exists($filePath)) {
-        @unlink($filePath);
+    if ($delStmt->rowCount() === 0) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => 'Failed to delete attachment from database']);
+        exit();
     }
 
-    file_put_contents('/tmp/delete_image_debug.log', print_r([
-        'bugId' => $bugId,
-        'attachmentId' => $attachmentId,
-        'file_exists' => file_exists($filePath),
-        'filePath' => $filePath,
-        'delRows' => $delStmt->rowCount()
-    ], true), FILE_APPEND);
-
-    echo json_encode(['success' => true, 'message' => 'Image deleted']);
+    echo json_encode(['success' => true, 'message' => 'Image deleted successfully']);
 } catch (Exception $e) {
     http_response_code(500);
     echo json_encode(['success' => false, 'message' => $e->getMessage()]);
