@@ -1,6 +1,6 @@
 <?php
-
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../../utils/send_email.php';
 
 class UserController extends BaseAPI {
     public function getUsers() {
@@ -20,8 +20,17 @@ class UserController extends BaseAPI {
                 return;
             }
 
-            // Get all users
-            $query = "SELECT id, username, email, role, created_at, updated_at FROM users ORDER BY created_at DESC";
+            // Check if phone column exists
+            $checkPhoneColumn = $this->conn->query("SHOW COLUMNS FROM users LIKE 'phone'");
+            $phoneColumnExists = $checkPhoneColumn->rowCount() > 0;
+
+            // Get all users with phone field if it exists
+            if ($phoneColumnExists) {
+                $query = "SELECT id, username, email, phone, role, created_at, updated_at FROM users ORDER BY created_at DESC";
+            } else {
+                $query = "SELECT id, username, email, role, created_at, updated_at FROM users ORDER BY created_at DESC";
+            }
+            
             $stmt = $this->conn->prepare($query);
             
             if (!$stmt) {
@@ -37,6 +46,15 @@ class UserController extends BaseAPI {
             }
 
             $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            // Add name field and ensure phone field exists
+            foreach ($users as &$user) {
+                $user['name'] = $user['username']; // Use username as name
+                if (!isset($user['phone'])) {
+                    $user['phone'] = null; // Set phone to null if column doesn't exist
+                }
+            }
+
             $this->sendJsonResponse(200, "Users retrieved successfully", $users);
         } catch (PDOException $e) {
             error_log("Database error in getUsers: " . $e->getMessage());
@@ -71,7 +89,7 @@ class UserController extends BaseAPI {
             }
 
             // Prepare and execute query
-            $query = "SELECT id, username, email, role, created_at, updated_at FROM users WHERE id = ?";
+            $query = "SELECT id, username, email, phone, role, created_at, updated_at FROM users WHERE id = ?";
             $stmt = $this->conn->prepare($query);
             
             if (!$stmt) {
@@ -121,7 +139,7 @@ class UserController extends BaseAPI {
             $totalUsers = $countStmt->fetch(PDO::FETCH_ASSOC)['total'];
 
             // Get users with pagination
-            $query = "SELECT id, username, email, role, created_at, updated_at 
+            $query = "SELECT id, username, email, phone, role, created_at, updated_at 
                      FROM users 
                      ORDER BY created_at DESC 
                      LIMIT ? OFFSET ?";
@@ -150,217 +168,343 @@ class UserController extends BaseAPI {
         }
     }
 
-    public function createUser($data) {
+    public function delete($userId, $force = false) {
         try {
-            // Validate required fields
-            $requiredFields = ['username', 'email', 'password', 'role'];
-            foreach ($requiredFields as $field) {
-                if (!isset($data[$field]) || empty($data[$field])) {
-                    $this->sendJsonResponse(400, "Missing required field: {$field}");
-                    return;
-                }
-            }
-
-            // Validate email format
-            if (!filter_var($data['email'], FILTER_VALIDATE_EMAIL)) {
-                $this->sendJsonResponse(400, "Invalid email format");
+            if (!$this->conn) {
+                error_log("Database connection failed in delete()");
+                $this->sendJsonResponse(500, "Database connection failed");
                 return;
             }
-
-            // Check if username or email already exists
-            $checkQuery = "SELECT id FROM users WHERE username = ? OR email = ?";
-            $checkStmt = $this->conn->prepare($checkQuery);
-            $checkStmt->execute([$data['username'], $data['email']]);
             
-            if ($checkStmt->rowCount() > 0) {
-                $this->sendJsonResponse(409, "Username or email already exists");
-                return;
-            }
-
-            // Hash password
-            $hashedPassword = password_hash($data['password'], PASSWORD_DEFAULT);
-
-            // Generate UUID
-            $userId = $this->utils->generateUUID();
-
-            // Insert new user
-            $query = "INSERT INTO users (id, username, email, password, role) VALUES (?, ?, ?, ?, ?)";
-            $stmt = $this->conn->prepare($query);
-            
-            if (!$stmt->execute([$userId, $data['username'], $data['email'], $hashedPassword, $data['role']])) {
-                throw new Exception("Failed to create user");
-            }
-
-            // Get the created user
-            $newUser = [
-                'id' => $userId,
-                'username' => $data['username'],
-                'email' => $data['email'],
-                'role' => $data['role'],
-                'created_at' => date('Y-m-d H:i:s')
-            ];
-
-            $this->sendJsonResponse(201, "User created successfully", $newUser);
-        } catch (PDOException $e) {
-            error_log("Database error in createUser: " . $e->getMessage());
-            $this->sendJsonResponse(500, "Failed to create user");
-        } catch (Exception $e) {
-            error_log("Error in createUser: " . $e->getMessage());
-            $this->sendJsonResponse(500, "An unexpected error occurred");
-        }
-    }
-
-    public function updateUser($userId, $data) {
-        try {
-            // Validate user ID
             if (!$userId || !$this->utils->isValidUUID($userId)) {
                 $this->sendJsonResponse(400, "Invalid user ID format");
                 return;
             }
 
-            // Check if user exists
-            $checkQuery = "SELECT id FROM users WHERE id = ?";
-            $checkStmt = $this->conn->prepare($checkQuery);
-            $checkStmt->execute([$userId]);
-            
-            if ($checkStmt->rowCount() === 0) {
-                $this->sendJsonResponse(404, "User not found");
-                return;
-            }
-
-            // Validate input data
-            $allowedFields = ['username', 'email', 'role', 'password'];
-            $updates = [];
-            $params = [];
-
-            foreach ($allowedFields as $field) {
-                if (isset($data[$field]) && !empty($data[$field])) {
-                    if ($field === 'password') {
-                        $updates[] = "$field = ?";
-                        $params[] = password_hash($data[$field], PASSWORD_DEFAULT);
-                    } else {
-                        $updates[] = "$field = ?";
-                        $params[] = $data[$field];
-                    }
-                }
-            }
-
-            if (empty($updates)) {
-                $this->sendJsonResponse(400, "No valid fields to update");
-                return;
-            }
-
-            // Add userId to params array
-            $params[] = $userId;
-
-            // Update user
-            $query = "UPDATE users SET " . implode(", ", $updates) . " WHERE id = ?";
-            $stmt = $this->conn->prepare($query);
-            
-            if (!$stmt->execute($params)) {
-                throw new Exception("Failed to update user");
-            }
-
-            // Get updated user data
-            $query = "SELECT id, username, email, role, created_at, updated_at FROM users WHERE id = ?";
-            $stmt = $this->conn->prepare($query);
-            $stmt->execute([$userId]);
-            $updatedUser = $stmt->fetch(PDO::FETCH_ASSOC);
-
-            $this->sendJsonResponse(200, "User updated successfully", $updatedUser);
-        } catch (PDOException $e) {
-            error_log("Database error in updateUser: " . $e->getMessage());
-            $this->sendJsonResponse(500, "Failed to update user");
-        } catch (Exception $e) {
-            error_log("Error in updateUser: " . $e->getMessage());
-            $this->sendJsonResponse(500, "An unexpected error occurred");
-        }
-    }
-
-    public function delete($userId) {
-        try {
-            $decoded = $this->validateToken();
-
-            // Validate user ID format
-            if (!$userId || !$this->utils->isValidUUID($userId)) {
-                $this->sendJsonResponse(400, "Invalid user ID format", null, false);
-                return;
-            }
-
+            // Start transaction for safe deletion
             $this->conn->beginTransaction();
 
-            // Check if user exists
-            $checkQuery = "SELECT id FROM users WHERE id = :id";
-            $checkStmt = $this->conn->prepare($checkQuery);
-            $checkStmt->bindParam(':id', $userId);
-            $checkStmt->execute();
-
-            if (!$checkStmt->fetch()) {
-                $this->conn->rollBack();
-                $this->sendJsonResponse(404, "User not found", null, false);
-                return;
-            }
-
             try {
-                // 1. First delete from bug_attachments (has FK to bugs and users)
-                $query = "DELETE FROM bug_attachments WHERE uploaded_by = :user_id";
-                $stmt = $this->conn->prepare($query);
-                $stmt->bindParam(':user_id', $userId);
-                $stmt->execute();
-
-                // 2. Delete from project_members (has FK to users)
-                $query = "DELETE FROM project_members WHERE user_id = :user_id";
-                $stmt = $this->conn->prepare($query);
-                $stmt->bindParam(':user_id', $userId);
-                $stmt->execute();
-
-                // 3. Delete from activity_log (has FK to users)
-                $query = "DELETE FROM activity_log WHERE user_id = :user_id";
-                $stmt = $this->conn->prepare($query);
-                $stmt->bindParam(':user_id', $userId);
-                $stmt->execute();
-
-                // 4. Set reported_by to NULL in bugs table
-                $query = "UPDATE bugs SET reported_by = NULL WHERE reported_by = :user_id";
-                $stmt = $this->conn->prepare($query);
-                $stmt->bindParam(':user_id', $userId);
-                $stmt->execute();
-
-                // 5. Set created_by to NULL in projects table
-                $query = "UPDATE projects SET created_by = NULL WHERE created_by = :user_id";
-                $stmt = $this->conn->prepare($query);
-                $stmt->bindParam(':user_id', $userId);
-                $stmt->execute();
-
-                // 6. Delete from activities (has ON DELETE CASCADE)
-                // This will be handled automatically by MySQL
-
-                // 7. Finally delete the user
-                $query = "DELETE FROM users WHERE id = :id";
-                $stmt = $this->conn->prepare($query);
-                $stmt->bindParam(':id', $userId);
+                // Check if user exists
+                $checkStmt = $this->conn->prepare("SELECT id, username FROM users WHERE id = ?");
+                $checkStmt->execute([$userId]);
+                $user = $checkStmt->fetch(PDO::FETCH_ASSOC);
                 
-                if (!$stmt->execute()) {
-                    throw new Exception("Failed to delete user record");
+                if (!$user) {
+                    $this->conn->rollback();
+                    $this->sendJsonResponse(404, "User not found");
+                    return;
                 }
 
-                $this->conn->commit();
-                $this->sendJsonResponse(200, "User deleted successfully", null, true);
-                return;
+                // Check for dependencies and handle them
+                $dependencies = [];
+
+                // Check projects created by this user
+                $projectStmt = $this->conn->prepare("SELECT COUNT(*) as count FROM projects WHERE created_by = ?");
+                $projectStmt->execute([$userId]);
+                $projectCount = $projectStmt->fetch(PDO::FETCH_ASSOC)['count'];
+                if ($projectCount > 0) {
+                    $dependencies[] = "$projectCount projects";
+                }
+
+                // Check bugs reported by this user
+                $bugStmt = $this->conn->prepare("SELECT COUNT(*) as count FROM bugs WHERE reported_by = ?");
+                $bugStmt->execute([$userId]);
+                $bugCount = $bugStmt->fetch(PDO::FETCH_ASSOC)['count'];
+                if ($bugCount > 0) {
+                    $dependencies[] = "$bugCount bugs";
+                }
+
+                // Check project memberships
+                $memberStmt = $this->conn->prepare("SELECT COUNT(*) as count FROM project_members WHERE user_id = ?");
+                $memberStmt->execute([$userId]);
+                $memberCount = $memberStmt->fetch(PDO::FETCH_ASSOC)['count'];
+                if ($memberCount > 0) {
+                    $dependencies[] = "$memberCount project memberships";
+                }
+
+                // Check bug attachments
+                $attachmentStmt = $this->conn->prepare("SELECT COUNT(*) as count FROM bug_attachments WHERE uploaded_by = ?");
+                $attachmentStmt->execute([$userId]);
+                $attachmentCount = $attachmentStmt->fetch(PDO::FETCH_ASSOC)['count'];
+                if ($attachmentCount > 0) {
+                    $dependencies[] = "$attachmentCount file uploads";
+                }
+
+                // If there are dependencies and force is not enabled, provide options
+                if (!empty($dependencies) && !$force) {
+                    $this->conn->rollback();
+                    $dependencyText = implode(', ', $dependencies);
+                    $this->sendJsonResponse(409, "Cannot delete user '{$user['username']}'. User has associated data: $dependencyText. Please reassign or remove these items first, or use force delete.", ['canForceDelete' => true]);
+                    return;
+                }
+
+                // If force delete is enabled, handle dependencies
+                if ($force && !empty($dependencies)) {
+                    // Remove project memberships first (no foreign key dependency)
+                    if ($memberCount > 0) {
+                        $deleteMembersStmt = $this->conn->prepare("DELETE FROM project_members WHERE user_id = ?");
+                        $deleteMembersStmt->execute([$userId]);
+                    }
+
+                    // Handle bug attachments - delete files and records
+                    if ($attachmentCount > 0) {
+                        // Get attachment file paths for cleanup
+                        $getAttachmentsStmt = $this->conn->prepare("SELECT file_path FROM bug_attachments WHERE uploaded_by = ?");
+                        $getAttachmentsStmt->execute([$userId]);
+                        $attachments = $getAttachmentsStmt->fetchAll(PDO::FETCH_ASSOC);
+                        
+                        // Delete attachment records
+                        $deleteAttachmentsStmt = $this->conn->prepare("DELETE FROM bug_attachments WHERE uploaded_by = ?");
+                        $deleteAttachmentsStmt->execute([$userId]);
+                        
+                        // Note: You may want to delete actual files from filesystem here
+                        // foreach ($attachments as $attachment) {
+                        //     if (file_exists($attachment['file_path'])) {
+                        //         unlink($attachment['file_path']);
+                        //     }
+                        // }
+                    }
+
+                    // Handle bugs - set reported_by to NULL or delete
+                    if ($bugCount > 0) {
+                        // Option 1: Set reported_by to NULL (recommended for data integrity)
+                        $updateBugsStmt = $this->conn->prepare("UPDATE bugs SET reported_by = NULL WHERE reported_by = ?");
+                        $updateBugsStmt->execute([$userId]);
+                        
+                        // Option 2: Delete bugs entirely (uncomment if preferred)
+                        // $deleteBugsStmt = $this->conn->prepare("DELETE FROM bugs WHERE reported_by = ?");
+                        // $deleteBugsStmt->execute([$userId]);
+                    }
+
+                    // Handle projects - set created_by to NULL or delete  
+                    if ($projectCount > 0) {
+                        // Option 1: Set created_by to NULL (recommended for data integrity)
+                        $updateProjectsStmt = $this->conn->prepare("UPDATE projects SET created_by = NULL WHERE created_by = ?");
+                        $updateProjectsStmt->execute([$userId]);
+                        
+                        // Option 2: Delete projects entirely (uncomment if preferred) 
+                        // $deleteProjectsStmt = $this->conn->prepare("DELETE FROM projects WHERE created_by = ?");
+                        // $deleteProjectsStmt->execute([$userId]);
+                    }
+
+                    // Handle activity logs
+                    $deleteActivityStmt = $this->conn->prepare("DELETE FROM activity_log WHERE user_id = ?");
+                    $deleteActivityStmt->execute([$userId]);
+
+                    // Handle activities table if it exists
+                    $deleteActivitiesStmt = $this->conn->prepare("DELETE FROM activities WHERE user_id = ?");
+                    $deleteActivitiesStmt->execute([$userId]);
+                }
+
+                // Now safe to delete the user
+                $deleteStmt = $this->conn->prepare("DELETE FROM users WHERE id = ?");
+                $result = $deleteStmt->execute([$userId]);
+                
+                if ($result && $deleteStmt->rowCount() > 0) {
+                    $this->conn->commit();
+                    $message = $force && !empty($dependencies) 
+                        ? "User '{$user['username']}' and all associated data deleted successfully" 
+                        : "User '{$user['username']}' deleted successfully";
+                    $this->sendJsonResponse(200, $message);
+                } else {
+                    $this->conn->rollback();
+                    $this->sendJsonResponse(500, "Failed to delete user");
+                }
 
             } catch (Exception $e) {
-                $this->conn->rollBack();
-                error_log("Error in delete user transaction: " . $e->getMessage());
-                $this->sendJsonResponse(500, "Failed to delete user: " . $e->getMessage(), null, false);
+                $this->conn->rollback();
+                throw $e;
+            }
+
+        } catch (PDOException $e) {
+            if ($this->conn->inTransaction()) {
+                $this->conn->rollback();
+            }
+            
+            // Check if it's a foreign key constraint error
+            if (strpos($e->getMessage(), 'foreign key constraint') !== false || 
+                strpos($e->getMessage(), 'FOREIGN KEY') !== false ||
+                $e->getCode() == '23000') {
+                error_log("Foreign key constraint error in delete(): " . $e->getMessage());
+                $this->sendJsonResponse(409, "Cannot delete user. User has associated data that must be removed first.");
+            } else {
+                error_log("Database error in delete(): " . $e->getMessage());
+                $this->sendJsonResponse(500, "Database error occurred");
+            }
+        } catch (Exception $e) {
+            if ($this->conn->inTransaction()) {
+                $this->conn->rollback();
+            }
+            error_log("Delete error: " . $e->getMessage());
+            $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
+        }
+    }
+
+    public function createUser($data) {
+        try {
+            $username = $data['username'] ?? '';
+            $email = $data['email'] ?? '';
+            $password = $data['password'] ?? '';
+            $role = $data['role'] ?? '';
+            $phone = $data['phone'] ?? null;
+
+            // Validate required fields
+            if (!$username || !$email || !$password || !$role) {
+                $this->sendJsonResponse(400, "All fields are required.");
                 return;
             }
 
-        } catch (Exception $e) {
-            if ($this->conn->inTransaction()) {
-                $this->conn->rollBack();
+            // Check if username, email, or phone exists
+            $stmt = $this->conn->prepare("SELECT id FROM users WHERE username = ? OR email = ? OR phone = ?");
+            $stmt->execute([$username, $email, $phone]);
+            if ($stmt->rowCount() > 0) {
+                $this->sendJsonResponse(400, "Username, email, or phone already exists");
+                return;
             }
-            error_log("Error in delete user: " . $e->getMessage());
-            $this->sendJsonResponse(500, "Server error: " . $e->getMessage(), null, false);
+
+            // Generate UUID for id
+            $id = $this->utils->generateUUID(); // Make sure you have a UUID generator in your utils
+
+            // Hash password
+            $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
+
+            // Insert user (add id column)
+            $query = "INSERT INTO users (id, username, email, phone, password, role) VALUES (?, ?, ?, ?, ?, ?)";
+            $stmt = $this->conn->prepare($query);
+            if (!$stmt->execute([$id, $username, $email, $phone, $hashedPassword, $role])) {
+                $errorInfo = $stmt->errorInfo();
+                if (strpos($errorInfo[2], 'username') !== false) {
+                    $this->sendJsonResponse(409, "Username already exists.");
+                } elseif (strpos($errorInfo[2], 'email') !== false) {
+                    $this->sendJsonResponse(409, "Email already exists.");
+                } else {
+                    $this->sendJsonResponse(500, "Failed to create user.");
+                }
+                return;
+            }
+
+            // If user created successfully, send welcome email
+            $emailSent = false;
+            if ($role === 'developer' || $role === 'tester') {
+                // Generate role-based login URL
+                $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
+                $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+                
+                // Determine if we're in development or production
+                if (strpos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false) {
+                    // Development - use localhost with role-based routing
+                    $loginLink = "http://localhost:8080/login";
+                } else {
+                    // Production - use the bug tracker domain with role-based routing
+                    $loginLink = "https://bugs.moajmalnk.in/login";
+                }
+                
+                $subject = 'Welcome to BugRacer!';
+                $body = "
+                    <div style=\"font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;\">
+                        <div style=\"max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">
+                            <div style=\"background-color: #2563eb; color: #ffffff; padding: 20px; text-align: center;\">
+                                <h1 style=\"margin: 0; font-size: 24px;\">Welcome to BugRacer!</h1>
+                                <p style=\"margin: 5px 0 0 0; font-size: 16px;\">Your account has been created.</p>
+                            </div>
+                            <div style=\"padding: 20px; border-bottom: 1px solid #e2e8f0;\">
+                                <h3 style=\"margin-top: 0; color: #1e293b; font-size: 18px;\">Hello {$username},</h3>
+                                <p>Welcome to the team! Your BugRacer account is ready. You can now log in to collaborate on projects, report bugs, and track updates.</p>
+                                <p>Here are your login details:</p>
+                                <div style=\"background-color: #f8fafc; padding: 15px; border-radius: 5px; margin-bottom: 15px;\">
+                                    <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Username:</strong> {$username}</p>
+                                    <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Email:</strong> {$email}</p>
+                                    <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Password:</strong> {$password}</p>
+                                    <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Role:</strong> " . ucfirst($role) . "</p>
+                                </div>
+                                <p style=\"text-align: center;\">
+                                    <a href=\"{$loginLink}\" style=\"background-color: #2563eb; color: #ffffff; padding: 12px 25px; text-decoration: none; border-radius: 5px; display: inline-block;\">Access Your Dashboard</a>
+                                </p>
+                                <p style=\"font-size: 14px; color: #64748b; text-align: center; margin-top: 15px;\">
+                                    <strong>Note:</strong> You'll be redirected to your role-specific dashboard after login.
+                                </p>
+                            </div>
+                            <div style=\"background-color: #f8fafc; color: #64748b; padding: 20px; text-align: center; font-size: 12px;\">
+                                <p style=\"margin: 0;\">This is an automated notification. Please do not reply to this email.</p>
+                                <p style=\"margin: 5px 0 0 0;\">&copy; " . date('Y') . " Bug Ricer. All rights reserved.</p>
+                            </div>
+                        </div>
+                    </div>
+                ";
+                $emailSent = sendWelcomeEmail($email, $subject, $body);
+            }
+
+            $message = "User '{$username}' created successfully";
+            if ($role === 'developer' || $role === 'tester') {
+                if ($emailSent) {
+                    $message .= " and a welcome email has been sent.";
+                } else {
+                    $message .= ", but the welcome email could not be sent.";
+                }
+            }
+
+            $this->sendJsonResponse(201, $message, [
+                "id" => $id,
+                "username" => $username,
+                "email" => $email,
+                "phone" => $phone,
+                "role" => $role
+            ]);
+        } catch (Exception $e) {
+            $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
         }
     }
-} 
+
+    public function updateUser($id, $data) {
+        try {
+            $conn = $this->getConnection();
+            $fields = [];
+            $params = [];
+            if (isset($data['username'])) {
+                $fields[] = "username = ?";
+                $params[] = $data['username'];
+            }
+            if (isset($data['email'])) {
+                $fields[] = "email = ?";
+                $params[] = $data['email'];
+            }
+            if (isset($data['role'])) {
+                $fields[] = "role = ?";
+                $params[] = $data['role'];
+            }
+            if (isset($data['phone'])) {
+                // Check for duplicate phone (exclude current user)
+                $stmt = $conn->prepare("SELECT id FROM users WHERE phone = ? AND id != ?");
+                $stmt->execute([$data['phone'], $id]);
+                if ($stmt->rowCount() > 0) {
+                    $this->sendJsonResponse(409, "Phone number already exists for another user.");
+                    return;
+                }
+                $fields[] = "phone = ?";
+                $params[] = $data['phone'];
+            }
+            // Add more fields as needed
+
+            if (empty($fields)) {
+                $this->sendJsonResponse(400, "No fields to update");
+                return;
+            }
+
+            $params[] = $id;
+            $sql = "UPDATE users SET " . implode(", ", $fields) . " WHERE id = ?";
+            $stmt = $conn->prepare($sql);
+            if ($stmt->execute($params)) {
+                $this->sendJsonResponse(200, "User updated successfully");
+            } else {
+                $this->sendJsonResponse(500, "Failed to update user");
+            }
+        } catch (Exception $e) {
+            $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
+        }
+    }
+
+    public function getConnection() {
+        return $this->conn;
+    }
+}

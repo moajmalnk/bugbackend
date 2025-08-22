@@ -1,12 +1,34 @@
 <?php
+// Handle CORS headers first
+$allowedOrigins = [
+    'https://bugs.moajmalnk.in',
+    'http://localhost:8080',
+    'http://localhost:3000',
+    'http://127.0.0.1:8080'
+];
+
+$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+if (in_array($origin, $allowedOrigins)) {
+    header("Access-Control-Allow-Origin: $origin");
+} else if (strpos($origin, 'localhost') !== false || strpos($origin, '127.0.0.1') !== false) {
+    header("Access-Control-Allow-Origin: $origin");
+} else {
+    header("Access-Control-Allow-Origin: https://bugs.moajmalnk.in");
+}
+
+header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept");
+header("Access-Control-Allow-Credentials: true");
+header("Access-Control-Max-Age: 3600");
+header('Content-Type: application/json');
+
+// Disable HTML error output to prevent JSON corruption
+error_reporting(E_ALL);
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
+
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/BugController.php';
-
-// Enable error reporting for debugging
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
-
-header('Content-Type: application/json');
 
 // Handle preflight requests
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
@@ -26,23 +48,27 @@ try {
     // Validate token
     $decoded = $controller->validateToken();
     
-    // Get request body
-    $input = file_get_contents('php://input');
-    error_log("Received update data: " . $input);
-    
-    $data = json_decode($input, true);
-    if (!$data) {
-        throw new Exception('Invalid JSON data received');
+    // Use $_POST and $_FILES for multipart/form-data
+    $data = $_POST;
+    $files = $_FILES;
+
+    // If $_POST is empty, try to get JSON input
+    if (empty($data)) {
+        $rawInput = file_get_contents('php://input');
+        $jsonData = json_decode($rawInput, true);
+        if ($jsonData) {
+            $data = $jsonData;
+        }
     }
 
     if (!isset($data['id'])) {
         throw new Exception('Bug ID is required');
     }
 
-    // Add user ID from token
+    // Add user ID from token as updated_by
     $data['updated_by'] = $decoded->user_id;
 
-    // Update the bug
+    // Update the bug using the correct method signature
     $result = $controller->updateBug($data);
 
     // Send success response
@@ -54,12 +80,11 @@ try {
     ]);
 
 } catch (Exception $e) {
-    error_log("Error in update.php: " . $e->getMessage());
+    error_log("Bug update error: " . $e->getMessage());
+    
     http_response_code(500);
     echo json_encode([
         'success' => false,
-        'message' => $e->getMessage()
+        'message' => 'Failed to update bug: ' . $e->getMessage()
     ]);
-}
-
-file_put_contents('D:/xampp/htdocs/debug.log', date('Y-m-d H:i:s') . " - Accessed update.php\n", FILE_APPEND); 
+} 

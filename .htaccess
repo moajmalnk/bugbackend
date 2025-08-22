@@ -1,44 +1,19 @@
-# Deny access to sensitive files
-<FilesMatch "^(deploy\.sh|composer\.(json|lock|phar)|\.gitignore|\.env)">
-    Order allow,deny
-    Deny from all
-</FilesMatch>
-
-# Enable rewrite engine
-RewriteEngine On
-
-# Handle CORS - Dynamic Origin
-SetEnvIf Origin "^http(s)?://(.+\.)?(localhost:8080|bugs\.moajmalnk\.in|bugracers\.vercel\.app)$" CORS_ALLOW_ORIGIN=$0
-Header always set Access-Control-Allow-Origin %{CORS_ALLOW_ORIGIN}e env=CORS_ALLOW_ORIGIN
-Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
-Header always set Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With"
-Header always set Access-Control-Allow-Credentials "true"
-Header always set Access-Control-Max-Age "3600"
-
-# Handle OPTIONS preflight
-RewriteCond %{REQUEST_METHOD} OPTIONS
-RewriteRule ^(.*)$ $1 [R=200,L]
-
-# Handle Authorization header
-RewriteCond %{HTTP:Authorization} ^(.*)
-RewriteRule .* - [e=HTTP_AUTHORIZATION:%1]
-
-# Route API requests
-RewriteCond %{REQUEST_FILENAME} !-f
-RewriteCond %{REQUEST_FILENAME} !-d
-RewriteRule ^api/auth/(.*)$ api/auth/$1.php [QSA,L]
-
-# Route API requests for all endpoints (not just auth)
-RewriteCond %{REQUEST_FILENAME} !-f
-RewriteCond %{REQUEST_FILENAME} !-d
-RewriteRule ^api/(.*)$ api/$1.php [QSA,L]
-
-# Set default charset and content type for API endpoints
-<FilesMatch "^api/.*\.php$">
+# Set charset for PHP files
+<FilesMatch "\.php$">
     AddDefaultCharset UTF-8
-    Header set Content-Type "application/json"
 </FilesMatch>
 
-# Enable error reporting for debugging (remove in production)
-php_flag display_errors off
-php_value error_reporting E_ALL 
+RewriteEngine On
+RewriteBase /
+RewriteRule ^index\.html$ - [L]
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule . /index.html [L]
+
+# Pass Authorization header to PHP
+RewriteCond %{HTTP:Authorization} .
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+# Handle API requests
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteCond %{REQUEST_FILENAME} !-f

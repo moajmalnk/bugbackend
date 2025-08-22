@@ -10,11 +10,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 try {
-    $controller = new UserController();
-
-    if ($_SERVER['REQUEST_METHOD'] !== 'PUT') {
+    if ($_SERVER['REQUEST_METHOD'] !== 'PUT' && $_SERVER['REQUEST_METHOD'] !== 'POST') {
         throw new Exception('Method not allowed', 405);
     }
+
+    $controller = new UserController();
 
     // Validate token
     $controller->validateToken();
@@ -34,4 +34,4 @@ try {
         'success' => false,
         'message' => $e->getMessage() ?: 'An unexpected error occurred'
     ]);
-} 
+}

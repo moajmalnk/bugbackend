@@ -1,0 +1,22 @@
+# Enable rewrite engine
+RewriteEngine On
+
+# Handle CORS headers
+Header always set Access-Control-Allow-Origin "*"
+Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+Header always set Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With, Accept, Origin"
+Header always set Access-Control-Allow-Credentials "false"
+Header always set Access-Control-Max-Age "3600"
+
+# Handle OPTIONS preflight requests
+RewriteCond %{REQUEST_METHOD} OPTIONS
+RewriteRule .* - [R=200,L]
+
+# Handle Authorization header for Apache
+RewriteCond %{HTTP:Authorization} ^(.*)
+RewriteRule .* - [e=HTTP_AUTHORIZATION:%1]
+
+# Set charset for PHP files
+<FilesMatch "\.php$">
+    AddDefaultCharset UTF-8
+</FilesMatch> 

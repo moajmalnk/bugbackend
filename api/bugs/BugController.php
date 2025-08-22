@@ -3,27 +3,48 @@
 require_once __DIR__ . '/../BaseAPI.php';
 
 class BugController extends BaseAPI {
-    private $logFile;
     private $baseUrl;
 
     public function __construct() {
         parent::__construct();
-        $this->logFile = __DIR__ . '/../../logs/debug.log';
         $this->baseUrl = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https://' : 'http://';
         $this->baseUrl .= $_SERVER['HTTP_HOST'];
-    }
-
-    private function log($message) {
-        $timestamp = date('Y-m-d H:i:s');
-        file_put_contents($this->logFile, "[$timestamp] $message\n", FILE_APPEND);
+        
+        // Handle different environments
+        $host = $_SERVER['HTTP_HOST'];
+        if (strpos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false) {
+            // Local development
+            $this->baseUrl .= '/Bugricer/backend';
+        } elseif (strpos($host, 'bugbackend.moajmalnk.in') !== false) {
+            // Production backend - no additional path needed
+            // Base URL is already correct
+        } else {
+            // Other environments - try to detect if we're in a subdirectory
+            $scriptPath = dirname($_SERVER['SCRIPT_NAME']);
+            if ($scriptPath !== '/' && $scriptPath !== '') {
+                $this->baseUrl .= $scriptPath;
+            }
+        }
     }
 
     private function getFullPath($path) {
-        return $this->baseUrl . '/' . $path;
+        // Remove any leading slashes
+        $path = ltrim($path, '/');
+        
+        // Check if this is an image file
+        $imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'];
+        $extension = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+        
+        if (in_array($extension, $imageExtensions)) {
+            // Use the image API endpoint for images to ensure CORS
+            return $this->baseUrl . '/api/image.php?path=' . urlencode($path);
+        } else {
+            // Use direct path for non-image files
+            return $this->baseUrl . '/' . $path;
+        }
     }
 
     public function handleError($message, $code = 400) {
-        $this->log("Error: $message");
         header('Content-Type: application/json');
         http_response_code($code);
         echo json_encode([
@@ -56,8 +77,6 @@ class BugController extends BaseAPI {
 
     public function createBug($data) {
         try {
-            $this->log("Starting bug creation with data: " . json_encode($data));
-
             // Validate required fields
             $requiredFields = ['name', 'project_id', 'reporter_id'];
             foreach ($requiredFields as $field) {
@@ -67,7 +86,6 @@ class BugController extends BaseAPI {
             }
 
             $this->conn->beginTransaction();
-            $this->log("Started transaction");
 
             $bugId = $this->generateUUID();
             
@@ -78,16 +96,6 @@ class BugController extends BaseAPI {
                     priority, status
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
             ");
-
-            $this->log("Executing bug insert with values: " . json_encode([
-                $bugId,
-                $data['name'],
-                $data['description'],
-                $data['project_id'],
-                $data['reporter_id'],
-                $data['priority'],
-                $data['status']
-            ]));
 
             $result = $stmt->execute([
                 $bugId,
@@ -104,9 +112,11 @@ class BugController extends BaseAPI {
                 throw new PDOException("Failed to insert bug: " . $error[2]);
             }
 
+            // Initialize uploadedAttachments array
+            $uploadedAttachments = [];
+
             // Insert screenshots
             if (!empty($data['screenshots'])) {
-                $this->log("Processing screenshots");
                 $stmt = $this->conn->prepare("
                     INSERT INTO bug_attachments (
                         id, bug_id, file_name, file_path, file_type,
@@ -129,12 +139,12 @@ class BugController extends BaseAPI {
                         $error = $stmt->errorInfo();
                         throw new PDOException("Failed to insert screenshot: " . $error[2]);
                     }
+                    $uploadedAttachments[] = $screenshot['file_path'];
                 }
             }
 
             // Insert other files
             if (!empty($data['files'])) {
-                $this->log("Processing files");
                 $stmt = $this->conn->prepare("
                     INSERT INTO bug_attachments (
                         id, bug_id, file_name, file_path, file_type,
@@ -157,12 +167,12 @@ class BugController extends BaseAPI {
                         $error = $stmt->errorInfo();
                         throw new PDOException("Failed to insert file: " . $error[2]);
                     }
+                    $uploadedAttachments[] = $file['file_path'];
                 }
             }
 
             // Insert affected dashboards
             if (!empty($data['affected_dashboards'])) {
-                $this->log("Processing dashboards");
                 $stmt = $this->conn->prepare("
                     INSERT INTO bug_dashboards (
                         bug_id, dashboard_id
@@ -179,23 +189,19 @@ class BugController extends BaseAPI {
             }
 
             $this->conn->commit();
-            $this->log("Transaction committed successfully");
 
             $this->handleSuccess("Bug created successfully", [
-                'bugId' => $bugId
+                'bugId' => $bugId,
+                'uploadedAttachments' => $uploadedAttachments
             ]);
         } catch (PDOException $e) {
-            $this->log("PDO Error: " . $e->getMessage());
             if ($this->conn->inTransaction()) {
                 $this->conn->rollBack();
-                $this->log("Transaction rolled back");
             }
             $this->handleError("Database error: " . $e->getMessage(), 500);
         } catch (Exception $e) {
-            $this->log("General Error: " . $e->getMessage());
             if ($this->conn->inTransaction()) {
                 $this->conn->rollBack();
-                $this->log("Transaction rolled back");
             }
             $this->handleError("Server error: " . $e->getMessage(), 500);
         }
@@ -221,7 +227,6 @@ class BugController extends BaseAPI {
                 'bugs' => $bugs
             ]);
         } catch (Exception $e) {
-            $this->log("Error getting bugs: " . $e->getMessage());
             $this->handleError("Failed to retrieve bugs: " . $e->getMessage(), 500);
         }
     }
@@ -239,10 +244,12 @@ class BugController extends BaseAPI {
             
             $query = "SELECT b.*, 
                             p.name as project_name,
-                            u.username as reporter_name
+                            reporter.username as reporter_name,
+                            updater.username as updated_by_name
                      FROM bugs b
                      LEFT JOIN projects p ON b.project_id = p.id
-                     LEFT JOIN users u ON b.reported_by = u.id";
+                     LEFT JOIN users reporter ON b.reported_by = reporter.id
+                     LEFT JOIN users updater ON b.updated_by = updater.id";
                      
             if ($projectId) {
                 $query .= " WHERE b.project_id = ?";
@@ -263,7 +270,6 @@ class BugController extends BaseAPI {
             $this->sendJsonResponse(200, "Bugs retrieved successfully", $bugs);
             
         } catch (Exception $e) {
-            error_log("Error fetching bugs: " . $e->getMessage());
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
         }
     }
@@ -273,10 +279,14 @@ class BugController extends BaseAPI {
             $stmt = $this->conn->prepare("
                 SELECT b.*, 
                        p.name as project_name,
-                       u.username as reporter_name
+                       reporter.username as reporter_name,
+                       updater.username as updated_by_name,
+                       fixer.username as fixed_by_name
                 FROM bugs b
                 LEFT JOIN projects p ON b.project_id = p.id
-                LEFT JOIN users u ON b.reported_by = u.id
+                LEFT JOIN users reporter ON b.reported_by = reporter.id
+                LEFT JOIN users updater ON b.updated_by = updater.id
+                LEFT JOIN users fixer ON b.fixed_by = fixer.id
                 WHERE b.id = ?
             ");
             
@@ -290,21 +300,39 @@ class BugController extends BaseAPI {
 
             // Get attachments
             $attachStmt = $this->conn->prepare("
-                SELECT id, file_name, file_path, file_type
+                SELECT id, file_name, file_path, file_type, uploaded_by, created_at
                 FROM bug_attachments
                 WHERE bug_id = ?
+                ORDER BY created_at ASC
             ");
             $attachStmt->execute([$id]);
             $attachments = $attachStmt->fetchAll(PDO::FETCH_ASSOC);
 
-            // Separate screenshots and other files
+            // Process attachments and add them to the bug object
+            $bug['attachments'] = [];
             $bug['screenshots'] = [];
             $bug['files'] = [];
+            
             foreach ($attachments as $attachment) {
-                // Remove any duplicate 'uploads/' in the path
-                $path = preg_replace('/uploads\/uploads\//', 'uploads/', $attachment['file_path']);
+                // Ensure path has the correct prefix
+                $path = $attachment['file_path'];
                 $fullPath = $this->getFullPath($path);
-                if (strpos($attachment['file_type'], 'image/') === 0) {
+                
+                // Create attachment object for frontend
+                $attachmentObj = [
+                    'id' => $attachment['id'],
+                    'file_name' => $attachment['file_name'],
+                    'file_path' => $attachment['file_path'], // Keep original path for frontend
+                    'file_type' => $attachment['file_type'],
+                    'uploaded_by' => $attachment['uploaded_by'],
+                    'created_at' => $attachment['created_at']
+                ];
+                
+                $bug['attachments'][] = $attachmentObj;
+                
+                // Also categorize them for backward compatibility
+                if (strpos($attachment['file_type'], 'image/') === 0 || 
+                    preg_match('/\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i', $attachment['file_name'])) {
                     $bug['screenshots'][] = [
                         'id' => $attachment['id'],
                         'name' => $attachment['file_name'],
@@ -363,6 +391,9 @@ class BugController extends BaseAPI {
                 $status
             ]);
 
+            // Initialize array to collect all uploaded file paths
+            $uploadedAttachments = [];
+
             // Handle screenshots
             if (!empty($_FILES['screenshots'])) {
                 $uploadDir = __DIR__ . '/../../uploads/screenshots/';
@@ -377,6 +408,8 @@ class BugController extends BaseAPI {
                     
                     if (move_uploaded_file($tmp_name, $filePath)) {
                         $attachmentId = Utils::generateUUID();
+                        // Store path relative to the 'uploads' directory
+                        $relativePath = str_replace(__DIR__ . '/../../uploads/', 'uploads/', $filePath);
                         $stmt = $this->conn->prepare(
                             "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by) 
                              VALUES (?, ?, ?, ?, ?, ?)"
@@ -385,10 +418,13 @@ class BugController extends BaseAPI {
                             $attachmentId,
                             $id,
                             $fileName,
-                            str_replace(__DIR__ . '/../../', '', $filePath), // Store relative path
+                            $relativePath,
                             $fileType,
                             $decoded->user_id
                         ]);
+                        // Add the relative path to the list
+                        $uploadedAttachments[] = $relativePath;
+                        @unlink($tmp_name);
                     }
                 }
             }
@@ -407,6 +443,8 @@ class BugController extends BaseAPI {
                     
                     if (move_uploaded_file($tmp_name, $filePath)) {
                         $attachmentId = Utils::generateUUID();
+                        // Store path relative to the 'uploads' directory
+                        $relativePath = str_replace(__DIR__ . '/../../uploads/', 'uploads/', $filePath);
                         $stmt = $this->conn->prepare(
                             "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by) 
                              VALUES (?, ?, ?, ?, ?, ?)"
@@ -415,10 +453,48 @@ class BugController extends BaseAPI {
                             $attachmentId,
                             $id,
                             $fileName,
-                            str_replace(__DIR__ . '/../../', '', $filePath), // Store relative path
+                            $relativePath,
                             $fileType,
                             $decoded->user_id
                         ]);
+                        // Add the relative path to the list
+                        $uploadedAttachments[] = $relativePath;
+                        @unlink($tmp_name);
+                    }
+                }
+            }
+
+            // Handle voice notes
+            if (!empty($_FILES['voice_notes'])) {
+                $uploadDir = __DIR__ . '/../../uploads/voice_notes/';
+                if (!file_exists($uploadDir)) {
+                    mkdir($uploadDir, 0777, true);
+                }
+
+                foreach ($_FILES['voice_notes']['tmp_name'] as $key => $tmp_name) {
+                    $fileName = $_FILES['voice_notes']['name'][$key];
+                    $fileType = $_FILES['voice_notes']['type'][$key];
+                    $filePath = $uploadDir . uniqid() . '_' . $fileName;
+                    
+                    if (move_uploaded_file($tmp_name, $filePath)) {
+                        $attachmentId = Utils::generateUUID();
+                        // Store path relative to the 'uploads' directory
+                        $relativePath = str_replace(__DIR__ . '/../../uploads/', 'uploads/', $filePath);
+                        $stmt = $this->conn->prepare(
+                            "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by) 
+                             VALUES (?, ?, ?, ?, ?, ?)"
+                        );
+                        $stmt->execute([
+                            $attachmentId,
+                            $id,
+                            $fileName,
+                            $relativePath,
+                            $fileType,
+                            $decoded->user_id
+                        ]);
+                        // Add the relative path to the list
+                        $uploadedAttachments[] = $relativePath;
+                        @unlink($tmp_name);
                     }
                 }
             }
@@ -433,17 +509,19 @@ class BugController extends BaseAPI {
                 'reported_by' => $decoded->user_id,
                 'priority' => $priority,
                 'status' => $status,
-                'created_at' => date('Y-m-d H:i:s'),
-                'updated_at' => date('Y-m-d H:i:s')
+                'created_at' => gmdate('Y-m-d H:i:s'),
+                'updated_at' => gmdate('Y-m-d H:i:s')
             ];
             
-            $this->sendJsonResponse(201, "Bug created successfully", $bug);
+            $this->sendJsonResponse(200, "Bug created successfully", [
+                'bug' => $bug,
+                'uploadedAttachments' => $uploadedAttachments
+            ]);
             
         } catch (Exception $e) {
             if ($this->conn->inTransaction()) {
                 $this->conn->rollBack();
             }
-            error_log("Error creating bug: " . $e->getMessage());
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
         }
     }
@@ -481,12 +559,25 @@ class BugController extends BaseAPI {
                 $values[] = $data['status'];
             }
             
+            if (isset($data['fix_description'])) {
+                $updateFields[] = "fix_description = ?";
+                $values[] = $data['fix_description'];
+            }
+            
+            if (isset($data['fixed_by'])) {
+                $updateFields[] = "fixed_by = ?";
+                $values[] = $data['fixed_by'];
+            }
+            
             if (empty($updateFields)) {
                 $this->sendJsonResponse(400, "No fields to update");
                 return;
             }
             
+            // Always set updated_at and updated_by when a bug is updated
             $updateFields[] = "updated_at = CURRENT_TIMESTAMP()";
+            $updateFields[] = "updated_by = ?";
+            $values[] = $decoded->user_id; // Set the current user as the one who updated the bug
             
             $query = "UPDATE bugs SET " . implode(", ", $updateFields) . " WHERE id = ?";
             $values[] = $id;
@@ -502,7 +593,6 @@ class BugController extends BaseAPI {
             $this->sendJsonResponse(200, "Bug updated successfully");
             
         } catch (Exception $e) {
-            error_log("Error updating bug: " . $e->getMessage());
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
         }
     }
@@ -510,18 +600,41 @@ class BugController extends BaseAPI {
     public function delete($id) {
         try {
             $decoded = $this->validateToken();
-            $this->conn->beginTransaction();
-
-            // Check if bug exists
-            $checkQuery = "SELECT id FROM bugs WHERE id = :id";
+            
+            // First, get the bug to check who reported it
+            $checkQuery = "SELECT reported_by FROM bugs WHERE id = :id";
             $checkStmt = $this->conn->prepare($checkQuery);
             $checkStmt->bindParam(':id', $id);
             $checkStmt->execute();
-
-            if (!$checkStmt->fetch()) {
-                $this->conn->rollBack();
+            $bug = $checkStmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$bug) {
                 $this->sendJsonResponse(404, "Bug not found");
                 return;
+            }
+            
+            // Check if user has permission to delete
+            // Only admins and the original reporter can delete
+            if ($decoded->role !== 'admin' && $decoded->user_id !== $bug['reported_by']) {
+                $this->sendJsonResponse(403, "You don't have permission to delete this bug. Only the reporter and admins can delete bugs.");
+                return;
+            }
+            
+            $this->conn->beginTransaction();
+
+            // Fetch all attachment file paths for this bug
+            $attachmentQuery = "SELECT file_path FROM bug_attachments WHERE bug_id = :id";
+            $attachmentStmt = $this->conn->prepare($attachmentQuery);
+            $attachmentStmt->bindParam(':id', $id);
+            $attachmentStmt->execute();
+            $attachments = $attachmentStmt->fetchAll(PDO::FETCH_ASSOC);
+
+            // Delete files from filesystem
+            foreach ($attachments as $attachment) {
+                $filePath = __DIR__ . '/../../' . $attachment['file_path'];
+                if (file_exists(filename: $filePath)) {
+                    @unlink($filePath);
+                }
             }
 
             // Delete bug (cascading will handle attachments and dashboard relations)
@@ -531,7 +644,7 @@ class BugController extends BaseAPI {
 
             if ($stmt->execute()) {
                 $this->conn->commit();
-                $this->sendJsonResponse(200, "Bug deleted successfully");
+                $this->sendJsonResponse(200, "Bug and attachments deleted successfully");
                 return;
             }
 
@@ -545,19 +658,25 @@ class BugController extends BaseAPI {
         }
     }
 
-    public function getAllBugs($projectId = null, $page = 1, $limit = 10) {
+    public function getAllBugs($projectId = null, $page = 1, $limit = 10, $status = null, $userId = null) {
         try {
             // Validate token
             $this->validateToken();
 
             // Validate connection
             if (!$this->conn) {
-                error_log("Database connection failed in BugController");
-                $this->sendJsonResponse(500, "Database connection failed");
-                return;
+                throw new Exception("Database connection failed");
             }
 
-            // Base query
+            // Create cache key for this query
+            $cacheKey = 'bugs_' . ($projectId ?? 'all') . '_' . $page . '_' . $limit . '_' . ($status ?? 'all') . '_' . ($userId ?? 'all');
+            $cachedResult = $this->getCache($cacheKey);
+            
+            if ($cachedResult !== null) {
+                return $cachedResult;
+            }
+
+            // Optimized query using JOINs to get everything in fewer queries
             $query = "SELECT b.*, 
                      u.username as reporter_name,
                      p.name as project_name
@@ -575,6 +694,20 @@ class BugController extends BaseAPI {
                 $params[] = $projectId;
             }
 
+            // Add status filter if specified
+            if ($status) {
+                $query .= " AND b.status = ?";
+                $countQuery .= " AND b.status = ?";
+                $params[] = $status;
+            }
+
+            // Add user filter if specified
+            if ($userId) {
+                $query .= " AND b.reported_by = ?";
+                $countQuery .= " AND b.reported_by = ?";
+                $params[] = $userId;
+            }
+
             // Add sorting
             $query .= " ORDER BY b.created_at DESC";
 
@@ -584,26 +717,39 @@ class BugController extends BaseAPI {
             $params[] = $limit;
             $params[] = $offset;
 
-            // Get total count
-            $countStmt = $this->conn->prepare($countQuery);
-            if ($projectId) {
-                $countStmt->execute([$projectId]);
-            } else {
-                $countStmt->execute();
-            }
-            $totalBugs = $countStmt->fetch(PDO::FETCH_ASSOC)['total'];
+            // Execute both queries using prepared statements with caching
+            $countParams = $projectId ? [$projectId] : [];
+            $totalBugs = $this->fetchSingleCached($countQuery, $countParams, 'bug_count_' . ($projectId ?? 'all') . '_' . ($status ?? 'all') . '_' . ($userId ?? 'all'), 600)['total'];
 
             // Execute main query
             $stmt = $this->conn->prepare($query);
             $stmt->execute($params);
             $bugs = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-            // Get attachments for each bug
-            foreach ($bugs as &$bug) {
-                $attachmentQuery = "SELECT id, file_name, file_path, file_type FROM bug_attachments WHERE bug_id = ?";
+            // Optimized attachment fetching - get all attachments in one query
+            if (!empty($bugs)) {
+                $bugIds = array_column($bugs, 'id');
+                $placeholders = str_repeat('?,', count($bugIds) - 1) . '?';
+                
+                $attachmentQuery = "SELECT bug_id, id, file_name, file_path, file_type 
+                                  FROM bug_attachments 
+                                  WHERE bug_id IN ($placeholders)
+                                  ORDER BY bug_id, id";
+                
                 $attachmentStmt = $this->conn->prepare($attachmentQuery);
-                $attachmentStmt->execute([$bug['id']]);
-                $bug['attachments'] = $attachmentStmt->fetchAll(PDO::FETCH_ASSOC);
+                $attachmentStmt->execute($bugIds);
+                $allAttachments = $attachmentStmt->fetchAll(PDO::FETCH_ASSOC);
+                
+                // Group attachments by bug_id
+                $attachmentsByBug = [];
+                foreach ($allAttachments as $attachment) {
+                    $attachmentsByBug[$attachment['bug_id']][] = $attachment;
+                }
+                
+                // Assign attachments to bugs
+                foreach ($bugs as &$bug) {
+                    $bug['attachments'] = $attachmentsByBug[$bug['id']] ?? [];
+                }
             }
 
             $response = [
@@ -616,24 +762,20 @@ class BugController extends BaseAPI {
                 ]
             ];
 
-            $this->sendJsonResponse(200, "Bugs retrieved successfully", $response);
+            // Cache the result for 5 minutes
+            $this->setCache($cacheKey, $response, 300);
+
+            return $response;
+            
         } catch (PDOException $e) {
-            error_log("Database error in getAllBugs: " . $e->getMessage());
-            $this->sendJsonResponse(500, "Failed to retrieve bugs");
+            throw new Exception("Failed to retrieve bugs");
         } catch (Exception $e) {
-            error_log("Error in getAllBugs: " . $e->getMessage());
-            $this->sendJsonResponse(500, "An unexpected error occurred");
+            throw new Exception("An unexpected error occurred");
         }
     }
 
     public function updateBug($data) {
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            $this->sendJsonResponse(405, "Method not allowed");
-            return;
-        }
         try {
-            $this->log("Starting bug update with data: " . json_encode($data));
-
             if (empty($data['id'])) {
                 throw new Exception("Bug ID is required");
             }
@@ -643,7 +785,9 @@ class BugController extends BaseAPI {
             // Check if bug exists
             $checkStmt = $this->conn->prepare("SELECT id FROM bugs WHERE id = ?");
             $checkStmt->execute([$data['id']]);
-            if (!$checkStmt->fetch()) {
+            $bugExists = $checkStmt->fetch();
+            
+            if (!$bugExists) {
                 throw new Exception("Bug not found");
             }
 
@@ -667,6 +811,20 @@ class BugController extends BaseAPI {
                 $updateFields[] = "status = ?";
                 $params[] = $data['status'];
             }
+            if (isset($data['fix_description'])) {
+                $updateFields[] = "fix_description = ?";
+                $params[] = $data['fix_description'];
+            }
+            if (isset($data['fixed_by'])) {
+                $updateFields[] = "fixed_by = ?";
+                $params[] = $data['fixed_by'];
+            }
+            
+            // Always include updated_by if it's provided
+            if (isset($data['updated_by'])) {
+                $updateFields[] = "updated_by = ?";
+                $params[] = $data['updated_by'];
+            }
 
             if (empty($updateFields)) {
                 throw new Exception("No fields to update");
@@ -681,41 +839,111 @@ class BugController extends BaseAPI {
             // Update bug
             $query = "UPDATE bugs SET " . implode(", ", $updateFields) . " WHERE id = ?";
             $stmt = $this->conn->prepare($query);
-            
-            $this->log("Executing query: " . $query);
-            $this->log("Parameters: " . json_encode($params));
 
             if (!$stmt->execute($params)) {
                 $error = $stmt->errorInfo();
                 throw new Exception("Failed to update bug: " . implode(", ", $error));
             }
 
-            // Get updated bug data
-            $stmt = $this->conn->prepare("
-                SELECT b.*, p.name as project_name, u.username as reporter_name
-                FROM bugs b
-                LEFT JOIN projects p ON b.project_id = p.id
-                LEFT JOIN users u ON b.reported_by = u.id
-                WHERE b.id = ?
-            ");
-            $stmt->execute([$data['id']]);
-            $updatedBug = $stmt->fetch(PDO::FETCH_ASSOC);
+            // Get updated bug data with updated_by_name
+            // Try the complex JOIN query first, fallback to simple query if it fails
+            $updatedBug = null;
+            
+            try {
+                $fetchQuery = "
+                    SELECT b.*, 
+                           p.name as project_name, 
+                           reporter.username as reporter_name,
+                           updater.username as updated_by_name,
+                           fixer.username as fixed_by_name
+                    FROM bugs b
+                    LEFT JOIN projects p ON b.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci
+                    LEFT JOIN users reporter ON b.reported_by COLLATE utf8mb4_unicode_ci = reporter.id COLLATE utf8mb4_unicode_ci
+                    LEFT JOIN users updater ON b.updated_by COLLATE utf8mb4_unicode_ci = updater.id COLLATE utf8mb4_unicode_ci
+                    LEFT JOIN users fixer ON b.fixed_by COLLATE utf8mb4_unicode_ci = fixer.id COLLATE utf8mb4_unicode_ci
+                    WHERE b.id = ?
+                ";
+                
+                $stmt = $this->conn->prepare($fetchQuery);
+                $stmt->execute([$data['id']]);
+                $updatedBug = $stmt->fetch(PDO::FETCH_ASSOC);
+                
+            } catch (Exception $joinError) {
+                // Fallback to simple query without JOINs
+                try {
+                    $fallbackQuery = "SELECT * FROM bugs WHERE id = ?";
+                    $stmt = $this->conn->prepare($fallbackQuery);
+                    $stmt->execute([$data['id']]);
+                    $updatedBug = $stmt->fetch(PDO::FETCH_ASSOC);
+                    
+                    if ($updatedBug) {
+                        // Add empty values for the missing JOIN fields
+                        $updatedBug['project_name'] = null;
+                        $updatedBug['reporter_name'] = null;
+                        $updatedBug['updated_by_name'] = null;
+                        $updatedBug['fixed_by_name'] = null;
+                    }
+                } catch (Exception $fallbackError) {
+                    error_log("Both JOIN and fallback queries failed: " . $fallbackError->getMessage());
+                }
+            }
 
             if (!$updatedBug) {
                 throw new Exception("Failed to fetch updated bug data");
             }
 
             $this->conn->commit();
-            $this->log("Bug update successful");
-
             return $updatedBug;
 
         } catch (Exception $e) {
-            $this->log("Error in updateBug: " . $e->getMessage());
             if ($this->conn->inTransaction()) {
                 $this->conn->rollBack();
             }
             throw $e;
         }
     }
-} 
+
+    function convertToWebP($sourcePath, $destinationPath, $quality = 80) {
+        $info = getimagesize($sourcePath);
+        if (!$info) return false;
+
+        switch ($info['mime']) {
+            case 'image/jpeg':
+                $image = imagecreatefromjpeg($sourcePath);
+                break;
+            case 'image/png':
+                $image = imagecreatefrompng($sourcePath);
+                // For PNG, preserve transparency
+                imagepalettetotruecolor($image);
+                imagealphablending($image, true);
+                imagesavealpha($image, true);
+                break;
+            case 'image/gif':
+                $image = imagecreatefromgif($sourcePath);
+                break;
+            default:
+                return false; // Not a supported image
+        }
+
+        // Convert and compress to WebP
+        $result = imagewebp($image, $destinationPath, $quality);
+        imagedestroy($image);
+        return $result;
+    }
+
+    /**
+     * Get basic bug information
+     * 
+     * @param string $id Bug ID
+     * @return array|false Basic bug info or false if not found
+     */
+    public function getBugBasicInfo($id) {
+        try {
+            $stmt = $this->conn->prepare("SELECT id, project_id FROM bugs WHERE id = ?");
+            $stmt->execute([$id]);
+            return $stmt->fetch(PDO::FETCH_ASSOC);
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+}

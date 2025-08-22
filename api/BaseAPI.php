@@ -1,31 +1,30 @@
 <?php
+date_default_timezone_set('UTC');
+
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../config/utils.php';
+require_once __DIR__ . '/../config/cors.php';
 
 class BaseAPI {
     protected $conn;
     protected $utils;
+    protected $database;
     
     public function __construct() {
-        // Enable error logging
-        error_reporting(E_ALL);
-        ini_set('display_errors', '0');
-        ini_set('log_errors', '1');
-        ini_set('error_log', __DIR__ . '/../../logs/php_errors.log');
         
-        // Set JSON content type
+        // Ensure logs directory exists
+        // $logDir = __DIR__ . '/../../logs';
+        // if (!is_dir($logDir)) {
+        //     mkdir($logDir, 0777, true);
+        // }
+                
+        // Set content type for JSON responses
         header('Content-Type: application/json');
         
-        // Handle CORS preflight
-        if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-            http_response_code(200);
-            exit();
-        }
-        
         try {
-            // Connect to database
-            $database = new Database();
-            $this->conn = $database->getConnection();
+            // Use singleton database instance for better connection management
+            $this->database = Database::getInstance();
+            $this->conn = $this->database->getConnection();
             
             if (!$this->conn) {
                 throw new Exception("Database connection failed");
@@ -38,7 +37,42 @@ class BaseAPI {
         }
     }
     
-    protected function getRequestData() {
+    public function getConnection() {
+        return $this->conn;
+    }
+    
+    public function getDatabase() {
+        return $this->database;
+    }
+    
+    // Optimized query methods with caching
+    public function fetchCached($query, $params = [], $cacheKey = null, $cacheTimeout = null) {
+        return $this->database->fetchCached($query, $params, $cacheKey, $cacheTimeout);
+    }
+    
+    public function fetchSingleCached($query, $params = [], $cacheKey = null, $cacheTimeout = null) {
+        return $this->database->fetchSingleCached($query, $params, $cacheKey, $cacheTimeout);
+    }
+    
+    // Prepared statement with caching
+    public function prepare($query) {
+        return $this->database->prepare($query);
+    }
+    
+    // Cache management methods
+    public function setCache($key, $value, $timeout = null) {
+        Database::setCache($key, $value, $timeout);
+    }
+    
+    public function getCache($key) {
+        return Database::getCache($key);
+    }
+    
+    public function clearCache($pattern = null) {
+        Database::clearCache($pattern);
+    }
+    
+    public function getRequestData() {
         try {
             $contentType = isset($_SERVER["CONTENT_TYPE"]) ? trim($_SERVER["CONTENT_TYPE"]) : '';
             
@@ -83,13 +117,32 @@ class BaseAPI {
     }
 
     public function validateToken() {
+        // Cache token validation for 5 minutes
         $token = $this->getBearerToken();
         
         if (!$token) {
             throw new Exception('No token provided');
         }
 
-        return $this->utils->validateJWT($token);
+        $cacheKey = 'token_validation_' . md5($token);
+        $cachedResult = $this->getCache($cacheKey);
+        
+        if ($cachedResult !== null) {
+            return $cachedResult;
+        }
+
+        try {
+        $result = $this->utils->validateJWT($token);
+        
+        // Cache valid tokens for 5 minutes
+        if ($result) {
+            $this->setCache($cacheKey, $result, 300);
+        }
+        
+        return $result;
+        } catch (Exception $e) {
+            $this->sendJsonResponse(500, "Token validation failed: " . $e->getMessage());
+        }
     }
     
     protected function getBearerToken() {
@@ -119,5 +172,49 @@ class BaseAPI {
         
         return $headers;
     }
+
+    protected function handleRequest($callback) {
+        // Start output buffering to catch any unwanted output
+        ob_start();
+        
+        try {
+            // Execute the callback (controller method)
+            $callback();
+        } catch (Exception $e) {
+            // Clean buffer and send error response
+            ob_end_clean();
+            
+            $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
+        }
+    }
+    
+    // Batch query execution for reducing multiple DB calls
+    public function executeBatch($queries) {
+        $results = [];
+        $this->conn->beginTransaction();
+        
+        try {
+            foreach ($queries as $key => $query) {
+                $stmt = $this->prepare($query['sql']);
+                $stmt->execute($query['params'] ?? []);
+                
+                if (isset($query['fetch']) && $query['fetch']) {
+                    if ($query['fetch'] === 'all') {
+                        $results[$key] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                    } else {
+                        $results[$key] = $stmt->fetch(PDO::FETCH_ASSOC);
+                    }
+                } else {
+                    $results[$key] = $stmt->rowCount();
+                }
+            }
+            
+            $this->conn->commit();
+            return $results;
+        } catch (Exception $e) {
+            $this->conn->rollBack();
+            throw $e;
+        }
+    }
 }
-?> 
+?>
