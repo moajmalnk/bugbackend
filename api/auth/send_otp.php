@@ -37,12 +37,12 @@ if ($method === 'whatsapp') {
     $stmt = $pdo->prepare("INSERT INTO user_otps (phone, otp, expires_at) VALUES (?, ?, ?)");
     $stmt->execute([$phone, $otp, $expires_at]);
     // Send WhatsApp
-    $msg = "🔐 *BugRacer Login OTP*\n\n";
+    $msg = "🔐 *BugRicer Login OTP*\n\n";
     $msg .= "Your one-time password is: *$otp*\n";
     $msg .= "This OTP is valid for 5 minutes.\n\n";
     $msg .= "⚠️ *Do not share this code with anyone.*\n";
     $msg .= "If you did not request this, please ignore this message.\n\n";
-    $msg .= "🐞 _Sent from BugRacer_";
+    $msg .= "🐞 _Sent from BugRicer_";
     $apikey = "05ce7a9046414e42b3983330611f8bf5";
     $url = "http://148.251.129.118/whatsapp/api/send?mobile=$phone&msg=" . urlencode($msg) . "&apikey=$apikey";
     $response = file_get_contents($url);
@@ -82,11 +82,11 @@ if ($method === 'whatsapp') {
         $mail->Port = 465;
         $mail->setFrom('bugs@moajmalnk.in', 'Bug Ricer');
         $mail->addAddress($email);
-        $mail->Subject = 'Your BugRacer OTP';
+        $mail->Subject = 'Your BugRicer OTP';
         $mail->isHTML(true);
         $mail->Body = '<div style="font-family:Segoe UI,Arial,sans-serif;max-width:480px;margin:0 auto;background:#fff;border-radius:8px;box-shadow:0 2px 8px #e2e8f0;overflow:hidden;">
   <div style="background:#2563eb;color:#fff;padding:24px 0;text-align:center;">
-    <h1 style="margin:0;font-size:28px;letter-spacing:1px;">BugRacer Login OTP</h1>
+    <h1 style="margin:0;font-size:28px;letter-spacing:1px;">BugRicer Login OTP</h1>
   </div>
   <div style="padding:32px 24px 24px 24px;text-align:center;">
     <p style="font-size:16px;margin-bottom:16px;">Use the following one-time password to sign in:</p>
@@ -96,10 +96,10 @@ if ($method === 'whatsapp') {
     <p style="font-size:13px;color:#64748b;margin-top:18px;">If you did not request this, you can safely ignore this email.</p>
   </div>
   <div style="background:#f8fafc;color:#64748b;padding:16px 0;text-align:center;font-size:12px;border-top:1px solid #e2e8f0;">
-    <span>🐞 Sent from <b>BugRacer</b> &mdash; <a href="https://bugs.moajmalnk.in" style="color:#2563eb;text-decoration:none;">bugs.moajmalnk.in</a></span>
+    <span>🐞 Sent from <b>BugRicer</b> &mdash; <a href="https://bugs.moajmalnk.in" style="color:#2563eb;text-decoration:none;">bugs.moajmalnk.in</a></span>
   </div>
 </div>';
-        $mail->AltBody = 'Your BugRacer OTP is: ' . $otp . '. This OTP is valid for 5 minutes. Do not share this code with anyone.';
+        $mail->AltBody = 'Your BugRicer OTP is: ' . $otp . '. This OTP is valid for 5 minutes. Do not share this code with anyone.';
         $mail->send();
         echo json_encode([
             'success' => true, 
