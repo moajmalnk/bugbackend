@@ -103,12 +103,12 @@ try {
     $formattedMessages = [];
     foreach ($messages as $msg) {
         // Create WhatsApp message format
-        $whatsappMessage = "🔐 *BugRacer Login OTP*\n\n";
+        $whatsappMessage = "🔐 *BugRicer Login OTP*\n\n";
         $whatsappMessage .= "Your one-time password is: *{$msg['otp']}*\n";
         $whatsappMessage .= "This OTP is valid for 5 minutes.\n\n";
         $whatsappMessage .= "⚠️ *Do not share this code with anyone.*\n";
         $whatsappMessage .= "If you did not request this, please ignore this message.\n\n";
-        $whatsappMessage .= "🐞 _Sent from BugRacer_";
+        $whatsappMessage .= "🐞 _Sent from BugRicer_";
 
         $formattedMessages[] = [
             'id' => $msg['id'],
