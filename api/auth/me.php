@@ -19,8 +19,8 @@ class MeController extends BaseAPI {
                 return;
             }
             
-            // Get user data from database
-            $stmt = $this->conn->prepare("SELECT id, username, email, role FROM users WHERE id = ?");
+            // Get user data from database (include phone so frontend can show it on profile)
+            $stmt = $this->conn->prepare("SELECT id, username, email, phone, role FROM users WHERE id = ?");
             $stmt->execute([$decoded->user_id]);
             
             if ($stmt->rowCount() > 0) {

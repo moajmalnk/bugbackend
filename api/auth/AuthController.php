@@ -162,7 +162,8 @@ class AuthController extends BaseAPI {
                 return;
             }
 
-            $stmt = $this->conn->prepare("SELECT id, username, email, role FROM users WHERE id = ?");
+            // Include phone so clients receive full profile data
+            $stmt = $this->conn->prepare("SELECT id, username, email, phone, role FROM users WHERE id = ?");
             $stmt->execute([$decoded->user_id]);
 
             if ($stmt->rowCount() === 0) {
