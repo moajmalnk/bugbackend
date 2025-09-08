@@ -129,7 +129,7 @@ try {
         'data' => [
             'url' => $dashboardUrl,
             'expires_at' => date('Y-m-d H:i:s', $expiration),
-            'ttl_seconds' => 300
+            'ttl_seconds' => 604800
         ]
     ]);
     
