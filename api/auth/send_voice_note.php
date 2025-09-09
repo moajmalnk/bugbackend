@@ -137,7 +137,7 @@ try {
     // This depends on your WhatsApp API provider
     $whatsappMessage = "🎵 *Voice Note*\n\n";
     $whatsappMessage .= "Duration: " . gmdate("i:s", $duration) . "\n";
-    $whatsappMessage .= "Sent via BugRacer\n\n";
+    $whatsappMessage .= "Sent via BugRicer\n\n";
     $whatsappMessage .= "🐞 _Voice note attached_";
 
     // Send text message first (as fallback)
