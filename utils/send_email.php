@@ -122,8 +122,8 @@ function sendOtpEmail($to, $otp) {
         $mail->setFrom('bugs@moajmalnk.in', 'Bug Ricer');
         $mail->addAddress($to);
         $mail->isHTML(true);
-        $mail->Subject = 'Your BugRacer OTP';
-        $mail->Body = "<b>Your OTP is: $otp</b><br>This OTP is valid for 5 minutes.<br><br>🐞 _Sent from BugRacer_";
+        $mail->Subject = 'Your BugRicer OTP';
+        $mail->Body = "<b>Your OTP is: $otp</b><br>This OTP is valid for 5 minutes.<br><br>🐞 _Sent from BugRicer_";
         $mail->send();
         return true;
     } catch (Exception $e) {
