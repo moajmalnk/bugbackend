@@ -96,27 +96,7 @@ The BugRicer Team
 }
 
 function sendEmail($to, $subject, $html_body, $text_body = '') {
-    // Check if we're in development mode (localhost)
-    $is_development = (
-        strpos($_SERVER['HTTP_HOST'] ?? '', 'localhost') !== false ||
-        strpos($_SERVER['HTTP_HOST'] ?? '', '127.0.0.1') !== false
-    );
-    
-    // For testing purposes, you can force email sending by setting FORCE_EMAIL_SEND=true
-    $force_send = isset($_GET['force_send']) && $_GET['force_send'] === 'true';
-    
-    if ($is_development && !$force_send) {
-        // In development mode, log the email instead of sending
-        error_log("=== PASSWORD RESET EMAIL ===");
-        error_log("To: $to");
-        error_log("Subject: $subject");
-        error_log("HTML Body: " . substr($html_body, 0, 500) . "...");
-        error_log("Text Body: " . substr($text_body, 0, 200) . "...");
-        error_log("=== END EMAIL ===");
-        return true;
-    }
-    
-    // In production, use PHPMailer with SMTP
+    // Use PHPMailer with SMTP for all environments
     try {
         $mail = new PHPMailer(true);
         
