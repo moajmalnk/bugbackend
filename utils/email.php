@@ -13,63 +13,47 @@ function sendPasswordResetEmail($email, $username, $reset_link) {
     $subject = "Password Reset Request - BugRicer";
     
     $html_body = "
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset='UTF-8'>
-        <meta name='viewport' content='width=device-width, initial-scale=1.0'>
-        <title>Password Reset - BugRicer</title>
-        <style>
-            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f8fafc; }
-            .container { max-width: 600px; margin: 0 auto; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
-            .header { background: linear-gradient(135deg, #3b82f6, #6366f1); padding: 40px 30px; text-align: center; }
-            .logo { width: 60px; height: 60px; background: white; border-radius: 12px; margin: 0 auto 20px; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: bold; color: #3b82f6; }
-            .header h1 { color: white; margin: 0; font-size: 28px; font-weight: 700; }
-            .content { padding: 40px 30px; }
-            .content h2 { color: #1f2937; margin: 0 0 20px; font-size: 24px; font-weight: 600; }
-            .content p { color: #6b7280; margin: 0 0 20px; font-size: 16px; }
-            .button { display: inline-block; background: linear-gradient(135deg, #3b82f6, #6366f1); color: white; text-decoration: none; padding: 16px 32px; border-radius: 8px; font-weight: 600; font-size: 16px; margin: 20px 0; }
-            .button:hover { background: linear-gradient(135deg, #2563eb, #4f46e5); }
-            .code { background: #f3f4f6; padding: 20px; border-radius: 8px; text-align: center; margin: 20px 0; font-family: 'Courier New', monospace; font-size: 14px; word-break: break-all; color: #374151; }
-            .footer { background: #f9fafb; padding: 30px; text-align: center; border-top: 1px solid #e5e7eb; }
-            .footer p { color: #9ca3af; font-size: 14px; margin: 0; }
-            .warning { background: #fef3c7; border: 1px solid #f59e0b; border-radius: 8px; padding: 16px; margin: 20px 0; }
-            .warning p { color: #92400e; margin: 0; font-size: 14px; }
-        </style>
-    </head>
-    <body>
-        <div class='container'>
-            <div class='header'>
-                <div class='logo'>🐛</div>
-                <h1>BugRicer</h1>
-            </div>
-            <div class='content'>
-                <h2>Password Reset Request</h2>
-                <p>Hello <strong>$username</strong>,</p>
-                <p>We received a request to reset your password for your BugRicer account. If you made this request, click the button below to reset your password:</p>
-                
-                <div style='text-align: center;'>
-                    <a href='$reset_link' class='button'>Reset My Password</a>
-                </div>
-                
-                <div class='warning'>
-                    <p><strong>Security Notice:</strong> This link will expire in 1 hour for your security. If you didn't request this password reset, please ignore this email.</p>
-                </div>
-                
-                <p>If the button doesn't work, you can copy and paste this link into your browser:</p>
-                <div class='code'>$reset_link</div>
-                
-                <p>If you have any questions or need assistance, please contact our support team.</p>
-                
-                <p>Best regards,<br>The BugRicer Team</p>
-            </div>
-            <div class='footer'>
-                <p>© 2025 BugRicer. All rights reserved.</p>
-                <p>This is an automated message, please do not reply to this email.</p>
-            </div>
+    <div style=\"font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;\">
+      <div style=\"max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">
+        
+        <!-- Header -->
+        <div style=\"background-color: #dc2626; color: #ffffff; padding: 20px; text-align: center;\">
+           <h1 style=\"margin: 0; font-size: 24px; display: flex; align-items: center; justify-content: center;\">
+            <img src=\"https://fonts.gstatic.com/s/e/notoemoji/16.0/1f41e/32.png\" alt=\"Bug Ricer Logo\" style=\"width: 30px; height: 30px; margin-right: 10px; vertical-align: middle;\">
+            BugRicer Alert
+          </h1>
+          <p style=\"margin: 5px 0 0 0; font-size: 16px;\">Password Reset Request</p>
         </div>
-    </body>
-    </html>
+        
+        <!-- Body -->
+        <div style=\"padding: 20px; border-bottom: 1px solid #e2e8f0;\">
+          <h3 style=\"margin-top: 0; color: #1e293b; font-size: 18px;\">Hello $username,</h3>
+          <p style=\"white-space: pre-line; margin-bottom: 15px; font-size: 14px;\">We received a request to reset your password for your BugRicer account. If you made this request, click the button below to reset your password:</p>
+          
+          <div style=\"margin: 20px 0; text-align: center;\">
+            <a href=\"$reset_link\" style=\"background-color: #2563eb; color: #ffffff; padding: 12px 25px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: 500; font-size: 16px;\">Reset My Password</a>
+          </div>
+          
+          <div style=\"margin-bottom: 15px; padding: 12px; background-color: #fef3c7; border-left: 4px solid #f59e0b; border-radius: 4px;\">
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #92400e;\"><strong>⚠️ Security Notice:</strong></p>
+            <p style=\"margin: 0; font-size: 14px; color: #92400e;\">This link will expire in 1 hour for your security. If you didn't request this password reset, please ignore this email.</p>
+          </div>
+          
+          <p style=\"font-size: 14px; margin-bottom: 10px;\">If the button doesn't work, you can copy and paste this link into your browser:</p>
+          <div style=\"background-color: #f3f4f6; padding: 12px; border-radius: 4px; text-align: center; margin: 15px 0; font-family: 'Courier New', monospace; font-size: 12px; word-break: break-all; color: #374151;\">$reset_link</div>
+          
+          <p style=\"font-size: 14px; margin-bottom: 0;\">If you have any questions or need assistance, please contact our support team.</p>
+          <p style=\"font-size: 14px; margin-bottom: 0;\">Best regards,<br>The BugRicer Team</p>
+        </div>
+        
+        <!-- Footer -->
+        <div style=\"background-color: #f8fafc; color: #64748b; padding: 20px; text-align: center; font-size: 12px;\">
+          <p style=\"margin: 0;\">This is an automated notification from Bug Ricer. Please do not reply to this email.</p>
+          <p style=\"margin: 5px 0 0 0;\">&copy; " . date('Y') . " Bug Ricer. All rights reserved.</p>
+        </div>
+        
+      </div>
+    </div>
     ";
     
     $text_body = "
@@ -143,46 +127,42 @@ function sendWelcomeEmail($email, $username) {
     $subject = "Welcome to BugRicer!";
     
     $html_body = "
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset='UTF-8'>
-        <meta name='viewport' content='width=device-width, initial-scale=1.0'>
-        <title>Welcome to BugRicer</title>
-        <style>
-            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f8fafc; }
-            .container { max-width: 600px; margin: 0 auto; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
-            .header { background: linear-gradient(135deg, #3b82f6, #6366f1); padding: 40px 30px; text-align: center; }
-            .logo { width: 60px; height: 60px; background: white; border-radius: 12px; margin: 0 auto 20px; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: bold; color: #3b82f6; }
-            .header h1 { color: white; margin: 0; font-size: 28px; font-weight: 700; }
-            .content { padding: 40px 30px; }
-            .content h2 { color: #1f2937; margin: 0 0 20px; font-size: 24px; font-weight: 600; }
-            .content p { color: #6b7280; margin: 0 0 20px; font-size: 16px; }
-            .button { display: inline-block; background: linear-gradient(135deg, #3b82f6, #6366f1); color: white; text-decoration: none; padding: 16px 32px; border-radius: 8px; font-weight: 600; font-size: 16px; margin: 20px 0; }
-            .footer { background: #f9fafb; padding: 30px; text-align: center; border-top: 1px solid #e5e7eb; }
-            .footer p { color: #9ca3af; font-size: 14px; margin: 0; }
-        </style>
-    </head>
-    <body>
-        <div class='container'>
-            <div class='header'>
-                <div class='logo'>🐛</div>
-                <h1>BugRicer</h1>
-            </div>
-            <div class='content'>
-                <h2>Welcome to BugRicer!</h2>
-                <p>Hello <strong>$username</strong>,</p>
-                <p>Welcome to BugRicer! Your account has been successfully created and you're ready to start tracking bugs and managing your projects.</p>
-                <p>You can now log in to your account and start exploring all the features we have to offer.</p>
-                <p>If you have any questions or need assistance, please don't hesitate to contact our support team.</p>
-                <p>Best regards,<br>The BugRicer Team</p>
-            </div>
-            <div class='footer'>
-                <p>© 2025 BugRicer. All rights reserved.</p>
-            </div>
+    <div style=\"font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;\">
+      <div style=\"max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">
+        
+        <!-- Header -->
+        <div style=\"background-color: #65a30d; color: #ffffff; padding: 20px; text-align: center;\">
+           <h1 style=\"margin: 0; font-size: 24px; display: flex; align-items: center; justify-content: center;\">
+            <img src=\"https://fonts.gstatic.com/s/e/notoemoji/16.0/1f41e/32.png\" alt=\"Bug Ricer Logo\" style=\"width: 30px; height: 30px; margin-right: 10px; vertical-align: middle;\">
+            BugRicer Welcome
+          </h1>
+          <p style=\"margin: 5px 0 0 0; font-size: 16px;\">Account Created Successfully</p>
         </div>
-    </body>
-    </html>
+        
+        <!-- Body -->
+        <div style=\"padding: 20px; border-bottom: 1px solid #e2e8f0;\">
+          <h3 style=\"margin-top: 0; color: #1e293b; font-size: 18px;\">Hello $username,</h3>
+          <p style=\"white-space: pre-line; margin-bottom: 15px; font-size: 14px;\">Welcome to BugRicer! Your account has been successfully created and you're ready to start tracking bugs and managing your projects.</p>
+          
+          <p style=\"white-space: pre-line; margin-bottom: 15px; font-size: 14px;\">You can now log in to your account and start exploring all the features we have to offer.</p>
+          
+          <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0f9ff; border-left: 4px solid #0ea5e9; border-radius: 4px;\">
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;\"><strong>🎉 What's Next?</strong></p>
+            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\">• Create your first project<br/>• Start reporting bugs<br/>• Collaborate with your team<br/>• Track progress and updates</p>
+          </div>
+          
+          <p style=\"font-size: 14px; margin-bottom: 0;\">If you have any questions or need assistance, please don't hesitate to contact our support team.</p>
+          <p style=\"font-size: 14px; margin-bottom: 0;\">Best regards,<br>The BugRicer Team</p>
+        </div>
+        
+        <!-- Footer -->
+        <div style=\"background-color: #f8fafc; color: #64748b; padding: 20px; text-align: center; font-size: 12px;\">
+          <p style=\"margin: 0;\">This is an automated notification from Bug Ricer. Please do not reply to this email.</p>
+          <p style=\"margin: 5px 0 0 0;\">&copy; " . date('Y') . " Bug Ricer. All rights reserved.</p>
+        </div>
+        
+      </div>
+    </div>
     ";
     
     $text_body = "
