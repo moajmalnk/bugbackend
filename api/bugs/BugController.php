@@ -92,15 +92,17 @@ class BugController extends BaseAPI {
             // Insert bug
             $stmt = $this->conn->prepare("
                 INSERT INTO bugs (
-                    id, title, description, project_id, reported_by,
+                    id, title, description, expected_result, actual_result, project_id, reported_by,
                     priority, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
 
             $result = $stmt->execute([
                 $bugId,
                 $data['name'],
                 $data['description'],
+                isset($data['expected_result']) ? $data['expected_result'] : null,
+                isset($data['actual_result']) ? $data['actual_result'] : null,
                 $data['project_id'],
                 $data['reporter_id'],
                 $data['priority'],
@@ -374,17 +376,21 @@ class BugController extends BaseAPI {
             
             $id = Utils::generateUUID();
             $stmt = $this->conn->prepare(
-                "INSERT INTO bugs (id, title, description, project_id, reported_by, priority, status) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO bugs (id, title, description, expected_result, actual_result, project_id, reported_by, priority, status) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
             );
             
             $priority = isset($data['priority']) ? $data['priority'] : 'medium';
             $status = 'pending';
+            $expectedResult = isset($data['expected_result']) ? $data['expected_result'] : null;
+            $actualResult = isset($data['actual_result']) ? $data['actual_result'] : null;
             
             $stmt->execute([
                 $id,
                 $data['title'],
                 $data['description'],
+                $expectedResult,
+                $actualResult,
                 $data['project_id'],
                 $decoded->user_id,
                 $priority,
