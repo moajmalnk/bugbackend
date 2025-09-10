@@ -107,7 +107,7 @@ try {
     $stmt = $pdo->query("
         SELECT pr.*, u.username, u.email 
         FROM password_resets pr 
-        LEFT JOIN users u ON pr.user_id = u.id 
+        LEFT JOIN users u ON pr.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci 
         ORDER BY pr.created_at DESC 
         LIMIT 5
     ");
