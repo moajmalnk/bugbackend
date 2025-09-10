@@ -47,12 +47,21 @@ class UpdateController extends BaseAPI
             ]);
 
             if ($success) {
+                // Also fetch creator username for convenience
+                $username = null;
+                try {
+                    $stmtUser = $this->conn->prepare("SELECT username FROM users WHERE id = ?");
+                    $stmtUser->execute([$userId]);
+                    $username = $stmtUser->fetchColumn();
+                } catch (Exception $e) {}
+
                 $this->sendJsonResponse(201, "Update created successfully", [
                     'id' => $id,
                     'title' => $data['title'],
                     'type' => $data['type'],
                     'description' => $data['description'],
-                    'created_by' => $userId,
+                    'created_by_id' => $userId,
+                    'created_by' => $username ?? $userId,
                     'created_at' => date('Y-m-d H:i:s')
                 ]);
             } else {
@@ -102,6 +111,7 @@ class UpdateController extends BaseAPI
                 'title' => $update['title'],
                 'type' => $update['type'],
                 'description' => $update['description'],
+                'created_by_id' => $update['created_by'],
                 'created_by' => $update['created_by_name'] ?? $update['created_by'],
                 'created_at' => $update['created_at'],
                 'updated_at' => $update['updated_at'],
@@ -154,6 +164,7 @@ class UpdateController extends BaseAPI
                     'title' => $update['title'],
                     'type' => $update['type'],
                     'description' => $update['description'],
+                    'created_by_id' => $update['created_by'],
                     'created_by' => $update['created_by_name'] ?? $update['created_by'],
                     'created_at' => $update['created_at'],
                     'updated_at' => $update['updated_at'],
