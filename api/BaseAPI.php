@@ -124,7 +124,9 @@ class BaseAPI {
             throw new Exception('No token provided');
         }
 
-        $cacheKey = 'token_validation_' . md5($token);
+        // Support admin impersonation via header or query param; include in cache key
+        $impersonateId = $this->getImpersonateUserId();
+        $cacheKey = 'token_validation_' . md5($token . '|' . ($impersonateId ?? 'none'));
         $cachedResult = $this->getCache($cacheKey);
         
         if ($cachedResult !== null) {
@@ -132,17 +134,91 @@ class BaseAPI {
         }
 
         try {
-        $result = $this->utils->validateJWT($token);
+            $result = $this->utils->validateJWT($token);
+
+            // If admin and impersonation requested, switch identity after validating token
+            if ($result && $impersonateId) {
+                try {
+                    if (isset($result->role) && $result->role === 'admin') {
+                        error_log("🔑 Admin impersonation attempt - Target user ID: " . $impersonateId);
+                        // Verify the target user exists and fetch username
+                        $stmt = $this->conn->prepare("SELECT id, username FROM users WHERE id = ? LIMIT 1");
+                        $stmt->execute([$impersonateId]);
+                        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                        if ($row && isset($row['id'])) {
+                            $originalUserId = $result->user_id;
+                            $result->user_id = $row['id'];
+                            $result->username = $row['username'] ?? ($result->username ?? null);
+                            $result->impersonated = true;
+                            error_log("✅ Impersonation successful - Original: $originalUserId, Now: " . $result->user_id . " (" . $result->username . ")");
+                        } else {
+                            error_log("❌ Impersonation failed - Target user not found: " . $impersonateId);
+                        }
+                    } else {
+                        error_log("❌ Impersonation denied - User role is not admin: " . ($result->role ?? 'unknown'));
+                    }
+                } catch (Exception $e) {
+                    error_log("❌ Impersonation error: " . $e->getMessage());
+                }
+            } else {
+                error_log("🔍 No impersonation - Result: " . ($result ? 'valid' : 'null') . ", ImpersonateId: " . ($impersonateId ?? 'null'));
+            }
         
-        // Cache valid tokens for 5 minutes
-        if ($result) {
-            $this->setCache($cacheKey, $result, 300);
-        }
+            // Cache valid tokens for 5 minutes (keyed by token + impersonation)
+            if ($result) {
+                $this->setCache($cacheKey, $result, 300);
+            }
         
-        return $result;
+            return $result;
         } catch (Exception $e) {
             $this->sendJsonResponse(500, "Token validation failed: " . $e->getMessage());
         }
+    }
+
+    protected function getImpersonateUserId() {
+        // Check common header names and query params
+        // Header: X-Impersonate-User or X-User-Id
+        $headerId = null;
+        if (isset($_SERVER['HTTP_X_IMPERSONATE_USER'])) {
+            $headerId = trim($_SERVER['HTTP_X_IMPERSONATE_USER']);
+        } elseif (isset($_SERVER['HTTP_X_USER_ID'])) {
+            $headerId = trim($_SERVER['HTTP_X_USER_ID']);
+        }
+        
+        // Also check for headers with different casing
+        foreach ($_SERVER as $key => $value) {
+            if (strtoupper($key) === 'HTTP_X_IMPERSONATE_USER') {
+                $headerId = trim($value);
+                break;
+            } elseif (strtoupper($key) === 'HTTP_X_USER_ID') {
+                $headerId = trim($value);
+                break;
+            }
+        }
+        
+        // Query param: impersonate or act_as
+        $queryId = null;
+        if (isset($_GET['impersonate'])) {
+            $queryId = trim($_GET['impersonate']);
+        } elseif (isset($_GET['act_as'])) {
+            $queryId = trim($_GET['act_as']);
+        }
+        
+        // Check POST body for impersonation data
+        $bodyId = null;
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            try {
+                $data = $this->getRequestData();
+                if (isset($data['impersonate_user_id'])) {
+                    $bodyId = trim($data['impersonate_user_id']);
+                }
+            } catch (Exception $e) {
+                // Ignore body parsing errors
+            }
+        }
+        
+        
+        return $headerId ?: $queryId ?: $bodyId;
     }
     
     protected function getBearerToken() {
