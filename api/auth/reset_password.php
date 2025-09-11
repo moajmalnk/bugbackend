@@ -61,6 +61,18 @@ try {
         throw new Exception('Invalid or expired reset token');
     }
     
+    // Additional validation - check if user actually exists
+    $user_check_stmt = $pdo->prepare("SELECT id, username, email FROM users WHERE id = ?");
+    $user_check_stmt->execute([$reset_request['user_id']]);
+    $user_exists = $user_check_stmt->fetch(PDO::FETCH_ASSOC);
+    
+    if (!$user_exists) {
+        error_log("Password Reset Debug - User not found for ID: " . $reset_request['user_id']);
+        throw new Exception('User not found for reset token');
+    }
+    
+    error_log("Password Reset Debug - User found: " . $user_exists['username'] . " (ID: " . $user_exists['id'] . ")");
+    
     // Hash the new password
     $hashed_password = password_hash($new_password, PASSWORD_DEFAULT);
     
@@ -81,6 +93,13 @@ try {
         // Debug logging for password update
         error_log("Password Reset Debug - Update result: " . ($result ? 'SUCCESS' : 'FAILED'));
         error_log("Password Reset Debug - Rows affected: " . $stmt->rowCount());
+        error_log("Password Reset Debug - User ID being updated: " . $reset_request['user_id']);
+        error_log("Password Reset Debug - New password hash: " . $hashed_password);
+        
+        // Check if the update actually worked
+        if ($stmt->rowCount() === 0) {
+            throw new Exception("Password update failed - no rows were affected. User ID: " . $reset_request['user_id']);
+        }
         
         // Verify the password was actually updated
         $verify_stmt = $pdo->prepare("SELECT password, password_changed_at FROM users WHERE id = ?");
