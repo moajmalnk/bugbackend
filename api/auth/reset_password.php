@@ -64,12 +64,18 @@ try {
     // Hash the new password
     $hashed_password = password_hash($new_password, PASSWORD_DEFAULT);
     
+    // Debug logging
+    error_log("Password Reset Debug - User ID: " . $reset_request['user_id']);
+    error_log("Password Reset Debug - New password: " . $new_password);
+    error_log("Password Reset Debug - New hash: " . $hashed_password);
+    error_log("Password Reset Debug - Hash length: " . strlen($hashed_password));
+    
     // Start transaction
     $pdo->beginTransaction();
     
     try {
         // Update user password
-        $stmt = $pdo->prepare("UPDATE users SET password = ?, updated_at = NOW() WHERE id = ?");
+        $stmt = $pdo->prepare("UPDATE users SET password = ?, password_changed_at = NOW(), updated_at = NOW() WHERE id = ?");
         $stmt->execute([$hashed_password, $reset_request['user_id']]);
         
         // Mark reset token as used
