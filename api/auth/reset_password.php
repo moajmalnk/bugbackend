@@ -67,20 +67,11 @@ try {
     $user_exists = $user_check_stmt->fetch(PDO::FETCH_ASSOC);
     
     if (!$user_exists) {
-        error_log("Password Reset Debug - User not found for ID: " . $reset_request['user_id']);
         throw new Exception('User not found for reset token');
     }
     
-    error_log("Password Reset Debug - User found: " . $user_exists['username'] . " (ID: " . $user_exists['id'] . ")");
-    
     // Hash the new password
     $hashed_password = password_hash($new_password, PASSWORD_DEFAULT);
-    
-    // Debug logging
-    error_log("Password Reset Debug - User ID: " . $reset_request['user_id']);
-    error_log("Password Reset Debug - New password: " . $new_password);
-    error_log("Password Reset Debug - New hash: " . $hashed_password);
-    error_log("Password Reset Debug - Hash length: " . strlen($hashed_password));
     
     // Start transaction
     $pdo->beginTransaction();
@@ -90,31 +81,9 @@ try {
         $stmt = $pdo->prepare("UPDATE users SET password = ?, password_changed_at = NOW(), updated_at = NOW() WHERE id = ?");
         $result = $stmt->execute([$hashed_password, $reset_request['user_id']]);
         
-        // Debug logging for password update
-        error_log("Password Reset Debug - Update result: " . ($result ? 'SUCCESS' : 'FAILED'));
-        error_log("Password Reset Debug - Rows affected: " . $stmt->rowCount());
-        error_log("Password Reset Debug - User ID being updated: " . $reset_request['user_id']);
-        error_log("Password Reset Debug - New password hash: " . $hashed_password);
-        
         // Check if the update actually worked
         if ($stmt->rowCount() === 0) {
-            throw new Exception("Password update failed - no rows were affected. User ID: " . $reset_request['user_id']);
-        }
-        
-        // Verify the password was actually updated
-        $verify_stmt = $pdo->prepare("SELECT password, password_changed_at FROM users WHERE id = ?");
-        $verify_stmt->execute([$reset_request['user_id']]);
-        $updated_user = $verify_stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($updated_user) {
-            error_log("Password Reset Debug - Updated password hash: " . $updated_user['password']);
-            error_log("Password Reset Debug - Password changed at: " . $updated_user['password_changed_at']);
-            
-            // Test if the new password works
-            $test_verify = password_verify($new_password, $updated_user['password']);
-            error_log("Password Reset Debug - New password verification test: " . ($test_verify ? 'SUCCESS' : 'FAILED'));
-        } else {
-            error_log("Password Reset Debug - ERROR: Could not verify password update");
+            throw new Exception("Password update failed - no rows were affected");
         }
         
         // Mark reset token as used

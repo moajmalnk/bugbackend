@@ -116,11 +116,6 @@ class AuthController extends BaseAPI {
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
             
             // Debug log for password verification
-            error_log("Login Debug - Verifying password for user: " . $data['username']);
-            error_log("Login Debug - Input password: " . $data['password']);
-            error_log("Login Debug - Stored hash: " . $user['password']);
-            error_log("Login Debug - Hash length: " . strlen($user['password']));
-            error_log("Login Debug - Password changed at: " . ($user['password_changed_at'] ?? 'NULL'));
             
             // Verify password
             if (!password_verify($data['password'], $user['password'])) {
@@ -194,14 +189,6 @@ class AuthController extends BaseAPI {
             if (is_array($username)) {
                 $username = $username[0]; // or handle as needed
             }
-            error_log("LoginWithIdentifier Debug - User found: " . $username);
-            error_log("LoginWithIdentifier Debug - Input password: [$password]");
-            error_log("LoginWithIdentifier Debug - Stored hash: [" . $user['password'] . "]");
-            error_log("LoginWithIdentifier Debug - Hash length: " . strlen($user['password']));
-            error_log("LoginWithIdentifier Debug - Password changed at: " . ($user['password_changed_at'] ?? 'NULL'));
-            if ($password === '1') { // for debug only
-                error_log("Plaintext password matches '1'");
-            }
             if (password_verify(trim($password), $user['password'])) {
                 unset($user['password']);
                 $token = Utils::generateJWT($user['id'], $username, $user['role']);
@@ -210,8 +197,6 @@ class AuthController extends BaseAPI {
                     'user' => $user,
                     'token' => $token
                 ];
-            } else {
-                error_log("Password verification failed");
             }
         }
         return ['success' => false, 'message' => 'Invalid credentials'];
