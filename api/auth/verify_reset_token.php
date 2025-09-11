@@ -30,7 +30,7 @@ try {
     $stmt = $pdo->prepare("
         SELECT pr.*, u.username, u.email, u.role 
         FROM password_resets pr 
-        LEFT JOIN users u ON pr.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci 
+        LEFT JOIN users u ON pr.user_id = u.id 
         WHERE pr.token = ? AND pr.expires_at > NOW() AND pr.used_at IS NULL
     ");
     
