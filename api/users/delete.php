@@ -14,7 +14,7 @@ if (in_array($origin, $allowedOrigins)) {
 } else if (strpos($origin, 'localhost') !== false || strpos($origin, '127.0.0.1') !== false) {
     header("Access-Control-Allow-Origin: $origin");
 } else {
-    header("Access-Control-Allow-Origin: https://bugs.moajmalnk.in, https://bugricer.com");
+    header("Access-Control-Allow-Origin: https://bugricer.com");
 }
 
 header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
