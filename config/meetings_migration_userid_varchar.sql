@@ -16,3 +16,4 @@ ALTER TABLE meetings
 ALTER TABLE meeting_participants
   DROP INDEX idx_participants_user,
   ADD INDEX idx_participants_user (user_id);
+
