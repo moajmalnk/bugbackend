@@ -13,6 +13,7 @@ function handleCORS() {
         'http://127.0.0.1',
         'https://bugs.moajmalnk.in',
         'https://bugricer.com',
+        'https://www.bugricer.com',
         'https://bugbackend.moajmalnk.in',
         'https://bugracers.vercel.app'
     ];
