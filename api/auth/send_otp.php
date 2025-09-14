@@ -96,7 +96,7 @@ if ($method === 'whatsapp') {
     <p style="font-size:13px;color:#64748b;margin-top:18px;">If you did not request this, you can safely ignore this email.</p>
   </div>
   <div style="background:#f8fafc;color:#64748b;padding:16px 0;text-align:center;font-size:12px;border-top:1px solid #e2e8f0;">
-    <span>🐞 Sent from <b>BugRicer</b> &mdash; <a href="https://bugs.moajmalnk.in" style="color:#2563eb;text-decoration:none;">bugs.moajmalnk.in</a></span>
+    <span>🐞 Sent from <b>BugRicer</b> &mdash; <a href="https://bugricer.com" style="color:#2563eb;text-decoration:none;">bugricer.com</a></span>
   </div>
 </div>';
         $mail->AltBody = 'Your BugRicer OTP is: ' . $otp . '. This OTP is valid for 5 minutes. Do not share this code with anyone.';

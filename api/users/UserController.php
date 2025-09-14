@@ -397,7 +397,7 @@ class UserController extends BaseAPI {
                     $loginLink = "http://localhost:8080/login";
                 } else {
                     // Production - use the bug tracker domain with role-based routing
-                    $loginLink = "https://bugs.moajmalnk.in/login";
+                    $loginLink = "https://bugricer.com/login";
                 }
                 
                 $subject = 'Welcome to BugRicer!';
