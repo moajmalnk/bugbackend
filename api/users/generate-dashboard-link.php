@@ -117,7 +117,7 @@ try {
         $frontendUrl = 'http://localhost:8080';
     } else {
         // Production - use the bug tracker domain
-        $frontendUrl = 'https://bugs.moajmalnk.in';
+        $frontendUrl = 'https://bugricer.com';
     }
     
     // Generate role-based dashboard URL
