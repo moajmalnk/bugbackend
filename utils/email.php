@@ -84,17 +84,17 @@ function sendEmail($to, $subject, $html_body, $text_body = '') {
     try {
         $mail = new PHPMailer(true);
         
-        // HOSTINGER SMTP CONFIGURATION (from send_email.php)
+        // GMAIL SMTP CONFIGURATION
         $mail->isSMTP();
-        $mail->Host = 'smtp.hostinger.com';
+        $mail->Host = 'smtp.gmail.com';
         $mail->SMTPAuth = true;
-        $mail->Username = 'bugs@moajmalnk.in';
-        $mail->Password = 'Codo@8848';
-        $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS;
-        $mail->Port = 465;
+        $mail->Username = 'bugricer@gmail.com';
+        $mail->Password = 'fvbu qkll xbpk verj';
+        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port = 587;
         
         // Recipients
-        $mail->setFrom('bugs@moajmalnk.in', 'BugRicer');
+        $mail->setFrom('bugricer@gmail.com', 'BugRicer');
         $mail->addAddress($to);
         
         // Content

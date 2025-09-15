@@ -14,17 +14,17 @@ function sendBugNotification($to, $subject, $body, $attachments = []) {
     try {
         $mail = new PHPMailer(true);
         
-        // HOSTINGER CONFIGURATION - WORKING
+        // GMAIL SMTP CONFIGURATION
         $mail->isSMTP();
-        $mail->Host = 'smtp.hostinger.com';
+        $mail->Host = 'smtp.gmail.com';
         $mail->SMTPAuth = true;
-        $mail->Username = 'bugs@moajmalnk.in';
-        $mail->Password = 'Codo@8848';
-        $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS;
-        $mail->Port = 465;
+        $mail->Username = 'bugricer@gmail.com';
+        $mail->Password = 'fvbu qkll xbpk verj';
+        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port = 587;
         
         // Recipients
-        $mail->setFrom('bugs@moajmalnk.in', 'Bug Ricer');
+        $mail->setFrom('bugricer@gmail.com', 'Bug Ricer');
         
         // Add recipients
         $mail->addAddress('noreply@codoacademy.com', 'Bug Ricer'); // Main recipient (not shown to others)
@@ -79,17 +79,17 @@ function sendWelcomeEmail($to, $subject, $body) {
     try {
         $mail = new PHPMailer(true);
         
-        // HOSTINGER CONFIGURATION - WORKING
+        // GMAIL SMTP CONFIGURATION
         $mail->isSMTP();
-        $mail->Host = 'smtp.hostinger.com';
+        $mail->Host = 'smtp.gmail.com';
         $mail->SMTPAuth = true;
-        $mail->Username = 'bugs@moajmalnk.in';
-        $mail->Password = 'Codo@8848';
-        $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS;
-        $mail->Port = 465;
+        $mail->Username = 'bugricer@gmail.com';
+        $mail->Password = 'fvbu qkll xbpk verj';
+        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port = 587;
         
         // Recipients
-        $mail->setFrom('bugs@moajmalnk.in', 'Bug Ricer');
+        $mail->setFrom('bugricer@gmail.com', 'Bug Ricer');
         $mail->addAddress($to); // Send directly to the new user
         
         // Content
@@ -113,13 +113,13 @@ function sendOtpEmail($to, $otp) {
     try {
         $mail = new PHPMailer(true);
         $mail->isSMTP();
-        $mail->Host = 'smtp.hostinger.com';
+        $mail->Host = 'smtp.gmail.com';
         $mail->SMTPAuth = true;
-        $mail->Username = 'bugs@moajmalnk.in';
-        $mail->Password = 'Codo@8848';
-        $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS;
-        $mail->Port = 465;
-        $mail->setFrom('bugs@moajmalnk.in', 'Bug Ricer');
+        $mail->Username = 'bugricer@gmail.com';
+        $mail->Password = 'fvbu qkll xbpk verj';
+        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port = 587;
+        $mail->setFrom('bugricer@gmail.com', 'Bug Ricer');
         $mail->addAddress($to);
         $mail->isHTML(true);
         $mail->Subject = 'Your BugRicer OTP';
