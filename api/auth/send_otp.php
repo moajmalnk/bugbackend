@@ -74,13 +74,13 @@ if ($method === 'whatsapp') {
     $mail = new PHPMailer(true);
     try {
         $mail->isSMTP();
-        $mail->Host = 'smtp.hostinger.com';
+        $mail->Host = 'smtp.gmail.com';
         $mail->SMTPAuth = true;
-        $mail->Username = 'bugs@moajmalnk.in';
-        $mail->Password = 'Codo@8848';
-        $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS;
-        $mail->Port = 465;
-        $mail->setFrom('bugs@moajmalnk.in', 'Bug Ricer');
+        $mail->Username = 'bugricer@gmail.com';
+        $mail->Password = 'fvbu qkll xbpk verj';
+        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port = 587;
+        $mail->setFrom('bugricer@gmail.com', 'Bug Ricer');
         $mail->addAddress($email);
         $mail->Subject = 'Your BugRicer OTP';
         $mail->isHTML(true);
