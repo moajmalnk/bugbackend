@@ -4,6 +4,8 @@ $allowedOrigins = [
     'https://bugs.moajmalnk.in',
     'https://bugricer.com',
     'https://www.bugricer.com',
+    'https://bugs.bugricer.com',
+    'https://www.bugricer.com',
     'http://localhost:8080',
     'http://localhost:3000',
     'http://127.0.0.1:8080'
@@ -16,7 +18,7 @@ if (in_array($origin, $allowedOrigins)) {
     header("Access-Control-Allow-Origin: $origin");
 } else {
     // Default to the main production domain
-    header("Access-Control-Allow-Origin: https://bugricer.com");
+    header("Access-Control-Allow-Origin: https://bugs.bugricer.com");
 }
 
 header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");

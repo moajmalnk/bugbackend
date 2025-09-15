@@ -14,6 +14,7 @@ function handleCORS() {
         'https://bugs.moajmalnk.in',
         'https://bugricer.com',
         'https://www.bugricer.com',
+        'https://bugs.bugricer.com',
         'https://bugbackend.moajmalnk.in',
         'https://bugracers.vercel.app'
     ];
