@@ -45,6 +45,28 @@ class SignalingServer implements MessageComponentInterface {
             }
             return;
         }
+        
+        // Handle chat messages
+        if ($type === 'chat' && $code) {
+            $message = $payload['message'] ?? '';
+            $this->broadcast($code, [
+                'type' => 'chat',
+                'from' => $from->resourceId,
+                'message' => $message
+            ], $from);
+            return;
+        }
+        
+        // Handle hand raising
+        if ($type === 'hand-raise' && $code) {
+            $raised = $payload['raised'] ?? false;
+            $this->broadcast($code, [
+                'type' => 'hand-raise',
+                'from' => $from->resourceId,
+                'raised' => $raised
+            ], $from);
+            return;
+        }
     }
 
     public function onClose(ConnectionInterface $conn) {
