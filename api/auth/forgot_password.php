@@ -71,7 +71,7 @@ try {
     ]);
     
     // Generate reset link
-    $reset_link = "https://bugricer.com/reset-password?token=" . $reset_token;
+    $reset_link = "https://bugs.bugricer.com/reset-password?token=" . $reset_token;
     
     // Send email
     $email_sent = sendPasswordResetEmail($user['email'], $user['username'], $reset_link);

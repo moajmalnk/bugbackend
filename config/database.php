@@ -16,7 +16,7 @@ class Database {
         
         if ($isLocal) {
             // Local database configuration
-            $this->host = "localhost";
+            $this->host = "127.0.0.1";
             $this->db_name = "u262074081_bugfixer_db";
             $this->username = "root";
             $this->password = "";
@@ -146,7 +146,7 @@ class Database {
         // For local environment, try simple connection first
         if ($this->isLocalEnvironment()) {
             try {
-                $dsn = "mysql:host=" . $this->host . ";dbname=" . $this->db_name . ";charset=utf8mb4";
+                $dsn = "mysql:host=" . $this->host . ";port=3306;dbname=" . $this->db_name . ";charset=utf8mb4";
                 error_log("Attempting local connection to: " . $dsn);
                 
                 $this->conn = new PDO($dsn, $this->username, $this->password, [
@@ -174,7 +174,7 @@ class Database {
                 
                 // Try to create the database if it doesn't exist
                 try {
-                    $createDbConn = new PDO("mysql:host=" . $this->host . ";charset=utf8mb4", $this->username, $this->password);
+                    $createDbConn = new PDO("mysql:host=" . $this->host . ";port=3306;charset=utf8mb4", $this->username, $this->password);
                     $createDbConn->exec("CREATE DATABASE IF NOT EXISTS `" . $this->db_name . "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
                     $createDbConn = null;
                     
