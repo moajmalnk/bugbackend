@@ -15,7 +15,7 @@ class Database {
         $isLocal = $this->isLocalEnvironment();
         
         if ($isLocal) {
-            // Local database configuration
+            // Local database configuration for XAMPP
             $this->host = "localhost";
             $this->db_name = "u262074081_bugfixer_db";
             $this->username = "root";
@@ -107,7 +107,7 @@ class Database {
         }
         
         // Check for common local development ports
-        if (preg_match('/:(8080|8000|3000|4000|5000)$/', $httpHost)) {
+        if (preg_match('/:(8080|8083|8000|3000|4000|5000)$/', $httpHost)) {
             return true;
         }
         
@@ -146,7 +146,13 @@ class Database {
         // For local environment, try simple connection first
         if ($this->isLocalEnvironment()) {
             try {
-                $dsn = "mysql:host=" . $this->host . ";dbname=" . $this->db_name . ";charset=utf8mb4";
+                // Use XAMPP MySQL socket for local connections
+                $xamppSocket = "/Applications/XAMPP/xamppfiles/var/mysql/mysql.sock";
+                if (file_exists($xamppSocket)) {
+                    $dsn = "mysql:unix_socket=" . $xamppSocket . ";dbname=" . $this->db_name . ";charset=utf8mb4";
+                } else {
+                    $dsn = "mysql:host=" . $this->host . ";dbname=" . $this->db_name . ";charset=utf8mb4";
+                }
                 error_log("Attempting local connection to: " . $dsn);
                 
                 $this->conn = new PDO($dsn, $this->username, $this->password, [
@@ -174,7 +180,13 @@ class Database {
                 
                 // Try to create the database if it doesn't exist
                 try {
-                    $createDbConn = new PDO("mysql:host=" . $this->host . ";charset=utf8mb4", $this->username, $this->password);
+                    $xamppSocket = "/Applications/XAMPP/xamppfiles/var/mysql/mysql.sock";
+                    if (file_exists($xamppSocket)) {
+                        $createDsn = "mysql:unix_socket=" . $xamppSocket . ";charset=utf8mb4";
+                    } else {
+                        $createDsn = "mysql:host=" . $this->host . ";charset=utf8mb4";
+                    }
+                    $createDbConn = new PDO($createDsn, $this->username, $this->password);
                     $createDbConn->exec("CREATE DATABASE IF NOT EXISTS `" . $this->db_name . "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
                     $createDbConn = null;
                     

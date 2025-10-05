@@ -26,7 +26,7 @@ class Utils {
             }
         }
         
-        if (preg_match('/:(8080|8000|3000|4000|5000)$/', $httpHost)) {
+        if (preg_match('/:(8080|8083|8000|3000|4000|5000)$/', $httpHost)) {
             return true;
         }
         
