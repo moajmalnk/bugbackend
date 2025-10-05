@@ -8,7 +8,7 @@ class Database {
     private static $instance = null;
     private static $connectionPool = [];
     private static $cache = [];
-    private static $cacheTimeout = 300; // 5 minute
+    private static $cacheTimeout = 300; // 5 minutes
 
     private function __construct() {
         // More reliable environment detection
