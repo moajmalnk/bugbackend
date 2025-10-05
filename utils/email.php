@@ -89,7 +89,7 @@ function sendEmail($to, $subject, $html_body, $text_body = '') {
         $mail->Host = 'smtp.gmail.com';
         $mail->SMTPAuth = true;
         $mail->Username = 'bugricer@gmail.com';
-        $mail->Password = 'fvbu qkll xbpk verj';
+        $mail->Password = 'uufq bfkb uwso uocn';
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port = 587;
         
