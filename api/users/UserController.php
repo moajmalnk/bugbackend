@@ -355,9 +355,18 @@ class UserController extends BaseAPI {
                 return;
             }
 
-            // Check if username, email, or phone exists
-            $stmt = $this->conn->prepare("SELECT id FROM users WHERE username = ? OR email = ? OR phone = ?");
-            $stmt->execute([$username, $email, $phone]);
+            // Check if username or email exists
+            $checkQuery = "SELECT id FROM users WHERE username = ? OR email = ?";
+            $checkParams = [$username, $email];
+            
+            // Only check phone if it's provided (not null/empty)
+            if (!empty($phone)) {
+                $checkQuery .= " OR phone = ?";
+                $checkParams[] = $phone;
+            }
+            
+            $stmt = $this->conn->prepare($checkQuery);
+            $stmt->execute($checkParams);
             if ($stmt->rowCount() > 0) {
                 $this->sendJsonResponse(400, "Username, email, or phone already exists");
                 return;

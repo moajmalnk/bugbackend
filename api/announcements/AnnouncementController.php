@@ -244,7 +244,7 @@ class AnnouncementController extends BaseAPI {
     }
 
     private function triggerFCMBroadcast($title, $content) {
-        $url = 'http://' . $_SERVER['SERVER_NAME'] . '/Bugricer/backend/api/send-fcm-message.php';
+        $url = 'http://' . $_SERVER['SERVER_NAME'] . '/BugRicer/backend/api/send-fcm-message.php';
 
         $payload = json_encode([
             'title' => $title,
