@@ -343,11 +343,14 @@ class UserController extends BaseAPI {
 
     public function createUser($data) {
         try {
-            $username = $data['username'] ?? '';
-            $email = $data['email'] ?? '';
+            $username = trim($data['username'] ?? '');
+            $email = trim($data['email'] ?? '');
             $password = $data['password'] ?? '';
             $role = $data['role'] ?? '';
-            $phone = $data['phone'] ?? null;
+            $phone = isset($data['phone']) && trim($data['phone']) !== '' ? trim($data['phone']) : null;
+
+            // Log the incoming data for debugging (remove in production if sensitive)
+            error_log("Creating user - Username: $username, Email: $email, Phone: " . ($phone ?? 'null'));
 
             // Validate required fields
             if (!$username || !$email || !$password || !$role) {
@@ -355,21 +358,30 @@ class UserController extends BaseAPI {
                 return;
             }
 
-            // Check if username or email exists
-            $checkQuery = "SELECT id FROM users WHERE username = ? OR email = ?";
-            $checkParams = [$username, $email];
-            
-            // Only check phone if it's provided (not null/empty)
-            if (!empty($phone)) {
-                $checkQuery .= " OR phone = ?";
-                $checkParams[] = $phone;
+            // Check for duplicate username
+            $checkUsername = $this->conn->prepare("SELECT id FROM users WHERE username = ?");
+            $checkUsername->execute([$username]);
+            if ($checkUsername->rowCount() > 0) {
+                $this->sendJsonResponse(400, "Username already exists");
+                return;
             }
             
-            $stmt = $this->conn->prepare($checkQuery);
-            $stmt->execute($checkParams);
-            if ($stmt->rowCount() > 0) {
-                $this->sendJsonResponse(400, "Username, email, or phone already exists");
+            // Check for duplicate email
+            $checkEmail = $this->conn->prepare("SELECT id FROM users WHERE email = ?");
+            $checkEmail->execute([$email]);
+            if ($checkEmail->rowCount() > 0) {
+                $this->sendJsonResponse(400, "Email already exists");
                 return;
+            }
+            
+            // Check for duplicate phone (only if provided)
+            if ($phone !== null) {
+                $checkPhone = $this->conn->prepare("SELECT id FROM users WHERE phone = ?");
+                $checkPhone->execute([$phone]);
+                if ($checkPhone->rowCount() > 0) {
+                    $this->sendJsonResponse(400, "Phone number already exists");
+                    return;
+                }
             }
 
             // Generate UUID for id
