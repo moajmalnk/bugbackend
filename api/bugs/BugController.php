@@ -14,7 +14,7 @@ class BugController extends BaseAPI {
         $host = $_SERVER['HTTP_HOST'];
         if (strpos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false) {
             // Local development
-            $this->baseUrl .= '/Bugricer/backend';
+            $this->baseUrl .= '/BugRicer/backend';
         } elseif (strpos($host, 'bugbackend.moajmalnk.in') !== false) {
             // Production backend - no additional path needed
             // Base URL is already correct
