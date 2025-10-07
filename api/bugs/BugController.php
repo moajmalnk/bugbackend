@@ -809,6 +809,16 @@ class BugController extends BaseAPI {
                 $updateFields[] = "description = ?";
                 $params[] = $data['description'];
             }
+            // Allow updating expected_result if provided (including empty string => NULL)
+            if (array_key_exists('expected_result', $data)) {
+                $updateFields[] = "expected_result = ?";
+                $params[] = ($data['expected_result'] === '' ? null : $data['expected_result']);
+            }
+            // Allow updating actual_result if provided (including empty string => NULL)
+            if (array_key_exists('actual_result', $data)) {
+                $updateFields[] = "actual_result = ?";
+                $params[] = ($data['actual_result'] === '' ? null : $data['actual_result']);
+            }
             if (isset($data['priority'])) {
                 $updateFields[] = "priority = ?";
                 $params[] = $data['priority'];
