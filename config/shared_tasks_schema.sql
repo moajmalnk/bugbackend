@@ -35,3 +35,16 @@ CREATE TABLE IF NOT EXISTS shared_task_projects (
     CONSTRAINT fk_stp_task FOREIGN KEY (shared_task_id) REFERENCES shared_tasks(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Table for shared tasks with multiple assignees
+CREATE TABLE IF NOT EXISTS shared_task_assignees (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    shared_task_id INT NOT NULL,
+    assigned_to VARCHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+    completed_at DATETIME DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_task_assignee (shared_task_id, assigned_to),
+    INDEX idx_shared_task_id (shared_task_id),
+    INDEX idx_assigned_to (assigned_to),
+    CONSTRAINT fk_sta_task FOREIGN KEY (shared_task_id) REFERENCES shared_tasks(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+

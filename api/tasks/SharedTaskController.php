@@ -14,18 +14,24 @@ class SharedTaskController extends BaseAPI {
                     approver.username as approved_by_name,
                     completer.username as completed_by_name,
                     GROUP_CONCAT(DISTINCT stp.project_id) as project_ids,
-                    GROUP_CONCAT(DISTINCT p.name) as project_names
+                    GROUP_CONCAT(DISTINCT p.name) as project_names,
+                    GROUP_CONCAT(DISTINCT sta.assigned_to) as assigned_to_ids,
+                    GROUP_CONCAT(DISTINCT au.username) as assigned_to_names,
+                    GROUP_CONCAT(DISTINCT CASE WHEN sta.completed_at IS NOT NULL THEN sta.assigned_to END) as completed_assignee_ids,
+                    GROUP_CONCAT(DISTINCT CASE WHEN sta.completed_at IS NOT NULL THEN au.username END) as completed_assignee_names
                 FROM shared_tasks st
-                LEFT JOIN users creator ON st.created_by = creator.id
-                LEFT JOIN users assignee ON st.assigned_to = assignee.id
-                LEFT JOIN users approver ON st.approved_by = approver.id
-                LEFT JOIN users completer ON st.completed_by = completer.id
+                LEFT JOIN users creator ON st.created_by COLLATE utf8mb4_unicode_ci = creator.id COLLATE utf8mb4_unicode_ci
+                LEFT JOIN users assignee ON st.assigned_to COLLATE utf8mb4_unicode_ci = assignee.id COLLATE utf8mb4_unicode_ci
+                LEFT JOIN users approver ON st.approved_by COLLATE utf8mb4_unicode_ci = approver.id COLLATE utf8mb4_unicode_ci
+                LEFT JOIN users completer ON st.completed_by COLLATE utf8mb4_unicode_ci = completer.id COLLATE utf8mb4_unicode_ci
                 LEFT JOIN shared_task_projects stp ON st.id = stp.shared_task_id
-                LEFT JOIN projects p ON stp.project_id = p.id
-                WHERE (st.assigned_to = ? OR st.created_by = ?)
+                LEFT JOIN projects p ON stp.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci
+                LEFT JOIN shared_task_assignees sta ON st.id = sta.shared_task_id
+                LEFT JOIN users au ON sta.assigned_to COLLATE utf8mb4_unicode_ci = au.id COLLATE utf8mb4_unicode_ci
+                WHERE (st.assigned_to = ? OR st.created_by = ? OR sta.assigned_to = ?)
             ";
             
-            $params = [$userId, $userId];
+            $params = [$userId, $userId, $userId];
             
             if ($status) {
                 $query .= " AND st.status = ?";
@@ -35,19 +41,34 @@ class SharedTaskController extends BaseAPI {
             $query .= " GROUP BY st.id ORDER BY st.created_at DESC";
             
             $stmt = $this->conn->prepare($query);
-            $stmt->execute($params);
+            if (!$stmt) {
+                $err = $this->conn->errorInfo();
+                error_log("SharedTaskController:getSharedTasks prepare failed: " . implode(' | ', $err));
+                $this->sendJsonResponse(500, "Database error occurred (prepare)");
+                return;
+            }
+            if (!$stmt->execute($params)) {
+                $err = $stmt->errorInfo();
+                error_log("SharedTaskController:getSharedTasks execute failed: " . implode(' | ', $err));
+                $this->sendJsonResponse(500, "Database error occurred (execute): " . ($err[2] ?? ''));
+                return;
+            }
             $tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
             // Process project IDs and names into arrays
             foreach ($tasks as &$task) {
                 $task['project_ids'] = $task['project_ids'] ? explode(',', $task['project_ids']) : [];
                 $task['project_names'] = $task['project_names'] ? explode(',', $task['project_names']) : [];
+                $task['assigned_to_ids'] = $task['assigned_to_ids'] ? explode(',', $task['assigned_to_ids']) : ($task['assigned_to'] ? [$task['assigned_to']] : []);
+                $task['assigned_to_names'] = $task['assigned_to_names'] ? explode(',', $task['assigned_to_names']) : ($task['assigned_to_name'] ? [$task['assigned_to_name']] : []);
+                $task['completed_assignee_ids'] = $task['completed_assignee_ids'] ? explode(',', $task['completed_assignee_ids']) : [];
+                $task['completed_assignee_names'] = $task['completed_assignee_names'] ? explode(',', $task['completed_assignee_names']) : [];
             }
             
             $this->sendJsonResponse(200, "Shared tasks retrieved successfully", $tasks);
         } catch (Exception $e) {
             error_log("Error in getSharedTasks: " . $e->getMessage());
-            $this->sendJsonResponse(500, "Failed to retrieve shared tasks");
+            $this->sendJsonResponse(500, "Failed to retrieve shared tasks: " . $e->getMessage());
         }
     }
     
@@ -95,6 +116,24 @@ class SharedTaskController extends BaseAPI {
                     }
                 }
             }
+
+            // Insert assignees mapping (multi-assign support)
+            $assigneeIds = [];
+            if (isset($data['assigned_to_ids']) && is_array($data['assigned_to_ids']) && count($data['assigned_to_ids']) > 0) {
+                $assigneeIds = $data['assigned_to_ids'];
+            } elseif (isset($data['assigned_to']) && !empty($data['assigned_to'])) {
+                $assigneeIds = [$data['assigned_to']];
+            }
+            if (count($assigneeIds) > 0) {
+                $assigneeQuery = "INSERT INTO shared_task_assignees (shared_task_id, assigned_to) VALUES (?, ?)";
+                $assigneeStmt = $this->conn->prepare($assigneeQuery);
+                foreach ($assigneeIds as $aid) {
+                    $assigneeStmt->execute([$taskId, $aid]);
+                }
+                // Keep primary assigned_to as first for backward compatibility
+                $primary = $assigneeIds[0];
+                $this->conn->prepare("UPDATE shared_tasks SET assigned_to = ? WHERE id = ?")->execute([$primary, $taskId]);
+            }
             
             $this->conn->commit();
             
@@ -119,20 +158,37 @@ class SharedTaskController extends BaseAPI {
                     approver.username as approved_by_name,
                     completer.username as completed_by_name,
                     GROUP_CONCAT(DISTINCT stp.project_id) as project_ids,
-                    GROUP_CONCAT(DISTINCT p.name) as project_names
+                    GROUP_CONCAT(DISTINCT p.name) as project_names,
+                    GROUP_CONCAT(DISTINCT sta.assigned_to) as assigned_to_ids,
+                    GROUP_CONCAT(DISTINCT au.username) as assigned_to_names,
+                    GROUP_CONCAT(DISTINCT CASE WHEN sta.completed_at IS NOT NULL THEN sta.assigned_to END) as completed_assignee_ids,
+                    GROUP_CONCAT(DISTINCT CASE WHEN sta.completed_at IS NOT NULL THEN au.username END) as completed_assignee_names
                 FROM shared_tasks st
-                LEFT JOIN users creator ON st.created_by = creator.id
-                LEFT JOIN users assignee ON st.assigned_to = assignee.id
-                LEFT JOIN users approver ON st.approved_by = approver.id
-                LEFT JOIN users completer ON st.completed_by = completer.id
+                LEFT JOIN users creator ON st.created_by COLLATE utf8mb4_unicode_ci = creator.id COLLATE utf8mb4_unicode_ci
+                LEFT JOIN users assignee ON st.assigned_to COLLATE utf8mb4_unicode_ci = assignee.id COLLATE utf8mb4_unicode_ci
+                LEFT JOIN users approver ON st.approved_by COLLATE utf8mb4_unicode_ci = approver.id COLLATE utf8mb4_unicode_ci
+                LEFT JOIN users completer ON st.completed_by COLLATE utf8mb4_unicode_ci = completer.id COLLATE utf8mb4_unicode_ci
                 LEFT JOIN shared_task_projects stp ON st.id = stp.shared_task_id
-                LEFT JOIN projects p ON stp.project_id = p.id
+                LEFT JOIN projects p ON stp.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci
+                LEFT JOIN shared_task_assignees sta ON st.id = sta.shared_task_id
+                LEFT JOIN users au ON sta.assigned_to COLLATE utf8mb4_unicode_ci = au.id COLLATE utf8mb4_unicode_ci
                 WHERE st.id = ?
                 GROUP BY st.id
             ";
             
             $stmt = $this->conn->prepare($query);
-            $stmt->execute([$taskId]);
+            if (!$stmt) {
+                $err = $this->conn->errorInfo();
+                error_log("SharedTaskController:getSharedTaskById prepare failed: " . implode(' | ', $err));
+                $this->sendJsonResponse(500, "Database error occurred (prepare)");
+                return;
+            }
+            if (!$stmt->execute([$taskId])) {
+                $err = $stmt->errorInfo();
+                error_log("SharedTaskController:getSharedTaskById execute failed: " . implode(' | ', $err));
+                $this->sendJsonResponse(500, "Database error occurred (execute): " . ($err[2] ?? ''));
+                return;
+            }
             $task = $stmt->fetch(PDO::FETCH_ASSOC);
             
             if (!$task) {
@@ -140,9 +196,11 @@ class SharedTaskController extends BaseAPI {
                 return;
             }
             
-            // Process project IDs and names into arrays
+            // Process project/assignee IDs and names into arrays
             $task['project_ids'] = $task['project_ids'] ? explode(',', $task['project_ids']) : [];
             $task['project_names'] = $task['project_names'] ? explode(',', $task['project_names']) : [];
+            $task['assigned_to_ids'] = $task['assigned_to_ids'] ? explode(',', $task['assigned_to_ids']) : ($task['assigned_to'] ? [$task['assigned_to']] : []);
+            $task['assigned_to_names'] = $task['assigned_to_names'] ? explode(',', $task['assigned_to_names']) : ($task['assigned_to_name'] ? [$task['assigned_to_name']] : []);
             
             $this->sendJsonResponse(200, "Shared task retrieved successfully", $task);
         } catch (Exception $e) {
@@ -212,6 +270,23 @@ class SharedTaskController extends BaseAPI {
                 }
             }
             
+            // Update assignees mapping if provided
+            if (isset($data['assigned_to_ids']) && is_array($data['assigned_to_ids'])) {
+                $deleteAssignees = $this->conn->prepare("DELETE FROM shared_task_assignees WHERE shared_task_id = ?");
+                $deleteAssignees->execute([$taskId]);
+                if (count($data['assigned_to_ids']) > 0) {
+                    $ins = $this->conn->prepare("INSERT INTO shared_task_assignees (shared_task_id, assigned_to) VALUES (?, ?)");
+                    foreach ($data['assigned_to_ids'] as $aid) {
+                        if (!empty($aid)) {
+                            $ins->execute([$taskId, $aid]);
+                        }
+                    }
+                    // Keep primary assigned_to as first for backward compatibility
+                    $primary = $data['assigned_to_ids'][0];
+                    $this->conn->prepare("UPDATE shared_tasks SET assigned_to = ? WHERE id = ?")->execute([$primary, $taskId]);
+                }
+            }
+
             $this->conn->commit();
             
             $this->getSharedTaskById($taskId);
@@ -258,6 +333,130 @@ class SharedTaskController extends BaseAPI {
         } catch (Exception $e) {
             error_log("Error in deleteSharedTask: " . $e->getMessage());
             $this->sendJsonResponse(500, "Failed to delete shared task");
+        }
+    }
+
+    public function completeTaskForUser($taskId, $userId) {
+        try {
+            // Check if user is assigned to this task
+            $checkStmt = $this->conn->prepare("
+                SELECT 1 FROM shared_task_assignees 
+                WHERE shared_task_id = ? AND assigned_to = ?
+            ");
+            $checkStmt->execute([$taskId, $userId]);
+            
+            if (!$checkStmt->fetch()) {
+                throw new Exception("User is not assigned to this task");
+            }
+
+            // Mark user as completed
+            $updateStmt = $this->conn->prepare("
+                UPDATE shared_task_assignees 
+                SET completed_at = NOW() 
+                WHERE shared_task_id = ? AND assigned_to = ?
+            ");
+            
+            if (!$updateStmt->execute([$taskId, $userId])) {
+                throw new Exception("Failed to mark task as completed");
+            }
+
+            // Check if all assignees have completed
+            $countStmt = $this->conn->prepare("
+                SELECT 
+                    COUNT(*) as total_assignees,
+                    COUNT(completed_at) as completed_assignees
+                FROM shared_task_assignees 
+                WHERE shared_task_id = ?
+            ");
+            $countStmt->execute([$taskId]);
+            $counts = $countStmt->fetch(PDO::FETCH_ASSOC);
+
+            // If all assignees completed, mark task as completed
+            if ($counts && $counts['total_assignees'] > 0 && $counts['total_assignees'] == $counts['completed_assignees']) {
+                $taskUpdateStmt = $this->conn->prepare("
+                    UPDATE shared_tasks 
+                    SET status = 'completed', completed_at = NOW(), completed_by = ?
+                    WHERE id = ?
+                ");
+                $taskUpdateStmt->execute([$userId, $taskId]);
+            }
+
+            return ['success' => true, 'message' => "Task marked as completed successfully"];
+        } catch (Exception $e) {
+            error_log("Error in completeTaskForUser: " . $e->getMessage());
+            throw new Exception("Failed to complete task: " . $e->getMessage());
+        }
+    }
+
+    public function uncompleteTaskForUser($taskId, $userId) {
+        try {
+            // Mark user as not completed
+            $updateStmt = $this->conn->prepare("
+                UPDATE shared_task_assignees 
+                SET completed_at = NULL 
+                WHERE shared_task_id = ? AND assigned_to = ?
+            ");
+            
+            if (!$updateStmt->execute([$taskId, $userId])) {
+                throw new Exception("Failed to mark task as not completed");
+            }
+
+            // If task was completed, change it back to pending
+            $taskUpdateStmt = $this->conn->prepare("
+                UPDATE shared_tasks 
+                SET status = 'pending', completed_at = NULL, completed_by = NULL
+                WHERE id = ?
+            ");
+            $taskUpdateStmt->execute([$taskId]);
+
+            return ['success' => true, 'message' => "Task marked as not completed successfully"];
+        } catch (Exception $e) {
+            error_log("Error in uncompleteTaskForUser: " . $e->getMessage());
+            throw new Exception("Failed to uncomplete task: " . $e->getMessage());
+        }
+    }
+
+    public function declineTask($taskId, $userId) {
+        try {
+            // Check if user is assigned to this task
+            $checkStmt = $this->conn->prepare("
+                SELECT 1 FROM shared_task_assignees 
+                WHERE shared_task_id = ? AND assigned_to = ?
+            ");
+            $checkStmt->execute([$taskId, $userId]);
+            
+            if (!$checkStmt->fetch()) {
+                throw new Exception("User is not assigned to this task");
+            }
+
+            // Remove user from assignees (decline)
+            $deleteStmt = $this->conn->prepare("
+                DELETE FROM shared_task_assignees 
+                WHERE shared_task_id = ? AND assigned_to = ?
+            ");
+            
+            if (!$deleteStmt->execute([$taskId, $userId])) {
+                throw new Exception("Failed to decline task");
+            }
+
+            // If no more assignees, delete the task
+            $countStmt = $this->conn->prepare("
+                SELECT COUNT(*) as assignee_count FROM shared_task_assignees 
+                WHERE shared_task_id = ?
+            ");
+            $countStmt->execute([$taskId]);
+            $count = $countStmt->fetch(PDO::FETCH_ASSOC)['assignee_count'];
+
+            if ($count == 0) {
+                $deleteTaskStmt = $this->conn->prepare("DELETE FROM shared_tasks WHERE id = ?");
+                $deleteTaskStmt->execute([$taskId]);
+                return ['success' => true, 'message' => "Task declined and removed (no more assignees)"];
+            } else {
+                return ['success' => true, 'message' => "Task declined successfully"];
+            }
+        } catch (Exception $e) {
+            error_log("Error in declineTask: " . $e->getMessage());
+            throw new Exception("Failed to decline task: " . $e->getMessage());
         }
     }
 }

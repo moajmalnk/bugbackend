@@ -10,13 +10,17 @@ try {
         throw new Exception('Method not allowed', 405);
     }
     
-    // Validate token
-    $controller->validateToken();
+    // Validate token and get user
+    $decoded = $controller->validateToken();
     
     // Get request data
-    $data = json_decode(file_get_contents('php://input'), true);
+    $data = $controller->getRequestData();
     if (!$data) {
         throw new Exception('Invalid request data', 400);
+    }
+    // Ensure created_by is set from token
+    if (!isset($data['created_by']) || empty($data['created_by'])) {
+        $data['created_by'] = $decoded->user_id;
     }
     
     $controller->createSharedTask($data);
