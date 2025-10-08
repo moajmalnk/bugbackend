@@ -11,13 +11,11 @@ try {
     }
     
     // Validate token and get user
-    $controller->validateToken();
-    $token = $controller->getAuthToken();
-    $decoded = $controller->decodeToken($token);
+    $decoded = $controller->validateToken();
     $userId = $decoded->user_id;
     
     // Get request data
-    $data = json_decode(file_get_contents('php://input'), true);
+    $data = $controller->getRequestData();
     if (!$data || !isset($data['id'])) {
         throw new Exception('Invalid request data', 400);
     }

@@ -11,9 +11,7 @@ try {
     }
     
     // Validate token and get user
-    $controller->validateToken();
-    $token = $controller->getAuthToken();
-    $decoded = $controller->decodeToken($token);
+    $decoded = $controller->validateToken();
     $userId = $decoded->user_id;
     
     $taskId = $_GET['id'] ?? null;
