@@ -212,6 +212,16 @@ class SharedTaskController extends BaseAPI {
     // Update shared task
     public function updateSharedTask($taskId, $data, $userId) {
         try {
+            // Check if user is the creator of the task
+            $checkCreatorStmt = $this->conn->prepare("SELECT created_by FROM shared_tasks WHERE id = ?");
+            $checkCreatorStmt->execute([$taskId]);
+            $task = $checkCreatorStmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$task || $task['created_by'] !== $userId) {
+                $this->sendJsonResponse(403, "Only task creators can edit tasks");
+                return;
+            }
+            
             $this->conn->beginTransaction();
             
             // Build update query dynamically
@@ -312,13 +322,8 @@ class SharedTaskController extends BaseAPI {
                 return;
             }
             
-            // Check if current user is admin
-            $userQuery = "SELECT role FROM users WHERE id = ?";
-            $userStmt = $this->conn->prepare($userQuery);
-            $userStmt->execute([$userId]);
-            $user = $userStmt->fetch(PDO::FETCH_ASSOC);
-            
-            if ($task['created_by'] !== $userId && $user['role'] !== 'admin') {
+            // Only task creators can delete tasks
+            if ($task['created_by'] !== $userId) {
                 $this->sendJsonResponse(403, "You don't have permission to delete this task");
                 return;
             }
