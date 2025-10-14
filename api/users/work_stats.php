@@ -71,24 +71,63 @@ class UserWorkStatsController extends BaseAPI {
                 $totalHours += (float)($submission['hours_today'] ?? 0);
             }
             
-            // Get task counts for current period
+            // Get task counts from work_submissions table for current period
             $taskStmt = $this->conn->prepare("
                 SELECT 
-                    COUNT(CASE WHEN status = 'done' AND updated_at >= ? AND updated_at <= ? THEN 1 END) as completed,
-                    COUNT(CASE WHEN status = 'todo' AND created_at >= ? AND created_at <= ? THEN 1 END) as pending,
-                    COUNT(CASE WHEN status = 'in_progress' AND created_at >= ? AND created_at <= ? THEN 1 END) as ongoing,
-                    COUNT(CASE WHEN status = 'todo' AND created_at >= ? AND created_at <= ? AND due_date > ? THEN 1 END) as upcoming
-                FROM user_tasks 
-                WHERE user_id = ?
+                    completed_tasks,
+                    pending_tasks,
+                    ongoing_tasks,
+                    notes
+                FROM work_submissions 
+                WHERE user_id = ? 
+                AND submission_date >= ? 
+                AND submission_date <= ?
             ");
-            $taskStmt->execute([
-                $periodStart . ' 00:00:00', $periodEnd . ' 23:59:59', // completed
-                $periodStart . ' 00:00:00', $periodEnd . ' 23:59:59', // pending
-                $periodStart . ' 00:00:00', $periodEnd . ' 23:59:59', // ongoing
-                $periodStart . ' 00:00:00', $periodEnd . ' 23:59:59', $periodEnd, // upcoming
-                $userId
-            ]);
-            $currentTaskData = $taskStmt->fetch(PDO::FETCH_ASSOC);
+            $taskStmt->execute([$userId, $periodStart, $periodEnd]);
+            $submissionTasks = $taskStmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            // Count tasks using the same logic as frontend countItems function
+            $completed = 0;
+            $pending = 0;
+            $ongoing = 0;
+            $upcoming = 0;
+            
+            foreach ($submissionTasks as $submission) {
+                // Count completed tasks (non-empty lines)
+                $completedTasks = $submission['completed_tasks'] ?? '';
+                $completedLines = array_filter(array_map('trim', explode("\n", $completedTasks)), function($line) {
+                    return !empty($line);
+                });
+                $completed += count($completedLines);
+                
+                // Count pending tasks (non-empty lines)
+                $pendingTasks = $submission['pending_tasks'] ?? '';
+                $pendingLines = array_filter(array_map('trim', explode("\n", $pendingTasks)), function($line) {
+                    return !empty($line);
+                });
+                $pending += count($pendingLines);
+                
+                // Count ongoing tasks (non-empty lines)
+                $ongoingTasks = $submission['ongoing_tasks'] ?? '';
+                $ongoingLines = array_filter(array_map('trim', explode("\n", $ongoingTasks)), function($line) {
+                    return !empty($line);
+                });
+                $ongoing += count($ongoingLines);
+                
+                // Count upcoming tasks (notes field, non-empty lines)
+                $upcomingTasks = $submission['notes'] ?? '';
+                $upcomingLines = array_filter(array_map('trim', explode("\n", $upcomingTasks)), function($line) {
+                    return !empty($line);
+                });
+                $upcoming += count($upcomingLines);
+            }
+            
+            $currentTaskData = [
+                'completed' => $completed,
+                'pending' => $pending,
+                'ongoing' => $ongoing,
+                'upcoming' => $upcoming
+            ];
             
             // Get last 6 custom periods for trend analysis
             $trendData = [];
@@ -126,24 +165,63 @@ class UserWorkStatsController extends BaseAPI {
                 $stmt->execute([$userId, $periodStartStr, $periodEndStr]);
                 $periodData = $stmt->fetch(PDO::FETCH_ASSOC);
                 
-                // Get task counts for this period
+                // Get task counts from work_submissions table for this period
                 $taskStmt = $this->conn->prepare("
                     SELECT 
-                        COUNT(CASE WHEN status = 'done' AND updated_at >= ? AND updated_at <= ? THEN 1 END) as completed,
-                        COUNT(CASE WHEN status = 'todo' AND created_at >= ? AND created_at <= ? THEN 1 END) as pending,
-                        COUNT(CASE WHEN status = 'in_progress' AND created_at >= ? AND created_at <= ? THEN 1 END) as ongoing,
-                        COUNT(CASE WHEN status = 'todo' AND created_at >= ? AND created_at <= ? AND due_date > ? THEN 1 END) as upcoming
-                    FROM user_tasks 
-                    WHERE user_id = ?
+                        completed_tasks,
+                        pending_tasks,
+                        ongoing_tasks,
+                        notes
+                    FROM work_submissions 
+                    WHERE user_id = ? 
+                    AND submission_date >= ? 
+                    AND submission_date <= ?
                 ");
-                $taskStmt->execute([
-                    $periodStartStr . ' 00:00:00', $periodEndStr . ' 23:59:59', // completed
-                    $periodStartStr . ' 00:00:00', $periodEndStr . ' 23:59:59', // pending
-                    $periodStartStr . ' 00:00:00', $periodEndStr . ' 23:59:59', // ongoing
-                    $periodStartStr . ' 00:00:00', $periodEndStr . ' 23:59:59', $periodEndStr, // upcoming
-                    $userId
-                ]);
-                $taskData = $taskStmt->fetch(PDO::FETCH_ASSOC);
+                $taskStmt->execute([$userId, $periodStartStr, $periodEndStr]);
+                $periodSubmissionTasks = $taskStmt->fetchAll(PDO::FETCH_ASSOC);
+                
+                // Count tasks using the same logic as frontend countItems function
+                $periodCompleted = 0;
+                $periodPending = 0;
+                $periodOngoing = 0;
+                $periodUpcoming = 0;
+                
+                foreach ($periodSubmissionTasks as $submission) {
+                    // Count completed tasks (non-empty lines)
+                    $completedTasks = $submission['completed_tasks'] ?? '';
+                    $completedLines = array_filter(array_map('trim', explode("\n", $completedTasks)), function($line) {
+                        return !empty($line);
+                    });
+                    $periodCompleted += count($completedLines);
+                    
+                    // Count pending tasks (non-empty lines)
+                    $pendingTasks = $submission['pending_tasks'] ?? '';
+                    $pendingLines = array_filter(array_map('trim', explode("\n", $pendingTasks)), function($line) {
+                        return !empty($line);
+                    });
+                    $periodPending += count($pendingLines);
+                    
+                    // Count ongoing tasks (non-empty lines)
+                    $ongoingTasks = $submission['ongoing_tasks'] ?? '';
+                    $ongoingLines = array_filter(array_map('trim', explode("\n", $ongoingTasks)), function($line) {
+                        return !empty($line);
+                    });
+                    $periodOngoing += count($ongoingLines);
+                    
+                    // Count upcoming tasks (notes field, non-empty lines)
+                    $upcomingTasks = $submission['notes'] ?? '';
+                    $upcomingLines = array_filter(array_map('trim', explode("\n", $upcomingTasks)), function($line) {
+                        return !empty($line);
+                    });
+                    $periodUpcoming += count($upcomingLines);
+                }
+                
+                $taskData = [
+                    'completed' => $periodCompleted,
+                    'pending' => $periodPending,
+                    'ongoing' => $periodOngoing,
+                    'upcoming' => $periodUpcoming
+                ];
                 
                 $trendData[] = [
                     'period' => $periodStartStr,
