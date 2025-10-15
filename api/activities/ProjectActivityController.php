@@ -13,6 +13,10 @@ class ProjectActivityController extends BaseAPI {
     public function getProjectActivities($projectId = null, $limit = 10, $offset = 0) {
         try {
             $decoded = $this->validateToken();
+            if (!$decoded || !isset($decoded->user_id)) {
+                $this->sendJsonResponse(401, "Invalid or expired token");
+                return;
+            }
             $userId = $decoded->user_id;
             $userRole = $decoded->role;
             
@@ -57,8 +61,15 @@ class ProjectActivityController extends BaseAPI {
                 $countParams = [$projectId];
             } else {
                 $query = $this->buildUserActivityQuery($userRole, $userId);
-                $params = [$userId, $userId, $limit, $offset]; // Note: userId twice for UNION query
-                $countParams = [$userId, $userId]; // Note: userId twice for UNION query
+                if ($userRole === 'admin') {
+                    // Admin query only needs limit and offset
+                    $params = [$limit, $offset];
+                    $countParams = [];
+                } else {
+                    // Regular user query needs userId twice for UNION query
+                    $params = [$userId, $userId, $limit, $offset];
+                    $countParams = [$userId, $userId];
+                }
             }
             
             // Execute main query with caching
@@ -102,6 +113,10 @@ class ProjectActivityController extends BaseAPI {
     public function logActivity($type, $description, $projectId = null, $relatedId = null, $metadata = null) {
         try {
             $decoded = $this->validateToken();
+            if (!$decoded || !isset($decoded->user_id)) {
+                $this->sendJsonResponse(401, "Invalid or expired token");
+                return;
+            }
             $userId = $decoded->user_id;
             
             // Use regular INSERT instead of bulkInsert
@@ -138,6 +153,10 @@ class ProjectActivityController extends BaseAPI {
     public function getActivityStats($projectId) {
         try {
             $decoded = $this->validateToken();
+            if (!$decoded || !isset($decoded->user_id)) {
+                $this->sendJsonResponse(401, "Invalid or expired token");
+                return;
+            }
             $userId = $decoded->user_id;
             $userRole = $decoded->role;
             
@@ -177,7 +196,7 @@ class ProjectActivityController extends BaseAPI {
             );
             
             $topContributors = $this->fetchCached(
-                'SELECT u.username, COUNT(*) as activity_count FROM project_activities pa JOIN users u ON pa.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci WHERE pa.project_id = ? GROUP BY pa.user_id, u.username ORDER BY activity_count DESC LIMIT 5',
+                'SELECT u.username, COUNT(*) as activity_count FROM project_activities pa JOIN users u ON pa.user_id COLLATE utf8mb4_general_ci = u.id COLLATE utf8mb4_general_ci WHERE pa.project_id = ? GROUP BY pa.user_id, u.username ORDER BY activity_count DESC LIMIT 5',
                 [$projectId],
                 "top_contributors_{$projectId}",
                 300
@@ -220,9 +239,9 @@ class ProjectActivityController extends BaseAPI {
         // Check if user is a member of the project or project owner
         $accessQuery = "
             SELECT 1 FROM (
-                SELECT 1 FROM project_members WHERE user_id COLLATE utf8mb4_unicode_ci = ? AND project_id COLLATE utf8mb4_unicode_ci = ?
+                SELECT 1 FROM project_members WHERE user_id = ? AND project_id = ?
                 UNION
-                SELECT 1 FROM projects WHERE created_by COLLATE utf8mb4_unicode_ci = ? AND id COLLATE utf8mb4_unicode_ci = ?
+                SELECT 1 FROM projects WHERE created_by = ? AND id = ?
             ) as access_check LIMIT 1
         ";
         
@@ -249,9 +268,9 @@ class ProjectActivityController extends BaseAPI {
                     ELSE NULL
                 END as related_title
             FROM project_activities pa
-            LEFT JOIN users u ON pa.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
-            LEFT JOIN projects p ON pa.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci
-            LEFT JOIN bugs b ON pa.related_id COLLATE utf8mb4_unicode_ci = b.id COLLATE utf8mb4_unicode_ci AND pa.activity_type LIKE 'bug_%'
+            LEFT JOIN users u ON pa.user_id COLLATE utf8mb4_general_ci = u.id COLLATE utf8mb4_general_ci
+            LEFT JOIN projects p ON pa.project_id COLLATE utf8mb4_general_ci = p.id COLLATE utf8mb4_general_ci
+            LEFT JOIN bugs b ON pa.related_id COLLATE utf8mb4_general_ci = b.id COLLATE utf8mb4_general_ci AND pa.activity_type LIKE 'bug_%'
             WHERE pa.project_id = ?
             ORDER BY pa.created_at DESC
             LIMIT ? OFFSET ?
@@ -277,9 +296,9 @@ class ProjectActivityController extends BaseAPI {
                         ELSE NULL
                     END as related_title
                 FROM project_activities pa
-                LEFT JOIN users u ON pa.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
-                LEFT JOIN projects p ON pa.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci
-                LEFT JOIN bugs b ON pa.related_id COLLATE utf8mb4_unicode_ci = b.id COLLATE utf8mb4_unicode_ci AND pa.activity_type LIKE 'bug_%'
+                LEFT JOIN users u ON pa.user_id COLLATE utf8mb4_general_ci = u.id COLLATE utf8mb4_general_ci
+                LEFT JOIN projects p ON pa.project_id COLLATE utf8mb4_general_ci = p.id COLLATE utf8mb4_general_ci
+                LEFT JOIN bugs b ON pa.related_id COLLATE utf8mb4_general_ci = b.id COLLATE utf8mb4_general_ci AND pa.activity_type LIKE 'bug_%'
                 ORDER BY pa.created_at DESC
                 LIMIT ? OFFSET ?
             ";
@@ -298,10 +317,10 @@ class ProjectActivityController extends BaseAPI {
                         ELSE NULL
                     END as related_title
                 FROM project_activities pa
-                LEFT JOIN users u ON pa.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
-                LEFT JOIN projects p ON pa.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci
-                LEFT JOIN bugs b ON pa.related_id COLLATE utf8mb4_unicode_ci = b.id COLLATE utf8mb4_unicode_ci AND pa.activity_type LIKE 'bug_%'
-                WHERE pa.project_id COLLATE utf8mb4_unicode_ci IN (
+                LEFT JOIN users u ON pa.user_id COLLATE utf8mb4_general_ci = u.id COLLATE utf8mb4_general_ci
+                LEFT JOIN projects p ON pa.project_id COLLATE utf8mb4_general_ci = p.id COLLATE utf8mb4_general_ci
+                LEFT JOIN bugs b ON pa.related_id COLLATE utf8mb4_general_ci = b.id COLLATE utf8mb4_general_ci AND pa.activity_type LIKE 'bug_%'
+                WHERE pa.project_id IN (
                     SELECT DISTINCT project_id FROM project_members WHERE user_id = ?
                     UNION
                     SELECT DISTINCT id FROM projects WHERE created_by = ?
