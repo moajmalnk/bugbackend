@@ -281,29 +281,43 @@ class ProjectActivityController extends BaseAPI {
     private function buildUserActivityQuery($userRole, $userId) {
         if ($userRole === 'admin') {
             // Admins can see all activities
-            // Simplified query without JOINs to avoid collation issues
             return "
                 SELECT 
                     pa.*,
-                    NULL as username,
-                    NULL as email,
-                    NULL as project_name,
-                    NULL as related_title
+                    u.username,
+                    u.email,
+                    p.name as project_name,
+                    CASE 
+                        WHEN pa.activity_type = 'bug_reported' THEN b.title
+                        WHEN pa.activity_type = 'bug_updated' THEN b.title
+                        WHEN pa.activity_type = 'bug_fixed' THEN b.title
+                        ELSE NULL
+                    END as related_title
                 FROM project_activities pa
+                LEFT JOIN users u ON pa.user_id = u.id
+                LEFT JOIN projects p ON pa.project_id = p.id
+                LEFT JOIN bugs b ON pa.related_id = b.id AND pa.activity_type LIKE 'bug_%'
                 ORDER BY pa.created_at DESC
                 LIMIT ? OFFSET ?
             ";
         } else {
             // Regular users see activities from projects they have access to PLUS non-project activities (project_id IS NULL)
-            // Simplified query without JOINs to avoid collation issues
             return "
                 SELECT 
                     pa.*,
-                    NULL as username,
-                    NULL as email,
-                    NULL as project_name,
-                    NULL as related_title
+                    u.username,
+                    u.email,
+                    p.name as project_name,
+                    CASE 
+                        WHEN pa.activity_type = 'bug_reported' THEN b.title
+                        WHEN pa.activity_type = 'bug_updated' THEN b.title
+                        WHEN pa.activity_type = 'bug_fixed' THEN b.title
+                        ELSE NULL
+                    END as related_title
                 FROM project_activities pa
+                LEFT JOIN users u ON pa.user_id = u.id
+                LEFT JOIN projects p ON pa.project_id = p.id
+                LEFT JOIN bugs b ON pa.related_id = b.id AND pa.activity_type LIKE 'bug_%'
                 WHERE (
                     pa.project_id IS NULL 
                     OR pa.project_id IN (
