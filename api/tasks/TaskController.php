@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../ActivityLogger.php';
 
 class TaskController extends BaseAPI {
     public function createTask($payload) {
@@ -25,6 +26,25 @@ class TaskController extends BaseAPI {
 
         $newId = $this->conn->lastInsertId();
         error_log("🔍 TaskController::createTask - Created task ID: " . $newId . " for user: " . $userId);
+        
+        // Log activity
+        try {
+            $logger = ActivityLogger::getInstance();
+            $logger->logTaskCreated(
+                $userId,
+                $payload['project_id'] ?? null,
+                $newId,
+                $payload['title'] ?? '',
+                [
+                    'priority' => $payload['priority'] ?? 'medium',
+                    'status' => $payload['status'] ?? 'todo',
+                    'due_date' => $payload['due_date'] ?? null
+                ]
+            );
+        } catch (Exception $e) {
+            error_log("Failed to log task creation activity: " . $e->getMessage());
+        }
+        
         $this->sendJsonResponse(201, 'Task created', ['id' => $newId]);
     }
 
@@ -68,6 +88,25 @@ class TaskController extends BaseAPI {
         $sql = "UPDATE user_tasks SET " . implode(',', $sets) . " WHERE id = ? AND user_id = ?";
         $stmt = $this->conn->prepare($sql);
         $stmt->execute($params);
+        
+        // Log activity
+        try {
+            $logger = ActivityLogger::getInstance();
+            $logger->logTaskUpdated(
+                $userId,
+                $payload['project_id'] ?? null,
+                $id,
+                $payload['title'] ?? 'Task',
+                [
+                    'updated_fields' => array_keys($payload),
+                    'priority' => $payload['priority'] ?? null,
+                    'status' => $payload['status'] ?? null
+                ]
+            );
+        } catch (Exception $e) {
+            error_log("Failed to log task update activity: " . $e->getMessage());
+        }
+        
         $this->sendJsonResponse(200, 'Task updated');
     }
 
@@ -76,9 +115,33 @@ class TaskController extends BaseAPI {
         $userId = $decoded->user_id;
         $id = $payload['id'] ?? null;
         if (!$id) { $this->sendJsonResponse(400, 'Missing id'); }
+        
+        // Get task details before deleting for activity logging
+        $getTaskSql = "SELECT title, project_id FROM user_tasks WHERE id = ? AND user_id = ?";
+        $getTaskStmt = $this->conn->prepare($getTaskSql);
+        $getTaskStmt->execute([$id, $userId]);
+        $task = $getTaskStmt->fetch(PDO::FETCH_ASSOC);
+        
         $sql = "DELETE FROM user_tasks WHERE id = ? AND user_id = ?";
         $stmt = $this->conn->prepare($sql);
         $stmt->execute([$id, $userId]);
+        
+        // Log activity
+        if ($task) {
+            try {
+                $logger = ActivityLogger::getInstance();
+                $logger->logTaskDeleted(
+                    $userId,
+                    $task['project_id'],
+                    $id,
+                    $task['title'],
+                    []
+                );
+            } catch (Exception $e) {
+                error_log("Failed to log task deletion activity: " . $e->getMessage());
+            }
+        }
+        
         $this->sendJsonResponse(200, 'Task deleted');
     }
 }
