@@ -354,4 +354,3 @@ class Database {
         return $result;
     }
 }
-?> 
