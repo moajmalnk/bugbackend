@@ -1,91 +1,29 @@
 <?php
-
 require_once __DIR__ . '/BaseAPI.php';
 
 /**
- * Comprehensive Activity Logger for BugRicer
- * Handles all CRUD operations across the application
+ * Centralized Activity Logger
+ * Handles logging of all activities across the application
  */
 class ActivityLogger extends BaseAPI {
     private static $instance = null;
-    
-    // Activity type constants
-    const BUG_CREATED = 'bug_created';
-    const BUG_REPORTED = 'bug_reported';
-    const BUG_UPDATED = 'bug_updated';
-    const BUG_FIXED = 'bug_fixed';
-    const BUG_ASSIGNED = 'bug_assigned';
-    const BUG_DELETED = 'bug_deleted';
-    const BUG_STATUS_CHANGED = 'bug_status_changed';
-    
-    const TASK_CREATED = 'task_created';
-    const TASK_UPDATED = 'task_updated';
-    const TASK_COMPLETED = 'task_completed';
-    const TASK_DELETED = 'task_deleted';
-    const TASK_ASSIGNED = 'task_assigned';
-    
-    const UPDATE_CREATED = 'update_created';
-    const UPDATE_UPDATED = 'update_updated';
-    const UPDATE_DELETED = 'update_deleted';
-    
-    const FIX_CREATED = 'fix_created';
-    const FIX_UPDATED = 'fix_updated';
-    const FIX_DELETED = 'fix_deleted';
-    
-    const PROJECT_CREATED = 'project_created';
-    const PROJECT_UPDATED = 'project_updated';
-    const PROJECT_DELETED = 'project_deleted';
-    const MEMBER_ADDED = 'member_added';
-    const MEMBER_REMOVED = 'member_removed';
-    
-    const USER_CREATED = 'user_created';
-    const USER_UPDATED = 'user_updated';
-    const USER_DELETED = 'user_deleted';
-    const USER_ROLE_CHANGED = 'user_role_changed';
-    
-    const FEEDBACK_CREATED = 'feedback_created';
-    const FEEDBACK_UPDATED = 'feedback_updated';
-    const FEEDBACK_DELETED = 'feedback_deleted';
-    const FEEDBACK_DISMISSED = 'feedback_dismissed';
-    
-    const MEETING_CREATED = 'meeting_created';
-    const MEETING_UPDATED = 'meeting_updated';
-    const MEETING_DELETED = 'meeting_deleted';
-    const MEETING_JOINED = 'meeting_joined';
-    const MEETING_LEFT = 'meeting_left';
-    
-    const MESSAGE_SENT = 'message_sent';
-    const MESSAGE_UPDATED = 'message_updated';
-    const MESSAGE_DELETED = 'message_deleted';
-    const MESSAGE_PINNED = 'message_pinned';
-    const MESSAGE_UNPINNED = 'message_unpinned';
-    
-    const ANNOUNCEMENT_CREATED = 'announcement_created';
-    const ANNOUNCEMENT_UPDATED = 'announcement_updated';
-    const ANNOUNCEMENT_DELETED = 'announcement_deleted';
-    const ANNOUNCEMENT_BROADCAST = 'announcement_broadcast';
-    
-    const COMMENT_ADDED = 'comment_added';
-    const COMMENT_UPDATED = 'comment_updated';
-    const COMMENT_DELETED = 'comment_deleted';
-    const FILE_UPLOADED = 'file_uploaded';
-    const FILE_DELETED = 'file_deleted';
-    const SETTINGS_UPDATED = 'settings_updated';
-    const MILESTONE_REACHED = 'milestone_reached';
-    
+
     private function __construct() {
         parent::__construct();
     }
-    
+
+    /**
+     * Get singleton instance
+     */
     public static function getInstance() {
         if (self::$instance === null) {
             self::$instance = new self();
         }
         return self::$instance;
     }
-    
+
     /**
-     * Log a general activity
+     * Log any activity
      */
     public function logActivity($userId, $projectId, $activityType, $description, $relatedId = null, $metadata = null) {
         try {
@@ -108,689 +46,615 @@ class ActivityLogger extends BaseAPI {
             }
             return false;
         } catch (Exception $e) {
-            error_log("ActivityLogger::logActivity error: " . $e->getMessage());
+            error_log("Error logging activity: " . $e->getMessage());
             return false;
         }
     }
-    
-    // Bug Activities
-    public function logBugCreated($userId, $projectId, $bugId, $bugTitle, $metadata = null) {
+
+    // ===== BUG ACTIVITIES =====
+    public function logBugCreated($userId, $projectId, $bugId, $bugTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::BUG_CREATED, 
+            'bug_created', 
             "Bug created: {$bugTitle}", 
             $bugId, 
-            $metadata
+            array_merge($metadata, ['action' => 'create'])
         );
     }
-    
-    public function logBugReported($userId, $projectId, $bugId, $bugTitle, $metadata = null) {
+
+    public function logBugReported($userId, $projectId, $bugId, $bugTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::BUG_REPORTED, 
+            'bug_reported', 
             "Bug reported: {$bugTitle}", 
             $bugId, 
-            $metadata
+            array_merge($metadata, ['action' => 'report'])
         );
     }
-    
-    public function logBugUpdated($userId, $projectId, $bugId, $bugTitle, $metadata = null) {
+
+    public function logBugUpdated($userId, $projectId, $bugId, $bugTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::BUG_UPDATED, 
+            'bug_updated', 
             "Bug updated: {$bugTitle}", 
             $bugId, 
-            $metadata
+            array_merge($metadata, ['action' => 'update'])
         );
     }
-    
-    public function logBugFixed($userId, $projectId, $bugId, $bugTitle, $metadata = null) {
+
+    public function logBugFixed($userId, $projectId, $bugId, $bugTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::BUG_FIXED, 
+            'bug_fixed', 
             "Bug fixed: {$bugTitle}", 
             $bugId, 
-            $metadata
+            array_merge($metadata, ['action' => 'fix'])
         );
     }
-    
-    public function logBugAssigned($userId, $projectId, $bugId, $bugTitle, $assigneeId, $metadata = null) {
-        $metadata = $metadata ?? [];
-        $metadata['assignee_id'] = $assigneeId;
+
+    public function logBugAssigned($userId, $projectId, $bugId, $bugTitle, $assignedTo, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::BUG_ASSIGNED, 
+            'bug_assigned', 
             "Bug assigned: {$bugTitle}", 
             $bugId, 
-            $metadata
+            array_merge($metadata, ['action' => 'assign', 'assigned_to' => $assignedTo])
         );
     }
-    
-    public function logBugDeleted($userId, $projectId, $bugId, $bugTitle, $metadata = null) {
+
+    public function logBugDeleted($userId, $projectId, $bugId, $bugTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::BUG_DELETED, 
+            'bug_deleted', 
             "Bug deleted: {$bugTitle}", 
             $bugId, 
-            $metadata
+            array_merge($metadata, ['action' => 'delete'])
         );
     }
-    
-    public function logBugStatusChanged($userId, $projectId, $bugId, $bugTitle, $oldStatus, $newStatus, $metadata = null) {
-        $metadata = $metadata ?? [];
-        $metadata['old_status'] = $oldStatus;
-        $metadata['new_status'] = $newStatus;
+
+    public function logBugStatusChanged($userId, $projectId, $bugId, $bugTitle, $fromStatus, $toStatus, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::BUG_STATUS_CHANGED, 
-            "Bug status changed from {$oldStatus} to {$newStatus}: {$bugTitle}", 
+            'bug_status_changed', 
+            "Bug status changed from {$fromStatus} to {$toStatus}: {$bugTitle}", 
             $bugId, 
-            $metadata
+            array_merge($metadata, ['action' => 'status_change', 'from' => $fromStatus, 'to' => $toStatus])
         );
     }
-    
-    // Task Activities
-    public function logTaskCreated($userId, $projectId, $taskId, $taskTitle, $metadata = null) {
+
+    // ===== TASK ACTIVITIES =====
+    public function logTaskCreated($userId, $projectId, $taskId, $taskTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::TASK_CREATED, 
+            'task_created', 
             "Task created: {$taskTitle}", 
             $taskId, 
-            $metadata
+            array_merge($metadata, ['action' => 'create'])
         );
     }
-    
-    public function logTaskUpdated($userId, $projectId, $taskId, $taskTitle, $metadata = null) {
+
+    public function logTaskUpdated($userId, $projectId, $taskId, $taskTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::TASK_UPDATED, 
+            'task_updated', 
             "Task updated: {$taskTitle}", 
             $taskId, 
-            $metadata
+            array_merge($metadata, ['action' => 'update'])
         );
     }
-    
-    public function logTaskCompleted($userId, $projectId, $taskId, $taskTitle, $metadata = null) {
+
+    public function logTaskCompleted($userId, $projectId, $taskId, $taskTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::TASK_COMPLETED, 
+            'task_completed', 
             "Task completed: {$taskTitle}", 
             $taskId, 
-            $metadata
+            array_merge($metadata, ['action' => 'complete'])
         );
     }
-    
-    public function logTaskDeleted($userId, $projectId, $taskId, $taskTitle, $metadata = null) {
+
+    public function logTaskDeleted($userId, $projectId, $taskId, $taskTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::TASK_DELETED, 
+            'task_deleted', 
             "Task deleted: {$taskTitle}", 
             $taskId, 
-            $metadata
+            array_merge($metadata, ['action' => 'delete'])
         );
     }
-    
-    public function logTaskAssigned($userId, $projectId, $taskId, $taskTitle, $assigneeId, $metadata = null) {
-        $metadata = $metadata ?? [];
-        $metadata['assignee_id'] = $assigneeId;
+
+    public function logTaskAssigned($userId, $projectId, $taskId, $taskTitle, $assignedTo, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::TASK_ASSIGNED, 
+            'task_assigned', 
             "Task assigned: {$taskTitle}", 
             $taskId, 
-            $metadata
+            array_merge($metadata, ['action' => 'assign', 'assigned_to' => $assignedTo])
         );
     }
-    
-    // Update Activities
-    public function logUpdateCreated($userId, $projectId, $updateId, $updateTitle, $metadata = null) {
+
+    // ===== UPDATE ACTIVITIES =====
+    public function logUpdateCreated($userId, $projectId, $updateId, $updateTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::UPDATE_CREATED, 
+            'update_created', 
             "Update created: {$updateTitle}", 
             $updateId, 
-            $metadata
+            array_merge($metadata, ['action' => 'create'])
         );
     }
-    
-    public function logUpdateUpdated($userId, $projectId, $updateId, $updateTitle, $metadata = null) {
+
+    public function logUpdateUpdated($userId, $projectId, $updateId, $updateTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::UPDATE_UPDATED, 
+            'update_updated', 
             "Update updated: {$updateTitle}", 
             $updateId, 
-            $metadata
+            array_merge($metadata, ['action' => 'update'])
         );
     }
-    
-    public function logUpdateDeleted($userId, $projectId, $updateId, $updateTitle, $metadata = null) {
+
+    public function logUpdateDeleted($userId, $projectId, $updateId, $updateTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::UPDATE_DELETED, 
+            'update_deleted', 
             "Update deleted: {$updateTitle}", 
             $updateId, 
-            $metadata
+            array_merge($metadata, ['action' => 'delete'])
         );
     }
-    
-    // Fix Activities
-    public function logFixCreated($userId, $projectId, $fixId, $fixTitle, $metadata = null) {
+
+    // ===== FIX ACTIVITIES =====
+    public function logFixCreated($userId, $projectId, $fixId, $fixTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::FIX_CREATED, 
+            'fix_created', 
             "Fix created: {$fixTitle}", 
             $fixId, 
-            $metadata
+            array_merge($metadata, ['action' => 'create'])
         );
     }
-    
-    public function logFixUpdated($userId, $projectId, $fixId, $fixTitle, $metadata = null) {
+
+    public function logFixUpdated($userId, $projectId, $fixId, $fixTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::FIX_UPDATED, 
+            'fix_updated', 
             "Fix updated: {$fixTitle}", 
             $fixId, 
-            $metadata
+            array_merge($metadata, ['action' => 'update'])
         );
     }
-    
-    public function logFixDeleted($userId, $projectId, $fixId, $fixTitle, $metadata = null) {
+
+    public function logFixDeleted($userId, $projectId, $fixId, $fixTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::FIX_DELETED, 
+            'fix_deleted', 
             "Fix deleted: {$fixTitle}", 
             $fixId, 
-            $metadata
+            array_merge($metadata, ['action' => 'delete'])
         );
     }
-    
-    // Project Activities
-    public function logProjectCreated($userId, $projectId, $projectName, $metadata = null) {
+
+    // ===== PROJECT ACTIVITIES =====
+    public function logProjectCreated($userId, $projectId, $projectName, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::PROJECT_CREATED, 
+            'project_created', 
             "Project created: {$projectName}", 
             $projectId, 
-            $metadata
+            array_merge($metadata, ['action' => 'create'])
         );
     }
-    
-    public function logProjectUpdated($userId, $projectId, $projectName, $metadata = null) {
+
+    public function logProjectUpdated($userId, $projectId, $projectName, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::PROJECT_UPDATED, 
+            'project_updated', 
             "Project updated: {$projectName}", 
             $projectId, 
-            $metadata
+            array_merge($metadata, ['action' => 'update'])
         );
     }
-    
-    public function logProjectDeleted($userId, $projectId, $projectName, $metadata = null) {
+
+    public function logProjectDeleted($userId, $projectId, $projectName, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::PROJECT_DELETED, 
+            'project_deleted', 
             "Project deleted: {$projectName}", 
             $projectId, 
-            $metadata
+            array_merge($metadata, ['action' => 'delete'])
         );
     }
-    
-    public function logMemberAdded($userId, $projectId, $memberId, $memberName, $role = null, $metadata = null) {
-        $metadata = $metadata ?? [];
-        $metadata['member_id'] = $memberId;
-        $metadata['member_name'] = $memberName;
-        if ($role) $metadata['role'] = $role;
+
+    public function logMemberAdded($userId, $projectId, $memberUsername, $role = null, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::MEMBER_ADDED, 
-            "Member added: {$memberName}" . ($role ? " ({$role})" : ""), 
-            $memberId, 
-            $metadata
+            'member_added', 
+            "Member added: {$memberUsername}", 
+            null, 
+            array_merge($metadata, ['action' => 'add_member', 'member_username' => $memberUsername, 'role' => $role])
         );
     }
-    
-    public function logMemberRemoved($userId, $projectId, $memberId, $memberName, $role = null, $metadata = null) {
-        $metadata = $metadata ?? [];
-        $metadata['member_id'] = $memberId;
-        $metadata['member_name'] = $memberName;
-        if ($role) $metadata['role'] = $role;
+
+    public function logMemberRemoved($userId, $projectId, $memberUsername, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::MEMBER_REMOVED, 
-            "Member removed: {$memberName}" . ($role ? " ({$role})" : ""), 
-            $memberId, 
-            $metadata
+            'member_removed', 
+            "Member removed: {$memberUsername}", 
+            null, 
+            array_merge($metadata, ['action' => 'remove_member', 'member_username' => $memberUsername])
         );
     }
-    
-    // User Activities
-    public function logUserCreated($userId, $projectId, $newUserId, $username, $metadata = null) {
-        $metadata = $metadata ?? [];
-        $metadata['new_user_id'] = $newUserId;
-        $metadata['username'] = $username;
+
+    // ===== USER ACTIVITIES =====
+    public function logUserCreated($userId, $projectId, $newUserId, $username, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::USER_CREATED, 
+            'user_created', 
             "User created: {$username}", 
             $newUserId, 
-            $metadata
+            array_merge($metadata, ['action' => 'create', 'username' => $username])
         );
     }
-    
-    public function logUserUpdated($userId, $projectId, $targetUserId, $username, $metadata = null) {
-        $metadata = $metadata ?? [];
-        $metadata['target_user_id'] = $targetUserId;
-        $metadata['username'] = $username;
+
+    public function logUserUpdated($userId, $projectId, $updatedUserId, $username, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::USER_UPDATED, 
+            'user_updated', 
             "User updated: {$username}", 
-            $targetUserId, 
-            $metadata
+            $updatedUserId, 
+            array_merge($metadata, ['action' => 'update', 'username' => $username])
         );
     }
-    
-    public function logUserDeleted($userId, $projectId, $targetUserId, $username, $metadata = null) {
-        $metadata = $metadata ?? [];
-        $metadata['target_user_id'] = $targetUserId;
-        $metadata['username'] = $username;
+
+    public function logUserDeleted($userId, $projectId, $deletedUserId, $username, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::USER_DELETED, 
+            'user_deleted', 
             "User deleted: {$username}", 
-            $targetUserId, 
-            $metadata
+            $deletedUserId, 
+            array_merge($metadata, ['action' => 'delete', 'username' => $username])
         );
     }
-    
-    public function logUserRoleChanged($userId, $projectId, $targetUserId, $username, $oldRole, $newRole, $metadata = null) {
-        $metadata = $metadata ?? [];
-        $metadata['target_user_id'] = $targetUserId;
-        $metadata['username'] = $username;
-        $metadata['old_role'] = $oldRole;
-        $metadata['new_role'] = $newRole;
+
+    public function logUserRoleChanged($userId, $projectId, $targetUserId, $username, $oldRole, $newRole, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::USER_ROLE_CHANGED, 
-            "User role changed from {$oldRole} to {$newRole}: {$username}", 
+            'user_role_changed', 
+            "User role changed: {$username} from {$oldRole} to {$newRole}", 
             $targetUserId, 
-            $metadata
+            array_merge($metadata, ['action' => 'role_change', 'username' => $username, 'old_role' => $oldRole, 'new_role' => $newRole])
         );
     }
-    
-    // Feedback Activities
-    public function logFeedbackCreated($userId, $projectId, $feedbackId, $feedbackTitle, $metadata = null) {
+
+    // ===== FEEDBACK ACTIVITIES =====
+    public function logFeedbackCreated($userId, $projectId, $feedbackId, $feedbackTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::FEEDBACK_CREATED, 
+            'feedback_created', 
             "Feedback created: {$feedbackTitle}", 
             $feedbackId, 
-            $metadata
+            array_merge($metadata, ['action' => 'create'])
         );
     }
-    
-    public function logFeedbackUpdated($userId, $projectId, $feedbackId, $feedbackTitle, $metadata = null) {
+
+    public function logFeedbackUpdated($userId, $projectId, $feedbackId, $feedbackTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::FEEDBACK_UPDATED, 
+            'feedback_updated', 
             "Feedback updated: {$feedbackTitle}", 
             $feedbackId, 
-            $metadata
+            array_merge($metadata, ['action' => 'update'])
         );
     }
-    
-    public function logFeedbackDeleted($userId, $projectId, $feedbackId, $feedbackTitle, $metadata = null) {
+
+    public function logFeedbackDeleted($userId, $projectId, $feedbackId, $feedbackTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::FEEDBACK_DELETED, 
+            'feedback_deleted', 
             "Feedback deleted: {$feedbackTitle}", 
             $feedbackId, 
-            $metadata
+            array_merge($metadata, ['action' => 'delete'])
         );
     }
-    
-    public function logFeedbackDismissed($userId, $projectId, $feedbackId, $feedbackTitle, $metadata = null) {
+
+    public function logFeedbackDismissed($userId, $projectId, $feedbackId, $feedbackTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::FEEDBACK_DISMISSED, 
+            'feedback_dismissed', 
             "Feedback dismissed: {$feedbackTitle}", 
             $feedbackId, 
-            $metadata
+            array_merge($metadata, ['action' => 'dismiss'])
         );
     }
-    
-    // Meeting Activities
-    public function logMeetingCreated($userId, $projectId, $meetingId, $meetingTitle, $metadata = null) {
+
+    // ===== MEETING ACTIVITIES =====
+    public function logMeetingCreated($userId, $projectId, $meetingId, $meetingTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::MEETING_CREATED, 
+            'meeting_created', 
             "Meeting created: {$meetingTitle}", 
             $meetingId, 
-            $metadata
+            array_merge($metadata, ['action' => 'create'])
         );
     }
-    
-    public function logMeetingUpdated($userId, $projectId, $meetingId, $meetingTitle, $metadata = null) {
+
+    public function logMeetingUpdated($userId, $projectId, $meetingId, $meetingTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::MEETING_UPDATED, 
+            'meeting_updated', 
             "Meeting updated: {$meetingTitle}", 
             $meetingId, 
-            $metadata
+            array_merge($metadata, ['action' => 'update'])
         );
     }
-    
-    public function logMeetingDeleted($userId, $projectId, $meetingId, $meetingTitle, $metadata = null) {
+
+    public function logMeetingDeleted($userId, $projectId, $meetingId, $meetingTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::MEETING_DELETED, 
+            'meeting_deleted', 
             "Meeting deleted: {$meetingTitle}", 
             $meetingId, 
-            $metadata
+            array_merge($metadata, ['action' => 'delete'])
         );
     }
-    
-    public function logMeetingJoined($userId, $projectId, $meetingId, $meetingTitle, $metadata = null) {
+
+    public function logMeetingJoined($userId, $projectId, $meetingId, $meetingTitle, $participantName, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::MEETING_JOINED, 
-            "Joined meeting: {$meetingTitle}", 
+            'meeting_joined', 
+            "Meeting joined: {$participantName} joined {$meetingTitle}", 
             $meetingId, 
-            $metadata
+            array_merge($metadata, ['action' => 'join', 'participant' => $participantName])
         );
     }
-    
-    public function logMeetingLeft($userId, $projectId, $meetingId, $meetingTitle, $metadata = null) {
+
+    public function logMeetingLeft($userId, $projectId, $meetingId, $meetingTitle, $participantName, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::MEETING_LEFT, 
-            "Left meeting: {$meetingTitle}", 
+            'meeting_left', 
+            "Meeting left: {$participantName} left {$meetingTitle}", 
             $meetingId, 
-            $metadata
+            array_merge($metadata, ['action' => 'leave', 'participant' => $participantName])
         );
     }
-    
-    // Message Activities
-    public function logMessageSent($userId, $projectId, $messageId, $messagePreview, $metadata = null) {
+
+    // ===== MESSAGE ACTIVITIES =====
+    public function logMessageSent($userId, $projectId, $messageId, $messageContent, $chatGroup = null, $metadata = []) {
+        $description = $chatGroup ? "Message sent in {$chatGroup}: " . substr($messageContent, 0, 50) . "..." : "Message sent: " . substr($messageContent, 0, 50) . "...";
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::MESSAGE_SENT, 
-            "Message sent: {$messagePreview}", 
+            'message_sent', 
+            $description, 
             $messageId, 
-            $metadata
+            array_merge($metadata, ['action' => 'send', 'chat_group' => $chatGroup])
         );
     }
-    
-    public function logMessageUpdated($userId, $projectId, $messageId, $messagePreview, $metadata = null) {
+
+    public function logMessageUpdated($userId, $projectId, $messageId, $messageContent, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::MESSAGE_UPDATED, 
-            "Message updated: {$messagePreview}", 
+            'message_updated', 
+            "Message updated: " . substr($messageContent, 0, 50) . "...", 
             $messageId, 
-            $metadata
+            array_merge($metadata, ['action' => 'update'])
         );
     }
-    
-    public function logMessageDeleted($userId, $projectId, $messageId, $messagePreview, $metadata = null) {
+
+    public function logMessageDeleted($userId, $projectId, $messageId, $messageContent, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::MESSAGE_DELETED, 
-            "Message deleted: {$messagePreview}", 
+            'message_deleted', 
+            "Message deleted: " . substr($messageContent, 0, 50) . "...", 
             $messageId, 
-            $metadata
+            array_merge($metadata, ['action' => 'delete'])
         );
     }
-    
-    public function logMessagePinned($userId, $projectId, $messageId, $messagePreview, $metadata = null) {
+
+    public function logMessagePinned($userId, $projectId, $messageId, $messageContent, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::MESSAGE_PINNED, 
-            "Message pinned: {$messagePreview}", 
+            'message_pinned', 
+            "Message pinned: " . substr($messageContent, 0, 50) . "...", 
             $messageId, 
-            $metadata
+            array_merge($metadata, ['action' => 'pin'])
         );
     }
-    
-    public function logMessageUnpinned($userId, $projectId, $messageId, $messagePreview, $metadata = null) {
+
+    public function logMessageUnpinned($userId, $projectId, $messageId, $messageContent, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::MESSAGE_UNPINNED, 
-            "Message unpinned: {$messagePreview}", 
+            'message_unpinned', 
+            "Message unpinned: " . substr($messageContent, 0, 50) . "...", 
             $messageId, 
-            $metadata
+            array_merge($metadata, ['action' => 'unpin'])
         );
     }
-    
-    // Announcement Activities
-    public function logAnnouncementCreated($userId, $projectId, $announcementId, $announcementTitle, $metadata = null) {
+
+    // ===== ANNOUNCEMENT ACTIVITIES =====
+    public function logAnnouncementCreated($userId, $projectId, $announcementId, $announcementTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::ANNOUNCEMENT_CREATED, 
+            'announcement_created', 
             "Announcement created: {$announcementTitle}", 
             $announcementId, 
-            $metadata
+            array_merge($metadata, ['action' => 'create'])
         );
     }
-    
-    public function logAnnouncementUpdated($userId, $projectId, $announcementId, $announcementTitle, $metadata = null) {
+
+    public function logAnnouncementUpdated($userId, $projectId, $announcementId, $announcementTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::ANNOUNCEMENT_UPDATED, 
+            'announcement_updated', 
             "Announcement updated: {$announcementTitle}", 
             $announcementId, 
-            $metadata
+            array_merge($metadata, ['action' => 'update'])
         );
     }
-    
-    public function logAnnouncementDeleted($userId, $projectId, $announcementId, $announcementTitle, $metadata = null) {
+
+    public function logAnnouncementDeleted($userId, $projectId, $announcementId, $announcementTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::ANNOUNCEMENT_DELETED, 
+            'announcement_deleted', 
             "Announcement deleted: {$announcementTitle}", 
             $announcementId, 
-            $metadata
+            array_merge($metadata, ['action' => 'delete'])
         );
     }
-    
-    public function logAnnouncementBroadcast($userId, $projectId, $announcementId, $announcementTitle, $metadata = null) {
+
+    public function logAnnouncementBroadcast($userId, $projectId, $announcementId, $announcementTitle, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::ANNOUNCEMENT_BROADCAST, 
+            'announcement_broadcast', 
             "Announcement broadcast: {$announcementTitle}", 
             $announcementId, 
-            $metadata
+            array_merge($metadata, ['action' => 'broadcast'])
         );
     }
-    
-    // General Activities
-    public function logCommentAdded($userId, $projectId, $commentId, $commentPreview, $relatedId = null, $metadata = null) {
+
+    // ===== GENERAL ACTIVITIES =====
+    public function logCommentAdded($userId, $projectId, $commentId, $commentContent, $relatedEntity = null, $metadata = []) {
+        $description = $relatedEntity ? "Comment added to {$relatedEntity}: " . substr($commentContent, 0, 50) . "..." : "Comment added: " . substr($commentContent, 0, 50) . "...";
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::COMMENT_ADDED, 
-            "Comment added: {$commentPreview}", 
+            'comment_added', 
+            $description, 
             $commentId, 
-            $metadata
+            array_merge($metadata, ['action' => 'add', 'related_entity' => $relatedEntity])
         );
     }
-    
-    public function logCommentUpdated($userId, $projectId, $commentId, $commentPreview, $metadata = null) {
+
+    public function logCommentUpdated($userId, $projectId, $commentId, $commentContent, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::COMMENT_UPDATED, 
-            "Comment updated: {$commentPreview}", 
+            'comment_updated', 
+            "Comment updated: " . substr($commentContent, 0, 50) . "...", 
             $commentId, 
-            $metadata
+            array_merge($metadata, ['action' => 'update'])
         );
     }
-    
-    public function logCommentDeleted($userId, $projectId, $commentId, $commentPreview, $metadata = null) {
+
+    public function logCommentDeleted($userId, $projectId, $commentId, $commentContent, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::COMMENT_DELETED, 
-            "Comment deleted: {$commentPreview}", 
+            'comment_deleted', 
+            "Comment deleted: " . substr($commentContent, 0, 50) . "...", 
             $commentId, 
-            $metadata
+            array_merge($metadata, ['action' => 'delete'])
         );
     }
-    
-    public function logFileUploaded($userId, $projectId, $fileId, $fileName, $metadata = null) {
+
+    public function logFileUploaded($userId, $projectId, $fileId, $fileName, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::FILE_UPLOADED, 
+            'file_uploaded', 
             "File uploaded: {$fileName}", 
             $fileId, 
-            $metadata
+            array_merge($metadata, ['action' => 'upload', 'filename' => $fileName])
         );
     }
-    
-    public function logFileDeleted($userId, $projectId, $fileId, $fileName, $metadata = null) {
+
+    public function logFileDeleted($userId, $projectId, $fileId, $fileName, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::FILE_DELETED, 
+            'file_deleted', 
             "File deleted: {$fileName}", 
             $fileId, 
-            $metadata
+            array_merge($metadata, ['action' => 'delete', 'filename' => $fileName])
         );
     }
-    
-    public function logSettingsUpdated($userId, $projectId, $settingsType, $metadata = null) {
+
+    public function logSettingsUpdated($userId, $projectId, $settingsType, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::SETTINGS_UPDATED, 
+            'settings_updated', 
             "Settings updated: {$settingsType}", 
             null, 
-            $metadata
+            array_merge($metadata, ['action' => 'update', 'settings_type' => $settingsType])
         );
     }
-    
-    public function logMilestoneReached($userId, $projectId, $milestoneName, $metadata = null) {
+
+    public function logMilestoneReached($userId, $projectId, $milestoneId, $milestoneName, $metadata = []) {
         return $this->logActivity(
             $userId, 
             $projectId, 
-            self::MILESTONE_REACHED, 
+            'milestone_reached', 
             "Milestone reached: {$milestoneName}", 
-            null, 
-            $metadata
+            $milestoneId, 
+            array_merge($metadata, ['action' => 'milestone', 'milestone_name' => $milestoneName])
         );
     }
-    
+
     /**
-     * Invalidate activity-related caches
+     * Invalidate activity caches
      */
-    private function invalidateActivityCaches($projectId = null, $userId = null) {
-        // Clear specific cache keys
-        if ($projectId) {
-            $this->clearCache("project_activities_{$projectId}");
-            $this->clearCache("project_activity_stats_{$projectId}");
-            $this->clearCache("total_activities_{$projectId}");
-            $this->clearCache("recent_activities_{$projectId}");
-            $this->clearCache("activity_types_{$projectId}");
-            $this->clearCache("top_contributors_{$projectId}");
+    private function invalidateActivityCaches($projectId, $userId) {
+        try {
+            // Clear project-specific caches
+            if ($projectId) {
+                $this->clearCache("project_activities_{$projectId}_*");
+                $this->clearCache("project_activity_stats_{$projectId}");
+            }
+            
+            // Clear user-specific caches
+            $this->clearCache("user_activities_{$userId}_*");
+            
+            // Clear general activity caches
+            $this->clearCache("activities_*");
+        } catch (Exception $e) {
+            error_log("Error invalidating activity caches: " . $e->getMessage());
         }
-        
-        if ($userId) {
-            $this->clearCache("user_activities_{$userId}");
-        }
-        
-        // Clear general activity cache patterns
-        $this->clearCache("activities_");
-    }
-    
-    /**
-     * Get all supported activity types
-     */
-    public static function getSupportedActivityTypes() {
-        return [
-            // Bug Activities
-            self::BUG_CREATED, self::BUG_REPORTED, self::BUG_UPDATED, self::BUG_FIXED,
-            self::BUG_ASSIGNED, self::BUG_DELETED, self::BUG_STATUS_CHANGED,
-            
-            // Task Activities
-            self::TASK_CREATED, self::TASK_UPDATED, self::TASK_COMPLETED, 
-            self::TASK_DELETED, self::TASK_ASSIGNED,
-            
-            // Update Activities
-            self::UPDATE_CREATED, self::UPDATE_UPDATED, self::UPDATE_DELETED,
-            
-            // Fix Activities
-            self::FIX_CREATED, self::FIX_UPDATED, self::FIX_DELETED,
-            
-            // Project Activities
-            self::PROJECT_CREATED, self::PROJECT_UPDATED, self::PROJECT_DELETED,
-            self::MEMBER_ADDED, self::MEMBER_REMOVED,
-            
-            // User Activities
-            self::USER_CREATED, self::USER_UPDATED, self::USER_DELETED, self::USER_ROLE_CHANGED,
-            
-            // Feedback Activities
-            self::FEEDBACK_CREATED, self::FEEDBACK_UPDATED, self::FEEDBACK_DELETED, self::FEEDBACK_DISMISSED,
-            
-            // Meeting Activities
-            self::MEETING_CREATED, self::MEETING_UPDATED, self::MEETING_DELETED,
-            self::MEETING_JOINED, self::MEETING_LEFT,
-            
-            // Message Activities
-            self::MESSAGE_SENT, self::MESSAGE_UPDATED, self::MESSAGE_DELETED,
-            self::MESSAGE_PINNED, self::MESSAGE_UNPINNED,
-            
-            // Announcement Activities
-            self::ANNOUNCEMENT_CREATED, self::ANNOUNCEMENT_UPDATED, self::ANNOUNCEMENT_DELETED, self::ANNOUNCEMENT_BROADCAST,
-            
-            // General Activities
-            self::COMMENT_ADDED, self::COMMENT_UPDATED, self::COMMENT_DELETED,
-            self::FILE_UPLOADED, self::FILE_DELETED, self::SETTINGS_UPDATED, self::MILESTONE_REACHED
-        ];
     }
 }
 ?>

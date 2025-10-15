@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../ActivityLogger.php';
 require_once __DIR__ . '/../../config/utils.php';
 
 class FeedbackController extends BaseAPI {
@@ -74,6 +75,23 @@ class FeedbackController extends BaseAPI {
                 VALUES (?, ?, ?, ?, NOW())
             ");
             $stmt->execute([$feedbackId, $userId, $rating, $feedbackText]);
+            
+            // Log feedback creation activity
+            try {
+                $logger = ActivityLogger::getInstance();
+                $logger->logFeedbackCreated(
+                    $userId,
+                    null, // No specific project for feedback
+                    $feedbackId,
+                    "User Feedback (Rating: {$rating})",
+                    [
+                        'rating' => $rating,
+                        'has_text' => !empty($feedbackText)
+                    ]
+                );
+            } catch (Exception $e) {
+                error_log("Failed to log feedback creation activity: " . $e->getMessage());
+            }
             
             $this->sendJsonResponse(200, "Feedback submitted successfully", [
                 'feedback_id' => $feedbackId,

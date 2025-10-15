@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../ActivityLogger.php';
 
 class ChatMessageController extends BaseAPI {
     
@@ -92,6 +93,25 @@ class ChatMessageController extends BaseAPI {
             }
             
             $this->conn->commit();
+            
+            // Log message sent activity
+            try {
+                $logger = ActivityLogger::getInstance();
+                $logger->logMessageSent(
+                    $userId,
+                    null, // No specific project for chat messages
+                    $messageId,
+                    $content ?? "[Voice Message]",
+                    $this->getGroupName($groupId),
+                    [
+                        'message_type' => $messageType,
+                        'group_id' => $groupId,
+                        'is_reply' => !empty($replyToMessageId)
+                    ]
+                );
+            } catch (Exception $e) {
+                error_log("Failed to log message sent activity: " . $e->getMessage());
+            }
             
             // Get the created message with sender details
             $message = $this->getMessageWithDetails($messageId);
@@ -625,5 +645,19 @@ class ChatMessageController extends BaseAPI {
             WHERE group_id = ? AND user_id = ?
         ");
         $updateStmt->execute([$groupId, $userId]);
+    }
+    
+    /**
+     * Get group name for activity logging
+     */
+    private function getGroupName($groupId) {
+        try {
+            $stmt = $this->conn->prepare("SELECT name FROM chat_groups WHERE id = ?");
+            $stmt->execute([$groupId]);
+            $group = $stmt->fetch(PDO::FETCH_ASSOC);
+            return $group ? $group['name'] : "Unknown Group";
+        } catch (Exception $e) {
+            return "Unknown Group";
+        }
     }
 } 
