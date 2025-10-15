@@ -46,4 +46,3 @@ function handleCORS() {
 
 // Auto-call CORS handler
 handleCORS();
-?> 
