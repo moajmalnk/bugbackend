@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../ActivityLogger.php';
 require_once __DIR__ . '/../projects/ProjectMemberController.php';
 class UpdateController extends BaseAPI
 {
@@ -47,6 +48,23 @@ class UpdateController extends BaseAPI
             ]);
 
             if ($success) {
+                // Log update creation activity
+                try {
+                    $logger = ActivityLogger::getInstance();
+                    $logger->logUpdateCreated(
+                        $userId,
+                        $projectId,
+                        $id,
+                        $data['title'],
+                        [
+                            'type' => $data['type'],
+                            'description' => substr($data['description'], 0, 100) . '...'
+                        ]
+                    );
+                } catch (Exception $e) {
+                    error_log("Failed to log update creation activity: " . $e->getMessage());
+                }
+                
                 // Also fetch creator username for convenience
                 $username = null;
                 try {

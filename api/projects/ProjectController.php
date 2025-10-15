@@ -16,7 +16,7 @@ class ProjectController extends BaseAPI
 
     public function getAll()
     {
-        if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+        if (!isset($_SERVER['REQUEST_METHOD']) || $_SERVER['REQUEST_METHOD'] !== 'GET') {
             $this->sendJsonResponse(405, "Method not allowed");
             return;
         }

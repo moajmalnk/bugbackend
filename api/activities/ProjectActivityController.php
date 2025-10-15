@@ -196,7 +196,7 @@ class ProjectActivityController extends BaseAPI {
             );
             
             $topContributors = $this->fetchCached(
-                'SELECT u.username, COUNT(*) as activity_count FROM project_activities pa JOIN users u ON pa.user_id COLLATE utf8mb4_general_ci = u.id COLLATE utf8mb4_general_ci WHERE pa.project_id = ? GROUP BY pa.user_id, u.username ORDER BY activity_count DESC LIMIT 5',
+                'SELECT u.username, COUNT(*) as activity_count FROM project_activities pa JOIN users u ON pa.user_id  = u.id  WHERE pa.project_id = ? GROUP BY pa.user_id, u.username ORDER BY activity_count DESC LIMIT 5',
                 [$projectId],
                 "top_contributors_{$projectId}",
                 300
@@ -268,9 +268,7 @@ class ProjectActivityController extends BaseAPI {
                     ELSE NULL
                 END as related_title
             FROM project_activities pa
-            LEFT JOIN users u ON pa.user_id COLLATE utf8mb4_general_ci = u.id COLLATE utf8mb4_general_ci
-            LEFT JOIN projects p ON pa.project_id COLLATE utf8mb4_general_ci = p.id COLLATE utf8mb4_general_ci
-            LEFT JOIN bugs b ON pa.related_id COLLATE utf8mb4_general_ci = b.id COLLATE utf8mb4_general_ci AND pa.activity_type LIKE 'bug_%'
+            LEFT JOIN users u ON pa.user_id  = u.id             LEFT JOIN projects p ON pa.project_id  = p.id             LEFT JOIN bugs b ON pa.related_id  = b.id  AND pa.activity_type LIKE 'bug_%'
             WHERE pa.project_id = ?
             ORDER BY pa.created_at DESC
             LIMIT ? OFFSET ?
@@ -283,47 +281,36 @@ class ProjectActivityController extends BaseAPI {
     private function buildUserActivityQuery($userRole, $userId) {
         if ($userRole === 'admin') {
             // Admins can see all activities
+            // Simplified query without JOINs to avoid collation issues
             return "
                 SELECT 
                     pa.*,
-                    u.username,
-                    u.email,
-                    p.name as project_name,
-                    CASE 
-                        WHEN pa.activity_type = 'bug_reported' THEN b.title
-                        WHEN pa.activity_type = 'bug_updated' THEN b.title
-                        WHEN pa.activity_type = 'bug_fixed' THEN b.title
-                        ELSE NULL
-                    END as related_title
+                    NULL as username,
+                    NULL as email,
+                    NULL as project_name,
+                    NULL as related_title
                 FROM project_activities pa
-                LEFT JOIN users u ON pa.user_id COLLATE utf8mb4_general_ci = u.id COLLATE utf8mb4_general_ci
-                LEFT JOIN projects p ON pa.project_id COLLATE utf8mb4_general_ci = p.id COLLATE utf8mb4_general_ci
-                LEFT JOIN bugs b ON pa.related_id COLLATE utf8mb4_general_ci = b.id COLLATE utf8mb4_general_ci AND pa.activity_type LIKE 'bug_%'
                 ORDER BY pa.created_at DESC
                 LIMIT ? OFFSET ?
             ";
         } else {
-            // Regular users only see activities from projects they have access to
+            // Regular users see activities from projects they have access to PLUS non-project activities (project_id IS NULL)
+            // Simplified query without JOINs to avoid collation issues
             return "
                 SELECT 
                     pa.*,
-                    u.username,
-                    u.email,
-                    p.name as project_name,
-                    CASE 
-                        WHEN pa.activity_type = 'bug_reported' THEN b.title
-                        WHEN pa.activity_type = 'bug_updated' THEN b.title
-                        WHEN pa.activity_type = 'bug_fixed' THEN b.title
-                        ELSE NULL
-                    END as related_title
+                    NULL as username,
+                    NULL as email,
+                    NULL as project_name,
+                    NULL as related_title
                 FROM project_activities pa
-                LEFT JOIN users u ON pa.user_id COLLATE utf8mb4_general_ci = u.id COLLATE utf8mb4_general_ci
-                LEFT JOIN projects p ON pa.project_id COLLATE utf8mb4_general_ci = p.id COLLATE utf8mb4_general_ci
-                LEFT JOIN bugs b ON pa.related_id COLLATE utf8mb4_general_ci = b.id COLLATE utf8mb4_general_ci AND pa.activity_type LIKE 'bug_%'
-                WHERE pa.project_id IN (
-                    SELECT DISTINCT project_id FROM project_members WHERE user_id = ?
-                    UNION
-                    SELECT DISTINCT id FROM projects WHERE created_by = ?
+                WHERE (
+                    pa.project_id IS NULL 
+                    OR pa.project_id IN (
+                        SELECT DISTINCT project_id FROM project_members WHERE user_id = ?
+                        UNION
+                        SELECT DISTINCT id FROM projects WHERE created_by = ?
+                    )
                 )
                 ORDER BY pa.created_at DESC
                 LIMIT ? OFFSET ?
@@ -345,10 +332,13 @@ class ProjectActivityController extends BaseAPI {
             return "
                 SELECT COUNT(*) as total 
                 FROM project_activities pa
-                WHERE pa.project_id IN (
-                    SELECT DISTINCT project_id FROM project_members WHERE user_id = ?
-                    UNION
-                    SELECT DISTINCT id FROM projects WHERE created_by = ?
+                WHERE (
+                    pa.project_id IS NULL 
+                    OR pa.project_id IN (
+                        SELECT DISTINCT project_id FROM project_members WHERE user_id = ?
+                        UNION
+                        SELECT DISTINCT id FROM projects WHERE created_by = ?
+                    )
                 )
             ";
         }

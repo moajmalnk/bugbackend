@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../ActivityLogger.php';
 require_once __DIR__ . '/../../utils/send_email.php';
 
 class UserController extends BaseAPI {
@@ -405,6 +406,24 @@ class UserController extends BaseAPI {
                 return;
             }
 
+            // Log user creation activity
+            try {
+                $logger = ActivityLogger::getInstance();
+                $logger->logUserCreated(
+                    $id, // Current user ID (admin who created the user)
+                    null, // No specific project for user creation
+                    $id, // The newly created user's ID
+                    $username,
+                    [
+                        'email' => $email,
+                        'role' => $role,
+                        'phone' => $phone
+                    ]
+                );
+            } catch (Exception $e) {
+                error_log("Failed to log user creation activity: " . $e->getMessage());
+            }
+
             // If user created successfully, send welcome email
             $emailSent = false;
             if ($role === 'developer' || $role === 'tester') {
@@ -516,6 +535,28 @@ class UserController extends BaseAPI {
             $sql = "UPDATE users SET " . implode(", ", $fields) . " WHERE id = ?";
             $stmt = $conn->prepare($sql);
             if ($stmt->execute($params)) {
+                // Log user update activity
+                try {
+                    // Get current user info for logging
+                    $currentUser = $this->conn->prepare("SELECT username FROM users WHERE id = ?");
+                    $currentUser->execute([$id]);
+                    $user = $currentUser->fetch(PDO::FETCH_ASSOC);
+                    
+                    $logger = ActivityLogger::getInstance();
+                    $logger->logUserUpdated(
+                        $id, // Current user ID (admin who updated the user)
+                        null, // No specific project for user updates
+                        $id, // The updated user's ID
+                        $user['username'],
+                        [
+                            'updated_fields' => array_keys($data),
+                            'role' => $data['role'] ?? null
+                        ]
+                    );
+                } catch (Exception $e) {
+                    error_log("Failed to log user update activity: " . $e->getMessage());
+                }
+                
                 $this->sendJsonResponse(200, "User updated successfully");
             } else {
                 $this->sendJsonResponse(500, "Failed to update user");

@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../ActivityLogger.php';
 
 class AnnouncementController extends BaseAPI {
 
@@ -8,7 +9,7 @@ class AnnouncementController extends BaseAPI {
     }
 
     public function getLatestActive() {
-        if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+        if (!isset($_SERVER['REQUEST_METHOD']) || $_SERVER['REQUEST_METHOD'] !== 'GET') {
             return $this->sendJsonResponse(405, "Method not allowed");
         }
 
@@ -39,7 +40,7 @@ class AnnouncementController extends BaseAPI {
     }
 
     public function getAll() {
-        if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+        if (!isset($_SERVER['REQUEST_METHOD']) || $_SERVER['REQUEST_METHOD'] !== 'GET') {
             return $this->sendJsonResponse(405, "Method not allowed");
         }
 
@@ -63,7 +64,7 @@ class AnnouncementController extends BaseAPI {
     }
 
     public function create() {
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        if (!isset($_SERVER['REQUEST_METHOD']) || $_SERVER['REQUEST_METHOD'] !== 'POST') {
             return $this->sendJsonResponse(405, "Method not allowed");
         }
 
@@ -101,6 +102,23 @@ class AnnouncementController extends BaseAPI {
                 'expiry_date' => $expiryDate,
             ];
 
+            // Log announcement creation activity
+            try {
+                $logger = ActivityLogger::getInstance();
+                $logger->logAnnouncementCreated(
+                    $decoded->user_id,
+                    null, // No specific project for announcements
+                    $lastInsertId,
+                    $data['title'],
+                    [
+                        'is_active' => $isActive,
+                        'has_expiry' => !empty($expiryDate)
+                    ]
+                );
+            } catch (Exception $e) {
+                error_log("Failed to log announcement creation activity: " . $e->getMessage());
+            }
+
             $this->sendJsonResponse(201, "Announcement created successfully", $announcement);
 
         } catch (Exception $e) {
@@ -110,7 +128,7 @@ class AnnouncementController extends BaseAPI {
     }
     
     public function update($id) {
-        if ($_SERVER['REQUEST_METHOD'] !== 'PUT' && $_SERVER['REQUEST_METHOD'] !== 'POST') { // Allow POST for updates
+        if (!isset($_SERVER['REQUEST_METHOD']) || ($_SERVER['REQUEST_METHOD'] !== 'PUT' && $_SERVER['REQUEST_METHOD'] !== 'POST')) { // Allow POST for updates
             return $this->sendJsonResponse(405, "Method not allowed");
         }
     
@@ -178,7 +196,7 @@ class AnnouncementController extends BaseAPI {
     
 
     public function delete($id) {
-        if ($_SERVER['REQUEST_METHOD'] !== 'DELETE') {
+        if (!isset($_SERVER['REQUEST_METHOD']) || $_SERVER['REQUEST_METHOD'] !== 'DELETE') {
             return $this->sendJsonResponse(405, "Method not allowed");
         }
 
@@ -205,7 +223,7 @@ class AnnouncementController extends BaseAPI {
     }
 
     public function broadcast($id) {
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        if (!isset($_SERVER['REQUEST_METHOD']) || $_SERVER['REQUEST_METHOD'] !== 'POST') {
             return $this->sendJsonResponse(405, "Method not allowed");
         }
 
@@ -272,4 +290,4 @@ class AnnouncementController extends BaseAPI {
         curl_exec($ch);
         curl_close($ch);
     }
-} 
+}

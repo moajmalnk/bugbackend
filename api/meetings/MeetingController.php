@@ -1,6 +1,7 @@
 <?php
 
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../ActivityLogger.php';
 require_once __DIR__ . '/../../config/utils.php';
 
 class MeetingController extends BaseAPI {
@@ -25,6 +26,24 @@ class MeetingController extends BaseAPI {
             return $this->sendJsonResponse(500, 'Failed to create meeting');
         }
         $meetingId = $this->conn->lastInsertId();
+        
+        // Log meeting creation activity
+        try {
+            $logger = ActivityLogger::getInstance();
+            $logger->logMeetingCreated(
+                $requestUserId,
+                null, // No specific project for meetings
+                $meetingId,
+                $title,
+                [
+                    'meeting_code' => $code,
+                    'is_active' => true
+                ]
+            );
+        } catch (Exception $e) {
+            error_log("Failed to log meeting creation activity: " . $e->getMessage());
+        }
+        
         return [ 'success' => true, 'data' => ['id' => (int)$meetingId, 'code' => $code, 'title' => $title] ];
     }
 
