@@ -375,15 +375,21 @@ class ProjectActivityController extends BaseAPI {
                 'id' => $activity['id'],
                 'type' => $activity['activity_type'],
                 'description' => $activity['description'],
+                'user_id' => $activity['user_id'],
+                'project_id' => $activity['project_id'],
+                'related_id' => $activity['related_id'],
+                'username' => $activity['username'],
+                'email' => $activity['email'],
+                'project_name' => $activity['project_name'],
                 'user' => [
                     'id' => $activity['user_id'],
                     'username' => $activity['username'],
                     'email' => $activity['email']
                 ],
-                'project' => [
+                'project' => $activity['project_id'] ? [
                     'id' => $activity['project_id'],
                     'name' => $activity['project_name']
-                ],
+                ] : null,
                 'related_title' => $activity['related_title'],
                 'metadata' => $metadata,
                 'created_at' => $activity['created_at'],
