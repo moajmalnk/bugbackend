@@ -1,6 +1,7 @@
 <?php
 
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../ActivityLogger.php';
 
 class BugController extends BaseAPI {
     private $baseUrl;
@@ -191,6 +192,24 @@ class BugController extends BaseAPI {
             }
 
             $this->conn->commit();
+
+            // Log activity
+            try {
+                $logger = ActivityLogger::getInstance();
+                $logger->logBugCreated(
+                    $data['reporter_id'],
+                    $data['project_id'],
+                    $bugId,
+                    $data['name'],
+                    [
+                        'priority' => $data['priority'],
+                        'status' => $data['status'],
+                        'attachments_count' => count($uploadedAttachments)
+                    ]
+                );
+            } catch (Exception $e) {
+                error_log("Failed to log bug creation activity: " . $e->getMessage());
+            }
 
             $this->handleSuccess("Bug created successfully", [
                 'bugId' => $bugId,
@@ -607,8 +626,8 @@ class BugController extends BaseAPI {
         try {
             $decoded = $this->validateToken();
             
-            // First, get the bug to check who reported it
-            $checkQuery = "SELECT reported_by FROM bugs WHERE id = :id";
+            // First, get the bug to check who reported it and get details for logging
+            $checkQuery = "SELECT reported_by, title, project_id FROM bugs WHERE id = :id";
             $checkStmt = $this->conn->prepare($checkQuery);
             $checkStmt->bindParam(':id', $id);
             $checkStmt->execute();
@@ -650,6 +669,24 @@ class BugController extends BaseAPI {
 
             if ($stmt->execute()) {
                 $this->conn->commit();
+
+                // Log activity
+                try {
+                    $logger = ActivityLogger::getInstance();
+                    $logger->logBugDeleted(
+                        $decoded->user_id,
+                        $bug['project_id'],
+                        $id,
+                        $bug['title'],
+                        [
+                            'attachments_count' => count($attachments),
+                            'deleted_by_role' => $decoded->role
+                        ]
+                    );
+                } catch (Exception $e) {
+                    error_log("Failed to log bug deletion activity: " . $e->getMessage());
+                }
+
                 $this->sendJsonResponse(200, "Bug and attachments deleted successfully");
                 return;
             }
@@ -909,6 +946,25 @@ class BugController extends BaseAPI {
             }
 
             $this->conn->commit();
+
+            // Log activity
+            try {
+                $logger = ActivityLogger::getInstance();
+                $logger->logBugUpdated(
+                    $data['updated_by'],
+                    $data['project_id'],
+                    $data['id'],
+                    $data['title'],
+                    [
+                        'priority' => $data['priority'],
+                        'status' => $data['status'],
+                        'updated_fields' => array_keys($data)
+                    ]
+                );
+            } catch (Exception $e) {
+                error_log("Failed to log bug update activity: " . $e->getMessage());
+            }
+
             return $updatedBug;
 
         } catch (Exception $e) {

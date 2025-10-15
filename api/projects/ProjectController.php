@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../ActivityLogger.php';
 
 class ProjectController extends BaseAPI
 {
@@ -14,35 +15,35 @@ class ProjectController extends BaseAPI
     }
 
     public function getAll()
-{
-    if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
-        $this->sendJsonResponse(405, "Method not allowed");
-        return;
-    }
-
-    try {
-        $decoded = $this->validateToken();
-
-        $query = "SELECT * FROM projects";
-        $stmt = $this->conn->prepare($query);
-        $stmt->execute();
-
-        $projects = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        // Add members array to each project
-        foreach ($projects as &$project) {
-            $stmt2 = $this->conn->prepare("SELECT user_id FROM project_members WHERE project_id = ?");
-            $stmt2->execute([$project['id']]);
-            $project['members'] = array_column($stmt2->fetchAll(PDO::FETCH_ASSOC), 'user_id');
+    {
+        if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+            $this->sendJsonResponse(405, "Method not allowed");
+            return;
         }
 
-        $this->sendJsonResponse(200, "Projects retrieved successfully", $projects);
+        try {
+            $decoded = $this->validateToken();
 
-    } catch (Exception $e) {
-        error_log("Error fetching projects: " . $e->getMessage());
-        $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
+            $query = "SELECT * FROM projects";
+            $stmt = $this->conn->prepare($query);
+            $stmt->execute();
+
+            $projects = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            // Add members array to each project
+            foreach ($projects as &$project) {
+                $stmt2 = $this->conn->prepare("SELECT user_id FROM project_members WHERE project_id = ?");
+                $stmt2->execute([$project['id']]);
+                $project['members'] = array_column($stmt2->fetchAll(PDO::FETCH_ASSOC), 'user_id');
+            }
+
+            $this->sendJsonResponse(200, "Projects retrieved successfully", $projects);
+
+        } catch (Exception $e) {
+            error_log("Error fetching projects: " . $e->getMessage());
+            $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
+        }
     }
-}
 
     public function create()
     {
@@ -84,6 +85,22 @@ class ProjectController extends BaseAPI
                 'created_at' => date('Y-m-d H:i:s'),
                 'updated_at' => date('Y-m-d H:i:s')
             ];
+
+            // Log activity
+            try {
+                $logger = ActivityLogger::getInstance();
+                $logger->logProjectCreated(
+                    $decoded->user_id,
+                    $id,
+                    $data['name'],
+                    [
+                        'description' => $data['description'],
+                        'status' => $status
+                    ]
+                );
+            } catch (Exception $e) {
+                error_log("Failed to log project creation activity: " . $e->getMessage());
+            }
 
             $this->sendJsonResponse(201, "Project created successfully", $project);
 
