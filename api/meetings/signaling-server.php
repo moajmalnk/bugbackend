@@ -30,7 +30,15 @@ class SignalingServer implements MessageComponentInterface {
         if ($type === 'join' && $code) {
             if (!isset($this->rooms[$code])) { $this->rooms[$code] = []; }
             $this->rooms[$code][$from->resourceId] = $from;
-            $this->broadcast($code, [ 'type' => 'peer-joined', 'peerId' => $from->resourceId ] , $from);
+            
+            // Store user information if provided
+            $userInfo = $data['user'] ?? null;
+            
+            $this->broadcast($code, [ 
+                'type' => 'peer-joined', 
+                'peerId' => $from->resourceId,
+                'user' => $userInfo
+            ], $from);
             $from->send(json_encode(['type' => 'peers', 'peers' => array_keys($this->rooms[$code]) ]));
             return;
         }

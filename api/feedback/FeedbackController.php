@@ -166,8 +166,27 @@ class FeedbackController extends BaseAPI {
         try {
             // Validate authentication and admin role
             $tokenData = $this->validateToken();
-            if ($tokenData->role !== 'admin') {
-                $this->sendJsonResponse(403, "Access denied. Admin role required.");
+            
+            // Debug logging
+            error_log("FeedbackController::getFeedbackStats - Token data: " . json_encode([
+                'user_id' => $tokenData->user_id ?? 'not_set',
+                'username' => $tokenData->username ?? 'not_set', 
+                'role' => $tokenData->role ?? 'not_set',
+                'has_role_property' => property_exists($tokenData, 'role')
+            ]));
+            
+            if (!isset($tokenData->role) || $tokenData->role !== 'admin') {
+                error_log("FeedbackController::getFeedbackStats - Access denied for role: " . ($tokenData->role ?? 'null'));
+                
+                // Get user data from database for comparison
+                $stmt = $this->conn->prepare("SELECT role FROM users WHERE id = ?");
+                $stmt->execute([$tokenData->user_id]);
+                $dbUser = $stmt->fetch(PDO::FETCH_ASSOC);
+                $dbRole = $dbUser['role'] ?? 'not_found';
+                
+                error_log("FeedbackController::getFeedbackStats - JWT role: " . ($tokenData->role ?? 'null') . ", DB role: " . $dbRole);
+                
+                $this->sendJsonResponse(403, "Access denied. Admin role required. JWT role: " . ($tokenData->role ?? 'null') . ", DB role: " . $dbRole);
                 return;
             }
             
