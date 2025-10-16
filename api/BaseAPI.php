@@ -82,6 +82,11 @@ class BaseAPI {
                     $this->sendJsonResponse(400, "Failed to read request body");
                 }
                 
+                // Handle empty content gracefully
+                if (empty(trim($content))) {
+                    return [];
+                }
+                
                 $data = json_decode($content, true);
                 if (json_last_error() !== JSON_ERROR_NONE) {
                     $this->sendJsonResponse(400, "Invalid JSON: " . json_last_error_msg());
