@@ -76,32 +76,58 @@ class ChatMessageController extends BaseAPI {
             
             $this->conn->beginTransaction();
             
-            // Insert message with media fields
-            $stmt = $this->conn->prepare("
-                INSERT INTO chat_messages (
-                    id, group_id, sender_id, message_type, content, 
-                    voice_file_path, voice_duration, reply_to_message_id,
-                    media_type, media_file_path, media_file_name, 
-                    media_file_size, media_thumbnail, media_duration
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ");
+            // Check if media columns exist
+            $columnsQuery = "SHOW COLUMNS FROM chat_messages LIKE 'media_type'";
+            $columnsStmt = $this->conn->query($columnsQuery);
+            $hasMediaColumns = $columnsStmt->rowCount() > 0;
             
-            $stmt->execute([
-                $messageId,
-                $groupId,
-                $userId,
-                $messageType,
-                $content,
-                $input['voice_file_path'] ?? null,
-                $input['voice_duration'] ?? null,
-                $replyToMessageId,
-                $input['media_type'] ?? null,
-                $input['media_file_path'] ?? null,
-                $input['media_file_name'] ?? null,
-                $input['media_file_size'] ?? null,
-                $input['media_thumbnail'] ?? null,
-                $input['media_duration'] ?? null
-            ]);
+            // Insert message with or without media fields depending on table structure
+            if ($hasMediaColumns) {
+                $stmt = $this->conn->prepare("
+                    INSERT INTO chat_messages (
+                        id, group_id, sender_id, message_type, content, 
+                        voice_file_path, voice_duration, reply_to_message_id,
+                        media_type, media_file_path, media_file_name, 
+                        media_file_size, media_thumbnail, media_duration
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ");
+                
+                $stmt->execute([
+                    $messageId,
+                    $groupId,
+                    $userId,
+                    $messageType,
+                    $content,
+                    $input['voice_file_path'] ?? null,
+                    $input['voice_duration'] ?? null,
+                    $replyToMessageId,
+                    $input['media_type'] ?? null,
+                    $input['media_file_path'] ?? null,
+                    $input['media_file_name'] ?? null,
+                    $input['media_file_size'] ?? null,
+                    $input['media_thumbnail'] ?? null,
+                    $input['media_duration'] ?? null
+                ]);
+            } else {
+                // Fallback for older database schema without media columns
+                $stmt = $this->conn->prepare("
+                    INSERT INTO chat_messages (
+                        id, group_id, sender_id, message_type, content, 
+                        voice_file_path, voice_duration, reply_to_message_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ");
+                
+                $stmt->execute([
+                    $messageId,
+                    $groupId,
+                    $userId,
+                    $messageType,
+                    $content,
+                    $input['voice_file_path'] ?? null,
+                    $input['voice_duration'] ?? null,
+                    $replyToMessageId
+                ]);
+            }
             
             // Process @mentions if content is provided
             if ($content && $messageType === 'text') {
