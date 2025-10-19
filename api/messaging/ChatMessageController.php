@@ -167,29 +167,57 @@ class ChatMessageController extends BaseAPI {
             $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 50;
             $offset = ($page - 1) * $limit;
             
-            // Get messages with sender details, reply information, and starred status
-            $query = "
-                SELECT 
-                    cm.*,
-                    COALESCE(u.username, 'BugRicer') as sender_name,
-                    u.email as sender_email,
-                    u.role as sender_role,
-                    rm.content as reply_content,
-                    rm.message_type as reply_type,
-                    COALESCE(ru.username, 'BugRicer') as reply_sender_name,
-                    IF(sm.id IS NOT NULL, 1, 0) as is_starred
-                FROM chat_messages cm
-                LEFT JOIN users u ON cm.sender_id = u.id
-                LEFT JOIN chat_messages rm ON cm.reply_to_message_id = rm.id
-                LEFT JOIN users ru ON rm.sender_id = ru.id
-                LEFT JOIN starred_messages sm ON cm.id = sm.message_id AND sm.user_id = ?
-                WHERE cm.group_id = ? AND cm.is_deleted = 0
-                ORDER BY cm.created_at DESC
-                LIMIT ? OFFSET ?
-            ";
+            // Check if starred_messages table exists
+            $tablesQuery = "SHOW TABLES LIKE 'starred_messages'";
+            $tablesStmt = $this->conn->query($tablesQuery);
+            $starredTableExists = $tablesStmt->rowCount() > 0;
             
-            $stmt = $this->conn->prepare($query);
-            $stmt->execute([$userId, $groupId, $limit, $offset]);
+            // Get messages with sender details, reply information, and starred status (if table exists)
+            if ($starredTableExists) {
+                $query = "
+                    SELECT 
+                        cm.*,
+                        COALESCE(u.username, 'BugRicer') as sender_name,
+                        u.email as sender_email,
+                        u.role as sender_role,
+                        rm.content as reply_content,
+                        rm.message_type as reply_type,
+                        COALESCE(ru.username, 'BugRicer') as reply_sender_name,
+                        IF(sm.id IS NOT NULL, 1, 0) as is_starred
+                    FROM chat_messages cm
+                    LEFT JOIN users u ON cm.sender_id = u.id
+                    LEFT JOIN chat_messages rm ON cm.reply_to_message_id = rm.id
+                    LEFT JOIN users ru ON rm.sender_id = ru.id
+                    LEFT JOIN starred_messages sm ON cm.id = sm.message_id AND sm.user_id = ?
+                    WHERE cm.group_id = ? AND cm.is_deleted = 0
+                    ORDER BY cm.created_at DESC
+                    LIMIT ? OFFSET ?
+                ";
+                $stmt = $this->conn->prepare($query);
+                $stmt->execute([$userId, $groupId, $limit, $offset]);
+            } else {
+                // Fallback query without starred messages
+                $query = "
+                    SELECT 
+                        cm.*,
+                        COALESCE(u.username, 'BugRicer') as sender_name,
+                        u.email as sender_email,
+                        u.role as sender_role,
+                        rm.content as reply_content,
+                        rm.message_type as reply_type,
+                        COALESCE(ru.username, 'BugRicer') as reply_sender_name,
+                        0 as is_starred
+                    FROM chat_messages cm
+                    LEFT JOIN users u ON cm.sender_id = u.id
+                    LEFT JOIN chat_messages rm ON cm.reply_to_message_id = rm.id
+                    LEFT JOIN users ru ON rm.sender_id = ru.id
+                    WHERE cm.group_id = ? AND cm.is_deleted = 0
+                    ORDER BY cm.created_at DESC
+                    LIMIT ? OFFSET ?
+                ";
+                $stmt = $this->conn->prepare($query);
+                $stmt->execute([$groupId, $limit, $offset]);
+            }
             $messages = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
             // Convert is_starred to boolean
@@ -220,7 +248,8 @@ class ChatMessageController extends BaseAPI {
             ]);
             
         } catch (Exception $e) {
-            error_log("Error fetching messages: " . $e->getMessage());
+            error_log("❌ Error fetching messages for group $groupId: " . $e->getMessage());
+            error_log("Stack trace: " . $e->getTraceAsString());
             $this->sendJsonResponse(500, "Failed to retrieve messages: " . $e->getMessage());
         }
     }
