@@ -40,7 +40,8 @@ class StarMessageAPI extends BaseAPI {
             $checkStmt = $this->conn->prepare("SELECT id FROM starred_messages WHERE message_id = ? AND user_id = ?");
             $checkStmt->execute([$messageId, $userId]);
             if ($checkStmt->fetch()) {
-                $this->sendJsonResponse(409, "Message already starred");
+                // Already starred - return success (idempotent)
+                $this->sendJsonResponse(200, "Message already starred");
                 return;
             }
             

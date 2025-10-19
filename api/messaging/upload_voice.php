@@ -44,9 +44,8 @@ class VoiceUploadController extends BaseAPI {
                 return;
             }
             
-            // Get the absolute path to the web root
-            $webRoot = $_SERVER['DOCUMENT_ROOT'];
-            $uploadDir = $webRoot . '/uploads/voice_messages/';
+            // Get the absolute path to the uploads directory
+            $uploadDir = __DIR__ . '/../../uploads/voice_notes/';
             if (!is_dir($uploadDir)) {
                 mkdir($uploadDir, 0755, true);
             }
@@ -68,9 +67,8 @@ class VoiceUploadController extends BaseAPI {
             // Determine the base URL dynamically
             $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' || $_SERVER['SERVER_PORT'] == 443) ? "https://" : "http://";
             $host = $_SERVER['HTTP_HOST'];
-            $basePath = str_replace('/api/messaging', '', dirname($_SERVER['SCRIPT_NAME']));
-            $publicPath = str_replace('/backend', '', $basePath);
-            $publicUrl = $protocol . $host . '/uploads/voice_messages/' . $filename;
+            $basePath = dirname(dirname(dirname($_SERVER['SCRIPT_NAME']))); // Go up to BugRicer root
+            $publicUrl = $protocol . $host . $basePath . '/backend/uploads/voice_notes/' . $filename;
             
             // Return file info
             $this->sendJsonResponse(200, "Voice message uploaded successfully", [
@@ -79,8 +77,6 @@ class VoiceUploadController extends BaseAPI {
                 'file_size' => $file['size'],
                 'file_type' => $file['type']
             ]);
-            
-            header('Content-Type: audio/webm');
             
         } catch (Exception $e) {
             error_log("Error uploading voice message: " . $e->getMessage());

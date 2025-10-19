@@ -34,9 +34,10 @@ class ChatMessageController extends BaseAPI {
             $content = $input['content'] ?? null;
             $replyToMessageId = $input['reply_to_message_id'] ?? null;
             
-            // Validate message type
-            if (!in_array($messageType, ['text', 'voice', 'reply'])) {
-                $this->sendJsonResponse(400, "Invalid message type");
+            // Validate message type - now includes media types
+            $validMessageTypes = ['text', 'voice', 'reply', 'image', 'video', 'document', 'audio'];
+            if (!in_array($messageType, $validMessageTypes)) {
+                $this->sendJsonResponse(400, "Invalid message type: $messageType");
                 return;
             }
             
@@ -57,6 +58,12 @@ class ChatMessageController extends BaseAPI {
                 return;
             }
             
+            // Validate media messages
+            if (in_array($messageType, ['image', 'video', 'document', 'audio']) && empty($input['media_file_path'])) {
+                $this->sendJsonResponse(400, "Media file path is required for media messages");
+                return;
+            }
+            
             // Validate reply message if provided
             if ($replyToMessageId) {
                 if (!$this->validateReplyMessage($replyToMessageId, $groupId)) {
@@ -69,11 +76,14 @@ class ChatMessageController extends BaseAPI {
             
             $this->conn->beginTransaction();
             
+            // Insert message with media fields
             $stmt = $this->conn->prepare("
                 INSERT INTO chat_messages (
                     id, group_id, sender_id, message_type, content, 
-                    voice_file_path, voice_duration, reply_to_message_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    voice_file_path, voice_duration, reply_to_message_id,
+                    media_type, media_file_path, media_file_name, 
+                    media_file_size, media_thumbnail, media_duration
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
             
             $stmt->execute([
@@ -84,7 +94,13 @@ class ChatMessageController extends BaseAPI {
                 $content,
                 $input['voice_file_path'] ?? null,
                 $input['voice_duration'] ?? null,
-                $replyToMessageId
+                $replyToMessageId,
+                $input['media_type'] ?? null,
+                $input['media_file_path'] ?? null,
+                $input['media_file_name'] ?? null,
+                $input['media_file_size'] ?? null,
+                $input['media_thumbnail'] ?? null,
+                $input['media_duration'] ?? null
             ]);
             
             // Process @mentions if content is provided
@@ -151,7 +167,7 @@ class ChatMessageController extends BaseAPI {
             $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 50;
             $offset = ($page - 1) * $limit;
             
-            // Get messages with sender details and reply information
+            // Get messages with sender details, reply information, and starred status
             $query = "
                 SELECT 
                     cm.*,
@@ -160,19 +176,26 @@ class ChatMessageController extends BaseAPI {
                     u.role as sender_role,
                     rm.content as reply_content,
                     rm.message_type as reply_type,
-                    ru.username as reply_sender_name
+                    ru.username as reply_sender_name,
+                    IF(sm.id IS NOT NULL, 1, 0) as is_starred
                 FROM chat_messages cm
                 JOIN users u ON cm.sender_id = u.id
                 LEFT JOIN chat_messages rm ON cm.reply_to_message_id = rm.id
                 LEFT JOIN users ru ON rm.sender_id = ru.id
+                LEFT JOIN starred_messages sm ON cm.id = sm.message_id AND sm.user_id = ?
                 WHERE cm.group_id = ? AND cm.is_deleted = 0
                 ORDER BY cm.created_at DESC
                 LIMIT ? OFFSET ?
             ";
             
             $stmt = $this->conn->prepare($query);
-            $stmt->execute([$groupId, $limit, $offset]);
+            $stmt->execute([$userId, $groupId, $limit, $offset]);
             $messages = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            // Convert is_starred to boolean
+            foreach ($messages as &$message) {
+                $message['is_starred'] = (bool)$message['is_starred'];
+            }
             
             // Get total count for pagination
             $countStmt = $this->conn->prepare("
