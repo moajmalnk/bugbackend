@@ -32,6 +32,7 @@ ini_set('log_errors', 1);
 
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/BugController.php';
+require_once __DIR__ . '/../../config/utils.php';
 
 // Handle preflight requests
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
@@ -71,8 +72,17 @@ try {
     // Add user ID from token as updated_by
     $data['updated_by'] = $decoded->user_id;
 
-    // Update the bug using the correct method signature
-    $result = $controller->updateBug($data);
+    // Check if we have files to handle
+    $hasFiles = !empty($_FILES['screenshots']) || !empty($_FILES['files']) || !empty($_FILES['voice_notes']);
+    $hasAttachmentsToDelete = isset($data['attachments_to_delete']) && !empty($data['attachments_to_delete']);
+
+    // If we have files or deletions, we need to handle them with updateBugWithAttachments
+    if ($hasFiles || $hasAttachmentsToDelete) {
+        $result = $controller->updateBugWithAttachments($data, $decoded->user_id);
+    } else {
+        // No files, just update the bug normally
+        $result = $controller->updateBug($data);
+    }
 
     // Send success response
     http_response_code(200);
