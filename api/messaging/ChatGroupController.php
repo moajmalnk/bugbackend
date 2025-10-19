@@ -399,18 +399,31 @@ class ChatGroupController extends BaseAPI {
             $errors = [];
             
             foreach ($userIds as $memberId) {
+                // Get username for error messages
+                $username = $memberId; // Default to ID if username not found
+                try {
+                    $userStmt = $this->conn->prepare("SELECT username FROM users WHERE id = ?");
+                    $userStmt->execute([$memberId]);
+                    $user = $userStmt->fetch(PDO::FETCH_ASSOC);
+                    if ($user) {
+                        $username = $user['username'];
+                    }
+                } catch (Exception $e) {
+                    // If username fetch fails, continue with ID
+                }
+                
                 try {
                     // Check if user is already a member
                     $checkStmt = $this->conn->prepare("SELECT 1 FROM chat_group_members WHERE group_id = ? AND user_id = ?");
                     $checkStmt->execute([$groupId, $memberId]);
                     if ($checkStmt->fetch()) {
-                        $errors[] = "User $memberId is already a member of this group";
+                        $errors[] = "User $username is already a member of this group";
                         continue;
                     }
                     
                     // Check if user exists and has access to the project
                     if (!$this->validateProjectAccess($memberId, 'user', $group['project_id'])) {
-                        $errors[] = "User $memberId does not have access to this project";
+                        $errors[] = "User $username does not have access to this project";
                         continue;
                     }
                     
@@ -419,7 +432,7 @@ class ChatGroupController extends BaseAPI {
                     $addedCount++;
                     
                 } catch (Exception $e) {
-                    $errors[] = "Failed to add user $memberId: " . $e->getMessage();
+                    $errors[] = "Failed to add user $username: " . $e->getMessage();
                 }
             }
             

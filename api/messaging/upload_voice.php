@@ -64,11 +64,12 @@ class VoiceUploadController extends BaseAPI {
             // Get audio duration using FFmpeg if available, otherwise estimate
             $duration = $this->getAudioDuration($filepath);
             
-            // Determine the base URL dynamically
+            // Generate the URL to access the file through the audio API
             $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' || $_SERVER['SERVER_PORT'] == 443) ? "https://" : "http://";
             $host = $_SERVER['HTTP_HOST'];
-            $basePath = dirname(dirname(dirname($_SERVER['SCRIPT_NAME']))); // Go up to BugRicer root
-            $publicUrl = $protocol . $host . $basePath . '/backend/uploads/voice_notes/' . $filename;
+            // Get base path: from /BugRicer/backend/api/messaging/upload_voice.php -> /BugRicer/backend
+            $basePath = dirname(dirname(dirname($_SERVER['SCRIPT_NAME']))); // Go up 3 levels to backend folder
+            $publicUrl = $protocol . $host . $basePath . '/api/audio.php?path=voice_notes/' . urlencode($filename);
             
             // Return file info
             $this->sendJsonResponse(200, "Voice message uploaded successfully", [

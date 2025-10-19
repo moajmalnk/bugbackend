@@ -28,13 +28,13 @@ class GetStarredMessagesAPI extends BaseAPI {
             $stmt = $this->conn->prepare("
                 SELECT 
                     cm.*,
-                    u.username as sender_name,
+                    COALESCE(u.username, 'BugRicer') as sender_name,
                     u.email as sender_email,
                     u.role as sender_role,
                     sm.starred_at
                 FROM starred_messages sm
                 JOIN chat_messages cm ON sm.message_id = cm.id
-                JOIN users u ON cm.sender_id = u.id
+                LEFT JOIN users u ON cm.sender_id = u.id
                 WHERE sm.user_id = ? 
                     AND sm.group_id = ?
                     AND cm.is_deleted = 0
