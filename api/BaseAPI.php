@@ -145,10 +145,17 @@ class BaseAPI {
             if ($result && isset($result->purpose) && $result->purpose === 'dashboard_access' && isset($result->admin_id)) {
                 try {
                     // This is an impersonation token - the user_id in the token is the impersonated user
-                    // Keep the admin_id for audit purposes but ensure we're acting as the impersonated user
+                    // Fetch the impersonated user's actual role from database
+                    $stmt = $this->conn->prepare("SELECT role FROM users WHERE id = ? LIMIT 1");
+                    $stmt->execute([$result->user_id]);
+                    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                    if ($row && isset($row['role'])) {
+                        $result->admin_role = $result->role ?? 'admin'; // Store original admin role
+                        $result->role = $row['role']; // Update to impersonated user's role
+                    }
                     $result->impersonated = true;
                     $result->admin_id = $result->admin_id; // Keep admin_id for logging
-                    error_log("🔑 Impersonation token detected - Admin: " . $result->admin_id . ", Acting as: " . $result->user_id . " (" . $result->username . ")");
+                    error_log("🔑 Impersonation token detected - Admin: " . $result->admin_id . ", Acting as: " . $result->user_id . " (" . $result->username . ", " . $result->role . ")");
                 } catch (Exception $e) {
                     error_log("❌ Impersonation token processing error: " . $e->getMessage());
                 }
@@ -158,16 +165,20 @@ class BaseAPI {
                 try {
                     if (isset($result->role) && $result->role === 'admin') {
                         error_log("🔑 Manual admin impersonation attempt - Target user ID: " . $impersonateId);
-                        // Verify the target user exists and fetch username
-                        $stmt = $this->conn->prepare("SELECT id, username FROM users WHERE id = ? LIMIT 1");
+                        // Verify the target user exists and fetch username and role
+                        $stmt = $this->conn->prepare("SELECT id, username, role FROM users WHERE id = ? LIMIT 1");
                         $stmt->execute([$impersonateId]);
                         $row = $stmt->fetch(PDO::FETCH_ASSOC);
                         if ($row && isset($row['id'])) {
                             $originalUserId = $result->user_id;
+                            $originalRole = $result->role;
                             $result->user_id = $row['id'];
                             $result->username = $row['username'] ?? ($result->username ?? null);
+                            $result->role = $row['role'] ?? $result->role; // Update role to impersonated user's role
                             $result->impersonated = true;
-                            error_log("✅ Manual impersonation successful - Original: $originalUserId, Now: " . $result->user_id . " (" . $result->username . ")");
+                            $result->admin_id = $originalUserId; // Store original admin ID
+                            $result->admin_role = $originalRole; // Store original admin role
+                            error_log("✅ Manual impersonation successful - Original: $originalUserId ($originalRole), Now: " . $result->user_id . " (" . $result->username . ", " . $result->role . ")");
                         } else {
                             error_log("❌ Manual impersonation failed - Target user not found: " . $impersonateId);
                         }
