@@ -119,11 +119,16 @@ class ChatGroupController extends BaseAPI {
             $userId = $decoded->user_id;
             $userRole = $decoded->role;
             
+            error_log("🔍 ChatGroupController::getByProject - User ID: $userId, Role: $userRole, Project ID: $projectId, Impersonated: " . (isset($decoded->impersonated) ? 'YES' : 'NO'));
+            
             // Validate project access
             if (!$this->validateProjectAccess($userId, $userRole, $projectId)) {
+                error_log("❌ ChatGroupController::getByProject - Access DENIED to project $projectId for user $userId (role: $userRole)");
                 $this->sendJsonResponse(403, "Access denied to this project");
                 return;
             }
+            
+            error_log("✅ ChatGroupController::getByProject - Access GRANTED to project $projectId for user $userId");
             
             $query = "
                 SELECT 
@@ -596,7 +601,10 @@ class ChatGroupController extends BaseAPI {
      * Helper methods
      */
     private function validateProjectAccess($userId, $userRole, $projectId) {
+        error_log("🔍 validateProjectAccess - User ID: $userId, Role: $userRole, Project ID: $projectId");
+        
         if ($userRole === 'admin') {
+            error_log("✅ validateProjectAccess - User is admin, access granted");
             return true;
         }
         
@@ -610,7 +618,11 @@ class ChatGroupController extends BaseAPI {
         
         $stmt = $this->conn->prepare($query);
         $stmt->execute([$userId, $projectId, $userId, $projectId]);
-        return (bool) $stmt->fetch();
+        $hasAccess = (bool) $stmt->fetch();
+        
+        error_log($hasAccess ? "✅ validateProjectAccess - User has project access" : "❌ validateProjectAccess - User does NOT have project access");
+        
+        return $hasAccess;
     }
     
     private function getGroupWithAccess($groupId, $userId, $userRole) {

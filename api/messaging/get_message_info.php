@@ -82,12 +82,12 @@ class GetMessageInfoAPI extends BaseAPI {
             $readStmt->execute([$messageId]);
             $readReceipts = $readStmt->fetchAll(PDO::FETCH_ASSOC);
             
-            // Merge delivery and read information
+            // Build user status map
             $userStatuses = [];
             foreach ($deliveryInfo as $delivery) {
                 $userStatuses[$delivery['id']] = [
                     'user_id' => $delivery['id'],
-                    'username' => $delivery['username'],
+                    'user_name' => $delivery['username'],
                     'email' => $delivery['email'],
                     'status' => 'delivered',
                     'delivered_at' => $delivery['delivered_at'],
@@ -95,6 +95,7 @@ class GetMessageInfoAPI extends BaseAPI {
                 ];
             }
             
+            // Update status for users who read the message
             foreach ($readReceipts as $read) {
                 if (isset($userStatuses[$read['user_id']])) {
                     $userStatuses[$read['user_id']]['status'] = 'read';
@@ -102,29 +103,54 @@ class GetMessageInfoAPI extends BaseAPI {
                 }
             }
             
-            // Get group member count for statistics
-            $memberStmt = $this->conn->prepare("
-                SELECT COUNT(*) as total_members
-                FROM chat_group_members
-                WHERE group_id = ? AND left_at IS NULL AND user_id != ?
-            ");
-            $memberStmt->execute([$groupId, $message['sender_id']]);
-            $memberCount = $memberStmt->fetch(PDO::FETCH_ASSOC)['total_members'];
+            // Separate users by status
+            $read = [];
+            $delivered = [];
+            $pending = [];
             
-            $readCount = count($readReceipts);
-            $deliveredCount = count($deliveryInfo);
+            foreach ($userStatuses as $user) {
+                if ($user['status'] === 'read') {
+                    $read[] = [
+                        'user_id' => $user['user_id'],
+                        'user_name' => $user['user_name'],
+                        'timestamp' => $user['read_at']
+                    ];
+                } else {
+                    $delivered[] = [
+                        'user_id' => $user['user_id'],
+                        'user_name' => $user['user_name'],
+                        'timestamp' => $user['delivered_at']
+                    ];
+                }
+            }
+            
+            // Get all group members to find pending users
+            $allMembersStmt = $this->conn->prepare("
+                SELECT u.id, u.username
+                FROM chat_group_members cgm
+                JOIN users u ON cgm.user_id = u.id
+                WHERE cgm.group_id = ? 
+                    AND cgm.user_id != ?
+                    AND cgm.left_at IS NULL
+            ");
+            $allMembersStmt->execute([$groupId, $message['sender_id']]);
+            $allMembers = $allMembersStmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            // Find pending users (those not in delivered or read)
+            $deliveredUserIds = array_column($userStatuses, 'user_id');
+            foreach ($allMembers as $member) {
+                if (!in_array($member['id'], $deliveredUserIds)) {
+                    $pending[] = [
+                        'user_id' => $member['id'],
+                        'user_name' => $member['username']
+                    ];
+                }
+            }
             
             $result = [
-                'message_id' => $messageId,
-                'sent_at' => $message['created_at'],
-                'sender_name' => $message['sender_name'],
-                'message_type' => $message['message_type'],
-                'statistics' => [
-                    'total_recipients' => (int)$memberCount,
-                    'delivered_count' => (int)$deliveredCount,
-                    'read_count' => (int)$readCount
-                ],
-                'recipients' => array_values($userStatuses)
+                'read' => $read,
+                'delivered' => $delivered,
+                'pending' => $pending
             ];
             
             $this->sendJsonResponse(200, "Message info retrieved successfully", $result);
@@ -133,6 +159,21 @@ class GetMessageInfoAPI extends BaseAPI {
             error_log("Error getting message info: " . $e->getMessage());
             $this->sendJsonResponse(500, "Failed to get message info: " . $e->getMessage());
         }
+    }
+    
+    private function validateGroupAccess($groupId, $userId, $userRole) {
+        if ($userRole === 'admin') {
+            return true;
+        }
+        
+        $query = "
+            SELECT 1 FROM chat_group_members 
+            WHERE group_id = ? AND user_id = ?
+        ";
+        
+        $stmt = $this->conn->prepare($query);
+        $stmt->execute([$groupId, $userId]);
+        return (bool) $stmt->fetch();
     }
 }
 
