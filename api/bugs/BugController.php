@@ -975,6 +975,217 @@ class BugController extends BaseAPI {
         }
     }
 
+    public function updateBugWithAttachments($data, $userId) {
+        try {
+            // Don't start a new transaction if one is already active
+            $startedTransaction = false;
+            if (!$this->conn->inTransaction()) {
+                $this->conn->beginTransaction();
+                $startedTransaction = true;
+            }
+
+            // Update the bug fields (without transaction since we're managing it here)
+            if (empty($data['id'])) {
+                throw new Exception("Bug ID is required");
+            }
+
+            // Build update query for bug fields only
+            $updateFields = [];
+            $params = [];
+            
+            if (isset($data['title'])) {
+                $updateFields[] = "title = ?";
+                $params[] = $data['title'];
+            }
+            if (isset($data['description'])) {
+                $updateFields[] = "description = ?";
+                $params[] = $data['description'];
+            }
+            if (array_key_exists('expected_result', $data)) {
+                $updateFields[] = "expected_result = ?";
+                $params[] = ($data['expected_result'] === '' ? null : $data['expected_result']);
+            }
+            if (array_key_exists('actual_result', $data)) {
+                $updateFields[] = "actual_result = ?";
+                $params[] = ($data['actual_result'] === '' ? null : $data['actual_result']);
+            }
+            if (isset($data['priority'])) {
+                $updateFields[] = "priority = ?";
+                $params[] = $data['priority'];
+            }
+            if (isset($data['status'])) {
+                $updateFields[] = "status = ?";
+                $params[] = $data['status'];
+            }
+            if (isset($data['updated_by'])) {
+                $updateFields[] = "updated_by = ?";
+                $params[] = $data['updated_by'];
+            }
+
+            if (!empty($updateFields)) {
+                $updateFields[] = "updated_at = CURRENT_TIMESTAMP";
+                $params[] = $data['id'];
+                
+                $query = "UPDATE bugs SET " . implode(", ", $updateFields) . " WHERE id = ?";
+                $stmt = $this->conn->prepare($query);
+                
+                if (!$stmt->execute($params)) {
+                    throw new Exception("Failed to update bug");
+                }
+            }
+
+            // Handle attachment deletions
+            if (isset($data['attachments_to_delete']) && !empty($data['attachments_to_delete'])) {
+                $attachmentsToDelete = json_decode($data['attachments_to_delete'], true);
+                if (is_array($attachmentsToDelete)) {
+                    foreach ($attachmentsToDelete as $attachmentId) {
+                        $stmt = $this->conn->prepare("SELECT file_path FROM bug_attachments WHERE id = ?");
+                        $stmt->execute([$attachmentId]);
+                        $attachment = $stmt->fetch(PDO::FETCH_ASSOC);
+                        
+                        if ($attachment) {
+                            $deleteStmt = $this->conn->prepare("DELETE FROM bug_attachments WHERE id = ?");
+                            $deleteStmt->execute([$attachmentId]);
+                            
+                            $filePath = __DIR__ . '/../../' . $attachment['file_path'];
+                            if (file_exists($filePath)) {
+                                @unlink($filePath);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Handle new screenshots
+            if (!empty($_FILES['screenshots'])) {
+                $uploadDir = __DIR__ . '/../../uploads/screenshots/';
+                if (!file_exists($uploadDir)) {
+                    mkdir($uploadDir, 0777, true);
+                }
+
+                foreach ($_FILES['screenshots']['tmp_name'] as $key => $tmp_name) {
+                    $fileName = $_FILES['screenshots']['name'][$key];
+                    $fileType = $_FILES['screenshots']['type'][$key];
+                    $filePath = $uploadDir . uniqid() . '_' . $fileName;
+                    
+                    if (move_uploaded_file($tmp_name, $filePath)) {
+                        $attachmentId = $this->generateUUID();
+                        $relativePath = str_replace(__DIR__ . '/../../uploads/', 'uploads/', $filePath);
+                        $stmt = $this->conn->prepare(
+                            "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by) 
+                             VALUES (?, ?, ?, ?, ?, ?)"
+                        );
+                        $stmt->execute([
+                            $attachmentId,
+                            $data['id'],
+                            $fileName,
+                            $relativePath,
+                            $fileType,
+                            $userId
+                        ]);
+                    }
+                }
+            }
+
+            // Handle new files
+            if (!empty($_FILES['files'])) {
+                $uploadDir = __DIR__ . '/../../uploads/files/';
+                if (!file_exists($uploadDir)) {
+                    mkdir($uploadDir, 0777, true);
+                }
+
+                foreach ($_FILES['files']['tmp_name'] as $key => $tmp_name) {
+                    $fileName = $_FILES['files']['name'][$key];
+                    $fileType = $_FILES['files']['type'][$key];
+                    $filePath = $uploadDir . uniqid() . '_' . $fileName;
+                    
+                    if (move_uploaded_file($tmp_name, $filePath)) {
+                        $attachmentId = $this->generateUUID();
+                        $relativePath = str_replace(__DIR__ . '/../../uploads/', 'uploads/', $filePath);
+                        $stmt = $this->conn->prepare(
+                            "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by) 
+                             VALUES (?, ?, ?, ?, ?, ?)"
+                        );
+                        $stmt->execute([
+                            $attachmentId,
+                            $data['id'],
+                            $fileName,
+                            $relativePath,
+                            $fileType,
+                            $userId
+                        ]);
+                    }
+                }
+            }
+
+            // Handle new voice notes
+            if (!empty($_FILES['voice_notes'])) {
+                $uploadDir = __DIR__ . '/../../uploads/voice_notes/';
+                if (!file_exists($uploadDir)) {
+                    mkdir($uploadDir, 0777, true);
+                }
+
+                foreach ($_FILES['voice_notes']['tmp_name'] as $key => $tmp_name) {
+                    $fileName = $_FILES['voice_notes']['name'][$key];
+                    $fileType = $_FILES['voice_notes']['type'][$key];
+                    $filePath = $uploadDir . uniqid() . '_' . $fileName;
+                    
+                    if (move_uploaded_file($tmp_name, $filePath)) {
+                        $attachmentId = $this->generateUUID();
+                        $relativePath = str_replace(__DIR__ . '/../../uploads/', 'uploads/', $filePath);
+                        $stmt = $this->conn->prepare(
+                            "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by) 
+                             VALUES (?, ?, ?, ?, ?, ?)"
+                        );
+                        $stmt->execute([
+                            $attachmentId,
+                            $data['id'],
+                            $fileName,
+                            $relativePath,
+                            $fileType,
+                            $userId
+                        ]);
+                    }
+                }
+            }
+
+            // Get updated bug data
+            $stmt = $this->conn->prepare("SELECT * FROM bugs WHERE id = ?");
+            $stmt->execute([$data['id']]);
+            $updatedBug = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            // Commit if we started the transaction
+            if ($startedTransaction) {
+                $this->conn->commit();
+            }
+
+            // Log activity
+            try {
+                $logger = ActivityLogger::getInstance();
+                $logger->logBugUpdated(
+                    $data['updated_by'],
+                    $data['project_id'],
+                    $data['id'],
+                    $data['title'] ?? 'Bug',
+                    [
+                        'priority' => $data['priority'] ?? null,
+                        'status' => $data['status'] ?? null,
+                    ]
+                );
+            } catch (Exception $e) {
+                error_log("Failed to log bug update activity: " . $e->getMessage());
+            }
+
+            return $updatedBug;
+
+        } catch (Exception $e) {
+            if ($this->conn->inTransaction()) {
+                $this->conn->rollBack();
+            }
+            throw $e;
+        }
+    }
+
     function convertToWebP($sourcePath, $destinationPath, $quality = 80) {
         $info = getimagesize($sourcePath);
         if (!$info) return false;
