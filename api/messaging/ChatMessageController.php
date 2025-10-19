@@ -138,7 +138,9 @@ class ChatMessageController extends BaseAPI {
             if ($this->conn->inTransaction()) {
                 $this->conn->rollback();
             }
-            error_log("Error sending message: " . $e->getMessage());
+            error_log("❌ Error sending message: " . $e->getMessage());
+            error_log("Stack trace: " . $e->getTraceAsString());
+            error_log("POST data: " . json_encode($input ?? []));
             $this->sendJsonResponse(500, "Failed to send message: " . $e->getMessage());
         }
     }
