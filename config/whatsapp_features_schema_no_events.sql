@@ -1,5 +1,6 @@
 -- WhatsApp-like Features Database Schema Enhancements
 -- Run this after the base messaging_schema.sql
+-- This version EXCLUDES events (use if Event Scheduler is disabled)
 
 -- Add new columns to chat_messages table for media and additional features
 ALTER TABLE `chat_messages` 
@@ -253,28 +254,6 @@ CREATE TABLE IF NOT EXISTS `poll_votes` (
   CONSTRAINT `poll_votes_ibfk_3` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Events for automatic cleanup
--- Note: These events require the Event Scheduler to be enabled
--- To enable: SET GLOBAL event_scheduler = ON;
--- Or add event_scheduler=ON to my.cnf/my.ini
-
--- Clean up expired status/stories (after 24 hours)
-DROP EVENT IF EXISTS `cleanup_expired_status`;
-CREATE EVENT `cleanup_expired_status`
-ON SCHEDULE EVERY 1 HOUR
-DO
-  DELETE FROM user_status WHERE expires_at < NOW();
-
--- Update online status (mark users offline after 5 minutes of inactivity)
-DROP EVENT IF EXISTS `update_offline_users`;
-CREATE EVENT `update_offline_users`
-ON SCHEDULE EVERY 1 MINUTE
-DO
-  UPDATE users 
-  SET is_online = 0 
-  WHERE is_online = 1 
-  AND last_seen < DATE_SUB(NOW(), INTERVAL 5 MINUTE);
-
 -- Full-text search index for messages (for search functionality)
 ALTER TABLE `chat_messages` 
   ADD FULLTEXT INDEX `ft_chat_messages_content` (`content`);
@@ -299,4 +278,7 @@ GROUP BY cgm.user_id, cgm.group_id, cg.name;
 CREATE INDEX `idx_chat_messages_content_search` ON `chat_messages` (`content`(100));
 CREATE INDEX `idx_users_username_search` ON `users` (`username`);
 CREATE INDEX `idx_chat_groups_name_search` ON `chat_groups` (`name`);
+
+-- NOTE: Automated cleanup events are in a separate file (whatsapp_features_schema.sql)
+-- To use automated cleanup, enable Event Scheduler first using enable_event_scheduler.sql
 
