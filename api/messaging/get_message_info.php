@@ -14,10 +14,14 @@ class GetMessageInfoAPI extends BaseAPI {
         }
         
         try {
+            error_log("📨 get_message_info.php started");
             $decoded = $this->validateToken();
             $userId = $decoded->user_id;
+            $role = $decoded->role;
+            error_log("✅ Token validated. User ID: $userId, Role: $role");
             
             $messageId = $_GET['message_id'] ?? null;
+            error_log("📝 Message ID: " . ($messageId ?? 'null'));
             
             if (!$messageId) {
                 $this->sendJsonResponse(400, "message_id is required");
@@ -33,6 +37,7 @@ class GetMessageInfoAPI extends BaseAPI {
             ");
             $messageStmt->execute([$messageId]);
             $message = $messageStmt->fetch(PDO::FETCH_ASSOC);
+            error_log("📬 Message query executed. Found: " . ($message ? 'Yes' : 'No'));
             
             if (!$message) {
                 $this->sendJsonResponse(404, "Message not found");
@@ -41,30 +46,32 @@ class GetMessageInfoAPI extends BaseAPI {
             
             // Verify user has access to the message's group
             $groupId = $message['group_id'];
-            $role = $decoded->role;
+            error_log("🔐 Checking access for group: $groupId");
             
             if (!$this->validateGroupAccess($groupId, $userId, $role)) {
+                error_log("❌ Access denied for user $userId to group $groupId");
                 $this->sendJsonResponse(403, "Access denied");
                 return;
             }
+            error_log("✅ Access granted");
             
             // Get delivery status (users who received the message)
+            // All group members except sender are considered as "delivered"
             $deliveryStmt = $this->conn->prepare("
                 SELECT 
                     u.id, 
                     u.username, 
                     u.email,
                     'delivered' as status,
-                    cm.created_at as delivered_at
+                    ? as delivered_at
                 FROM chat_group_members cgm
                 JOIN users u ON cgm.user_id = u.id
-                JOIN chat_messages cm ON cm.group_id = cgm.group_id
-                WHERE cm.id = ? 
+                WHERE cgm.group_id = ? 
                     AND cgm.user_id != ?
                     AND cgm.left_at IS NULL
                 ORDER BY u.username ASC
             ");
-            $deliveryStmt->execute([$messageId, $message['sender_id']]);
+            $deliveryStmt->execute([$message['created_at'], $groupId, $message['sender_id']]);
             $deliveryInfo = $deliveryStmt->fetchAll(PDO::FETCH_ASSOC);
             
             // Get read receipts
@@ -156,7 +163,8 @@ class GetMessageInfoAPI extends BaseAPI {
             $this->sendJsonResponse(200, "Message info retrieved successfully", $result);
             
         } catch (Exception $e) {
-            error_log("Error getting message info: " . $e->getMessage());
+            error_log("❌ Error getting message info: " . $e->getMessage());
+            error_log("Stack trace: " . $e->getTraceAsString());
             $this->sendJsonResponse(500, "Failed to get message info: " . $e->getMessage());
         }
     }
