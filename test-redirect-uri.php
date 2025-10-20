@@ -19,6 +19,7 @@ function getRedirectUri() {
         return $envRedirectUri;
     }
     
+
     // Fallback: Check if we're in local development or production
     $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
     
