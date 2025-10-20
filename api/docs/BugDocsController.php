@@ -1,9 +1,4 @@
 <?php
-/**
- * BugDocs Controller
- * Handles all document operations: bug-specific and general CRUD
- * Uses GoogleAuthService for authentication
- */
 
 require_once __DIR__ . '/../../vendor/autoload.php';
 require_once __DIR__ . '/../../config/database.php';
