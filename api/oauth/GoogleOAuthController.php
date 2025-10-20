@@ -44,14 +44,20 @@ class GoogleOAuthController extends BaseAPI {
     }
     
     private function getRedirectUri() {
-        // Check if we're in local development or production
+        // Use environment variable if available, otherwise auto-detect
+        $envRedirectUri = Environment::getGoogleRedirectUri();
+        if (!empty($envRedirectUri)) {
+            return $envRedirectUri;
+        }
+        
+        // Fallback: Check if we're in local development or production
         $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
         
         if (strpos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false) {
             return 'http://localhost/BugRicer/backend/api/oauth/callback';
         } else {
-            // Production URL - adjust as needed
-            return 'https://' . $host . '/backend/api/oauth/callback';
+            // Production URL - use the path that matches Google Cloud Console
+            return 'https://' . $host . '/api/oauth/callback';
         }
     }
     
