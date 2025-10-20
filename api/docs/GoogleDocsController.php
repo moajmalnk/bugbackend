@@ -58,6 +58,9 @@ class GoogleDocsController extends BaseAPI {
             
             error_log("Document created with ID: " . $docId);
             
+            // Set default sharing permissions (Anyone with link - Editor)
+            $this->setDefaultSharingPermissions($driveService, $docId);
+            
             // Add initial content to the document
             $this->addInitialContent($docsService, $docId, $bugDetails);
             
@@ -357,6 +360,33 @@ class GoogleDocsController extends BaseAPI {
             return !empty($tokenData);
         } catch (Exception $e) {
             return false;
+        }
+    }
+    
+    /**
+     * Set default sharing permissions for a document
+     * Sets "Anyone with the link" to "Editor" access
+     * 
+     * @param Google\Service\Drive $driveService Drive service instance
+     * @param string $docId Google Document ID
+     */
+    private function setDefaultSharingPermissions($driveService, $docId) {
+        try {
+            // Create permission for "Anyone with the link" to have "Editor" access
+            $permission = new Google\Service\Drive\Permission([
+                'type' => 'anyone',
+                'role' => 'writer', // 'writer' = Editor access
+                'allowFileDiscovery' => false // Only accessible via link, not searchable
+            ]);
+            
+            // Apply the permission
+            $driveService->permissions->create($docId, $permission);
+            
+            error_log("Set default sharing permissions for document: {$docId}");
+            
+        } catch (Exception $e) {
+            error_log("Warning: Failed to set sharing permissions for document {$docId}: " . $e->getMessage());
+            // Don't throw - document creation should still succeed even if sharing fails
         }
     }
 }
