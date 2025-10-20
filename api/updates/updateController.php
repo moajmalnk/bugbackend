@@ -196,6 +196,62 @@ class UpdateController extends BaseAPI
         }
     }
 
+    public function getByProject($projectId)
+    {
+        if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+            $this->sendJsonResponse(405, "Method not allowed");
+            return;
+        }
+        try {
+            $decoded = $this->validateToken();
+            if (!$decoded || !isset($decoded->user_id)) {
+                $this->sendJsonResponse(401, "Unauthorized: Invalid or missing token");
+                return;
+            }
+            $userId = $decoded->user_id;
+            $userRole = $decoded->role;
+            
+            // Check if user has access to this project
+            $pmc = new ProjectMemberController();
+            if (!$pmc->hasProjectAccess($userId, $projectId)) {
+                $this->sendJsonResponse(403, 'You are not a member of this project');
+                return;
+            }
+
+            // Fetch updates for the specific project
+            $stmt = $this->conn->prepare("
+                SELECT u.*, p.name as project_name, us.username as created_by_name 
+                FROM updates u 
+                JOIN projects p ON u.project_id = p.id 
+                LEFT JOIN users us ON u.created_by = us.id 
+                WHERE u.project_id = ? 
+                ORDER BY u.created_at DESC
+            ");
+            $stmt->execute([$projectId]);
+            $updates = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $result = array_map(function ($update) {
+                return [
+                    'id' => $update['id'],
+                    'title' => $update['title'],
+                    'type' => $update['type'],
+                    'description' => $update['description'],
+                    'created_by_id' => $update['created_by'],
+                    'created_by' => $update['created_by_name'] ?? $update['created_by'],
+                    'created_at' => $update['created_at'],
+                    'updated_at' => $update['updated_at'],
+                    'status' => $update['status'],
+                    'project_id' => $update['project_id'],
+                    'project_name' => $update['project_name']
+                ];
+            }, $updates);
+
+            $this->sendJsonResponse(200, "Project updates retrieved successfully", $result);
+        } catch (Exception $e) {
+            $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
+        }
+    }
+
     public function update($id)
     {
         if ($_SERVER['REQUEST_METHOD'] !== 'PUT') {
