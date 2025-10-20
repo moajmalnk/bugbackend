@@ -80,7 +80,9 @@ class VoiceUploadController extends BaseAPI {
             ]);
             
         } catch (Exception $e) {
-            error_log("Error uploading voice message: " . $e->getMessage());
+            error_log("❌ Error uploading voice message: " . $e->getMessage());
+            error_log("Stack trace: " . $e->getTraceAsString());
+            error_log("Files: " . json_encode($_FILES));
             $this->sendJsonResponse(500, "Failed to upload voice message: " . $e->getMessage());
         }
     }
