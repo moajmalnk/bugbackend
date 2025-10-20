@@ -50,15 +50,38 @@ class Environment {
     }
     
     public static function getGoogleClientId() {
+        // Get from environment variable or .env file only
+        // No hardcoded fallback for security reasons
         return self::get('GOOGLE_CLIENT_ID');
     }
     
     public static function getGoogleClientSecret() {
+        // Get from environment variable or .env file only
+        // No hardcoded fallback for security reasons
         return self::get('GOOGLE_CLIENT_SECRET');
     }
     
     public static function getGoogleRedirectUri() {
-        return self::get('GOOGLE_REDIRECT_URI', 'http://localhost/BugRicer/backend/api/oauth/callback');
+        // Auto-detect production vs local
+        $defaultUri = 'http://localhost/BugRicer/backend/api/oauth/callback';
+        
+        // Check if we're on production domain
+        if (isset($_SERVER['HTTP_HOST'])) {
+            $host = $_SERVER['HTTP_HOST'];
+            if (strpos($host, 'bugricer.com') !== false) {
+                $defaultUri = 'https://bugbackend.bugricer.com/api/oauth/callback';
+            }
+        }
+        
+        return self::get('GOOGLE_REDIRECT_URI', $defaultUri);
+    }
+    
+    public static function isProduction() {
+        if (isset($_SERVER['HTTP_HOST'])) {
+            $host = $_SERVER['HTTP_HOST'];
+            return strpos($host, 'bugricer.com') !== false;
+        }
+        return false;
     }
 }
 

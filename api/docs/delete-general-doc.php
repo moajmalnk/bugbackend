@@ -23,15 +23,17 @@ if ($_SERVER['REQUEST_METHOD'] !== 'DELETE') {
 }
 
 try {
-    // Validate JWT token
-    $baseAPI = new BaseAPI();
-    $userId = $baseAPI->getUserId();
+    // Initialize controller
+    $controller = new BugDocsController();
     
-    if (!$userId) {
-        http_response_code(401);
-        echo json_encode(['success' => false, 'message' => 'User not authenticated']);
-        exit();
+    // Validate user authentication
+    $userData = $controller->validateToken();
+    
+    if (!$userData || !isset($userData->user_id)) {
+        throw new Exception('User not authenticated');
     }
+    
+    $userId = $userData->user_id;
     
     // Get document ID from URL path
     // Support both /delete-general-doc/123 and /delete-general-doc?id=123
@@ -52,7 +54,7 @@ try {
     
     // Fallback to request body
     if (!$documentId) {
-        $input = json_decode(file_get_contents('php://input'), true);
+        $input = $controller->getRequestData();
         if (isset($input['id'])) {
             $documentId = (int)$input['id'];
         }
@@ -67,7 +69,6 @@ try {
     error_log("Deleting document ID: {$documentId} for user: {$userId}");
     
     // Delete document
-    $controller = new BugDocsController();
     $result = $controller->deleteDocument($documentId, $userId);
     
     http_response_code(200);
