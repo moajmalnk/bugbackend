@@ -23,18 +23,20 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 try {
-    // Validate JWT token
-    $baseAPI = new BaseAPI();
-    $userId = $baseAPI->getUserId();
+    // Initialize controller
+    $controller = new BugDocsController();
     
-    if (!$userId) {
-        http_response_code(401);
-        echo json_encode(['success' => false, 'message' => 'User not authenticated']);
-        exit();
+    // Validate user authentication
+    $userData = $controller->validateToken();
+    
+    if (!$userData || !isset($userData->user_id)) {
+        throw new Exception('User not authenticated');
     }
     
+    $userId = $userData->user_id;
+    
     // Get request body
-    $input = json_decode(file_get_contents('php://input'), true);
+    $input = $controller->getRequestData();
     
     // Validate input
     if (empty($input['doc_title'])) {
@@ -57,7 +59,6 @@ try {
     error_log("Creating general document: '{$docTitle}' for user: {$userId}");
     
     // Create document
-    $controller = new BugDocsController();
     $result = $controller->createGeneralDocument($userId, $docTitle, $templateId, $docType);
     
     http_response_code(201);

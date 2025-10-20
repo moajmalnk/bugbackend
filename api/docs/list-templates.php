@@ -23,23 +23,24 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
 }
 
 try {
-    // Validate JWT token
-    $baseAPI = new BaseAPI();
-    $userId = $baseAPI->getUserId();
+    // Initialize controller
+    $controller = new BugDocsController();
     
-    if (!$userId) {
-        http_response_code(401);
-        echo json_encode(['success' => false, 'message' => 'User not authenticated']);
-        exit();
+    // Validate user authentication
+    $userData = $controller->validateToken();
+    
+    if (!$userData || !isset($userData->user_id)) {
+        throw new Exception('User not authenticated');
     }
+    
+    $userId = $userData->user_id;
     
     // Get query parameters
     $category = $_GET['category'] ?? null;
     
-    error_log("Listing templates" . ($category ? " for category: {$category}" : ""));
+    error_log("Listing templates for user: {$userId}" . ($category ? ", category: {$category}" : ""));
     
     // Get templates
-    $controller = new BugDocsController();
     $result = $controller->listTemplates($category);
     
     http_response_code(200);

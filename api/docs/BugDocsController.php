@@ -5,17 +5,16 @@
  * Uses GoogleAuthService for authentication
  */
 
-require_once __DIR__ . '/../../../vendor/autoload.php';
-require_once __DIR__ . '/../../../config/database.php';
+require_once __DIR__ . '/../../vendor/autoload.php';
+require_once __DIR__ . '/../../config/database.php';
+require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../oauth/GoogleAuthService.php';
 
-class BugDocsController {
-    private $conn;
+class BugDocsController extends BaseAPI {
     private $authService;
     
     public function __construct() {
-        $db = Database::getInstance();
-        $this->conn = $db->getConnection();
+        parent::__construct();
         $this->authService = new GoogleAuthService();
     }
     
@@ -342,6 +341,11 @@ class BugDocsController {
             $stmt->execute($params);
             $templates = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
+            // Mark templates with placeholder IDs as not ready
+            foreach ($templates as &$template) {
+                $template['is_configured'] = !$this->isPlaceholderTemplateId($template['google_doc_id']);
+            }
+            
             return [
                 'success' => true,
                 'templates' => $templates,
@@ -363,7 +367,15 @@ class BugDocsController {
                 "SELECT * FROM doc_templates WHERE template_name = ? AND is_active = 1 LIMIT 1"
             );
             $stmt->execute([$templateName]);
-            return $stmt->fetch(PDO::FETCH_ASSOC);
+            $template = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            // Check if template has a valid Google Doc ID (not a placeholder)
+            if ($template && $this->isPlaceholderTemplateId($template['google_doc_id'])) {
+                error_log("Template {$template['template_name']} has placeholder ID, skipping template");
+                return null;
+            }
+            
+            return $template;
         } catch (Exception $e) {
             error_log("Error getting template: " . $e->getMessage());
             return null;
@@ -379,11 +391,47 @@ class BugDocsController {
                 "SELECT * FROM doc_templates WHERE id = ? AND is_active = 1 LIMIT 1"
             );
             $stmt->execute([$templateId]);
-            return $stmt->fetch(PDO::FETCH_ASSOC);
+            $template = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            // Check if template has a valid Google Doc ID (not a placeholder)
+            if ($template && $this->isPlaceholderTemplateId($template['google_doc_id'])) {
+                error_log("Template {$template['template_name']} has placeholder ID, skipping template");
+                return null;
+            }
+            
+            return $template;
         } catch (Exception $e) {
             error_log("Error getting template by ID: " . $e->getMessage());
             return null;
         }
+    }
+    
+    /**
+     * Check if a template ID is a placeholder
+     */
+    private function isPlaceholderTemplateId($docId) {
+        // Check for common placeholder patterns
+        $placeholders = [
+            'TEMPLATE_',
+            'YOUR_DOC_ID',
+            'YOUR_ACTUAL_DOC_ID',
+            'PLACEHOLDER',
+            'REPLACE_ME',
+            'CHANGE_THIS'
+        ];
+        
+        foreach ($placeholders as $placeholder) {
+            if (stripos($docId, $placeholder) !== false) {
+                return true;
+            }
+        }
+        
+        // Check if it's too short (real Google Doc IDs are typically 44 characters)
+        if (strlen($docId) < 20) {
+            return true;
+        }
+        
+        return false;
     }
     
     // ========================================================================
