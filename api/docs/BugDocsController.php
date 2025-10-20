@@ -59,6 +59,9 @@ class BugDocsController extends BaseAPI {
                 $docUrl = "https://docs.google.com/document/d/{$docId}/edit";
                 $templateId = null;
                 
+                // Set default sharing permissions (Anyone with link - Editor)
+                $this->setDefaultSharingPermissions($driveService, $docId);
+                
                 // Add initial content
                 $this->addBugContent($docsService, $docId, $bugDetails);
             }
@@ -135,6 +138,9 @@ class BugDocsController extends BaseAPI {
                 $doc = $docsService->documents->create($document);
                 $docId = $doc->getDocumentId();
                 $docUrl = "https://docs.google.com/document/d/{$docId}/edit";
+                
+                // Set default sharing permissions (Anyone with link - Editor)
+                $this->setDefaultSharingPermissions($driveService, $docId);
             }
             
             // Save to user_documents table
@@ -444,6 +450,9 @@ class BugDocsController extends BaseAPI {
         $newFile = $driveService->files->copy($templateDocId, $copiedFile);
         $newDocId = $newFile->getId();
         
+        // Set default sharing permissions (Anyone with link - Editor)
+        $this->setDefaultSharingPermissions($driveService, $newDocId);
+        
         // Replace placeholders
         if (!empty($placeholders)) {
             $this->replacePlaceholders($docsService, $newDocId, $placeholders);
@@ -574,6 +583,33 @@ class BugDocsController extends BaseAPI {
         
         $batchUpdateRequest = new Google\Service\Docs\BatchUpdateDocumentRequest(['requests' => $requests]);
         $docsService->documents->batchUpdate($docId, $batchUpdateRequest);
+    }
+    
+    /**
+     * Set default sharing permissions for a document
+     * Sets "Anyone with the link" to "Editor" access
+     * 
+     * @param Google\Service\Drive $driveService Drive service instance
+     * @param string $docId Google Document ID
+     */
+    private function setDefaultSharingPermissions($driveService, $docId) {
+        try {
+            // Create permission for "Anyone with the link" to have "Editor" access
+            $permission = new Google\Service\Drive\Permission([
+                'type' => 'anyone',
+                'role' => 'writer', // 'writer' = Editor access
+                'allowFileDiscovery' => false // Only accessible via link, not searchable
+            ]);
+            
+            // Apply the permission
+            $driveService->permissions->create($docId, $permission);
+            
+            error_log("Set default sharing permissions for document: {$docId}");
+            
+        } catch (Exception $e) {
+            error_log("Warning: Failed to set sharing permissions for document {$docId}: " . $e->getMessage());
+            // Don't throw - document creation should still succeed even if sharing fails
+        }
     }
 }
 
