@@ -11,8 +11,9 @@ try {
     $bugricerUserId = null;
     
     // Try to get from query parameter first
-    if (isset($_GET['user_id'])) {
+    if (isset($_GET['user_id']) && !empty($_GET['user_id'])) {
         $bugricerUserId = $_GET['user_id'];
+        error_log("DEBUG: Using user_id from query parameter: " . $bugricerUserId);
     } else {
         // Try to get from JWT token
         require_once __DIR__ . '/../BaseAPI.php';
@@ -20,6 +21,7 @@ try {
         $userData = $api->validateToken();
         if ($userData && isset($userData->user_id)) {
             $bugricerUserId = $userData->user_id;
+            error_log("DEBUG: Using user_id from JWT token: " . $bugricerUserId);
         }
     }
     
@@ -27,7 +29,20 @@ try {
         throw new Exception('User ID required. Please provide user_id parameter or valid JWT token.');
     }
     
-    echo "Starting OAuth re-authorization for user: $bugricerUserId\n\n";
+    // Validate that the user exists in the database
+    require_once __DIR__ . '/../../config/database.php';
+    $db = Database::getInstance();
+    $pdo = $db->getConnection();
+    
+    $stmt = $pdo->prepare('SELECT id, username FROM users WHERE id = ?');
+    $stmt->execute([$bugricerUserId]);
+    $user = $stmt->fetch(PDO::FETCH_ASSOC);
+    
+    if (!$user) {
+        throw new Exception('Invalid user ID. User not found in database.');
+    }
+    
+    echo "Starting OAuth re-authorization for user: " . $user['username'] . " (ID: $bugricerUserId)\n\n";
     
     // Initialize OAuth controller
     $oauthController = new GoogleOAuthController();
