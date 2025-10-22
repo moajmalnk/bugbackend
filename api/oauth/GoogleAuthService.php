@@ -64,7 +64,8 @@ class GoogleAuthService {
             $client->setRedirectUri($this->redirectUri);
             $client->setScopes([
                 Google\Service\Docs::DOCUMENTS,
-                Google\Service\Drive::DRIVE_FILE
+                Google\Service\Drive::DRIVE_FILE,
+                'https://www.googleapis.com/auth/calendar'
             ]);
             $client->setAccessType('offline');
             

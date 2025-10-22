@@ -51,12 +51,12 @@ try {
     $expiresIn = $token['expires_in'] ?? 3600;
     $accessTokenExpiry = date('Y-m-d H:i:s', time() + $expiresIn);
     
-    // Try to get the user's JWT token from the state parameter
+    // Try to get the user ID from the state parameter
     if ($state) {
-        error_log("Attempting to validate JWT token from state parameter");
+        error_log("Attempting to parse state parameter: " . substr($state, 0, 50) . "...");
         
         try {
-            // Validate the JWT token to get user info
+            // First try to validate as JWT token (most common case)
             require_once __DIR__ . '/../BaseAPI.php';
             $baseAPI = new BaseAPI();
             
@@ -66,7 +66,7 @@ try {
             
             if ($userData && isset($userData->user_id)) {
                 $bugricerUserId = $userData->user_id;
-                error_log("User authenticated in callback: " . $bugricerUserId);
+                error_log("User authenticated in callback via JWT: " . $bugricerUserId);
                 
                 // Check if we have a refresh token
                 if (!empty($token['refresh_token'])) {
@@ -88,9 +88,38 @@ try {
                 } else {
                     error_log("No refresh token received, storing in session for manual linking");
                 }
+            } else {
+                // Fallback: Try to decode the state as JSON (for direct-auth)
+                $stateData = json_decode(base64_decode($state), true);
+                
+                if ($stateData && isset($stateData['user_id'])) {
+                    $bugricerUserId = $stateData['user_id'];
+                    error_log("User ID from state JSON: " . $bugricerUserId);
+                    
+                    // Check if we have a refresh token
+                    if (!empty($token['refresh_token'])) {
+                        // Save tokens directly to database
+                        $oauthController->saveTokens(
+                            $googleUserId,
+                            $bugricerUserId,
+                            $token['refresh_token'],
+                            $accessTokenExpiry,
+                            $email
+                        );
+                        
+                        error_log("Successfully linked Google account for user: " . $bugricerUserId);
+                        
+                        // Redirect to frontend success page with success flag
+                        $frontendUrl = 'http://localhost:8080/docs-setup-success?linked=true&email=' . urlencode($email);
+                        header('Location: ' . $frontendUrl);
+                        exit();
+                    } else {
+                        error_log("No refresh token received, storing in session for manual linking");
+                    }
+                }
             }
         } catch (Exception $e) {
-            error_log("JWT validation failed in callback: " . $e->getMessage());
+            error_log("State parsing failed in callback: " . $e->getMessage());
         }
     }
     
