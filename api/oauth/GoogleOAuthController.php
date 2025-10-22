@@ -31,10 +31,11 @@ class GoogleOAuthController extends BaseAPI {
         $redirectUri = $this->getRedirectUri();
         $this->googleClient->setRedirectUri($redirectUri);
         
-        // Set required scopes for Google Docs and Drive
+        // Set required scopes for Google Docs, Drive, and Calendar (for Meet)
         $this->googleClient->addScope('https://www.googleapis.com/auth/documents');
         $this->googleClient->addScope('https://www.googleapis.com/auth/drive.file');
         $this->googleClient->addScope('https://www.googleapis.com/auth/userinfo.email');
+        $this->googleClient->addScope('https://www.googleapis.com/auth/calendar');
         
         // Critical: Get refresh token
         $this->googleClient->setAccessType('offline');
