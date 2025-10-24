@@ -1,5 +1,7 @@
 <?php
+require_once __DIR__ . '/../../config/cors.php';
 require_once __DIR__ . '/../../config/database.php';
+require_once __DIR__ . '/../../config/utils.php';
 require_once 'AuthController.php';
 
 header('Content-Type: application/json');
