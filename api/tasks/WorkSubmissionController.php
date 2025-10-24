@@ -50,6 +50,9 @@ class WorkSubmissionController extends BaseAPI {
     }
 
     public function mySubmissions($q) {
+        $requestId = uniqid('req_', true);
+        error_log("🔍 WorkSubmissionController::mySubmissions - Request ID: $requestId - Starting");
+        
         $decoded = $this->validateToken();
         $userId = $decoded->user_id;
         $from = $q['from'] ?? date('Y-m-01');
@@ -58,14 +61,34 @@ class WorkSubmissionController extends BaseAPI {
         // Debug logging to verify user isolation and impersonation
         $impersonationInfo = isset($decoded->impersonated) && $decoded->impersonated ? " (IMPERSONATED)" : "";
         $roleInfo = isset($decoded->role) ? " Role: " . $decoded->role : "";
-        error_log("🔍 WorkSubmissionController::mySubmissions - User ID: " . $userId . ", Username: " . ($decoded->username ?? 'unknown') . $impersonationInfo . $roleInfo . ", Date range: $from to $to");
+        $adminInfo = isset($decoded->admin_id) ? " Admin ID: " . $decoded->admin_id : "";
+        error_log("🔍 WorkSubmissionController::mySubmissions - Request ID: $requestId - User ID: " . $userId . ", Username: " . ($decoded->username ?? 'unknown') . $impersonationInfo . $roleInfo . $adminInfo . ", Date range: $from to $to");
+        
+        // Additional debugging - log the full decoded token
+        error_log("🔍 WorkSubmissionController::mySubmissions - Request ID: $requestId - Full decoded token: " . json_encode($decoded));
+        
+        // Force clear any cached token validation to ensure fresh processing
+        $this->clearCache();
 
         $sql = "SELECT * FROM work_submissions WHERE user_id = ? AND submission_date BETWEEN ? AND ? ORDER BY submission_date DESC";
+        error_log("🔍 WorkSubmissionController::mySubmissions - Request ID: $requestId - SQL Query: " . $sql);
+        error_log("🔍 WorkSubmissionController::mySubmissions - Request ID: $requestId - Query Parameters: userId=$userId, from=$from, to=$to");
+        
         $stmt = $this->conn->prepare($sql);
         $stmt->execute([$userId, $from, $to]);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
         
-        error_log("🔍 WorkSubmissionController::mySubmissions - Found " . count($rows) . " submissions for user: " . $userId . $impersonationInfo);
+        error_log("🔍 WorkSubmissionController::mySubmissions - Request ID: $requestId - Found " . count($rows) . " submissions for user: " . $userId . $impersonationInfo);
+        
+        // Log the first few rows to see what user_ids are being returned
+        if (count($rows) > 0) {
+            $firstRow = $rows[0];
+            error_log("🔍 WorkSubmissionController::mySubmissions - Request ID: $requestId - First row user_id: " . ($firstRow['user_id'] ?? 'not set'));
+            error_log("🔍 WorkSubmissionController::mySubmissions - Request ID: $requestId - First row submission_date: " . ($firstRow['submission_date'] ?? 'not set'));
+        } else {
+            error_log("🔍 WorkSubmissionController::mySubmissions - Request ID: $requestId - No rows returned for user: " . $userId);
+        }
+        
         $this->sendJsonResponse(200, 'OK', $rows);
     }
 

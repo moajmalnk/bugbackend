@@ -44,6 +44,14 @@ try {
     
     echo "Starting OAuth re-authorization for user: " . $user['username'] . " (ID: $bugricerUserId)\n\n";
     
+    // Force production environment for OAuth
+    $_SERVER['HTTP_HOST'] = 'bugbackend.bugricer.com';
+    
+    // Clear existing tokens to force fresh OAuth
+    $stmt = $pdo->prepare('DELETE FROM google_tokens WHERE bugricer_user_id = ?');
+    $stmt->execute([$bugricerUserId]);
+    echo "✅ Cleared existing tokens to force fresh OAuth\n";
+    
     // Initialize OAuth controller
     $oauthController = new GoogleOAuthController();
     
@@ -53,8 +61,14 @@ try {
     // Get the authorization URL
     $authUrl = $oauthController->getAuthorizationUrl($state);
     
+    // Debug: Extract redirect URI from the auth URL
+    $parsedUrl = parse_url($authUrl);
+    parse_str($parsedUrl['query'], $queryParams);
+    $redirectUri = $queryParams['redirect_uri'] ?? 'not found';
+    
     echo "Redirecting to Google OAuth with updated scopes...\n";
-    echo "URL: " . $authUrl . "\n\n";
+    echo "Generated redirect URI: " . $redirectUri . "\n";
+    echo "Full auth URL: " . $authUrl . "\n\n";
     echo "After completing OAuth, your Google account will have the calendar scope for Meet integration.\n";
     
     // Redirect to Google's OAuth consent screen

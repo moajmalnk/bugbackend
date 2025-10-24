@@ -205,12 +205,12 @@ class ChatMessageController extends BaseAPI {
                 $query = "
                     SELECT 
                         cm.*,
-                        COALESCE(u.username, 'BugRicer') as sender_name,
+                        COALESCE(u.username, u.email, 'User') as sender_name,
                         u.email as sender_email,
                         u.role as sender_role,
                         rm.content as reply_content,
                         rm.message_type as reply_type,
-                        COALESCE(ru.username, 'BugRicer') as reply_sender_name,
+                        COALESCE(ru.username, ru.email, 'User') as reply_sender_name,
                         IF(sm.id IS NOT NULL, 1, 0) as is_starred
                     FROM chat_messages cm
                     LEFT JOIN users u ON cm.sender_id = u.id
@@ -228,12 +228,12 @@ class ChatMessageController extends BaseAPI {
                 $query = "
                     SELECT 
                         cm.*,
-                        COALESCE(u.username, 'BugRicer') as sender_name,
+                        COALESCE(u.username, u.email, 'User') as sender_name,
                         u.email as sender_email,
                         u.role as sender_role,
                         rm.content as reply_content,
                         rm.message_type as reply_type,
-                        COALESCE(ru.username, 'BugRicer') as reply_sender_name,
+                        COALESCE(ru.username, ru.email, 'User') as reply_sender_name,
                         0 as is_starred
                     FROM chat_messages cm
                     LEFT JOIN users u ON cm.sender_id = u.id

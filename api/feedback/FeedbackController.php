@@ -256,8 +256,10 @@ class FeedbackController extends BaseAPI {
             $stmt->execute([$userId]);
             $tracking = $stmt->fetch(PDO::FETCH_ASSOC);
             
+            // If user has already submitted feedback, that's fine - just return success
+            // This handles the case where the frontend tries to dismiss after submission
             if ($tracking && $tracking['has_submitted_feedback']) {
-                $this->sendJsonResponse(409, "Feedback has already been submitted");
+                $this->sendJsonResponse(200, "Feedback already submitted - prompt dismissed");
                 return;
             }
             

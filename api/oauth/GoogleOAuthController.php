@@ -37,11 +37,14 @@ class GoogleOAuthController extends BaseAPI {
         $this->googleClient->addScope('https://www.googleapis.com/auth/userinfo.email');
         $this->googleClient->addScope('https://www.googleapis.com/auth/calendar');
         
-        // Critical: Get refresh token
+        // Critical: Get refresh token and force consent
         $this->googleClient->setAccessType('offline');
         $this->googleClient->setPrompt('consent');
+        $this->googleClient->setIncludeGrantedScopes(true);
         
         error_log("Google Client initialized with redirect URI: " . $redirectUri);
+        error_log("Current host: " . ($_SERVER['HTTP_HOST'] ?? 'unknown'));
+        error_log("Environment redirect URI: " . ($envRedirectUri ?? 'not set'));
     }
     
     private function getRedirectUri() {
@@ -57,8 +60,8 @@ class GoogleOAuthController extends BaseAPI {
         if (strpos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false) {
             return 'http://localhost/BugRicer/backend/api/oauth/callback';
         } else {
-            // Production URL - use the path that matches Google Cloud Console
-            return 'https://' . $host . '/api/oauth/callback';
+            // Production URL - use the backend domain for OAuth callback
+            return 'https://bugbackend.bugricer.com/api/oauth/callback';
         }
     }
     
