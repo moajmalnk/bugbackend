@@ -17,7 +17,8 @@ function handleCORS() {
         'https://bugs.bugricer.com',
         'https://bugbackend.bugricer.com',
         'https://bugbackend.moajmalnk.in',
-        'https://bugracers.vercel.app'
+        'https://bugracers.vercel.app',
+        'https://bugs.bugricer.com' // Ensure this is included
     ];
     
     // Check if origin is allowed

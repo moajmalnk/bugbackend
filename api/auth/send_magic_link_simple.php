@@ -5,15 +5,9 @@
  */
 
 header('Content-Type: application/json');
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: POST, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type');
 
-// Handle preflight requests
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(200);
-    exit();
-}
+// Include CORS configuration
+require_once __DIR__ . '/../../config/cors.php';
 
 require_once __DIR__ . '/../../config/database.php';
 require_once __DIR__ . '/../../utils/email.php';
