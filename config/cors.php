@@ -3,7 +3,7 @@
 function handleCORS() {
     $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
     
-    // Allowed origins - more comprehensive for local development
+    // Allowed origins - more comprehensive for local development and production
     $allowedOrigins = [
         'http://localhost:8080',
         'http://localhost:3000',
@@ -15,6 +15,7 @@ function handleCORS() {
         'https://bugricer.com',
         'https://www.bugricer.com',
         'https://bugs.bugricer.com',
+        'https://bugbackend.bugricer.com',
         'https://bugbackend.moajmalnk.in',
         'https://bugracers.vercel.app'
     ];
@@ -34,7 +35,7 @@ function handleCORS() {
     
     header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
     header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Impersonate-User, X-User-Id");
-    header("Access-Control-Allow-Credentials: false");
+    header("Access-Control-Allow-Credentials: true");
     header("Access-Control-Max-Age: 3600");
     
     // Handle preflight OPTIONS request
