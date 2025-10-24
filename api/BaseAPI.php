@@ -131,19 +131,36 @@ class BaseAPI {
 
         // Support admin impersonation via header or query param; include in cache key
         $impersonateId = $this->getImpersonateUserId();
-        $cacheKey = 'token_validation_' . md5($token . '|' . ($impersonateId ?? 'none'));
-        $cachedResult = $this->getCache($cacheKey);
         
-        if ($cachedResult !== null) {
-            return $cachedResult;
+        // First decode the token to check if it's an impersonation token
+        $tempResult = $this->utils->validateJWT($token);
+        $isImpersonationToken = $tempResult && isset($tempResult->purpose) && $tempResult->purpose === 'dashboard_access' && isset($tempResult->admin_id);
+        
+        // Debug logging
+        error_log("🔍 BaseAPI::validateToken - Token purpose: " . ($tempResult->purpose ?? 'none') . ", Admin ID: " . ($tempResult->admin_id ?? 'none') . ", Is impersonation: " . ($isImpersonationToken ? 'YES' : 'NO'));
+        
+        // Don't cache impersonation tokens to avoid conflicts
+        if (!$isImpersonationToken) {
+            $cacheKey = 'token_validation_' . md5($token . '|' . ($impersonateId ?? 'none'));
+            $cachedResult = $this->getCache($cacheKey);
+            
+            if ($cachedResult !== null) {
+                return $cachedResult;
+            }
+        } else {
+            // For impersonation tokens, clear any existing cache for this token
+            $cacheKey = 'token_validation_' . md5($token . '|' . ($impersonateId ?? 'none'));
+            $this->clearCache($cacheKey);
         }
 
         try {
-            $result = $this->utils->validateJWT($token);
+            $result = $tempResult;
 
             // Handle impersonation token (dashboard access token with admin_id)
             if ($result && isset($result->purpose) && $result->purpose === 'dashboard_access' && isset($result->admin_id)) {
                 try {
+                    error_log("🔍 BaseAPI::validateToken - Processing impersonation token - Original user_id: " . $result->user_id . ", Admin ID: " . $result->admin_id);
+                    
                     // This is an impersonation token - the user_id in the token is the impersonated user
                     // Fetch the impersonated user's actual role from database
                     $stmt = $this->conn->prepare("SELECT role FROM users WHERE id = ? LIMIT 1");
@@ -156,6 +173,7 @@ class BaseAPI {
                     $result->impersonated = true;
                     $result->admin_id = $result->admin_id; // Keep admin_id for logging
                     error_log("🔑 Impersonation token detected - Admin: " . $result->admin_id . ", Acting as: " . $result->user_id . " (" . $result->username . ", " . $result->role . ")");
+                    error_log("🔍 BaseAPI::validateToken - Final result user_id: " . $result->user_id);
                 } catch (Exception $e) {
                     error_log("❌ Impersonation token processing error: " . $e->getMessage());
                 }
@@ -193,7 +211,9 @@ class BaseAPI {
             }
         
             // Cache valid tokens for 5 minutes (keyed by token + impersonation)
-            if ($result) {
+            // Don't cache impersonation tokens to avoid conflicts
+            if ($result && !$isImpersonationToken) {
+                $cacheKey = 'token_validation_' . md5($token . '|' . ($impersonateId ?? 'none'));
                 $this->setCache($cacheKey, $result, 300);
             }
         

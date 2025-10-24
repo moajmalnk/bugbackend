@@ -81,8 +81,18 @@ try {
                     
                     error_log("Successfully linked Google account for user: " . $bugricerUserId);
                     
-                    // Redirect to frontend success page with success flag
-                    $frontendUrl = 'http://localhost:8080/docs-setup-success?linked=true&email=' . urlencode($email);
+                    // Redirect to frontend success page - environment aware
+                    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+                    $isLocal = strpos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false;
+                    
+                    if ($isLocal) {
+                        $frontendUrl = 'http://localhost:8080/docs-setup-success?linked=true&email=' . urlencode($email);
+                    } else {
+                        // Production - redirect to the main domain
+                        $frontendUrl = 'https://bugs.bugricer.com/admin/meet?google_connected=true&email=' . urlencode($email);
+                    }
+                    
+                    error_log("Redirecting to: " . $frontendUrl);
                     header('Location: ' . $frontendUrl);
                     exit();
                 } else {
@@ -109,8 +119,18 @@ try {
                         
                         error_log("Successfully linked Google account for user: " . $bugricerUserId);
                         
-                        // Redirect to frontend success page with success flag
-                        $frontendUrl = 'http://localhost:8080/docs-setup-success?linked=true&email=' . urlencode($email);
+                        // Redirect to frontend success page - environment aware
+                        $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+                        $isLocal = strpos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false;
+                        
+                        if ($isLocal) {
+                            $frontendUrl = 'http://localhost:8080/docs-setup-success?linked=true&email=' . urlencode($email);
+                        } else {
+                            // Production - redirect to the main domain
+                            $frontendUrl = 'https://bugs.bugricer.com/admin/meet?google_connected=true&email=' . urlencode($email);
+                        }
+                        
+                        error_log("Redirecting to: " . $frontendUrl);
                         header('Location: ' . $frontendUrl);
                         exit();
                     } else {
@@ -137,8 +157,18 @@ try {
     
     error_log("OAuth callback successful. Stored in session. Redirecting to frontend...");
     
-    // Redirect to frontend success page
-    $frontendUrl = 'http://localhost:8080/docs-setup-success';
+    // Redirect to frontend success page - environment aware
+    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+    $isLocal = strpos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false;
+    
+    if ($isLocal) {
+        $frontendUrl = 'http://localhost:8080/docs-setup-success';
+    } else {
+        // Production - redirect to the main domain
+        $frontendUrl = 'https://bugs.bugricer.com/admin/meet?google_connected=true';
+    }
+    
+    error_log("OAuth callback redirecting to: " . $frontendUrl);
     header('Location: ' . $frontendUrl);
     exit();
     
@@ -146,8 +176,18 @@ try {
     error_log("OAuth callback error: " . $e->getMessage());
     error_log("Stack trace: " . $e->getTraceAsString());
     
-    // Redirect to frontend with error
-    $frontendUrl = 'http://localhost:8080/docs-setup-error?error=' . urlencode($e->getMessage());
+    // Redirect to frontend with error - environment aware
+    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+    $isLocal = strpos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false;
+    
+    if ($isLocal) {
+        $frontendUrl = 'http://localhost:8080/docs-setup-error?error=' . urlencode($e->getMessage());
+    } else {
+        // Production - redirect to the main domain with error
+        $frontendUrl = 'https://bugs.bugricer.com/admin/meet?google_error=' . urlencode($e->getMessage());
+    }
+    
+    error_log("OAuth callback error redirecting to: " . $frontendUrl);
     header('Location: ' . $frontendUrl);
     exit();
 }

@@ -354,3 +354,14 @@ class Database {
         return $result;
     }
 }
+
+// Global function to get database connection (for backward compatibility)
+function getDBConnection() {
+    try {
+        $db = Database::getInstance();
+        return $db->getConnection();
+    } catch (Exception $e) {
+        error_log("Database connection error: " . $e->getMessage());
+        return null;
+    }
+}
