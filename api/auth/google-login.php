@@ -13,13 +13,6 @@ require_once __DIR__ . '/../../config/cors.php';
 // Set headers
 header('Content-Type: application/json');
 
-// Handle CORS preflight
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(200);
-    echo json_encode(['success' => true, 'message' => 'Preflight OK']);
-    exit;
-}
-
 // Only allow POST method
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
