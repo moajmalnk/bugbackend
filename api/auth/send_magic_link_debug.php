@@ -139,6 +139,7 @@ try {
     $host = $_SERVER['HTTP_HOST'];
     
     // Determine if we're in local or production environment
+    // Check if backend is running on localhost or production domain
     $isLocal = (strpos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false);
     
     if ($isLocal) {
@@ -148,6 +149,8 @@ try {
         // Production environment: use bugs.bugricer.com for frontend
         $magic_link = 'https://bugs.bugricer.com/login?magic_token=' . $token;
     }
+    
+    error_log("Magic Link Debug: Host detected: $host, isLocal: " . ($isLocal ? 'true' : 'false') . ", magic_link: $magic_link");
     
     error_log("Magic Link Debug: Magic link URL generated - " . $magic_link);
     
