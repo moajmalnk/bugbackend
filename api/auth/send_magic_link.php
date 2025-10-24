@@ -105,12 +105,17 @@ class MagicLinkAPI extends BaseAPI {
     private function getBaseUrl() {
         $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
         $host = $_SERVER['HTTP_HOST'];
-        $path = dirname($_SERVER['REQUEST_URI']);
         
-        // Remove /api/auth from path
-        $path = str_replace('/api/auth', '', $path);
+        // Determine if we're in local or production environment
+        $isLocal = (strpos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false);
         
-        return $protocol . '://' . $host . $path;
+        if ($isLocal) {
+            // Local environment: use localhost:8080 for frontend
+            return 'http://localhost:8080';
+        } else {
+            // Production environment: use bugs.bugricer.com for frontend
+            return 'https://bugs.bugricer.com';
+        }
     }
     
     private function sendMagicLinkEmail($email, $username, $magic_link) {
