@@ -413,6 +413,57 @@ class ProjectActivityController extends BaseAPI {
     }
     
     /**
+     * Delete an activity (admin only)
+     */
+    public function deleteActivity($activityId) {
+        try {
+            $decoded = $this->validateToken();
+            if (!$decoded || !isset($decoded->user_id)) {
+                $this->sendJsonResponse(401, "Invalid or expired token");
+                return;
+            }
+            
+            $userRole = $decoded->role;
+            
+            // Only admins can delete activities
+            if ($userRole !== 'admin') {
+                $this->sendJsonResponse(403, "Access denied. Only administrators can delete activities.");
+                return;
+            }
+            
+            // Check if activity exists
+            $activity = $this->fetchSingleCached(
+                "SELECT id, project_id, user_id FROM project_activities WHERE id = ?",
+                [$activityId],
+                "activity_exists_{$activityId}",
+                60
+            );
+            
+            if (!$activity) {
+                $this->sendJsonResponse(404, "Activity not found");
+                return;
+            }
+            
+            // Delete the activity
+            $stmt = $this->conn->prepare("DELETE FROM project_activities WHERE id = ?");
+            $result = $stmt->execute([$activityId]);
+            
+            if ($result) {
+                // Invalidate all activity caches since we don't know which specific caches to clear
+                $this->invalidateAllActivityCaches();
+                
+                $this->sendJsonResponse(200, "Activity deleted successfully");
+            } else {
+                $this->sendJsonResponse(500, "Failed to delete activity");
+            }
+            
+        } catch (Exception $e) {
+            error_log("Error deleting activity: " . $e->getMessage());
+            $this->sendJsonResponse(500, "Failed to delete activity: " . $e->getMessage());
+        }
+    }
+    
+    /**
      * Invalidate activity-related caches
      */
     private function invalidateActivityCaches($projectId = null, $userId = null) {
@@ -431,6 +482,21 @@ class ProjectActivityController extends BaseAPI {
         }
         
         // Clear general activity cache patterns
+        $this->clearCache("activities_");
+    }
+    
+    /**
+     * Invalidate all activity caches (used when deleting activities)
+     */
+    private function invalidateAllActivityCaches() {
+        // Clear all activity-related cache patterns
+        $this->clearCache("project_activities_");
+        $this->clearCache("user_activities_");
+        $this->clearCache("project_activity_stats_");
+        $this->clearCache("total_activities_");
+        $this->clearCache("recent_activities_");
+        $this->clearCache("activity_types_");
+        $this->clearCache("top_contributors_");
         $this->clearCache("activities_");
     }
 }
