@@ -25,11 +25,25 @@ class UserController extends BaseAPI {
             $checkPhoneColumn = $this->conn->query("SHOW COLUMNS FROM users LIKE 'phone'");
             $phoneColumnExists = $checkPhoneColumn->rowCount() > 0;
 
-            // Get all users with phone field if it exists
+            // Get all users with phone field and status calculation
             if ($phoneColumnExists) {
-                $query = "SELECT id, username, email, phone, role, created_at, updated_at FROM users ORDER BY created_at DESC";
+                $query = "SELECT id, username, email, phone, role, created_at, updated_at, last_active_at,
+                    CASE 
+                        WHEN last_active_at IS NULL THEN 'offline'
+                        WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 120 THEN 'active'
+                        WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 900 THEN 'idle'
+                        ELSE 'offline'
+                    END as status
+                    FROM users ORDER BY created_at DESC";
             } else {
-                $query = "SELECT id, username, email, role, created_at, updated_at FROM users ORDER BY created_at DESC";
+                $query = "SELECT id, username, email, role, created_at, updated_at, last_active_at,
+                    CASE 
+                        WHEN last_active_at IS NULL THEN 'offline'
+                        WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 120 THEN 'active'
+                        WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 900 THEN 'idle'
+                        ELSE 'offline'
+                    END as status
+                    FROM users ORDER BY created_at DESC";
             }
             
             $stmt = $this->conn->prepare($query);
@@ -564,6 +578,139 @@ class UserController extends BaseAPI {
         } catch (Exception $e) {
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
         }
+    }
+
+    public function getActiveHours($userId, $period = 'daily') {
+        try {
+            // Validate user ID
+            if (!$userId || !$this->utils->isValidUUID($userId)) {
+                $this->sendJsonResponse(400, "Invalid user ID format");
+                return;
+            }
+
+            // Check if user_activity_sessions table exists
+            $tableExists = $this->conn->query("SHOW TABLES LIKE 'user_activity_sessions'")->rowCount() > 0;
+            
+            if (!$tableExists) {
+                // Return empty data if table doesn't exist
+                $response = [
+                    'period' => $period,
+                    'date_range' => $this->getDateRange($period),
+                    'summary' => [
+                        'total_hours' => 0,
+                    'total_minutes' => 0,
+                    'total_sessions' => 0,
+                    'active_days' => 0,
+                    'average_hours_per_day' => 0
+                ],
+                'daily_breakdown' => []
+            ];
+                $this->sendJsonResponse(200, "Active hours retrieved successfully (no activity data available)", $response);
+                return;
+            }
+
+            // Determine date range based on period
+            $dateRange = $this->getDateRange($period);
+            $startDate = $dateRange['start'];
+            $endDate = $dateRange['end'];
+
+            // Calculate active hours for the period
+            $query = "
+                SELECT 
+                    DATE(session_start) as date,
+                    SUM(
+                        CASE 
+                            WHEN session_end IS NOT NULL THEN 
+                                TIMESTAMPDIFF(MINUTE, session_start, session_end)
+                            ELSE 
+                                TIMESTAMPDIFF(MINUTE, session_start, NOW())
+                        END
+                    ) as total_minutes,
+                    COUNT(*) as session_count
+                FROM user_activity_sessions 
+                WHERE user_id = ? 
+                AND session_start >= ? 
+                AND session_start <= ?
+                GROUP BY DATE(session_start)
+                ORDER BY date DESC
+            ";
+
+            $stmt = $this->conn->prepare($query);
+            $stmt->execute([$userId, $startDate, $endDate]);
+            $dailyData = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            // Calculate summary statistics
+            $totalMinutes = 0;
+            $totalSessions = 0;
+            $activeDays = count($dailyData);
+
+            foreach ($dailyData as $day) {
+                $totalMinutes += (int)$day['total_minutes'];
+                $totalSessions += (int)$day['session_count'];
+            }
+
+            $totalHours = round($totalMinutes / 60, 2);
+            $averageHoursPerDay = $activeDays > 0 ? round($totalHours / $activeDays, 2) : 0;
+
+            $response = [
+                'period' => $period,
+                'date_range' => [
+                    'start' => $startDate,
+                    'end' => $endDate
+                ],
+                'summary' => [
+                    'total_hours' => $totalHours,
+                    'total_minutes' => $totalMinutes,
+                    'total_sessions' => $totalSessions,
+                    'active_days' => $activeDays,
+                    'average_hours_per_day' => $averageHoursPerDay
+                ],
+                'daily_breakdown' => $dailyData
+            ];
+
+            $this->sendJsonResponse(200, "Active hours retrieved successfully", $response);
+
+        } catch (Exception $e) {
+            error_log("Error in getActiveHours: " . $e->getMessage());
+            $this->sendJsonResponse(500, "An unexpected error occurred");
+        }
+    }
+
+    private function getDateRange($period) {
+        $now = new DateTime();
+        $start = new DateTime();
+
+        switch ($period) {
+            case 'daily':
+                $start->modify('today');
+                $end = clone $start;
+                $end->modify('+1 day');
+                break;
+            case 'weekly':
+                $start->modify('monday this week');
+                $end = clone $start;
+                $end->modify('+7 days');
+                break;
+            case 'monthly':
+                $start->modify('first day of this month');
+                $end = clone $start;
+                $end->modify('+1 month');
+                break;
+            case 'yearly':
+                $start->modify('first day of January this year');
+                $end = clone $start;
+                $end->modify('+1 year');
+                break;
+            default:
+                $start->modify('today');
+                $end = clone $start;
+                $end->modify('+1 day');
+        }
+
+        return [
+            'start' => $start->format('Y-m-d H:i:s'),
+            'end' => $end->format('Y-m-d H:i:s')
+        ];
     }
 
     public function getConnection() {

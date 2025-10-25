@@ -18,7 +18,8 @@ class SharedTaskController extends BaseAPI {
                     GROUP_CONCAT(DISTINCT sta.assigned_to) as assigned_to_ids,
                     GROUP_CONCAT(DISTINCT au.username) as assigned_to_names,
                     GROUP_CONCAT(DISTINCT CASE WHEN sta.completed_at IS NOT NULL THEN sta.assigned_to END) as completed_assignee_ids,
-                    GROUP_CONCAT(DISTINCT CASE WHEN sta.completed_at IS NOT NULL THEN au.username END) as completed_assignee_names
+                    GROUP_CONCAT(DISTINCT CASE WHEN sta.completed_at IS NOT NULL THEN au.username END) as completed_assignee_names,
+                    GROUP_CONCAT(DISTINCT CASE WHEN sta.completed_at IS NOT NULL THEN CONCAT(sta.assigned_to, ':', sta.completed_at) END) as completion_details_raw
                 FROM shared_tasks st
                 LEFT JOIN users creator ON st.created_by COLLATE utf8mb4_unicode_ci = creator.id COLLATE utf8mb4_unicode_ci
                 LEFT JOIN users assignee ON st.assigned_to COLLATE utf8mb4_unicode_ci = assignee.id COLLATE utf8mb4_unicode_ci
@@ -63,6 +64,19 @@ class SharedTaskController extends BaseAPI {
                 $task['assigned_to_names'] = $task['assigned_to_names'] ? explode(',', $task['assigned_to_names']) : ($task['assigned_to_name'] ? [$task['assigned_to_name']] : []);
                 $task['completed_assignee_ids'] = $task['completed_assignee_ids'] ? explode(',', $task['completed_assignee_ids']) : [];
                 $task['completed_assignee_names'] = $task['completed_assignee_names'] ? explode(',', $task['completed_assignee_names']) : [];
+                
+                // Parse completion_details into associative array: userId => completed_at timestamp
+                $task['completion_details'] = [];
+                if (!empty($task['completion_details_raw'])) {
+                    $details = explode(',', $task['completion_details_raw']);
+                    foreach ($details as $detail) {
+                        if (strpos($detail, ':') !== false) {
+                            list($userId, $timestamp) = explode(':', $detail, 2);
+                            $task['completion_details'][$userId] = $timestamp;
+                        }
+                    }
+                }
+                unset($task['completion_details_raw']); // Remove raw field
             }
             
             $this->sendJsonResponse(200, "Shared tasks retrieved successfully", $tasks);

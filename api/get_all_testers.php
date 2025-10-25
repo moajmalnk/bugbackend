@@ -17,17 +17,22 @@ try {
     $api = new BaseAPI();
     
     // Use cached query for better performance
-    $emails = $api->fetchCached(
-        "SELECT email FROM users WHERE role = 'tester'",
+    $testers = $api->fetchCached(
+        "SELECT id, name, email, role FROM users WHERE role = 'tester' ORDER BY name ASC",
         [],
-        'testers_emails',
+        'testers_data',
         600 // Cache for 10 minutes
     );
     
-    // Extract just the email values from the result
-    $emailList = array_column($emails, 'email');
+    // Extract just the email values for backward compatibility
+    $emailList = array_column($testers, 'email');
     
-    echo json_encode(['success' => true, 'emails' => $emailList]);
+    // Return both complete user data and email list
+    echo json_encode([
+        'success' => true, 
+        'data' => $testers,
+        'emails' => $emailList
+    ]);
 } catch (Exception $e) {
     http_response_code(500);
     echo json_encode(['success' => false, 'message' => $e->getMessage()]);
