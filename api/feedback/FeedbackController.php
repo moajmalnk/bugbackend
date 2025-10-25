@@ -209,6 +209,7 @@ class FeedbackController extends BaseAPI {
             // Get recent feedback
             $stmt = $this->conn->prepare("
                 SELECT 
+                    uf.id,
                     uf.rating,
                     uf.feedback_text,
                     uf.submitted_at,
@@ -280,6 +281,82 @@ class FeedbackController extends BaseAPI {
         } catch (Exception $e) {
             error_log("Feedback dismiss error: " . $e->getMessage());
             $this->sendJsonResponse(500, "Failed to dismiss feedback prompt");
+        }
+    }
+    
+    /**
+     * Delete feedback (admin only)
+     */
+    public function deleteFeedback() {
+        if ($_SERVER['REQUEST_METHOD'] !== 'DELETE' && $_SERVER['REQUEST_METHOD'] !== 'POST') {
+            $this->sendJsonResponse(405, "Method not allowed");
+            return;
+        }
+        
+        try {
+            // Validate authentication and admin role
+            $tokenData = $this->validateToken();
+            
+            if (!isset($tokenData->role) || $tokenData->role !== 'admin') {
+                $this->sendJsonResponse(403, "Access denied. Only administrators can delete feedback.");
+                return;
+            }
+            
+            // Get feedback ID from URL parameter or request body
+            $feedbackId = null;
+            
+            if ($_SERVER['REQUEST_METHOD'] === 'DELETE') {
+                $feedbackId = $_GET['id'] ?? null;
+            } else {
+                $data = $this->getRequestData();
+                $feedbackId = $data['id'] ?? null;
+            }
+            
+            if (!$feedbackId) {
+                $this->sendJsonResponse(400, "Feedback ID is required");
+                return;
+            }
+            
+            // Check if feedback exists
+            $stmt = $this->conn->prepare("SELECT id, user_id FROM user_feedback WHERE id = ?");
+            $stmt->execute([$feedbackId]);
+            $feedback = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$feedback) {
+                $this->sendJsonResponse(404, "Feedback not found");
+                return;
+            }
+            
+            // Delete the feedback
+            $stmt = $this->conn->prepare("DELETE FROM user_feedback WHERE id = ?");
+            $result = $stmt->execute([$feedbackId]);
+            
+            if ($result) {
+                // Log feedback deletion activity
+                try {
+                    $logger = ActivityLogger::getInstance();
+                    $logger->logFeedbackDeleted(
+                        $tokenData->user_id,
+                        null, // No specific project for feedback
+                        $feedbackId,
+                        "Admin deleted user feedback",
+                        [
+                            'deleted_feedback_id' => $feedbackId,
+                            'original_user_id' => $feedback['user_id']
+                        ]
+                    );
+                } catch (Exception $e) {
+                    error_log("Failed to log feedback deletion activity: " . $e->getMessage());
+                }
+                
+                $this->sendJsonResponse(200, "Feedback deleted successfully");
+            } else {
+                $this->sendJsonResponse(500, "Failed to delete feedback");
+            }
+            
+        } catch (Exception $e) {
+            error_log("Feedback deletion error: " . $e->getMessage());
+            $this->sendJsonResponse(500, "Failed to delete feedback: " . $e->getMessage());
         }
     }
 }
