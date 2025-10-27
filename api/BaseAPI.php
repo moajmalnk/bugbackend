@@ -4,6 +4,7 @@ date_default_timezone_set('UTC');
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../config/utils.php';
 require_once __DIR__ . '/../config/cors.php';
+require_once __DIR__ . '/PermissionManager.php';
 
 class BaseAPI {
     protected $conn;
@@ -338,6 +339,47 @@ class BaseAPI {
         } catch (Exception $e) {
             $this->conn->rollBack();
             throw $e;
+        }
+    }
+    
+    /**
+     * Require permission - throws 403 if user doesn't have permission
+     * 
+     * @param string $permissionKey Permission key (e.g., 'BUGS_CREATE')
+     * @param string|null $projectId Optional project ID for project-scoped permissions
+     * @return void Throws exception if permission denied
+     */
+    public function requirePermission($permissionKey, $projectId = null) {
+        try {
+            // Get current user from token
+            $decoded = $this->validateToken();
+            if (!$decoded || !isset($decoded->user_id)) {
+                throw new Exception('Authentication required');
+            }
+            
+            $userId = $decoded->user_id;
+            
+            // Check permission
+            $pm = PermissionManager::getInstance();
+            if (!$pm->hasPermission($userId, $permissionKey, $projectId)) {
+                http_response_code(403);
+                echo json_encode([
+                    'success' => false,
+                    'message' => 'Access denied. You do not have permission to perform this action.',
+                    'required_permission' => $permissionKey
+                ]);
+                exit();
+            }
+            
+        } catch (Exception $e) {
+            error_log("Permission check error: " . $e->getMessage());
+            http_response_code(403);
+            echo json_encode([
+                'success' => false,
+                'message' => 'Access denied. Permission check failed.',
+                'error' => $e->getMessage()
+            ]);
+            exit();
         }
     }
 }

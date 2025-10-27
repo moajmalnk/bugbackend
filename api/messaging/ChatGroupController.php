@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../PermissionManager.php';
 
 class ChatGroupController extends BaseAPI {
     
@@ -21,9 +22,10 @@ class ChatGroupController extends BaseAPI {
             $userId = $decoded->user_id;
             $userRole = $decoded->role;
             
-            // Only admins can create groups
-            if ($userRole !== 'admin') {
-                $this->sendJsonResponse(403, "Only admins can create chat groups");
+            // Check for SUPER_ADMIN or MESSAGING_CREATE permission
+            $pm = PermissionManager::getInstance();
+            if (!$pm->hasPermission($userId, 'SUPER_ADMIN') && !$pm->hasPermission($userId, 'MESSAGING_CREATE')) {
+                $this->sendJsonResponse(403, "You do not have permission to create chat groups");
                 return;
             }
             
@@ -170,9 +172,10 @@ class ChatGroupController extends BaseAPI {
             $userId = $decoded->user_id;
             $userRole = $decoded->role;
             
-            // Only admins can update groups
-            if ($userRole !== 'admin') {
-                $this->sendJsonResponse(403, "Only admins can update chat groups");
+            // Check for SUPER_ADMIN or MESSAGING_MANAGE permission
+            $pm = PermissionManager::getInstance();
+            if (!$pm->hasPermission($userId, 'SUPER_ADMIN') && !$pm->hasPermission($userId, 'MESSAGING_MANAGE')) {
+                $this->sendJsonResponse(403, "You do not have permission to update chat groups");
                 return;
             }
             
@@ -234,9 +237,10 @@ class ChatGroupController extends BaseAPI {
             $userId = $decoded->user_id;
             $userRole = $decoded->role;
             
-            // Only admins can delete groups
-            if ($userRole !== 'admin') {
-                $this->sendJsonResponse(403, "Only admins can delete chat groups");
+            // Check for SUPER_ADMIN or MESSAGING_MANAGE permission
+            $pm = PermissionManager::getInstance();
+            if (!$pm->hasPermission($userId, 'SUPER_ADMIN') && !$pm->hasPermission($userId, 'MESSAGING_MANAGE')) {
+                $this->sendJsonResponse(403, "You do not have permission to delete chat groups");
                 return;
             }
             
@@ -320,9 +324,10 @@ class ChatGroupController extends BaseAPI {
             $userId = $decoded->user_id;
             $userRole = $decoded->role;
             
-            // Only admins can add members
-            if ($userRole !== 'admin') {
-                $this->sendJsonResponse(403, "Only admins can add members to groups");
+            // Check for SUPER_ADMIN or MESSAGING_MANAGE permission
+            $pm = PermissionManager::getInstance();
+            if (!$pm->hasPermission($userId, 'SUPER_ADMIN') && !$pm->hasPermission($userId, 'MESSAGING_MANAGE')) {
+                $this->sendJsonResponse(403, "You do not have permission to add members to groups");
                 return;
             }
             
@@ -380,9 +385,10 @@ class ChatGroupController extends BaseAPI {
             $userId = $decoded->user_id;
             $userRole = $decoded->role;
             
-            // Only admins can add members
-            if ($userRole !== 'admin') {
-                $this->sendJsonResponse(403, "Only admins can add members to groups");
+            // Check for SUPER_ADMIN or MESSAGING_MANAGE permission
+            $pm = PermissionManager::getInstance();
+            if (!$pm->hasPermission($userId, 'SUPER_ADMIN') && !$pm->hasPermission($userId, 'MESSAGING_MANAGE')) {
+                $this->sendJsonResponse(403, "You do not have permission to add members to groups");
                 return;
             }
             
@@ -476,9 +482,10 @@ class ChatGroupController extends BaseAPI {
             $userId = $decoded->user_id;
             $userRole = $decoded->role;
             
-            // Only admins can remove members
-            if ($userRole !== 'admin') {
-                $this->sendJsonResponse(403, "Only admins can remove members from groups");
+            // Check for SUPER_ADMIN or MESSAGING_MANAGE permission
+            $pm = PermissionManager::getInstance();
+            if (!$pm->hasPermission($userId, 'SUPER_ADMIN') && !$pm->hasPermission($userId, 'MESSAGING_MANAGE')) {
+                $this->sendJsonResponse(403, "You do not have permission to remove members from groups");
                 return;
             }
             
@@ -528,9 +535,10 @@ class ChatGroupController extends BaseAPI {
             $userId = $decoded->user_id;
             $userRole = $decoded->role;
             
-            // Only admins can remove members
-            if ($userRole !== 'admin') {
-                $this->sendJsonResponse(403, "Only admins can remove members from groups");
+            // Check for SUPER_ADMIN or MESSAGING_MANAGE permission
+            $pm = PermissionManager::getInstance();
+            if (!$pm->hasPermission($userId, 'SUPER_ADMIN') && !$pm->hasPermission($userId, 'MESSAGING_MANAGE')) {
+                $this->sendJsonResponse(403, "You do not have permission to remove members from groups");
                 return;
             }
             
@@ -603,11 +611,22 @@ class ChatGroupController extends BaseAPI {
     private function validateProjectAccess($userId, $userRole, $projectId) {
         error_log("🔍 validateProjectAccess - User ID: $userId, Role: $userRole, Project ID: $projectId");
         
-        if ($userRole === 'admin') {
-            error_log("✅ validateProjectAccess - User is admin, access granted");
+        // Check for SUPER_ADMIN or PROJECTS_VIEW permission
+        $pm = PermissionManager::getInstance();
+        
+        // Check SUPER_ADMIN first
+        if ($pm->hasPermission($userId, 'SUPER_ADMIN')) {
+            error_log("✅ validateProjectAccess - User has SUPER_ADMIN permission");
             return true;
         }
         
+        // Check PROJECTS_VIEW permission
+        if ($pm->hasPermission($userId, 'PROJECTS_VIEW', $projectId)) {
+            error_log("✅ validateProjectAccess - User has PROJECTS_VIEW permission");
+            return true;
+        }
+        
+        // Legacy: Check if user is a member or creator of the project
         $query = "
             SELECT 1 FROM (
                 SELECT 1 FROM project_members WHERE user_id = ? AND project_id = ?
@@ -620,13 +639,17 @@ class ChatGroupController extends BaseAPI {
         $stmt->execute([$userId, $projectId, $userId, $projectId]);
         $hasAccess = (bool) $stmt->fetch();
         
-        error_log($hasAccess ? "✅ validateProjectAccess - User has project access" : "❌ validateProjectAccess - User does NOT have project access");
+        error_log($hasAccess ? "✅ validateProjectAccess - User has project access (legacy)" : "❌ validateProjectAccess - User does NOT have project access");
         
         return $hasAccess;
     }
     
     private function getGroupWithAccess($groupId, $userId, $userRole) {
-        if ($userRole === 'admin') {
+        // Check for SUPER_ADMIN permission
+        $pm = PermissionManager::getInstance();
+        $isSuperAdmin = $pm->hasPermission($userId, 'SUPER_ADMIN');
+        
+        if ($isSuperAdmin) {
             $query = "SELECT * FROM chat_groups WHERE id = ? AND is_active = 1";
             $params = [$groupId];
         } else {

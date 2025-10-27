@@ -27,7 +27,7 @@ class UserController extends BaseAPI {
 
             // Get all users with phone field and status calculation
             if ($phoneColumnExists) {
-                $query = "SELECT id, username, email, phone, role, created_at, updated_at, last_active_at,
+                $query = "SELECT id, username, email, phone, role, role_id, created_at, updated_at, last_active_at,
                     CASE 
                         WHEN last_active_at IS NULL THEN 'offline'
                         WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 120 THEN 'active'
@@ -36,7 +36,7 @@ class UserController extends BaseAPI {
                     END as status
                     FROM users ORDER BY created_at DESC";
             } else {
-                $query = "SELECT id, username, email, role, created_at, updated_at, last_active_at,
+                $query = "SELECT id, username, email, role, role_id, created_at, updated_at, last_active_at,
                     CASE 
                         WHEN last_active_at IS NULL THEN 'offline'
                         WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 120 THEN 'active'
@@ -104,7 +104,7 @@ class UserController extends BaseAPI {
             }
 
             // Prepare and execute query
-            $query = "SELECT id, username, email, phone, role, created_at, updated_at FROM users WHERE id = ?";
+            $query = "SELECT id, username, email, phone, role, role_id, created_at, updated_at FROM users WHERE id = ?";
             $stmt = $this->conn->prepare($query);
             
             if (!$stmt) {
@@ -154,7 +154,7 @@ class UserController extends BaseAPI {
             $totalUsers = $countStmt->fetch(PDO::FETCH_ASSOC)['total'];
 
             // Get users with pagination
-            $query = "SELECT id, username, email, phone, role, created_at, updated_at 
+            $query = "SELECT id, username, email, phone, role, role_id, created_at, updated_at 
                      FROM users 
                      ORDER BY created_at DESC 
                      LIMIT ? OFFSET ?";
@@ -362,14 +362,15 @@ class UserController extends BaseAPI {
             $email = trim($data['email'] ?? '');
             $password = $data['password'] ?? '';
             $role = $data['role'] ?? '';
+            $roleId = isset($data['role_id']) && !empty($data['role_id']) ? $data['role_id'] : null;
             $phone = isset($data['phone']) && trim($data['phone']) !== '' ? trim($data['phone']) : null;
 
             // Log the incoming data for debugging (remove in production if sensitive)
             error_log("Creating user - Username: $username, Email: $email, Phone: " . ($phone ?? 'null'));
 
             // Validate required fields
-            if (!$username || !$email || !$password || !$role) {
-                $this->sendJsonResponse(400, "All fields are required.");
+            if (!$username || !$email || !$password) {
+                $this->sendJsonResponse(400, "Username, email, and password are required.");
                 return;
             }
 
@@ -405,10 +406,46 @@ class UserController extends BaseAPI {
             // Hash password
             $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
 
-            // Insert user (add id column)
-            $query = "INSERT INTO users (id, username, email, phone, password, role) VALUES (?, ?, ?, ?, ?, ?)";
+            // If role_id not provided, try to map from role string
+            if (!$roleId && $role) {
+                $mapStmt = $this->conn->prepare("SELECT id, role_name FROM roles WHERE LOWER(role_name) = LOWER(?) LIMIT 1");
+                $mapStmt->execute([$role]);
+                $mappedRole = $mapStmt->fetch(PDO::FETCH_ASSOC);
+                if ($mappedRole) {
+                    $roleId = $mappedRole['id'];
+                    $role = $mappedRole['role_name']; // Get the actual role name from DB
+                }
+            }
+
+            // If no role specified, default to user role (tester)
+            if (!$roleId) {
+                $roleId = 3; // Tester default
+                $role = 'tester'; // Set default role for ENUM
+            }
+
+            // Normalize role to a valid ENUM value if we have role_id
+            // Get the role_name from roles table based on role_id to ensure ENUM compatibility
+            if ($roleId) {
+                $roleStmt = $this->conn->prepare("SELECT role_name FROM roles WHERE id = ? LIMIT 1");
+                $roleStmt->execute([$roleId]);
+                $roleData = $roleStmt->fetch(PDO::FETCH_ASSOC);
+                if ($roleData) {
+                    // Map the role_name to a valid ENUM value
+                    $actualRole = strtolower($roleData['role_name']);
+                    // Map to valid ENUM values
+                    if (in_array($actualRole, ['admin', 'developer', 'tester', 'user'])) {
+                        $role = $actualRole;
+                    } else {
+                        // For custom roles, use a default ENUM value ('user')
+                        $role = 'user';
+                    }
+                }
+            }
+
+            // Insert user
+            $query = "INSERT INTO users (id, username, email, phone, password, role, role_id) VALUES (?, ?, ?, ?, ?, ?, ?)";
             $stmt = $this->conn->prepare($query);
-            if (!$stmt->execute([$id, $username, $email, $phone, $hashedPassword, $role])) {
+            if (!$stmt->execute([$id, $username, $email, $phone, $hashedPassword, $role, $roleId])) {
                 $errorInfo = $stmt->errorInfo();
                 if (strpos($errorInfo[2], 'username') !== false) {
                     $this->sendJsonResponse(409, "Username already exists.");
@@ -503,7 +540,8 @@ class UserController extends BaseAPI {
                 "username" => $username,
                 "email" => $email,
                 "phone" => $phone,
-                "role" => $role
+                "role" => $role,
+                "role_id" => $roleId
             ]);
         } catch (Exception $e) {
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
@@ -524,8 +562,53 @@ class UserController extends BaseAPI {
                 $params[] = $data['email'];
             }
             if (isset($data['role'])) {
+                // Map role to a valid ENUM value
+                $role = $data['role'];
+                $roleId = isset($data['role_id']) ? $data['role_id'] : null;
+                
+                // If role_id not provided, try to map from role string
+                if (!$roleId && $role) {
+                    $mapStmt = $conn->prepare("SELECT id, role_name FROM roles WHERE LOWER(role_name) = LOWER(?) LIMIT 1");
+                    $mapStmt->execute([$role]);
+                    $mappedRole = $mapStmt->fetch(PDO::FETCH_ASSOC);
+                    if ($mappedRole) {
+                        $roleId = $mappedRole['id'];
+                    }
+                }
+                
+                // Normalize role to a valid ENUM value if we have role_id
+                if ($roleId) {
+                    $roleStmt = $conn->prepare("SELECT role_name FROM roles WHERE id = ? LIMIT 1");
+                    $roleStmt->execute([$roleId]);
+                    $roleData = $roleStmt->fetch(PDO::FETCH_ASSOC);
+                    if ($roleData) {
+                        // Map the role_name to a valid ENUM value
+                        $actualRole = strtolower($roleData['role_name']);
+                        // Map to valid ENUM values
+                        if (in_array($actualRole, ['admin', 'developer', 'tester', 'user'])) {
+                            $role = $actualRole;
+                        } else {
+                            // For custom roles, use a default ENUM value
+                            $role = 'user';
+                        }
+                    }
+                }
+                
                 $fields[] = "role = ?";
-                $params[] = $data['role'];
+                $params[] = $role;
+                
+                // Also update role_id if we have it
+                if ($roleId) {
+                    $fields[] = "role_id = ?";
+                    $params[] = $roleId;
+                }
+            } else if (isset($data['role_id'])) {
+                // If only role_id is provided
+                $roleId = $data['role_id'];
+                if ($roleId) {
+                    $fields[] = "role_id = ?";
+                    $params[] = $roleId;
+                }
             }
             if (isset($data['phone'])) {
                 // Check for duplicate phone (exclude current user)

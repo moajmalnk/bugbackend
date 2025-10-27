@@ -1,0 +1,11 @@
+RewriteEngine On
+
+# Handle /user/{userId} requests
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^user/([^/]+)$ user_permissions.php?userId=$1 [L,QSA]
+
+# Handle existing files normally
+RewriteCond %{REQUEST_FILENAME} -f
+RewriteRule ^ - [L]
+
