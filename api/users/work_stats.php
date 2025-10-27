@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../PermissionManager.php';
 
 class UserWorkStatsController extends BaseAPI {
     public function getUserWorkStats($userId) {
@@ -12,13 +13,18 @@ class UserWorkStatsController extends BaseAPI {
             }
 
             // Check if user has permission to view stats
-            $currentUserRole = $decoded->role ?? 'user';
             $currentUserId = $decoded->user_id;
             
-            // Only allow admins to view other users' stats, or users to view their own
-            if ($currentUserRole !== 'admin' && $currentUserId !== $userId) {
-                $this->sendJsonResponse(403, 'Access denied');
-                return;
+            // Allow users to view their own stats, or SUPER_ADMIN/USERS_VIEW to view others
+            if ($currentUserId !== $userId) {
+                $pm = PermissionManager::getInstance();
+                
+                // Check for SUPER_ADMIN or USERS_VIEW permission
+                if (!$pm->hasPermission($currentUserId, 'SUPER_ADMIN') && 
+                    !$pm->hasPermission($currentUserId, 'USERS_VIEW')) {
+                    $this->sendJsonResponse(403, 'Access denied');
+                    return;
+                }
             }
 
             // Get current custom month period (6th to 5th of next month)
