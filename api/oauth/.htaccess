@@ -5,4 +5,3 @@ RewriteRule ^callback$ callback.php [L]
 
 # Redirect /oauth/auth to /oauth/auth.php  
 RewriteRule ^auth$ auth.php [L]
-
