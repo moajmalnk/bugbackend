@@ -53,4 +53,3 @@ class MasterPermissionsController extends BaseAPI {
 $controller = new MasterPermissionsController();
 $controller->dispatch();
 ?>
-

@@ -152,4 +152,3 @@ class UserPermissionsController extends BaseAPI {
 $controller = new UserPermissionsController();
 $controller->dispatch();
 ?>
-
