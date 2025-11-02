@@ -1,6 +1,6 @@
 # BugRicer Backend API
 
-A robust, enterprise-grade RESTful API backend built with PHP for the BugRicer bug tracking and project management platform. This API provides comprehensive functionality for bug tracking, user management, real-time messaging, time tracking, and more.
+A robust, enterprise-grade RESTful API backend built with PHP for the BugRicer bug tracking and project management platform. This API provides comprehensive functionality for bug tracking, user management, real-time messaging, and more.
 
 ## 📋 Table of Contents
 
@@ -28,7 +28,6 @@ A robust, enterprise-grade RESTful API backend built with PHP for the BugRicer b
 - **User Management**: Role-based user system (Admin, Developer, Tester) with granular permissions
 - **Real-time Messaging**: In-app messaging system with support for text, files, and voice notes
 - **Activity Logging**: Comprehensive audit trail for all user activities
-- **Time Tracking**: Check-in/check-out system with session management
 - **Task Management**: Full task lifecycle management with assignment and tracking
 - **Meeting Management**: Video conferencing integration and meeting scheduling
 - **Notifications**: Real-time push notifications via Firebase Cloud Messaging (FCM)
@@ -350,14 +349,6 @@ X-Impersonate-User: <user_id>
 - `PUT /update.php` - Update task
 - `DELETE /delete.php` - Delete task
 
-### Time Tracking (`/api/time-tracking/`)
-- `POST /check-in.php` - Check in
-- `POST /check-out.php` - Check out
-- `POST /pause.php` - Pause session
-- `POST /resume.php` - Resume session
-- `GET /current-session.php` - Get current session
-- `GET /session-history.php` - Get session history
-
 ### Meetings (`/api/meetings/`)
 - `GET /list.php` - List meetings
 - `POST /create.php` - Create meeting
@@ -418,7 +409,6 @@ The database uses a normalized relational structure with the following key table
 - **project_members**: Project membership
 - **notifications**: Notification records
 - **announcements**: System announcements
-- **time_sessions**: Time tracking sessions
 - **meetings**: Meeting records
 - **feedback**: User feedback
 
