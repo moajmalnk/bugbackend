@@ -394,9 +394,14 @@ class BugController extends BaseAPI {
             $this->conn->beginTransaction();
             
             $id = Utils::generateUUID();
+            
+            // Get IST time for insertion
+            $istTime = new DateTime('now', new DateTimeZone('Asia/Kolkata'));
+            $istTimeStr = $istTime->format('Y-m-d H:i:s');
+            
             $stmt = $this->conn->prepare(
-                "INSERT INTO bugs (id, title, description, expected_result, actual_result, project_id, reported_by, priority, status) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO bugs (id, title, description, expected_result, actual_result, project_id, reported_by, priority, status, created_at, updated_at) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             );
             
             $priority = isset($data['priority']) ? $data['priority'] : 'medium';
@@ -413,11 +418,34 @@ class BugController extends BaseAPI {
                 $data['project_id'],
                 $decoded->user_id,
                 $priority,
-                $status
+                $status,
+                $istTimeStr,
+                $istTimeStr
             ]);
 
             // Initialize array to collect all uploaded file paths
             $uploadedAttachments = [];
+
+            // Debug: Log received files
+            error_log("BugController::create - Received FILES keys: " . json_encode(array_keys($_FILES)));
+            if (!empty($_FILES)) {
+                foreach ($_FILES as $key => $file) {
+                    if (is_array($file) && isset($file['name'])) {
+                        // Single file
+                        error_log("BugController::create - File key: $key, Name: " . ($file['name'] ?? 'N/A') . ", Error: " . ($file['error'] ?? 'N/A') . ", Size: " . ($file['size'] ?? 'N/A'));
+                    } else if (is_array($file) && isset($file[0])) {
+                        // Multiple files
+                        error_log("BugController::create - File key: $key, Count: " . count($file));
+                        foreach ($file as $idx => $f) {
+                            if (is_array($f)) {
+                                error_log("BugController::create -   [$idx] Name: " . ($f['name'] ?? 'N/A') . ", Error: " . ($f['error'] ?? 'N/A') . ", Size: " . ($f['size'] ?? 'N/A'));
+                            }
+                        }
+                    }
+                }
+            } else {
+                error_log("BugController::create - WARNING: \$_FILES is empty!");
+            }
 
             // Handle screenshots
             if (!empty($_FILES['screenshots'])) {
@@ -429,9 +457,18 @@ class BugController extends BaseAPI {
                 foreach ($_FILES['screenshots']['tmp_name'] as $key => $tmp_name) {
                     $fileName = $_FILES['screenshots']['name'][$key];
                     $fileType = $_FILES['screenshots']['type'][$key];
+                    $fileError = $_FILES['screenshots']['error'][$key];
+                    
+                    // Check for upload errors
+                    if ($fileError !== UPLOAD_ERR_OK || empty($tmp_name)) {
+                        error_log("BugController::create - Skipping screenshot $fileName (Error: $fileError)");
+                        continue;
+                    }
+                    
                     $filePath = $uploadDir . uniqid() . '_' . $fileName;
                     
                     if (move_uploaded_file($tmp_name, $filePath)) {
+                        error_log("BugController::create - Saved screenshot: $filePath");
                         $attachmentId = Utils::generateUUID();
                         // Store path relative to the 'uploads' directory
                         $relativePath = str_replace(__DIR__ . '/../../uploads/', 'uploads/', $filePath);
@@ -464,9 +501,18 @@ class BugController extends BaseAPI {
                 foreach ($_FILES['files']['tmp_name'] as $key => $tmp_name) {
                     $fileName = $_FILES['files']['name'][$key];
                     $fileType = $_FILES['files']['type'][$key];
+                    $fileError = $_FILES['files']['error'][$key];
+                    
+                    // Check for upload errors
+                    if ($fileError !== UPLOAD_ERR_OK || empty($tmp_name)) {
+                        error_log("BugController::create - Skipping file $fileName (Error: $fileError)");
+                        continue;
+                    }
+                    
                     $filePath = $uploadDir . uniqid() . '_' . $fileName;
                     
                     if (move_uploaded_file($tmp_name, $filePath)) {
+                        error_log("BugController::create - Saved file: $filePath");
                         $attachmentId = Utils::generateUUID();
                         // Store path relative to the 'uploads' directory
                         $relativePath = str_replace(__DIR__ . '/../../uploads/', 'uploads/', $filePath);
@@ -490,18 +536,38 @@ class BugController extends BaseAPI {
             }
 
             // Handle voice notes
+            error_log("BugController::create - Checking voice_notes: " . (empty($_FILES['voice_notes']) ? 'EMPTY' : 'NOT EMPTY'));
             if (!empty($_FILES['voice_notes'])) {
                 $uploadDir = __DIR__ . '/../../uploads/voice_notes/';
                 if (!file_exists($uploadDir)) {
                     mkdir($uploadDir, 0777, true);
                 }
+                
+                error_log("BugController::create - Voice notes count: " . (is_array($_FILES['voice_notes']['tmp_name']) ? count($_FILES['voice_notes']['tmp_name']) : 'NOT ARRAY'));
 
                 foreach ($_FILES['voice_notes']['tmp_name'] as $key => $tmp_name) {
                     $fileName = $_FILES['voice_notes']['name'][$key];
                     $fileType = $_FILES['voice_notes']['type'][$key];
+                    $fileError = $_FILES['voice_notes']['error'][$key];
+                    $fileSize = $_FILES['voice_notes']['size'][$key] ?? 0;
+                    
+                    error_log("BugController::create - Processing voice note [$key]: Name=$fileName, Type=$fileType, Error=$fileError, Size=$fileSize, Tmp=$tmp_name");
+                    
+                    // Check for upload errors
+                    if ($fileError !== UPLOAD_ERR_OK) {
+                        error_log("BugController::create - Upload error for voice note $fileName: Code=$fileError (UPLOAD_ERR_OK=" . UPLOAD_ERR_OK . ")");
+                        continue;
+                    }
+                    
+                    if (empty($tmp_name) || !is_uploaded_file($tmp_name)) {
+                        error_log("BugController::create - Invalid temp file for voice note $fileName: $tmp_name");
+                        continue;
+                    }
+                    
                     $filePath = $uploadDir . uniqid() . '_' . $fileName;
                     
                     if (move_uploaded_file($tmp_name, $filePath)) {
+                        error_log("BugController::create - Saved voice note: $filePath");
                         $attachmentId = Utils::generateUUID();
                         // Store path relative to the 'uploads' directory
                         $relativePath = str_replace(__DIR__ . '/../../uploads/', 'uploads/', $filePath);
@@ -526,6 +592,35 @@ class BugController extends BaseAPI {
             
             $this->conn->commit();
             
+            // Fetch attachments from database to include in response
+            $attachStmt = $this->conn->prepare("
+                SELECT id, file_name, file_path, file_type, uploaded_by, created_at
+                FROM bug_attachments
+                WHERE bug_id = ?
+                ORDER BY created_at ASC
+            ");
+            $attachStmt->execute([$id]);
+            $attachments = $attachStmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            // Process attachments to include full URLs
+            $processedAttachments = [];
+            foreach ($attachments as $attachment) {
+                $path = $attachment['file_path'];
+                $fullPath = $this->getFullPath($path);
+                $processedAttachments[] = [
+                    'id' => $attachment['id'],
+                    'file_name' => $attachment['file_name'],
+                    'file_path' => $attachment['file_path'],
+                    'file_type' => $attachment['file_type'],
+                    'uploaded_by' => $attachment['uploaded_by'],
+                    'created_at' => $attachment['created_at'],
+                    'full_url' => $fullPath
+                ];
+            }
+            
+            error_log("BugController::create - Bug created successfully with " . count($processedAttachments) . " attachments: " . json_encode(array_column($processedAttachments, 'file_name')));
+            
+            // Use the IST time we already calculated for the response
             $bug = [
                 'id' => $id,
                 'title' => $data['title'],
@@ -534,8 +629,9 @@ class BugController extends BaseAPI {
                 'reported_by' => $decoded->user_id,
                 'priority' => $priority,
                 'status' => $status,
-                'created_at' => gmdate('Y-m-d H:i:s'),
-                'updated_at' => gmdate('Y-m-d H:i:s')
+                'created_at' => $istTimeStr,
+                'updated_at' => $istTimeStr,
+                'attachments' => $processedAttachments
             ];
             
             $this->sendJsonResponse(200, "Bug created successfully", [
@@ -544,6 +640,7 @@ class BugController extends BaseAPI {
             ]);
             
         } catch (Exception $e) {
+            error_log("BugController::create - Exception: " . $e->getMessage() . " | Trace: " . $e->getTraceAsString());
             if ($this->conn->inTransaction()) {
                 $this->conn->rollBack();
             }

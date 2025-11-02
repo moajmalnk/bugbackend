@@ -34,12 +34,25 @@ class WorkSubmissionController extends BaseAPI {
                 // ignore; migration may fail if no permissions
             }
 
-            $sql = "INSERT INTO work_submissions (user_id, submission_date, start_time, hours_today, total_working_days, total_hours_cumulative, completed_tasks, pending_tasks, ongoing_tasks, notes)
-                    VALUES (?,?,?,?,?,?,?,?,?,?)
-                    ON DUPLICATE KEY UPDATE start_time=VALUES(start_time), hours_today=VALUES(hours_today), total_working_days=VALUES(total_working_days),
+            // Auto-migrate: add overtime_hours column if missing
+            try {
+                $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'overtime_hours'");
+                if ($check->rowCount() === 0) {
+                    $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN overtime_hours DECIMAL(6,2) DEFAULT 0 AFTER hours_today");
+                }
+            } catch (Exception $e) {
+                // ignore; migration may fail if no permissions
+            }
+
+            // Calculate overtime: if hours > 8, overtime = hours - 8, otherwise 0
+            $overtime = $hours > 8 ? $hours - 8 : 0;
+
+            $sql = "INSERT INTO work_submissions (user_id, submission_date, start_time, hours_today, overtime_hours, total_working_days, total_hours_cumulative, completed_tasks, pending_tasks, ongoing_tasks, notes)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                    ON DUPLICATE KEY UPDATE start_time=VALUES(start_time), hours_today=VALUES(hours_today), overtime_hours=VALUES(overtime_hours), total_working_days=VALUES(total_working_days),
                     total_hours_cumulative=VALUES(total_hours_cumulative), completed_tasks=VALUES(completed_tasks), pending_tasks=VALUES(pending_tasks), ongoing_tasks=VALUES(ongoing_tasks), notes=VALUES(notes)";
             $stmt = $this->conn->prepare($sql);
-            $stmt->execute([$userId, $date, $start, $hours, $days, $cumulative, $completed, $pending, $ongoing, $notes]);
+            $stmt->execute([$userId, $date, $start, $hours, $overtime, $days, $cumulative, $completed, $pending, $ongoing, $notes]);
 
             error_log("🔍 WorkSubmissionController::submit - Saved submission for user: " . $userId . " on date: " . $date);
             $this->sendJsonResponse(200, 'Submission saved');

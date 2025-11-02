@@ -25,7 +25,17 @@ class GoogleAuthService {
         // Load OAuth configuration from environment
         $this->clientId = Environment::getGoogleClientId();
         $this->clientSecret = Environment::getGoogleClientSecret();
-        $this->redirectUri = Environment::getGoogleRedirectUri();
+        
+        // CRITICAL: Determine redirect URI based on actual environment (not just config)
+        // This must match what was used during authorization to avoid refresh token errors
+        $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+        if (strpos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false) {
+            $this->redirectUri = 'http://localhost/BugRicer/backend/api/oauth/callback';
+            error_log("GoogleAuthService: Using LOCAL redirect URI: " . $this->redirectUri);
+        } else {
+            $this->redirectUri = Environment::getGoogleRedirectUri();
+            error_log("GoogleAuthService: Using redirect URI from environment: " . $this->redirectUri);
+        }
         
         // Validate required configuration
         if (empty($this->clientId) || empty($this->clientSecret)) {
@@ -43,6 +53,8 @@ class GoogleAuthService {
      */
     public function getClientForUser($bugricerUserId) {
         try {
+            error_log("GoogleAuthService::getClientForUser called for user: " . $bugricerUserId);
+            
             // Retrieve user's refresh token from database
             $stmt = $this->conn->prepare(
                 "SELECT google_user_id, refresh_token, access_token_expiry, email 
@@ -54,8 +66,12 @@ class GoogleAuthService {
             $tokenData = $stmt->fetch(PDO::FETCH_ASSOC);
             
             if (!$tokenData) {
+                error_log("No token data found for user: " . $bugricerUserId);
                 throw new Exception('User has not connected Google Docs. Please connect your Google account first.');
             }
+            
+            error_log("Found token data for user: " . $bugricerUserId . ", refresh_token (first 20): " . substr($tokenData['refresh_token'] ?? 'NULL', 0, 20));
+            error_log("Using redirect URI: " . $this->redirectUri);
             
             // Initialize Google Client
             $client = new Google\Client();
@@ -70,14 +86,54 @@ class GoogleAuthService {
             $client->setAccessType('offline');
             
             // Set refresh token
-            $client->refreshToken($tokenData['refresh_token']);
+            error_log("Attempting to refresh token...");
+            error_log("Refresh token length: " . strlen($tokenData['refresh_token']));
+            error_log("Refresh token (first 50 chars): " . substr($tokenData['refresh_token'], 0, 50));
+            
+            try {
+                // refreshToken() returns the access token array or throws an exception
+                $refreshResult = $client->refreshToken($tokenData['refresh_token']);
+                error_log("refreshToken() returned: " . json_encode($refreshResult));
+                
+                if (is_array($refreshResult) && isset($refreshResult['error'])) {
+                    error_log("ERROR in refreshToken response: " . $refreshResult['error']);
+                    throw new Exception('Failed to refresh access token: ' . $refreshResult['error'] . '. User may need to reconnect Google account.');
+                }
+            } catch (Exception $refreshException) {
+                error_log("ERROR during refreshToken exception: " . $refreshException->getMessage());
+                error_log("Exception class: " . get_class($refreshException));
+                error_log("Refresh token (first 50 chars): " . substr($tokenData['refresh_token'], 0, 50));
+                throw new Exception('Failed to refresh access token: ' . $refreshException->getMessage() . '. User may need to reconnect Google account.');
+            }
             
             // Get fresh access token
             $accessToken = $client->getAccessToken();
+            error_log("getAccessToken() returned: " . json_encode($accessToken));
+            error_log("Access token is null: " . ($accessToken === null ? 'YES' : 'NO'));
+            error_log("Access token is array: " . (is_array($accessToken) ? 'YES' : 'NO'));
             
-            if (!$accessToken || isset($accessToken['error'])) {
-                throw new Exception('Failed to obtain access token. User may need to reconnect Google account.');
+            if (!$accessToken) {
+                error_log("ERROR: Access token is null or empty");
+                error_log("Full access token response: " . var_export($accessToken, true));
+                throw new Exception('Failed to obtain access token: Access token is null. The refresh token may be invalid. User may need to reconnect Google account.');
             }
+            
+            if (is_array($accessToken) && isset($accessToken['error'])) {
+                $errorMsg = $accessToken['error'];
+                $errorDescription = $accessToken['error_description'] ?? '';
+                error_log("ERROR in access token: " . $errorMsg . " - " . $errorDescription);
+                error_log("Full access token error response: " . json_encode($accessToken));
+                throw new Exception('Failed to obtain access token: ' . $errorMsg . ($errorDescription ? ' - ' . $errorDescription : '') . '. User may need to reconnect Google account.');
+            }
+            
+            // Validate access token structure
+            if (!is_array($accessToken) || !isset($accessToken['access_token'])) {
+                error_log("ERROR: Access token structure is invalid");
+                error_log("Access token structure: " . json_encode($accessToken));
+                throw new Exception('Failed to obtain access token: Invalid token structure. User may need to reconnect Google account.');
+            }
+            
+            error_log("✓ Successfully obtained access token for user: " . $bugricerUserId);
             
             // Update token expiry in database for tracking
             $this->updateTokenExpiry($bugricerUserId, $accessToken);

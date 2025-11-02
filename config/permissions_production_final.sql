@@ -1,6 +1,7 @@
 -- ============================================
 -- Production Permission System Setup
 -- BugRicer - Dynamic Role-Based Access Control
+-- FINAL VERSION - Verified against production database
 -- ============================================
 
 -- Disable foreign key checks temporarily for clean installation
@@ -10,12 +11,14 @@ SET FOREIGN_KEY_CHECKS = 0;
 -- STEP 1: Drop Existing Tables (if any)
 -- ============================================
 
--- Note: Foreign key constraints are automatically ignored when FOREIGN_KEY_CHECKS = 0
--- Now drop tables in correct order
 DROP TABLE IF EXISTS `user_permissions`;
 DROP TABLE IF EXISTS `role_permissions`;
 DROP TABLE IF EXISTS `permissions`;
 DROP TABLE IF EXISTS `roles`;
+
+-- ============================================
+-- STEP 2: Create Permission Tables
+-- ============================================
 
 CREATE TABLE `roles` (
     `id` INT AUTO_INCREMENT PRIMARY KEY,
@@ -24,7 +27,7 @@ CREATE TABLE `roles` (
     `is_system_role` BOOLEAN DEFAULT FALSE,
     `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE `permissions` (
     `id` INT AUTO_INCREMENT PRIMARY KEY,
@@ -34,7 +37,7 @@ CREATE TABLE `permissions` (
     `scope` ENUM('global', 'project') DEFAULT 'global',
     `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE `role_permissions` (
     `id` INT AUTO_INCREMENT PRIMARY KEY,
@@ -45,7 +48,7 @@ CREATE TABLE `role_permissions` (
     FOREIGN KEY (`role_id`) REFERENCES `roles`(`id`) ON DELETE CASCADE,
     FOREIGN KEY (`permission_id`) REFERENCES `permissions`(`id`) ON DELETE CASCADE,
     UNIQUE KEY `unique_role_permission` (`role_id`, `permission_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE `user_permissions` (
     `id` INT AUTO_INCREMENT PRIMARY KEY,
@@ -59,13 +62,12 @@ CREATE TABLE `user_permissions` (
     INDEX `idx_user_id` (`user_id`),
     INDEX `idx_permission_id` (`permission_id`),
     INDEX `idx_project_id` (`project_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- Re-enable foreign key checks
 SET FOREIGN_KEY_CHECKS = 1;
 
--- Now add foreign key constraints AFTER all tables are created
--- Note: These may fail if constraints already exist - that's okay
+-- Now add foreign key constraints for user_permissions
 ALTER TABLE `user_permissions`
 ADD CONSTRAINT `fk_up_user` 
 FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE;
@@ -74,8 +76,10 @@ ALTER TABLE `user_permissions`
 ADD CONSTRAINT `fk_up_permission`
 FOREIGN KEY (`permission_id`) REFERENCES `permissions`(`id`) ON DELETE CASCADE;
 
+-- Note: Project FK intentionally omitted to avoid errors
+
 -- ============================================
--- STEP 2: Insert System Roles
+-- STEP 3: Insert System Roles
 -- ============================================
 
 INSERT INTO `roles` (`id`, `role_name`, `description`, `is_system_role`) VALUES
@@ -85,7 +89,7 @@ INSERT INTO `roles` (`id`, `role_name`, `description`, `is_system_role`) VALUES
 ON DUPLICATE KEY UPDATE `role_name`=`role_name`;
 
 -- ============================================
--- STEP 3: Insert All Permissions
+-- STEP 4: Insert All Permissions
 -- ============================================
 
 INSERT INTO `permissions` (`id`, `permission_key`, `permission_name`, `category`, `scope`) VALUES
@@ -171,134 +175,124 @@ INSERT INTO `permissions` (`id`, `permission_key`, `permission_name`, `category`
 ON DUPLICATE KEY UPDATE `permission_key`=`permission_key`;
 
 -- ============================================
--- STEP 4: Map Permissions to Admin Role
+-- STEP 5: Map Permissions to Admin Role
 -- ============================================
 
 INSERT INTO `role_permissions` (`role_id`, `permission_id`) VALUES
--- Bugs
 (1, 1), (1, 2), (1, 3), (1, 4), (1, 5), (1, 6), (1, 7),
--- Users
 (1, 8), (1, 9), (1, 10), (1, 11), (1, 12), (1, 13), (1, 14),
--- Documentation
 (1, 25), (1, 26), (1, 42),
--- Settings
 (1, 38), (1, 39), (1, 50), (1, 51),
--- System
 (1, 55),
--- Messaging
 (1, 43), (1, 44), (1, 45), (1, 46),
--- Projects
 (1, 18), (1, 19), (1, 20), (1, 21), (1, 22), (1, 23), (1, 24),
--- Fixes
 (1, 27),
--- Updates
 (1, 33), (1, 34), (1, 35), (1, 36), (1, 37),
--- Activity & Feedback
 (1, 47), (1, 48), (1, 49),
--- Tasks
 (1, 56), (1, 57), (1, 58), (1, 59), (1, 60), (1, 61),
--- Daily Updates
 (1, 40), (1, 41),
--- Meetings
 (1, 52), (1, 53), (1, 54)
 
 ON DUPLICATE KEY UPDATE `role_id`=`role_id`;
 
 -- ============================================
--- STEP 5: Map Permissions to Developer Role
+-- STEP 6: Map Permissions to Developer Role
 -- ============================================
 
 INSERT INTO `role_permissions` (`role_id`, `permission_id`) VALUES
--- Bugs
 (2, 1), (2, 2), (2, 3), (2, 4), (2, 5), (2, 6), (2, 7),
--- Users
 (2, 8), (2, 9), (2, 10), (2, 11), (2, 12), (2, 13), (2, 14),
--- Documentation
 (2, 25), (2, 26), (2, 42),
--- Settings
 (2, 38), (2, 39), (2, 50), (2, 51),
--- Messaging
 (2, 43), (2, 44), (2, 45), (2, 46),
--- Projects
 (2, 18), (2, 19), (2, 20), (2, 21), (2, 22), (2, 23), (2, 24),
--- Fixes
 (2, 27),
--- Updates
 (2, 33), (2, 34), (2, 35), (2, 36), (2, 37),
--- Activity & Feedback
 (2, 47), (2, 48), (2, 49),
--- Tasks
 (2, 56), (2, 57), (2, 58), (2, 59), (2, 60), (2, 61),
--- Daily Updates
 (2, 40), (2, 41),
--- Meetings
 (2, 52), (2, 53), (2, 54)
 
 ON DUPLICATE KEY UPDATE `role_id`=`role_id`;
 
 -- ============================================
--- STEP 6: Map Permissions to Tester Role
+-- STEP 7: Map Permissions to Tester Role
 -- ============================================
 
 INSERT INTO `role_permissions` (`role_id`, `permission_id`) VALUES
--- Bugs
 (3, 1), (3, 4),
--- Users
 (3, 8),
--- Documentation
 (3, 25),
--- Settings
 (3, 50),
--- Messaging
 (3, 43), (3, 44),
--- Projects
 (3, 19),
--- Fixes
 (3, 27),
--- Updates
 (3, 33),
--- Activity & Feedback
 (3, 47), (3, 48),
--- Tasks
 (3, 57),
--- Daily Updates
 (3, 41),
--- Meetings
 (3, 53)
 
 ON DUPLICATE KEY UPDATE `role_id`=`role_id`;
 
 -- ============================================
--- STEP 7: Add role_id to users table
+-- STEP 8: Add role_id column to users table (if needed)
 -- ============================================
 
--- Add role_id column if it doesn't exist (will fail if column already exists - that's okay)
-ALTER TABLE `users` 
-ADD COLUMN `role_id` INT NULL AFTER `role`;
+-- Add role_id column if it doesn't exist
+SET @col_exists = (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS 
+    WHERE TABLE_SCHEMA = DATABASE() 
+    AND TABLE_NAME = 'users' 
+    AND COLUMN_NAME = 'role_id'
+);
 
--- Add foreign key constraint (will fail if constraint already exists - that's okay)
-ALTER TABLE `users` 
-ADD CONSTRAINT `fk_users_role` 
-FOREIGN KEY (`role_id`) REFERENCES `roles`(`id`) ON DELETE SET NULL;
+SET @add_col_sql = IF(@col_exists = 0,
+    'ALTER TABLE `users` ADD COLUMN `role_id` INT NULL AFTER `role`',
+    'SELECT "Column role_id already exists" AS message'
+);
+
+SET @sql = @add_col_sql;
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+-- Add foreign key constraint if it doesn't exist
+SET @fk_exists = (
+    SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS 
+    WHERE CONSTRAINT_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'users'
+    AND CONSTRAINT_NAME = 'fk_users_role'
+);
+
+SET @add_fk_sql = IF(@fk_exists = 0,
+    'ALTER TABLE `users` ADD CONSTRAINT `fk_users_role` FOREIGN KEY (`role_id`) REFERENCES `roles`(`id`) ON DELETE SET NULL',
+    'SELECT "Foreign key already exists" AS message'
+);
+
+SET @sql = @add_fk_sql;
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
 -- Sync existing roles to role_id
-UPDATE `users` SET `role_id` = 1 WHERE `role` = 'admin' AND `role_id` IS NULL;
-UPDATE `users` SET `role_id` = 2 WHERE `role` = 'developer' AND `role_id` IS NULL;
-UPDATE `users` SET `role_id` = 3 WHERE `role` IN ('tester', 'user') AND `role_id` IS NULL;
+UPDATE `users` SET `role_id` = 1 WHERE `role` = 'admin' AND (`role_id` IS NULL OR `role_id` != 1);
+UPDATE `users` SET `role_id` = 2 WHERE `role` = 'developer' AND (`role_id` IS NULL OR `role_id` != 2);
+UPDATE `users` SET `role_id` = 3 WHERE `role` IN ('tester', 'user') AND (`role_id` IS NULL OR `role_id` != 3);
 
 -- Set default role_id for any remaining users
 UPDATE `users` SET `role_id` = 3 WHERE `role_id` IS NULL;
 
 -- ============================================
--- STEP 8: Create Indexes for Performance
+-- STEP 9: Create Indexes for Performance
 -- ============================================
 
-CREATE INDEX IF NOT EXISTS `idx_users_role_id` ON `users`(`role_id`);
-CREATE INDEX IF NOT EXISTS `idx_permissions_category` ON `permissions`(`category`);
-CREATE INDEX IF NOT EXISTS `idx_user_permissions_user` ON `user_permissions`(`user_id`);
-CREATE INDEX IF NOT EXISTS `idx_user_permissions_project` ON `user_permissions`(`project_id`);
-CREATE INDEX IF NOT EXISTS `idx_role_permissions_role` ON `role_permissions`(`role_id`);
-CREATE INDEX IF NOT EXISTS `idx_role_permissions_permission` ON `role_permissions`(`permission_id`);
+CREATE INDEX `idx_users_role_id` ON `users`(`role_id`);
+CREATE INDEX `idx_permissions_category` ON `permissions`(`category`);
+CREATE INDEX `idx_user_permissions_user` ON `user_permissions`(`user_id`);
+CREATE INDEX `idx_user_permissions_project` ON `user_permissions`(`project_id`);
+CREATE INDEX `idx_role_permissions_role` ON `role_permissions`(`role_id`);
+CREATE INDEX `idx_role_permissions_permission` ON `role_permissions`(`permission_id`);
 
 -- ============================================
 -- Installation Complete!
@@ -311,6 +305,5 @@ SELECT
     COUNT(DISTINCT rp.id) as total_assignments
 FROM roles r
 CROSS JOIN permissions p
-LEFT JOIN role_permissions rp ON r.id = rp.role_id AND p.id = rp.permission_id
-LIMIT 1;
+LEFT JOIN role_permissions rp ON r.id = rp.role_id AND p.id = rp.permission_id;
 

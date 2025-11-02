@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS work_submissions (
   submission_date DATE NOT NULL,
   start_time TIME DEFAULT NULL,
   hours_today DECIMAL(6,2) NOT NULL DEFAULT 0,
+  overtime_hours DECIMAL(6,2) DEFAULT 0,
   total_working_days INT DEFAULT NULL,
   total_hours_cumulative DECIMAL(10,2) DEFAULT NULL,
   completed_tasks MEDIUMTEXT,

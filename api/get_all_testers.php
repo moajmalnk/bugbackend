@@ -18,7 +18,7 @@ try {
     
     // Use cached query for better performance
     $testers = $api->fetchCached(
-        "SELECT id, name, email, role FROM users WHERE role = 'tester' ORDER BY name ASC",
+        "SELECT id, username, email, role FROM users WHERE role = 'tester' ORDER BY username ASC",
         [],
         'testers_data',
         600 // Cache for 10 minutes

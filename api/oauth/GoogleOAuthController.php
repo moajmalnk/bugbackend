@@ -65,6 +65,27 @@ class GoogleOAuthController extends BaseAPI {
         }
     }
     
+    /**
+     * Override redirect URI (useful for forcing local redirect in admin-reauth)
+     */
+    public function setRedirectUri($redirectUri) {
+        // Set the redirect URI on the Google Client
+        $this->googleClient->setRedirectUri($redirectUri);
+        
+        // Verify it was set correctly
+        $actualUri = $this->googleClient->getRedirectUri();
+        if ($actualUri !== $redirectUri) {
+            error_log("WARNING: Redirect URI mismatch after setting. Expected: " . $redirectUri . ", Got: " . $actualUri);
+            // Try setting it again - sometimes the Google Client needs it set multiple times
+            $this->googleClient->setRedirectUri($redirectUri);
+            $actualUri = $this->googleClient->getRedirectUri();
+            error_log("After second attempt, redirect URI: " . $actualUri);
+        }
+        
+        error_log("Redirect URI overridden to: " . $redirectUri);
+        error_log("Verifying redirect URI after override: " . $this->googleClient->getRedirectUri());
+    }
+    
     public function getClient() {
         return $this->googleClient;
     }
@@ -73,11 +94,28 @@ class GoogleOAuthController extends BaseAPI {
      * Generate and return the authorization URL
      */
     public function getAuthorizationUrl($state = null) {
+        // Log redirect URI before creating auth URL
+        $redirectUriBefore = $this->googleClient->getRedirectUri();
+        error_log("Redirect URI BEFORE creating auth URL: " . $redirectUriBefore);
+        
         if ($state) {
             $this->googleClient->setState($state);
         }
         $authUrl = $this->googleClient->createAuthUrl();
+        
+        // Parse the redirect_uri from the auth URL to verify it's correct
+        $parsedUrl = parse_url($authUrl);
+        if (isset($parsedUrl['query'])) {
+            parse_str($parsedUrl['query'], $params);
+            $redirectUriInUrl = urldecode($params['redirect_uri'] ?? 'not found');
+            error_log("Redirect URI IN the auth URL: " . $redirectUriInUrl);
+            if ($redirectUriInUrl !== $redirectUriBefore) {
+                error_log("ERROR: Redirect URI mismatch! Client has: " . $redirectUriBefore . ", but URL contains: " . $redirectUriInUrl);
+            }
+        }
+        
         error_log("Generated auth URL: " . $authUrl);
+        error_log("Redirect URI in Google Client AFTER creating auth URL: " . $this->googleClient->getRedirectUri());
         return $authUrl;
     }
     
@@ -134,30 +172,43 @@ class GoogleOAuthController extends BaseAPI {
      */
     public function saveTokens($googleUserId, $bugricerUserId, $refreshToken, $accessTokenExpiry, $email) {
         try {
-            // Check if token already exists
-            $stmt = $this->conn->prepare(
-                "SELECT google_user_id FROM google_tokens WHERE google_user_id = ? OR bugricer_user_id = ?"
-            );
-            $stmt->execute([$googleUserId, $bugricerUserId]);
-            $existing = $stmt->fetch(PDO::FETCH_ASSOC);
+            error_log("saveTokens called - googleUserId: " . $googleUserId . ", bugricerUserId: " . $bugricerUserId);
+            error_log("refreshToken length: " . strlen($refreshToken) . ", first 30 chars: " . substr($refreshToken, 0, 30));
             
-            if ($existing) {
-                // Update existing token
-                $stmt = $this->conn->prepare(
-                    "UPDATE google_tokens 
-                     SET refresh_token = ?, access_token_expiry = ?, email = ?, updated_at = CURRENT_TIMESTAMP 
-                     WHERE google_user_id = ?"
-                );
-                $stmt->execute([$refreshToken, $accessTokenExpiry, $email, $googleUserId]);
-                error_log("Updated existing Google token for user: " . $bugricerUserId);
+            // FIRST: Delete any existing tokens for this user to avoid conflicts
+            // Google invalidates old refresh tokens when a new one is issued
+            $deleteStmt = $this->conn->prepare(
+                "DELETE FROM google_tokens WHERE bugricer_user_id = ? OR google_user_id = ?"
+            );
+            $deleteStmt->execute([$bugricerUserId, $googleUserId]);
+            $deletedRows = $deleteStmt->rowCount();
+            if ($deletedRows > 0) {
+                error_log("Deleted " . $deletedRows . " old token(s) for user: " . $bugricerUserId);
+            }
+            
+            // Now insert the new token
+            $stmt = $this->conn->prepare(
+                "INSERT INTO google_tokens (google_user_id, bugricer_user_id, refresh_token, access_token_expiry, email) 
+                 VALUES (?, ?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE 
+                    refresh_token = VALUES(refresh_token),
+                    access_token_expiry = VALUES(access_token_expiry),
+                    email = VALUES(email),
+                    updated_at = CURRENT_TIMESTAMP"
+            );
+            $stmt->execute([$googleUserId, $bugricerUserId, $refreshToken, $accessTokenExpiry, $email]);
+            
+            // Verify the token was saved
+            $verifyStmt = $this->conn->prepare(
+                "SELECT refresh_token FROM google_tokens WHERE bugricer_user_id = ? LIMIT 1"
+            );
+            $verifyStmt->execute([$bugricerUserId]);
+            $savedToken = $verifyStmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($savedToken && $savedToken['refresh_token'] === $refreshToken) {
+                error_log("✓✓✓ Verified: New refresh token successfully saved for user: " . $bugricerUserId);
             } else {
-                // Insert new token
-                $stmt = $this->conn->prepare(
-                    "INSERT INTO google_tokens (google_user_id, bugricer_user_id, refresh_token, access_token_expiry, email) 
-                     VALUES (?, ?, ?, ?, ?)"
-                );
-                $stmt->execute([$googleUserId, $bugricerUserId, $refreshToken, $accessTokenExpiry, $email]);
-                error_log("Saved new Google token for user: " . $bugricerUserId);
+                error_log("✗✗✗ WARNING: Token save verification failed for user: " . $bugricerUserId);
             }
             
             // Clear any cached token data
