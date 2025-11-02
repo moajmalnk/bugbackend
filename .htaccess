@@ -1,0 +1,26 @@
+# Set charset for PHP files
+<FilesMatch "\.php$">
+    AddDefaultCharset UTF-8
+</FilesMatch>
+
+RewriteEngine On
+RewriteBase /
+RewriteRule ^index\.html$ - [L]
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule . /index.html [L]
+
+# Pass Authorization header to PHP
+RewriteCond %{HTTP:Authorization} .
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+# Pass custom impersonation headers to PHP
+RewriteCond %{HTTP:X-Impersonate-User} .
+RewriteRule .* - [E=HTTP_X_IMPERSONATE_USER:%{HTTP:X-Impersonate-User}]
+
+RewriteCond %{HTTP:X-User-Id} .
+RewriteRule .* - [E=HTTP_X_USER_ID:%{HTTP:X-User-Id}]
+
+# Handle API requests
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteCond %{REQUEST_FILENAME} !-f
