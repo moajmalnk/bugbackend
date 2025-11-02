@@ -31,5 +31,5 @@ Thumbs.db .env
 
 # Database dumps (may contain secrets)
 currentdb.sql
-*.sql
-!config/*.sql
+*.sql.backup
+*.sql.bak
