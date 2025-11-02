@@ -28,3 +28,8 @@ composer.lock
 .Trashes
 ehthumbs.db
 Thumbs.db .env
+
+# Database dumps (may contain secrets)
+currentdb.sql
+*.sql
+!config/*.sql
