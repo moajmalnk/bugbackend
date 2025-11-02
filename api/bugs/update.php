@@ -69,8 +69,35 @@ try {
         throw new Exception('Bug ID is required');
     }
 
+    // Check permissions: admin can edit any bug, or user can edit their own bug
+    $bugId = $data['id'];
+    $userId = $decoded->user_id;
+    $userRole = $decoded->role;
+    
+    // Fetch bug to check reported_by
+    $stmt = $controller->getConnection()->prepare("SELECT reported_by FROM bugs WHERE id = ?");
+    $stmt->execute([$bugId]);
+    $bug = $stmt->fetch(PDO::FETCH_ASSOC);
+    
+    if (!$bug) {
+        throw new Exception('Bug not found');
+    }
+    
+    // Check if user is admin or the bug creator
+    $isAdmin = $userRole === 'admin';
+    $isCreator = $bug['reported_by'] === $userId;
+    
+    if (!$isAdmin && !$isCreator) {
+        http_response_code(403);
+        echo json_encode([
+            'success' => false,
+            'message' => 'You do not have permission to edit this bug. Only admins and the bug creator can edit bugs.'
+        ]);
+        exit();
+    }
+
     // Add user ID from token as updated_by
-    $data['updated_by'] = $decoded->user_id;
+    $data['updated_by'] = $userId;
 
     // Check if we have files to handle
     $hasFiles = !empty($_FILES['screenshots']) || !empty($_FILES['files']) || !empty($_FILES['voice_notes']);
