@@ -7,3 +7,4 @@ echo json_encode([
     // ...weekly activity data here...
   ]
 ]);
+
