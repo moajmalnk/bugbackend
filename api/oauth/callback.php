@@ -201,14 +201,25 @@ try {
                                          strpos($host, '127.0.0.1') !== false || 
                                          strpos($host, 'local') !== false;
                     
+                    // Determine redirect path based on user role
+                    $userRole = $userData->role ?? 'developer';
+                    $rolePath = 'admin'; // default
+                    if ($userRole === 'admin') {
+                        $rolePath = 'admin';
+                    } elseif ($userRole === 'tester') {
+                        $rolePath = 'tester';
+                    } elseif ($userRole === 'developer') {
+                        $rolePath = 'developer';
+                    }
+                    
                     if ($isDefinitelyLocal) {
-                        $frontendUrl = 'http://localhost:8080/admin/meet?google_connected=true&email=' . urlencode($email);
-                        error_log("⚠⚠⚠ FORCING LOCAL redirect (fallback detected local): " . $frontendUrl);
+                        $frontendUrl = "http://localhost:8080/{$rolePath}/meet?google_connected=true&email=" . urlencode($email);
+                        error_log("⚠⚠⚠ FORCING LOCAL redirect (fallback detected local, role: {$userRole}): " . $frontendUrl);
                         header('Location: ' . $frontendUrl);
                         exit();
                     } else {
-                        $frontendUrl = 'https://bugs.bugricer.com/admin/meet?google_connected=true&email=' . urlencode($email);
-                        error_log("⚠ Fallback: Detected production environment, redirecting to: " . $frontendUrl);
+                        $frontendUrl = "https://bugs.bugricer.com/{$rolePath}/meet?google_connected=true&email=" . urlencode($email);
+                        error_log("⚠ Fallback: Detected production environment (role: {$userRole}), redirecting to: " . $frontendUrl);
                         header('Location: ' . $frontendUrl);
                         exit();
                     }
@@ -271,14 +282,42 @@ try {
                                              strpos($host, '127.0.0.1') !== false || 
                                              strpos($host, 'local') !== false;
                         
+                        // Get user role from database if we have user_id
+                        $userRole = 'developer'; // default
+                        if (isset($bugricerUserId)) {
+                            try {
+                                require_once __DIR__ . '/../../config/database.php';
+                                $db = Database::getInstance();
+                                $pdo = $db->getConnection();
+                                $stmt = $pdo->prepare('SELECT role FROM users WHERE id = ? LIMIT 1');
+                                $stmt->execute([$bugricerUserId]);
+                                $userRow = $stmt->fetch(PDO::FETCH_ASSOC);
+                                if ($userRow && isset($userRow['role'])) {
+                                    $userRole = $userRow['role'];
+                                }
+                            } catch (Exception $e) {
+                                error_log("Failed to get user role: " . $e->getMessage());
+                            }
+                        }
+                        
+                        // Determine redirect path based on user role
+                        $rolePath = 'admin'; // default
+                        if ($userRole === 'admin') {
+                            $rolePath = 'admin';
+                        } elseif ($userRole === 'tester') {
+                            $rolePath = 'tester';
+                        } elseif ($userRole === 'developer') {
+                            $rolePath = 'developer';
+                        }
+                        
                         if ($isDefinitelyLocal) {
-                            $frontendUrl = 'http://localhost:8080/admin/meet?google_connected=true&email=' . urlencode($email);
-                            error_log("⚠⚠⚠ FORCING LOCAL redirect (fallback 2 detected local): " . $frontendUrl);
+                            $frontendUrl = "http://localhost:8080/{$rolePath}/meet?google_connected=true&email=" . urlencode($email);
+                            error_log("⚠⚠⚠ FORCING LOCAL redirect (fallback 2 detected local, role: {$userRole}): " . $frontendUrl);
                             header('Location: ' . $frontendUrl);
                             exit();
                         } else {
-                            $frontendUrl = 'https://bugs.bugricer.com/admin/meet?google_connected=true&email=' . urlencode($email);
-                            error_log("⚠ Fallback: Detected production environment, redirecting to: " . $frontendUrl);
+                            $frontendUrl = "https://bugs.bugricer.com/{$rolePath}/meet?google_connected=true&email=" . urlencode($email);
+                            error_log("⚠ Fallback: Detected production environment (role: {$userRole}), redirecting to: " . $frontendUrl);
                             header('Location: ' . $frontendUrl);
                             exit();
                         }
@@ -363,15 +402,50 @@ try {
                              strpos($host, '127.0.0.1') !== false || 
                              strpos($host, 'local') !== false;
         
+        // Try to get user role from JWT token in state if available
+        $userRole = 'admin'; // default to admin if we can't determine
+        if ($state) {
+            try {
+                // Try to decode JWT from state
+                $jwtToken = $state;
+                // Check if state is base64 encoded JSON
+                $decoded = @json_decode(@base64_decode($state), true);
+                if ($decoded && isset($decoded['jwt_token'])) {
+                    $jwtToken = $decoded['jwt_token'];
+                }
+                
+                // Decode JWT token to get role (only payload, no verification needed for role extraction)
+                $parts = explode('.', $jwtToken);
+                if (count($parts) === 3) {
+                    $payload = json_decode(base64_decode($parts[1]), true);
+                    if ($payload && isset($payload['role'])) {
+                        $userRole = $payload['role'];
+                    }
+                }
+            } catch (Exception $e) {
+                error_log("Failed to extract role from JWT: " . $e->getMessage());
+            }
+        }
+        
+        // Determine redirect path based on user role
+        $rolePath = 'admin'; // default
+        if ($userRole === 'admin') {
+            $rolePath = 'admin';
+        } elseif ($userRole === 'tester') {
+            $rolePath = 'tester';
+        } elseif ($userRole === 'developer') {
+            $rolePath = 'developer';
+        }
+        
         if ($isDefinitelyLocal) {
-            $frontendUrl = 'http://localhost:8080/admin/meet?google_connected=true';
-            error_log("⚠⚠⚠ FORCING LOCAL redirect (final fallback detected local): " . $frontendUrl);
+            $frontendUrl = "http://localhost:8080/{$rolePath}/meet?google_connected=true";
+            error_log("⚠⚠⚠ FORCING LOCAL redirect (final fallback detected local, role: {$userRole}): " . $frontendUrl);
             header('Location: ' . $frontendUrl);
             exit();
         } else {
             // Production - redirect to the main domain
-            $frontendUrl = 'https://bugs.bugricer.com/admin/meet?google_connected=true';
-            error_log("Detected production environment (final fallback), redirecting to: " . $frontendUrl);
+            $frontendUrl = "https://bugs.bugricer.com/{$rolePath}/meet?google_connected=true";
+            error_log("Detected production environment (final fallback, role: {$userRole}), redirecting to: " . $frontendUrl);
             header('Location: ' . $frontendUrl);
             exit();
         }

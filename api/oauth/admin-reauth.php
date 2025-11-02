@@ -62,20 +62,51 @@ try {
         $token = $matches[1] ?? null;
     }
     
+    // Get return_url from query parameter, or construct based on user role
+    $returnUrl = $_GET['return_url'] ?? null;
+    if (!$returnUrl) {
+        // Determine user role to construct return_url
+        $userRole = 'admin'; // default
+        try {
+            require_once __DIR__ . '/../../config/database.php';
+            $db = Database::getInstance();
+            $pdo = $db->getConnection();
+            $stmt = $pdo->prepare('SELECT role FROM users WHERE id = ? LIMIT 1');
+            $stmt->execute([$userId]);
+            $userRow = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($userRow && isset($userRow['role'])) {
+                $userRole = $userRow['role'];
+            }
+        } catch (Exception $e) {
+            error_log("Failed to get user role: " . $e->getMessage());
+        }
+        
+        // Construct return_url based on role
+        $rolePath = 'admin';
+        if ($userRole === 'admin') {
+            $rolePath = 'admin';
+        } elseif ($userRole === 'tester') {
+            $rolePath = 'tester';
+        } elseif ($userRole === 'developer') {
+            $rolePath = 'developer';
+        }
+        $returnUrl = "http://localhost:8080/{$rolePath}/meet";
+        error_log("Constructed return_url based on role ({$userRole}): " . $returnUrl);
+    }
+    
     // Use JWT token as state if available, otherwise encode user_id with return URL
     if ($token) {
-        // For JWT token, we'll append return_url info separately in a cookie or session
-        // But since state can only be one value, we'll encode both in JSON format
+        // Encode both JWT token and return_url in state
         $state = base64_encode(json_encode([
             'jwt_token' => $token,
             'user_id' => $userId,
-            'return_url' => 'http://localhost:8080/admin/meet'
+            'return_url' => $returnUrl
         ]));
-        error_log("Using JWT token with return_url in state parameter");
+        error_log("Using JWT token with return_url in state parameter: " . $returnUrl);
     } else {
         // Fallback: encode user_id in state
-        $state = base64_encode(json_encode(['user_id' => $userId, 'return_url' => 'http://localhost:8080/admin/meet']));
-        error_log("Using encoded user_id as state parameter");
+        $state = base64_encode(json_encode(['user_id' => $userId, 'return_url' => $returnUrl]));
+        error_log("Using encoded user_id as state parameter with return_url: " . $returnUrl);
     }
     
     // Get the authorization URL

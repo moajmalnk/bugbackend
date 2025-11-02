@@ -55,8 +55,50 @@ try {
     // Initialize OAuth controller
     $oauthController = new GoogleOAuthController();
     
-    // Create state with user ID
-    $state = base64_encode(json_encode(['user_id' => $bugricerUserId]));
+    // Get return_url from query parameter, or construct based on user role
+    $returnUrl = $_GET['return_url'] ?? null;
+    if (!$returnUrl) {
+        // Determine user role to construct return_url
+        $userRole = 'admin'; // default
+        try {
+            $stmt = $pdo->prepare('SELECT role FROM users WHERE id = ? LIMIT 1');
+            $stmt->execute([$bugricerUserId]);
+            $userRow = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($userRow && isset($userRow['role'])) {
+                $userRole = $userRow['role'];
+            }
+        } catch (Exception $e) {
+            error_log("Failed to get user role: " . $e->getMessage());
+        }
+        
+        // Construct return_url based on role (production URL)
+        $rolePath = 'admin';
+        if ($userRole === 'admin') {
+            $rolePath = 'admin';
+        } elseif ($userRole === 'tester') {
+            $rolePath = 'tester';
+        } elseif ($userRole === 'developer') {
+            $rolePath = 'developer';
+        }
+        $returnUrl = "https://bugs.bugricer.com/{$rolePath}/meet";
+        error_log("Constructed return_url based on role ({$userRole}): " . $returnUrl);
+    }
+    
+    // Get JWT token if available
+    $token = $_GET['token'] ?? null;
+    
+    // Create state with user ID and return_url, include JWT token if available
+    if ($token) {
+        $state = base64_encode(json_encode([
+            'jwt_token' => $token,
+            'user_id' => $bugricerUserId,
+            'return_url' => $returnUrl
+        ]));
+        error_log("Using JWT token with return_url in state parameter: " . $returnUrl);
+    } else {
+        $state = base64_encode(json_encode(['user_id' => $bugricerUserId, 'return_url' => $returnUrl]));
+        error_log("Using user_id with return_url in state parameter: " . $returnUrl);
+    }
     
     // Get the authorization URL
     $authUrl = $oauthController->getAuthorizationUrl($state);

@@ -30,6 +30,13 @@ try {
     
     error_log("Connection check result: " . ($hasAccount ? 'true' : 'false'));
     
+    // Get connected email if account is linked
+    $connectedEmail = null;
+    if ($hasAccount) {
+        $connectedEmail = $authService->getUserGoogleEmail($userId);
+        error_log("Connected email for user $userId: " . ($connectedEmail ?? 'null'));
+    }
+    
     // Additional debug: check database directly
     $db = Database::getInstance();
     $conn = $db->getConnection();
@@ -41,7 +48,8 @@ try {
     echo json_encode([
         'success' => true,
         'data' => [
-            'connected' => $hasAccount
+            'connected' => $hasAccount,
+            'email' => $connectedEmail
         ],
         'debug' => [
             'user_id' => $userId,
