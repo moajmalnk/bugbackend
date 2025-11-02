@@ -1,8 +1,8 @@
 <?php
 /**
- * List General Documents Endpoint
- * GET /api/docs/list-general-docs
- * Returns all general documents for the authenticated user
+ * Get Shared Documents Endpoint (Developers/Testers)
+ * GET /api/docs/get-shared-docs
+ * Returns documents from projects the user is a member of
  */
 
 require_once __DIR__ . '/../../config/cors.php';
@@ -37,25 +37,23 @@ try {
     
     // Get query parameters
     $includeArchived = isset($_GET['include_archived']) && $_GET['include_archived'] === 'true';
-    $projectId = isset($_GET['project_id']) && !empty($_GET['project_id']) ? $_GET['project_id'] : null;
     
-    error_log("Listing general documents for user: {$userId}, project: " . ($projectId ?? 'all'));
+    error_log("Listing shared documents for user: {$userId}");
     
     // Get documents
-    $result = $controller->listUserDocuments($userId, $includeArchived, $projectId);
+    $result = $controller->listSharedDocuments($userId, $includeArchived);
     
     http_response_code(200);
     echo json_encode($result);
     
 } catch (Exception $e) {
-    error_log("Error in list-general-docs.php: " . $e->getMessage());
+    error_log("Error in get-shared-docs.php: " . $e->getMessage());
     error_log("Stack trace: " . $e->getTraceAsString());
     
     http_response_code(500);
     echo json_encode([
         'success' => false,
-        'message' => $e->getMessage(),
-        'error_details' => $e->getTraceAsString()
+        'message' => $e->getMessage()
     ]);
 }
 

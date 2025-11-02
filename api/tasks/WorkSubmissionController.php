@@ -47,6 +47,12 @@ class WorkSubmissionController extends BaseAPI {
             // Calculate overtime: if hours > 8, overtime = hours - 8, otherwise 0
             $overtime = $hours > 8 ? $hours - 8 : 0;
 
+            // Check if this is an update before inserting
+            $checkStmt = $this->conn->prepare("SELECT COUNT(*) as cnt FROM work_submissions WHERE user_id = ? AND submission_date = ?");
+            $checkStmt->execute([$userId, $date]);
+            $existing = $checkStmt->fetch(PDO::FETCH_ASSOC);
+            $isUpdate = ($existing['cnt'] ?? 0) > 0;
+
             $sql = "INSERT INTO work_submissions (user_id, submission_date, start_time, hours_today, overtime_hours, total_working_days, total_hours_cumulative, completed_tasks, pending_tasks, ongoing_tasks, notes)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?)
                     ON DUPLICATE KEY UPDATE start_time=VALUES(start_time), hours_today=VALUES(hours_today), overtime_hours=VALUES(overtime_hours), total_working_days=VALUES(total_working_days),
@@ -55,6 +61,67 @@ class WorkSubmissionController extends BaseAPI {
             $stmt->execute([$userId, $date, $start, $hours, $overtime, $days, $cumulative, $completed, $pending, $ongoing, $notes]);
 
             error_log("🔍 WorkSubmissionController::submit - Saved submission for user: " . $userId . " on date: " . $date);
+            
+            // Send email notification to admins
+            error_log("EMAIL_NOTIFICATION: About to start email notification process");
+            try {
+                $emailPath = __DIR__ . '/../../utils/email.php';
+                error_log("EMAIL_NOTIFICATION: Requiring email.php from: " . $emailPath);
+                require_once $emailPath;
+                error_log("EMAIL_NOTIFICATION: email.php required successfully");
+                
+                error_log("📧 Starting daily work update email notification process...");
+                
+                // Get user information
+                $userStmt = $this->conn->prepare("SELECT username, email FROM users WHERE id = ? LIMIT 1");
+                $userStmt->execute([$userId]);
+                $user = $userStmt->fetch(PDO::FETCH_ASSOC);
+                $userName = $user['username'] ?? 'User';
+                $userEmail = $user['email'] ?? '';
+                
+                error_log("📧 User info - Name: $userName, Email: " . ($userEmail ?: 'EMPTY'));
+                
+                // Get admin emails
+                $adminStmt = $this->conn->prepare("SELECT email FROM users WHERE role = 'admin'");
+                $adminStmt->execute();
+                $adminRows = $adminStmt->fetchAll(PDO::FETCH_ASSOC);
+                $adminEmails = array_column($adminRows, 'email');
+                
+                error_log("📧 Found " . count($adminEmails) . " admin emails: " . json_encode($adminEmails));
+                
+                if (empty($adminEmails)) {
+                    error_log("⚠️ No admin emails found - skipping email notification");
+                } elseif (empty($userEmail)) {
+                    error_log("⚠️ User email is empty - skipping email notification");
+                } else {
+                    $submissionData = [
+                        'submission_date' => $date,
+                        'start_time' => $start,
+                        'hours_today' => $hours,
+                        'overtime_hours' => $overtime,
+                        'completed_tasks' => $completed,
+                        'pending_tasks' => $pending,
+                        'ongoing_tasks' => $ongoing,
+                        'notes' => $notes,
+                        'is_update' => $isUpdate
+                    ];
+                    
+                    error_log("📧 Calling sendDailyWorkUpdateEmailToAdmins with data: " . json_encode([
+                        'admin_emails_count' => count($adminEmails),
+                        'user_name' => $userName,
+                        'user_email' => $userEmail,
+                        'submission_date' => $date
+                    ]));
+                    
+                    $emailResults = sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $submissionData);
+                    error_log("📧 Daily work update emails sent to admins. Results: " . json_encode($emailResults));
+                }
+            } catch (Exception $e) {
+                // Don't fail the submission if email fails
+                error_log("⚠️ Failed to send daily work update email notification: " . $e->getMessage());
+                error_log("⚠️ Exception trace: " . $e->getTraceAsString());
+            }
+            
             $this->sendJsonResponse(200, 'Submission saved');
         } catch (Exception $e) {
             error_log('WorkSubmission submit error: ' . $e->getMessage());

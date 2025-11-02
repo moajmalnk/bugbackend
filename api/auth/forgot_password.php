@@ -70,8 +70,22 @@ try {
         $expires_at
     ]);
     
-    // Generate reset link
-    $reset_link = "https://bugs.bugricer.com/reset-password?token=" . $reset_token;
+    // Generate reset link based on environment
+    $host = $_SERVER['HTTP_HOST'] ?? '';
+    
+    // Determine if we're in local or production environment
+    // Check if backend is running on localhost or production domain
+    $isLocal = (strpos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false);
+    
+    if ($isLocal) {
+        // Local environment: use localhost:8080 for frontend
+        $reset_link = 'http://localhost:8080/reset-password?token=' . $reset_token;
+    } else {
+        // Production environment: use bugs.bugricer.com for frontend
+        $reset_link = 'https://bugs.bugricer.com/reset-password?token=' . $reset_token;
+    }
+    
+    error_log("Password Reset: Host detected: $host, isLocal: " . ($isLocal ? 'true' : 'false') . ", reset_link: $reset_link");
     
     // Send email
     $email_sent = sendPasswordResetEmail($user['email'], $user['username'], $reset_link);

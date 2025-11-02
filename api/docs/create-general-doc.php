@@ -48,6 +48,7 @@ try {
     $docTitle = trim($input['doc_title']);
     $templateId = $input['template_id'] ?? null;
     $docType = $input['doc_type'] ?? 'general';
+    $projectId = $input['project_id'] ?? null;
     
     // Validate template ID if provided
     if ($templateId !== null && !is_numeric($templateId)) {
@@ -56,10 +57,15 @@ try {
         exit();
     }
     
-    error_log("Creating general document: '{$docTitle}' for user: {$userId}");
+    // Validate project ID if provided
+    if ($projectId !== null && empty($projectId)) {
+        $projectId = null;
+    }
+    
+    error_log("Creating general document: '{$docTitle}' for user: {$userId}, project: " . ($projectId ?? 'none'));
     
     // Create document
-    $result = $controller->createGeneralDocument($userId, $docTitle, $templateId, $docType);
+    $result = $controller->createGeneralDocument($userId, $docTitle, $templateId, $docType, $projectId);
     
     http_response_code(201);
     echo json_encode($result);

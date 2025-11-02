@@ -4,6 +4,7 @@ require_once __DIR__ . '/../../vendor/autoload.php';
 require_once __DIR__ . '/../../config/database.php';
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../oauth/GoogleAuthService.php';
+require_once __DIR__ . '/../projects/ProjectMemberController.php';
 
 class BugDocsController extends BaseAPI {
     private $authService;
@@ -103,9 +104,10 @@ class BugDocsController extends BaseAPI {
      * @param string $docTitle Document title
      * @param int|null $templateId Template ID (optional)
      * @param string $docType Document type (default: 'general')
+     * @param string|null $projectId Project ID (optional)
      * @return array Document details with URL
      */
-    public function createGeneralDocument($userId, $docTitle, $templateId = null, $docType = 'general') {
+    public function createGeneralDocument($userId, $docTitle, $templateId = null, $docType = 'general', $projectId = null) {
         try {
             // Get authenticated client
             $client = $this->authService->getClientForUser($userId);
@@ -143,13 +145,23 @@ class BugDocsController extends BaseAPI {
                 $this->setDefaultSharingPermissions($driveService, $docId);
             }
             
+            // Check if project_id column exists, if not, try to add it (graceful fallback)
+            try {
+                $checkColumn = $this->conn->query("SHOW COLUMNS FROM user_documents LIKE 'project_id'");
+                if ($checkColumn->rowCount() == 0) {
+                    $this->conn->exec("ALTER TABLE user_documents ADD COLUMN project_id VARCHAR(36) DEFAULT NULL COMMENT 'Reference to projects.id'");
+                }
+            } catch (Exception $e) {
+                error_log("Note: project_id column check/add failed (may already exist): " . $e->getMessage());
+            }
+            
             // Save to user_documents table
             $stmt = $this->conn->prepare(
                 "INSERT INTO user_documents 
-                (doc_title, google_doc_id, google_doc_url, creator_user_id, template_id, doc_type) 
-                VALUES (?, ?, ?, ?, ?, ?)"
+                (doc_title, google_doc_id, google_doc_url, creator_user_id, template_id, doc_type, project_id) 
+                VALUES (?, ?, ?, ?, ?, ?, ?)"
             );
-            $stmt->execute([$docTitle, $docId, $docUrl, $userId, $templateId, $docType]);
+            $stmt->execute([$docTitle, $docId, $docUrl, $userId, $templateId, $docType, $projectId]);
             $insertId = $this->conn->lastInsertId();
             
             error_log("General document created: {$docId} for user: {$userId}");
@@ -173,10 +185,28 @@ class BugDocsController extends BaseAPI {
      * 
      * @param string $userId User ID
      * @param bool $includeArchived Include archived documents (default: false)
+     * @param string|null $projectId Filter by project ID (optional)
      * @return array List of documents
      */
-    public function listUserDocuments($userId, $includeArchived = false) {
+    public function listUserDocuments($userId, $includeArchived = false, $projectId = null) {
         try {
+            // Check if project_id column exists by trying to select it
+            $hasProjectColumn = false;
+            try {
+                $testStmt = $this->conn->query("SHOW COLUMNS FROM user_documents WHERE Field = 'project_id'");
+                $hasProjectColumn = $testStmt->rowCount() > 0;
+            } catch (Exception $e) {
+                error_log("Note: Could not check for project_id column: " . $e->getMessage());
+                // Try alternative method - just try to select the column
+                try {
+                    $testStmt = $this->conn->query("SELECT project_id FROM user_documents LIMIT 1");
+                    $hasProjectColumn = true;
+                } catch (Exception $e2) {
+                    error_log("Note: project_id column does not exist: " . $e2->getMessage());
+                    $hasProjectColumn = false;
+                }
+            }
+            
             $sql = "SELECT 
                         d.id,
                         d.doc_title,
@@ -187,10 +217,62 @@ class BugDocsController extends BaseAPI {
                         d.created_at,
                         d.updated_at,
                         d.last_accessed_at,
-                        t.template_name
-                    FROM user_documents d
-                    LEFT JOIN doc_templates t ON d.template_id = t.id
-                    WHERE d.creator_user_id = ?";
+                        t.template_name";
+            
+            if ($hasProjectColumn) {
+                $sql .= ", d.project_id, COALESCE(p.name, '') as project_name";
+            }
+            
+            $sql .= " FROM user_documents d
+                    LEFT JOIN doc_templates t ON d.template_id = t.id";
+            
+            if ($hasProjectColumn) {
+                $sql .= " LEFT JOIN projects p ON d.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci";
+            }
+            
+            $sql .= " WHERE CONVERT(d.creator_user_id, CHAR) COLLATE utf8mb4_unicode_ci = ?";
+            
+            $params = [$userId];
+            
+            if (!$includeArchived) {
+                $sql .= " AND d.is_archived = 0";
+            }
+            
+            if ($projectId !== null && $hasProjectColumn) {
+                $sql .= " AND CONVERT(d.project_id, CHAR) COLLATE utf8mb4_unicode_ci = ?";
+                $params[] = $projectId;
+            }
+            
+            $sql .= " ORDER BY d.created_at DESC";
+            
+            error_log("Executing SQL: " . $sql);
+            error_log("Params: " . print_r($params, true));
+            
+            try {
+                $stmt = $this->conn->prepare($sql);
+                $stmt->execute($params);
+                $documents = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            } catch (Exception $sqlError) {
+                error_log("SQL execution failed: " . $sqlError->getMessage());
+                // If query failed and we tried to use project_id, retry without it
+                if ($hasProjectColumn) {
+                    error_log("Retrying query without project columns...");
+                    $sql = "SELECT 
+                                d.id,
+                                d.doc_title,
+                                d.google_doc_id,
+                                d.google_doc_url,
+                                d.doc_type,
+                                d.is_archived,
+                                d.created_at,
+                                d.updated_at,
+                                d.last_accessed_at,
+                                t.template_name
+                            FROM user_documents d
+                            LEFT JOIN doc_templates t ON d.template_id = t.id
+                            WHERE d.creator_user_id = ?";
+                    
+                    $params = [$userId];
             
             if (!$includeArchived) {
                 $sql .= " AND d.is_archived = 0";
@@ -199,8 +281,24 @@ class BugDocsController extends BaseAPI {
             $sql .= " ORDER BY d.created_at DESC";
             
             $stmt = $this->conn->prepare($sql);
-            $stmt->execute([$userId]);
+                    $stmt->execute($params);
             $documents = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                    $hasProjectColumn = false; // Mark as not available
+                } else {
+                    throw $sqlError; // Re-throw if we weren't using project columns
+                }
+            }
+            
+            // Ensure project_id and project_name exist in results
+            foreach ($documents as &$doc) {
+                if (!isset($doc['project_id'])) {
+                    $doc['project_id'] = null;
+                }
+                if (!isset($doc['project_name'])) {
+                    $doc['project_name'] = null;
+                }
+            }
+            unset($doc);
             
             return [
                 'success' => true,
@@ -210,6 +308,448 @@ class BugDocsController extends BaseAPI {
             
         } catch (Exception $e) {
             error_log("Error listing user documents: " . $e->getMessage());
+            throw $e;
+        }
+    }
+    
+    /**
+     * List all documents for admin users, grouped by project
+     * 
+     * @param string $userId User ID (should be admin)
+     * @param bool $includeArchived Include archived documents (default: false)
+     * @return array Documents grouped by project
+     */
+    public function listAllDocuments($userId, $includeArchived = false) {
+        try {
+            // Check if project_id column exists
+            $hasProjectColumn = false;
+            try {
+                $testStmt = $this->conn->query("SHOW COLUMNS FROM user_documents WHERE Field = 'project_id'");
+                $hasProjectColumn = $testStmt->rowCount() > 0;
+            } catch (Exception $e) {
+                try {
+                    $testStmt = $this->conn->query("SELECT project_id FROM user_documents LIMIT 1");
+                    $hasProjectColumn = true;
+                } catch (Exception $e2) {
+                    $hasProjectColumn = false;
+                }
+            }
+            
+            $sql = "SELECT 
+                        d.id,
+                        d.doc_title,
+                        d.google_doc_id,
+                        d.google_doc_url,
+                        d.doc_type,
+                        d.is_archived,
+                        d.created_at,
+                        d.updated_at,
+                        d.last_accessed_at,
+                        d.creator_user_id,
+                        u.username as creator_name,
+                        t.template_name";
+            
+            if ($hasProjectColumn) {
+                $sql .= ", d.project_id, COALESCE(p.name, '') as project_name";
+            } else {
+                $sql .= ", NULL as project_id, '' as project_name";
+            }
+            
+            $sql .= " FROM user_documents d
+                    LEFT JOIN doc_templates t ON d.template_id = t.id
+                    LEFT JOIN users u ON d.creator_user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci";
+            
+            if ($hasProjectColumn) {
+                $sql .= " LEFT JOIN projects p ON d.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci";
+            }
+            
+            $sql .= " WHERE 1=1";
+            
+            if (!$includeArchived) {
+                $sql .= " AND d.is_archived = 0";
+            }
+            
+            $sql .= " ORDER BY " . ($hasProjectColumn ? "COALESCE(p.name, 'No Project'), " : "") . "d.created_at DESC";
+            
+            $stmt = $this->conn->prepare($sql);
+            $stmt->execute();
+            $documents = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            // Ensure project fields exist
+            foreach ($documents as &$doc) {
+                if (!isset($doc['project_id'])) {
+                    $doc['project_id'] = null;
+                }
+                if (!isset($doc['project_name'])) {
+                    $doc['project_name'] = null;
+                }
+                if (!isset($doc['creator_name'])) {
+                    $doc['creator_name'] = null;
+                }
+            }
+            unset($doc);
+            
+            // Group by project
+            $grouped = [];
+            foreach ($documents as $doc) {
+                $projectId = $doc['project_id'] ?? 'no-project';
+                $projectName = $doc['project_name'] ?? 'No Project';
+                
+                if (!isset($grouped[$projectId])) {
+                    $grouped[$projectId] = [
+                        'project_id' => $doc['project_id'],
+                        'project_name' => $projectName,
+                        'documents' => []
+                    ];
+                }
+                
+                $grouped[$projectId]['documents'][] = $doc;
+            }
+            
+            return [
+                'success' => true,
+                'documents' => array_values($grouped),
+                'count' => count($documents)
+            ];
+            
+        } catch (Exception $e) {
+            error_log("Error listing all documents: " . $e->getMessage());
+            throw $e;
+        }
+    }
+    
+    /**
+     * List shared documents for developers/testers from projects they're members of
+     * 
+     * @param string $userId User ID
+     * @param bool $includeArchived Include archived documents (default: false)
+     * @return array List of documents
+     */
+    public function listSharedDocuments($userId, $includeArchived = false) {
+        try {
+            $memberController = new ProjectMemberController();
+            $userProjects = $memberController->getUserProjects($userId);
+            
+            if (empty($userProjects)) {
+                return [
+                    'success' => true,
+                    'documents' => [],
+                    'count' => 0
+                ];
+            }
+            
+            $projectIds = array_column($userProjects, 'project_id');
+            
+            // Check if project_id column exists
+            $hasProjectColumn = false;
+            try {
+                $testStmt = $this->conn->query("SHOW COLUMNS FROM user_documents WHERE Field = 'project_id'");
+                $hasProjectColumn = $testStmt->rowCount() > 0;
+            } catch (Exception $e) {
+                try {
+                    $testStmt = $this->conn->query("SELECT project_id FROM user_documents LIMIT 1");
+                    $hasProjectColumn = true;
+                } catch (Exception $e2) {
+                    $hasProjectColumn = false;
+                }
+            }
+            
+            if (!$hasProjectColumn) {
+                // If no project column, return empty (can't filter by project)
+                return [
+                    'success' => true,
+                    'documents' => [],
+                    'count' => 0
+                ];
+            }
+            
+            // Build placeholders for IN clause
+            $placeholders = implode(',', array_fill(0, count($projectIds), '?'));
+            
+            $sql = "SELECT 
+                        d.id,
+                        d.doc_title,
+                        d.google_doc_id,
+                        d.google_doc_url,
+                        d.doc_type,
+                        d.is_archived,
+                        d.created_at,
+                        d.updated_at,
+                        d.last_accessed_at,
+                        d.creator_user_id,
+                        u.username as creator_name,
+                        t.template_name,
+                        d.project_id,
+                        COALESCE(p.name, '') as project_name
+                    FROM user_documents d
+                    LEFT JOIN doc_templates t ON d.template_id = t.id
+                    LEFT JOIN users u ON d.creator_user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
+                    LEFT JOIN projects p ON d.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci
+                    WHERE CONVERT(d.project_id, CHAR) COLLATE utf8mb4_unicode_ci IN ($placeholders)";
+            
+            $params = $projectIds;
+            
+            if (!$includeArchived) {
+                $sql .= " AND d.is_archived = 0";
+            }
+            
+            $sql .= " ORDER BY d.created_at DESC";
+            
+            $stmt = $this->conn->prepare($sql);
+            $stmt->execute($params);
+            $documents = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            // Ensure project fields exist
+            foreach ($documents as &$doc) {
+                if (!isset($doc['project_id'])) {
+                    $doc['project_id'] = null;
+                }
+                if (!isset($doc['project_name'])) {
+                    $doc['project_name'] = null;
+                }
+                if (!isset($doc['creator_name'])) {
+                    $doc['creator_name'] = null;
+                }
+            }
+            unset($doc);
+            
+            return [
+                'success' => true,
+                'documents' => $documents,
+                'count' => count($documents)
+            ];
+            
+        } catch (Exception $e) {
+            error_log("Error listing shared documents: " . $e->getMessage());
+            throw $e;
+        }
+    }
+    
+    /**
+     * Get documents for a specific project with access validation
+     * 
+     * @param string $projectId Project ID
+     * @param string $userId User ID
+     * @param bool $includeArchived Include archived documents (default: false)
+     * @return array List of documents
+     */
+    public function getDocumentsByProject($projectId, $userId, $includeArchived = false) {
+        try {
+            // Validate project access
+            $memberController = new ProjectMemberController();
+            $hasAccess = $memberController->hasProjectAccess($userId, $projectId);
+            
+            if (!$hasAccess) {
+                throw new Exception('Access denied to this project');
+            }
+            
+            // Check if project_id column exists
+            $hasProjectColumn = false;
+            try {
+                $testStmt = $this->conn->query("SHOW COLUMNS FROM user_documents WHERE Field = 'project_id'");
+                $hasProjectColumn = $testStmt->rowCount() > 0;
+            } catch (Exception $e) {
+                try {
+                    $testStmt = $this->conn->query("SELECT project_id FROM user_documents LIMIT 1");
+                    $hasProjectColumn = true;
+                } catch (Exception $e2) {
+                    $hasProjectColumn = false;
+                }
+            }
+            
+            if (!$hasProjectColumn) {
+                return [
+                    'success' => true,
+                    'documents' => [],
+                    'count' => 0,
+                    'project_id' => $projectId,
+                    'project_name' => null
+                ];
+            }
+            
+            // Get project name
+            $projectStmt = $this->conn->prepare("SELECT name FROM projects WHERE id = ?");
+            $projectStmt->execute([$projectId]);
+            $project = $projectStmt->fetch(PDO::FETCH_ASSOC);
+            $projectName = $project ? $project['name'] : null;
+            
+            $sql = "SELECT 
+                        d.id,
+                        d.doc_title,
+                        d.google_doc_id,
+                        d.google_doc_url,
+                        d.doc_type,
+                        d.is_archived,
+                        d.created_at,
+                        d.updated_at,
+                        d.last_accessed_at,
+                        d.creator_user_id,
+                        u.username as creator_name,
+                        t.template_name,
+                        d.project_id,
+                        COALESCE(p.name, '') as project_name
+                    FROM user_documents d
+                    LEFT JOIN doc_templates t ON d.template_id = t.id
+                    LEFT JOIN users u ON d.creator_user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
+                    LEFT JOIN projects p ON d.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci
+                    WHERE CONVERT(d.project_id, CHAR) COLLATE utf8mb4_unicode_ci = ?";
+            
+            $params = [$projectId];
+            
+            if (!$includeArchived) {
+                $sql .= " AND d.is_archived = 0";
+            }
+            
+            $sql .= " ORDER BY d.created_at DESC";
+            
+            $stmt = $this->conn->prepare($sql);
+            $stmt->execute($params);
+            $documents = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            // Ensure all fields exist
+            foreach ($documents as &$doc) {
+                if (!isset($doc['project_id'])) {
+                    $doc['project_id'] = null;
+                }
+                if (!isset($doc['project_name'])) {
+                    $doc['project_name'] = $projectName;
+                }
+                if (!isset($doc['creator_name'])) {
+                    $doc['creator_name'] = null;
+                }
+            }
+            unset($doc);
+            
+            return [
+                'success' => true,
+                'documents' => $documents,
+                'count' => count($documents),
+                'project_id' => $projectId,
+                'project_name' => $projectName
+            ];
+            
+        } catch (Exception $e) {
+            error_log("Error getting documents by project: " . $e->getMessage());
+            throw $e;
+        }
+    }
+    
+    /**
+     * Get projects with document counts for card display
+     * 
+     * @param string $userId User ID
+     * @return array Projects with document counts
+     */
+    public function getProjectsWithDocumentCounts($userId) {
+        try {
+            $memberController = new ProjectMemberController();
+            $userProjects = $memberController->getUserProjects($userId);
+            
+            // Get user role to determine if admin
+            $userStmt = $this->conn->prepare("SELECT role FROM users WHERE id = ?");
+            $userStmt->execute([$userId]);
+            $user = $userStmt->fetch(PDO::FETCH_ASSOC);
+            $isAdmin = $user && strtolower($user['role']) === 'admin';
+            
+            // Check if project_id column exists
+            $hasProjectColumn = false;
+            try {
+                $testStmt = $this->conn->query("SHOW COLUMNS FROM user_documents WHERE Field = 'project_id'");
+                $hasProjectColumn = $testStmt->rowCount() > 0;
+            } catch (Exception $e) {
+                try {
+                    $testStmt = $this->conn->query("SELECT project_id FROM user_documents LIMIT 1");
+                    $hasProjectColumn = true;
+                } catch (Exception $e2) {
+                    $hasProjectColumn = false;
+                }
+            }
+            
+            if (!$hasProjectColumn) {
+                // Return projects without counts
+                $projectIds = array_column($userProjects, 'project_id');
+                if (empty($projectIds) && !$isAdmin) {
+                    return [
+                        'success' => true,
+                        'projects' => []
+                    ];
+                }
+                
+                if ($isAdmin) {
+                    $projectStmt = $this->conn->query("SELECT id, name, description, status FROM projects");
+                    $projects = $projectStmt->fetchAll(PDO::FETCH_ASSOC);
+                } else {
+                    $placeholders = implode(',', array_fill(0, count($projectIds), '?'));
+                    $projectStmt = $this->conn->prepare("SELECT id, name, description, status FROM projects WHERE id IN ($placeholders)");
+                    $projectStmt->execute($projectIds);
+                    $projects = $projectStmt->fetchAll(PDO::FETCH_ASSOC);
+                }
+                
+                foreach ($projects as &$proj) {
+                    $proj['document_count'] = 0;
+                }
+                unset($proj);
+                
+                return [
+                    'success' => true,
+                    'projects' => $projects
+                ];
+            }
+            
+            // Get projects
+            if ($isAdmin) {
+                $projectStmt = $this->conn->query("SELECT id, name, description, status FROM projects");
+                $projects = $projectStmt->fetchAll(PDO::FETCH_ASSOC);
+            } else {
+                $projectIds = array_column($userProjects, 'project_id');
+                if (empty($projectIds)) {
+                    return [
+                        'success' => true,
+                        'projects' => []
+                    ];
+                }
+                
+                $placeholders = implode(',', array_fill(0, count($projectIds), '?'));
+                $projectStmt = $this->conn->prepare("SELECT id, name, description, status FROM projects WHERE id IN ($placeholders)");
+                $projectStmt->execute($projectIds);
+                $projects = $projectStmt->fetchAll(PDO::FETCH_ASSOC);
+            }
+            
+            // Get document counts for each project
+            foreach ($projects as &$project) {
+                $countStmt = $this->conn->prepare(
+                    "SELECT COUNT(*) as count FROM user_documents WHERE CONVERT(project_id, CHAR) COLLATE utf8mb4_unicode_ci = ? AND is_archived = 0"
+                );
+                $countStmt->execute([$project['id']]);
+                $countResult = $countStmt->fetch(PDO::FETCH_ASSOC);
+                $project['document_count'] = (int)$countResult['count'];
+            }
+            unset($project);
+            
+            // Also get count for "No Project" if admin
+            if ($isAdmin) {
+                $noProjectStmt = $this->conn->query(
+                    "SELECT COUNT(*) as count FROM user_documents WHERE (project_id IS NULL OR project_id = '') AND is_archived = 0"
+                );
+                $noProjectCount = $noProjectStmt->fetch(PDO::FETCH_ASSOC);
+                if ($noProjectCount && $noProjectCount['count'] > 0) {
+                    $projects[] = [
+                        'id' => 'no-project',
+                        'name' => 'No Project',
+                        'description' => 'Documents not associated with any project',
+                        'status' => 'active',
+                        'document_count' => (int)$noProjectCount['count']
+                    ];
+                }
+            }
+            
+            return [
+                'success' => true,
+                'projects' => $projects
+            ];
+            
+        } catch (Exception $e) {
+            error_log("Error getting projects with document counts: " . $e->getMessage());
             throw $e;
         }
     }
