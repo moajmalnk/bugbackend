@@ -118,14 +118,14 @@ try {
             // $mail->SMTPDebug = 2; // Enable verbose debug output
             $mail->Host = 'smtp.gmail.com';
             $mail->SMTPAuth = true;
-            $mail->Username = 'bugricer@gmail.com';
-            $mail->Password = 'czwd tceg rfmq ytam';  // New app password
+            $mail->Username = 'codo.bugricer@gmail.com';
+            $mail->Password = 'ieka afeu uhds qkam';  // New app password
             $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
             $mail->Port = 587;
             $mail->Debugoutput = function($str, $level) {
                 error_log("PHPMailer SMTP Debug: $str");
             };
-            $mail->setFrom('bugricer@gmail.com', 'BugRicer');
+            $mail->setFrom('codo.bugricer@gmail.com', 'BugRicer');
             $mail->addAddress($email);
             $mail->Subject = 'Your BugRicer OTP';
             $mail->isHTML(true);

@@ -88,13 +88,13 @@ function sendEmail($to, $subject, $html_body, $text_body = '') {
         $mail->isSMTP();
         $mail->Host = 'smtp.gmail.com';
         $mail->SMTPAuth = true;
-        $mail->Username = 'bugricer@gmail.com';
-        $mail->Password = 'czwd tceg rfmq ytam';
+        $mail->Username = 'codo.bugricer@gmail.com';
+        $mail->Password = 'ieka afeu uhds qkam';
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port = 587;
         
         // Recipients
-        $mail->setFrom('bugricer@gmail.com', 'BugRicer');
+        $mail->setFrom('codo.bugricer@gmail.com', 'BugRicer');
         $mail->addAddress($to);
         
         // Content
