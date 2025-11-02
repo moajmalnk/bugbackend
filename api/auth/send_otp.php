@@ -1,22 +1,45 @@
 <?php
+// Enable error reporting for debugging
+error_reporting(E_ALL);
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
+
 require_once __DIR__ . '/../../config/cors.php';
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../config/database.php';
 require_once __DIR__ . '/../../utils/send_email.php';
 require_once __DIR__ . '/../../config/utils.php';
 require_once __DIR__ . '/../../vendor/autoload.php';
+
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
-$pdo = Database::getInstance()->getConnection();
+try {
+    header('Content-Type: application/json');
+    
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        http_response_code(405);
+        echo json_encode(['success' => false, 'message' => 'Method not allowed']);
+        exit;
+    }
 
-header('Content-Type: application/json');
-$data = json_decode(file_get_contents('php://input'), true);
-$method = $data['method'] ?? 'mail';
-$otp = str_pad(random_int(0, 999999), 6, '0', STR_PAD_LEFT);
-$expires_at = date('Y-m-d H:i:s', strtotime('+5 minutes'));
+    $pdo = Database::getInstance()->getConnection();
+    if (!$pdo) {
+        throw new Exception('Database connection failed');
+    }
 
-if ($method === 'whatsapp') {
+    $data = json_decode(file_get_contents('php://input'), true);
+    if (!$data) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Invalid JSON input']);
+        exit;
+    }
+    
+    $method = $data['method'] ?? 'mail';
+    $otp = str_pad(random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+    $expires_at = date('Y-m-d H:i:s', strtotime('+5 minutes'));
+
+    if ($method === 'whatsapp') {
     $phone = $data['phone'] ?? '';
     $phone = Utils::normalizePhone($phone);
     if (!$phone) {
@@ -47,44 +70,33 @@ if ($method === 'whatsapp') {
     $url = "http://148.251.129.118/whatsapp/api/send?mobile=$phone&msg=" . urlencode($msg) . "&apikey=$apikey";
     $response = file_get_contents($url);
     error_log('WhatsApp API response: ' . $response);
-    echo json_encode([
-        'success' => true, 
-        'message' => 'OTP sent via WhatsApp',
-        'phone' => $phone
-    ]);
-} else {
-    $email = $data['email'] ?? '';
-    if (!$email) {
-        http_response_code(400);
-        echo json_encode(['success' => false, 'message' => 'Email required']);
-        exit;
-    }
-    // Check if user exists with this email
-    $stmt = $pdo->prepare("SELECT id FROM users WHERE email = ?");
-    $stmt->execute([$email]);
-    $user = $stmt->fetch(PDO::FETCH_ASSOC);
-    if (!$user) {
-        http_response_code(404);
-        echo json_encode(['success' => false, 'message' => 'User with this email does not exist']);
-        exit;
-    }
-    // Store OTP in DB
-    $stmt = $pdo->prepare("INSERT INTO user_otps (email, otp, expires_at) VALUES (?, ?, ?)");
-    $stmt->execute([$email, $otp, $expires_at]);
-    $mail = new PHPMailer(true);
-    try {
-        $mail->isSMTP();
-        $mail->Host = 'smtp.gmail.com';
-        $mail->SMTPAuth = true;
-        $mail->Username = 'bugricer@gmail.com';
-        $mail->Password = 'uufq bfkb uwso uocn';
-        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-        $mail->Port = 587;
-        $mail->setFrom('bugricer@gmail.com', 'Bug Ricer');
-        $mail->addAddress($email);
-        $mail->Subject = 'Your BugRicer OTP';
-        $mail->isHTML(true);
-        $mail->Body = '<div style="font-family:Segoe UI,Arial,sans-serif;max-width:480px;margin:0 auto;background:#fff;border-radius:8px;box-shadow:0 2px 8px #e2e8f0;overflow:hidden;">
+        echo json_encode([
+            'success' => true, 
+            'message' => 'OTP sent via WhatsApp',
+            'phone' => $phone
+        ]);
+    } else {
+        $email = $data['email'] ?? '';
+        if (!$email) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'Email required']);
+            exit;
+        }
+        // Check if user exists with this email
+        $stmt = $pdo->prepare("SELECT id FROM users WHERE email = ?");
+        $stmt->execute([$email]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$user) {
+            http_response_code(404);
+            echo json_encode(['success' => false, 'message' => 'User with this email does not exist']);
+            exit;
+        }
+        // Store OTP in DB
+        $stmt = $pdo->prepare("INSERT INTO user_otps (email, otp, expires_at) VALUES (?, ?, ?)");
+        $stmt->execute([$email, $otp, $expires_at]);
+        
+        // Use the existing sendOtpEmail function but with better HTML formatting
+        $html_body = '<div style="font-family:Segoe UI,Arial,sans-serif;max-width:480px;margin:0 auto;background:#fff;border-radius:8px;box-shadow:0 2px 8px #e2e8f0;overflow:hidden;">
   <div style="background:#2563eb;color:#fff;padding:24px 0;text-align:center;">
     <h1 style="margin:0;font-size:28px;letter-spacing:1px;">BugRicer Login OTP</h1>
   </div>
@@ -99,16 +111,42 @@ if ($method === 'whatsapp') {
     <span>🐞 Sent from <b>BugRicer</b> &mdash; <a href="https://bugricer.com" style="color:#2563eb;text-decoration:none;">bugricer.com</a></span>
   </div>
 </div>';
-        $mail->AltBody = 'Your BugRicer OTP is: ' . $otp . '. This OTP is valid for 5 minutes. Do not share this code with anyone.';
-        $mail->send();
-        echo json_encode([
-            'success' => true, 
-            'message' => 'OTP sent via Email',
-            'email' => $email
-        ]);
-    } catch (Exception $e) {
-        error_log("OTP mail error: " . $mail->ErrorInfo);
-        http_response_code(500);
-        echo json_encode(['success' => false, 'message' => 'Failed to send OTP email']);
+        
+        $mail = new PHPMailer(true);
+        try {
+            $mail->isSMTP();
+            // $mail->SMTPDebug = 2; // Enable verbose debug output
+            $mail->Host = 'smtp.gmail.com';
+            $mail->SMTPAuth = true;
+            $mail->Username = 'bugricer@gmail.com';
+            $mail->Password = 'czwd tceg rfmq ytam';  // New app password
+            $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+            $mail->Port = 587;
+            $mail->Debugoutput = function($str, $level) {
+                error_log("PHPMailer SMTP Debug: $str");
+            };
+            $mail->setFrom('bugricer@gmail.com', 'BugRicer');
+            $mail->addAddress($email);
+            $mail->Subject = 'Your BugRicer OTP';
+            $mail->isHTML(true);
+            $mail->Body = $html_body;
+            $mail->AltBody = 'Your BugRicer OTP is: ' . $otp . '. This OTP is valid for 5 minutes. Do not share this code with anyone.';
+            $mail->send();
+            echo json_encode([
+                'success' => true, 
+                'message' => 'OTP sent via Email',
+                'email' => $email
+            ]);
+        } catch (Exception $e) {
+            error_log("OTP mail error: " . $mail->ErrorInfo);
+            error_log("OTP mail exception: " . $e->getMessage());
+            http_response_code(500);
+            echo json_encode(['success' => false, 'message' => 'Failed to send OTP email']);
+        }
     }
+} catch (Exception $e) {
+    error_log("send_otp.php fatal error: " . $e->getMessage());
+    error_log("send_otp.php trace: " . $e->getTraceAsString());
+    http_response_code(500);
+    echo json_encode(['success' => false, 'message' => 'Internal server error: ' . $e->getMessage()]);
 }

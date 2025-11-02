@@ -200,7 +200,7 @@ function sendMagicLinkEmail($email, $username, $magic_link) {
             <!-- Header -->
             <div style=\"background-color: #7c3aed; color: #ffffff; padding: 20px; text-align: center;\">
                <h1 style=\"margin: 0; font-size: 24px; display: flex; align-items: center; justify-content: center;\">
-                <img src=\"https://fonts.gstatic.com/s/e/notoemoji/16.0/1f41e/32.png\" alt=\"Bug Ricer Logo\" style=\"width: 30px; height: 30px; margin-right: 10px; vertical-align: middle;\">
+                <img src=\"https://fonts.gstatic.com/s/e/notoemoji/16.0/1f41e/32.png\" alt=\"BugRicer Logo\" style=\"width: 30px; height: 30px; margin-right: 10px; vertical-align: middle;\">
                 BugRicer Magic Link
               </h1>
               <p style=\"margin: 5px 0 0 0; font-size: 16px;\">Passwordless Sign-In</p>
@@ -229,8 +229,8 @@ function sendMagicLinkEmail($email, $username, $magic_link) {
             
             <!-- Footer -->
             <div style=\"background-color: #f8fafc; color: #64748b; padding: 20px; text-align: center; font-size: 12px;\">
-              <p style=\"margin: 0;\">This is an automated notification from Bug Ricer. Please do not reply to this email.</p>
-              <p style=\"margin: 5px 0 0 0;\">&copy; " . date('Y') . " Bug Ricer. All rights reserved.</p>
+              <p style=\"margin: 0;\">This is an automated notification from BugRicer. Please do not reply to this email.</p>
+              <p style=\"margin: 5px 0 0 0;\">&copy; " . date('Y') . " BugRicer. All rights reserved.</p>
             </div>
             
           </div>

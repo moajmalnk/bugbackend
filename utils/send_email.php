@@ -19,15 +19,15 @@ function sendBugNotification($to, $subject, $body, $attachments = []) {
         $mail->Host = 'smtp.gmail.com';
         $mail->SMTPAuth = true;
         $mail->Username = 'bugricer@gmail.com';
-        $mail->Password = 'uufq bfkb uwso uocn';
+        $mail->Password = 'czwd tceg rfmq ytam';
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port = 587;
         
         // Recipients
-        $mail->setFrom('bugricer@gmail.com', 'Bug Ricer');
+        $mail->setFrom('bugricer@gmail.com', 'BugRicer');
         
         // Add recipients
-        $mail->addAddress('noreply@codoacademy.com', 'Bug Ricer'); // Main recipient (not shown to others)
+        $mail->addAddress('noreply@codoacademy.com', 'BugRicer'); // Main recipient (not shown to others)
         if (is_array($to)) {
             foreach ($to as $recipient) {
                 $mail->addBCC($recipient);
@@ -84,12 +84,12 @@ function sendWelcomeEmail($to, $subject, $body) {
         $mail->Host = 'smtp.gmail.com';
         $mail->SMTPAuth = true;
         $mail->Username = 'bugricer@gmail.com';
-        $mail->Password = 'uufq bfkb uwso uocn';
+        $mail->Password = 'czwd tceg rfmq ytam';
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port = 587;
         
         // Recipients
-        $mail->setFrom('bugricer@gmail.com', 'Bug Ricer');
+        $mail->setFrom('bugricer@gmail.com', 'BugRicer');
         $mail->addAddress($to); // Send directly to the new user
         
         // Content
@@ -116,10 +116,10 @@ function sendOtpEmail($to, $otp) {
         $mail->Host = 'smtp.gmail.com';
         $mail->SMTPAuth = true;
         $mail->Username = 'bugricer@gmail.com';
-        $mail->Password = 'uufq bfkb uwso uocn';
+        $mail->Password = 'czwd tceg rfmq ytam';
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port = 587;
-        $mail->setFrom('bugricer@gmail.com', 'Bug Ricer');
+        $mail->setFrom('bugricer@gmail.com', 'BugRicer');
         $mail->addAddress($to);
         $mail->isHTML(true);
         $mail->Subject = 'Your BugRicer OTP';

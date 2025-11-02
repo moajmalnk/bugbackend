@@ -518,7 +518,7 @@ class UserController extends BaseAPI {
                             </div>
                             <div style=\"background-color: #f8fafc; color: #64748b; padding: 20px; text-align: center; font-size: 12px;\">
                                 <p style=\"margin: 0;\">This is an automated notification. Please do not reply to this email.</p>
-                                <p style=\"margin: 5px 0 0 0;\">&copy; " . date('Y') . " Bug Ricer. All rights reserved.</p>
+                                <p style=\"margin: 5px 0 0 0;\">&copy; " . date('Y') . " BugRicer. All rights reserved.</p>
                             </div>
                         </div>
                     </div>

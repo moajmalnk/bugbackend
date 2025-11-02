@@ -77,7 +77,13 @@ try {
     $email_sent = sendPasswordResetEmail($user['email'], $user['username'], $reset_link);
     
     if (!$email_sent) {
-        throw new Exception('Failed to send reset email');
+        error_log("Forgot Password: Email sending failed for {$user['email']}");
+        http_response_code(500);
+        echo json_encode([
+            'success' => false,
+            'message' => 'Failed to send reset email. Please try again later.'
+        ]);
+        exit();
     }
     
     // Log the password reset request
@@ -101,7 +107,9 @@ try {
 } catch (Exception $e) {
     error_log("Forgot Password Error: " . $e->getMessage());
     
-    http_response_code(400);
+    // Use 400 for client errors (validation), 500 for server errors
+    $isClientError = in_array($e->getMessage(), ['Email is required', 'Invalid email format', 'Invalid JSON input']);
+    http_response_code($isClientError ? 400 : 500);
     echo json_encode([
         'success' => false,
         'message' => $e->getMessage()
