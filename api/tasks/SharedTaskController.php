@@ -6,6 +6,32 @@ class SharedTaskController extends BaseAPI {
     // Get all shared tasks for current user (assigned to or created by)
     public function getSharedTasks($userId, $status = null) {
         try {
+            // First, get all task IDs that the user has access to
+            $taskIdsQuery = "
+                SELECT DISTINCT st.id 
+                FROM shared_tasks st
+                LEFT JOIN shared_task_assignees sta ON st.id = sta.shared_task_id
+                WHERE (st.assigned_to = ? OR st.created_by = ? OR sta.assigned_to = ?)
+            ";
+            
+            $taskIdsParams = [$userId, $userId, $userId];
+            
+            if ($status) {
+                $taskIdsQuery .= " AND st.status = ?";
+                $taskIdsParams[] = $status;
+            }
+            
+            $taskIdsStmt = $this->conn->prepare($taskIdsQuery);
+            $taskIdsStmt->execute($taskIdsParams);
+            $taskIds = $taskIdsStmt->fetchAll(PDO::FETCH_COLUMN);
+            
+            if (empty($taskIds)) {
+                $this->sendJsonResponse(200, "Shared tasks retrieved successfully", []);
+                return;
+            }
+            
+            // Now get all details for those tasks, including ALL assignees (not filtered by user)
+            $placeholders = implode(',', array_fill(0, count($taskIds), '?'));
             $query = "
                 SELECT 
                     st.*,
@@ -29,10 +55,10 @@ class SharedTaskController extends BaseAPI {
                 LEFT JOIN projects p ON stp.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci
                 LEFT JOIN shared_task_assignees sta ON st.id = sta.shared_task_id
                 LEFT JOIN users au ON sta.assigned_to COLLATE utf8mb4_unicode_ci = au.id COLLATE utf8mb4_unicode_ci
-                WHERE (st.assigned_to = ? OR st.created_by = ? OR sta.assigned_to = ?)
+                WHERE st.id IN ($placeholders)
             ";
             
-            $params = [$userId, $userId, $userId];
+            $params = $taskIds;
             
             if ($status) {
                 $query .= " AND st.status = ?";
@@ -60,10 +86,28 @@ class SharedTaskController extends BaseAPI {
             foreach ($tasks as &$task) {
                 $task['project_ids'] = $task['project_ids'] ? explode(',', $task['project_ids']) : [];
                 $task['project_names'] = $task['project_names'] ? explode(',', $task['project_names']) : [];
-                $task['assigned_to_ids'] = $task['assigned_to_ids'] ? explode(',', $task['assigned_to_ids']) : ($task['assigned_to'] ? [$task['assigned_to']] : []);
-                $task['assigned_to_names'] = $task['assigned_to_names'] ? explode(',', $task['assigned_to_names']) : ($task['assigned_to_name'] ? [$task['assigned_to_name']] : []);
-                $task['completed_assignee_ids'] = $task['completed_assignee_ids'] ? explode(',', $task['completed_assignee_ids']) : [];
-                $task['completed_assignee_names'] = $task['completed_assignee_names'] ? explode(',', $task['completed_assignee_names']) : [];
+                
+                // Handle assigned_to_ids - explode and remove duplicates
+                if ($task['assigned_to_ids']) {
+                    $assignedIds = explode(',', $task['assigned_to_ids']);
+                    $task['assigned_to_ids'] = array_values(array_unique($assignedIds));
+                } else {
+                    $task['assigned_to_ids'] = $task['assigned_to'] ? [$task['assigned_to']] : [];
+                }
+                
+                // Handle assigned_to_names - explode and remove duplicates
+                if ($task['assigned_to_names']) {
+                    $assignedNames = explode(',', $task['assigned_to_names']);
+                    $task['assigned_to_names'] = array_values(array_unique($assignedNames));
+                } else {
+                    $task['assigned_to_names'] = $task['assigned_to_name'] ? [$task['assigned_to_name']] : [];
+                }
+                
+                // Handle completed_assignee_ids - explode and remove duplicates
+                $task['completed_assignee_ids'] = $task['completed_assignee_ids'] ? array_values(array_unique(explode(',', $task['completed_assignee_ids']))) : [];
+                
+                // Handle completed_assignee_names - explode and remove duplicates
+                $task['completed_assignee_names'] = $task['completed_assignee_names'] ? array_values(array_unique(explode(',', $task['completed_assignee_names']))) : [];
                 
                 // Parse completion_details into associative array: userId => completed_at timestamp
                 $task['completion_details'] = [];
@@ -138,11 +182,15 @@ class SharedTaskController extends BaseAPI {
             } elseif (isset($data['assigned_to']) && !empty($data['assigned_to'])) {
                 $assigneeIds = [$data['assigned_to']];
             }
+            // Remove duplicates before inserting
+            $assigneeIds = array_values(array_unique($assigneeIds));
             if (count($assigneeIds) > 0) {
                 $assigneeQuery = "INSERT INTO shared_task_assignees (shared_task_id, assigned_to) VALUES (?, ?)";
                 $assigneeStmt = $this->conn->prepare($assigneeQuery);
                 foreach ($assigneeIds as $aid) {
-                    $assigneeStmt->execute([$taskId, $aid]);
+                    if (!empty($aid)) {
+                        $assigneeStmt->execute([$taskId, $aid]);
+                    }
                 }
                 // Keep primary assigned_to as first for backward compatibility
                 $primary = $assigneeIds[0];
@@ -176,7 +224,8 @@ class SharedTaskController extends BaseAPI {
                     GROUP_CONCAT(DISTINCT sta.assigned_to) as assigned_to_ids,
                     GROUP_CONCAT(DISTINCT au.username) as assigned_to_names,
                     GROUP_CONCAT(DISTINCT CASE WHEN sta.completed_at IS NOT NULL THEN sta.assigned_to END) as completed_assignee_ids,
-                    GROUP_CONCAT(DISTINCT CASE WHEN sta.completed_at IS NOT NULL THEN au.username END) as completed_assignee_names
+                    GROUP_CONCAT(DISTINCT CASE WHEN sta.completed_at IS NOT NULL THEN au.username END) as completed_assignee_names,
+                    GROUP_CONCAT(DISTINCT CASE WHEN sta.completed_at IS NOT NULL THEN CONCAT(sta.assigned_to, ':', sta.completed_at) END) as completion_details_raw
                 FROM shared_tasks st
                 LEFT JOIN users creator ON st.created_by COLLATE utf8mb4_unicode_ci = creator.id COLLATE utf8mb4_unicode_ci
                 LEFT JOIN users assignee ON st.assigned_to COLLATE utf8mb4_unicode_ci = assignee.id COLLATE utf8mb4_unicode_ci
@@ -213,8 +262,41 @@ class SharedTaskController extends BaseAPI {
             // Process project/assignee IDs and names into arrays
             $task['project_ids'] = $task['project_ids'] ? explode(',', $task['project_ids']) : [];
             $task['project_names'] = $task['project_names'] ? explode(',', $task['project_names']) : [];
-            $task['assigned_to_ids'] = $task['assigned_to_ids'] ? explode(',', $task['assigned_to_ids']) : ($task['assigned_to'] ? [$task['assigned_to']] : []);
-            $task['assigned_to_names'] = $task['assigned_to_names'] ? explode(',', $task['assigned_to_names']) : ($task['assigned_to_name'] ? [$task['assigned_to_name']] : []);
+            
+            // Handle assigned_to_ids - explode and remove duplicates
+            if ($task['assigned_to_ids']) {
+                $assignedIds = explode(',', $task['assigned_to_ids']);
+                $task['assigned_to_ids'] = array_values(array_unique($assignedIds));
+            } else {
+                $task['assigned_to_ids'] = $task['assigned_to'] ? [$task['assigned_to']] : [];
+            }
+            
+            // Handle assigned_to_names - explode and remove duplicates
+            if ($task['assigned_to_names']) {
+                $assignedNames = explode(',', $task['assigned_to_names']);
+                $task['assigned_to_names'] = array_values(array_unique($assignedNames));
+            } else {
+                $task['assigned_to_names'] = $task['assigned_to_name'] ? [$task['assigned_to_name']] : [];
+            }
+            
+            // Handle completed_assignee_ids - explode and remove duplicates
+            $task['completed_assignee_ids'] = $task['completed_assignee_ids'] ? array_values(array_unique(explode(',', $task['completed_assignee_ids']))) : [];
+            
+            // Handle completed_assignee_names - explode and remove duplicates
+            $task['completed_assignee_names'] = $task['completed_assignee_names'] ? array_values(array_unique(explode(',', $task['completed_assignee_names']))) : [];
+            
+            // Parse completion_details into associative array: userId => completed_at timestamp
+            $task['completion_details'] = [];
+            if (!empty($task['completion_details_raw'])) {
+                $details = explode(',', $task['completion_details_raw']);
+                foreach ($details as $detail) {
+                    if (strpos($detail, ':') !== false) {
+                        list($userId, $timestamp) = explode(':', $detail, 2);
+                        $task['completion_details'][$userId] = $timestamp;
+                    }
+                }
+            }
+            unset($task['completion_details_raw']); // Remove raw field
             
             $this->sendJsonResponse(200, "Shared task retrieved successfully", $task);
         } catch (Exception $e) {
@@ -296,17 +378,19 @@ class SharedTaskController extends BaseAPI {
             
             // Update assignees mapping if provided
             if (isset($data['assigned_to_ids']) && is_array($data['assigned_to_ids'])) {
+                // Remove duplicates before updating
+                $assigneeIds = array_values(array_unique($data['assigned_to_ids']));
                 $deleteAssignees = $this->conn->prepare("DELETE FROM shared_task_assignees WHERE shared_task_id = ?");
                 $deleteAssignees->execute([$taskId]);
-                if (count($data['assigned_to_ids']) > 0) {
+                if (count($assigneeIds) > 0) {
                     $ins = $this->conn->prepare("INSERT INTO shared_task_assignees (shared_task_id, assigned_to) VALUES (?, ?)");
-                    foreach ($data['assigned_to_ids'] as $aid) {
+                    foreach ($assigneeIds as $aid) {
                         if (!empty($aid)) {
                             $ins->execute([$taskId, $aid]);
                         }
                     }
                     // Keep primary assigned_to as first for backward compatibility
-                    $primary = $data['assigned_to_ids'][0];
+                    $primary = $assigneeIds[0];
                     $this->conn->prepare("UPDATE shared_tasks SET assigned_to = ? WHERE id = ?")->execute([$primary, $taskId]);
                 }
             }
