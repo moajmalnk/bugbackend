@@ -909,16 +909,49 @@ class NotificationManager extends BaseAPI {
      */
     public function markAllAsRead($userId) {
         try {
+            $userId = (string)$userId;
             $query = "
                 UPDATE user_notifications 
                 SET `read` = 1, read_at = NOW()
-                WHERE user_id = ? AND `read` = 0
+                WHERE CAST(user_id AS CHAR) = CAST(? AS CHAR) AND `read` = 0
             ";
             
             $stmt = $this->conn->prepare($query);
             return $stmt->execute([$userId]);
         } catch (Exception $e) {
             error_log("Error marking all notifications as read: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Delete all notifications for a user
+     * Removes all entries from user_notifications table for the specified user
+     * 
+     * @param string $userId User ID
+     * @return bool Success
+     */
+    public function deleteAllNotifications($userId) {
+        try {
+            $userId = (string)$userId;
+            
+            error_log("NotificationManager::deleteAllNotifications - UserId: $userId");
+            
+            $query = "
+                DELETE FROM user_notifications 
+                WHERE CAST(user_id AS CHAR) = CAST(? AS CHAR)
+            ";
+            
+            $stmt = $this->conn->prepare($query);
+            $result = $stmt->execute([$userId]);
+            $deletedCount = $stmt->rowCount();
+            
+            error_log("NotificationManager::deleteAllNotifications - Deleted $deletedCount notifications for user $userId");
+            
+            return $result;
+        } catch (Exception $e) {
+            error_log("Error deleting all notifications: " . $e->getMessage());
+            error_log("Error trace: " . $e->getTraceAsString());
             return false;
         }
     }
