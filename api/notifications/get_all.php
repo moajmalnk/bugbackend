@@ -248,11 +248,14 @@ try {
     }
     
     // Format notifications for frontend - handle null/undefined values
-    $formattedNotifications = array_map(function($notification) {
-        return [
-            'id' => isset($notification['id']) ? (int)$notification['id'] : 0,
+    $formattedNotifications = [];
+    
+    foreach ($notifications as $notification) {
+        // Ensure all required fields exist
+        $formattedNotifications[] = [
+            'id' => isset($notification['id']) ? (int)$notification['id'] : (isset($notification['notification_id']) ? (int)$notification['notification_id'] : 0),
             'type' => $notification['type'] ?? 'info',
-            'title' => $notification['title'] ?? '',
+            'title' => $notification['title'] ?? 'Notification',
             'message' => $notification['message'] ?? '',
             'entity_type' => $notification['entity_type'] ?? null,
             'entity_id' => $notification['entity_id'] ?? null,
@@ -261,32 +264,46 @@ try {
             'bug_title' => $notification['bug_title'] ?? null,
             'status' => $notification['status'] ?? null,
             'created_by' => $notification['created_by'] ?? 'system',
-            'createdAt' => $notification['created_at'] ?? date('Y-m-d H:i:s'),
-            'read' => isset($notification['read']) ? (bool)$notification['read'] : false,
+            'createdAt' => $notification['created_at'] ?? ($notification['createdAt'] ?? date('Y-m-d H:i:s')),
+            'created_at' => $notification['created_at'] ?? ($notification['createdAt'] ?? date('Y-m-d H:i:s')), // Include both for compatibility
+            'read' => isset($notification['read']) ? (bool)(int)$notification['read'] : false,
             'read_at' => $notification['read_at'] ?? null
         ];
-    }, $notifications);
+    }
     
     // Clean any output buffer before sending JSON
     ob_clean();
     
     $debugEnabled = isset($_GET['debug']) && $_GET['debug'] === '1';
     
+    // Log what we're sending
+    error_log("get_all.php - Sending response: " . count($formattedNotifications) . " notifications");
+    if ($debugEnabled) {
+        error_log("get_all.php - Sample notification: " . json_encode($formattedNotifications[0] ?? null));
+    }
+    
     header('Content-Type: application/json');
-    echo json_encode([
+    $response = [
         'success' => true,
         'data' => [
             'notifications' => $formattedNotifications,
             'count' => count($formattedNotifications),
             'limit' => $limit,
             'offset' => $offset
-        ],
-        // only include debug if explicitly requested
-        'debug' => $debugEnabled ? [
+        ]
+    ];
+    
+    // only include debug if explicitly requested
+    if ($debugEnabled) {
+        $response['debug'] = [
             'user_id' => $userId,
-            'raw_count' => count($notifications)
-        ] : null
-    ]);
+            'raw_count' => count($notifications),
+            'formatted_count' => count($formattedNotifications),
+            'sample_notification' => $formattedNotifications[0] ?? null
+        ];
+    }
+    
+    echo json_encode($response, JSON_UNESCAPED_UNICODE);
     
 } catch (Exception $e) {
     ob_clean();

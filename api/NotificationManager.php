@@ -723,11 +723,12 @@ class NotificationManager extends BaseAPI {
                 return [];
             }
             
-            // Try multiple query approaches to handle different user_id formats
+            // Use the proven working query from test_query.php
+            // This exact query works, so we'll use it as the primary method
             $results = [];
             
-            // Approach 1: Direct string comparison (most common)
-            $query1 = "
+            // Primary query: Direct JOIN (proven to work in test_query.php)
+            $query = "
                 SELECT 
                     n.id,
                     n.type,
@@ -744,24 +745,27 @@ class NotificationManager extends BaseAPI {
                     un.`read`,
                     un.read_at
                 FROM user_notifications un
-                INNER JOIN notifications n ON un.notification_id = n.id
+                JOIN notifications n ON un.notification_id = n.id
                 WHERE un.user_id = ?
                 ORDER BY n.created_at DESC
                 LIMIT ? OFFSET ?
             ";
             
             try {
-                $stmt = $this->conn->prepare($query1);
+                $stmt = $this->conn->prepare($query);
                 if ($stmt) {
                     $stmt->execute([$userId, $limit, $offset]);
                     $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
-                    error_log("NotificationManager::getUserNotifications - Query 1 (direct match): Found " . count($results) . " notifications");
+                    error_log("NotificationManager::getUserNotifications - Primary query: Found " . count($results) . " notifications for user $userId");
+                } else {
+                    error_log("NotificationManager::getUserNotifications - ERROR: Failed to prepare primary query");
                 }
             } catch (Exception $e1) {
-                error_log("NotificationManager::getUserNotifications - Query 1 failed: " . $e1->getMessage());
+                error_log("NotificationManager::getUserNotifications - Primary query failed: " . $e1->getMessage());
+                error_log("NotificationManager::getUserNotifications - Error trace: " . $e1->getTraceAsString());
             }
             
-            // Approach 2: If no results, try with CAST comparison
+            // Fallback: If no results, try with CAST comparison (for edge cases)
             if (empty($results)) {
                 $query2 = "
                     SELECT 
@@ -780,7 +784,7 @@ class NotificationManager extends BaseAPI {
                         un.`read`,
                         un.read_at
                     FROM user_notifications un
-                    INNER JOIN notifications n ON un.notification_id = n.id
+                    JOIN notifications n ON un.notification_id = n.id
                     WHERE CAST(un.user_id AS CHAR) = CAST(? AS CHAR)
                     ORDER BY n.created_at DESC
                     LIMIT ? OFFSET ?
@@ -791,47 +795,10 @@ class NotificationManager extends BaseAPI {
                     if ($stmt2) {
                         $stmt2->execute([$userId, $limit, $offset]);
                         $results = $stmt2->fetchAll(PDO::FETCH_ASSOC);
-                        error_log("NotificationManager::getUserNotifications - Query 2 (CAST match): Found " . count($results) . " notifications");
+                        error_log("NotificationManager::getUserNotifications - Fallback query (CAST): Found " . count($results) . " notifications");
                     }
                 } catch (Exception $e2) {
-                    error_log("NotificationManager::getUserNotifications - Query 2 failed: " . $e2->getMessage());
-                }
-            }
-            
-            // Approach 3: If still no results, try BINARY comparison (exact match)
-            if (empty($results)) {
-                $query3 = "
-                    SELECT 
-                        n.id,
-                        n.type,
-                        n.title,
-                        n.message,
-                        n.entity_type,
-                        n.entity_id,
-                        n.project_id,
-                        n.bug_id,
-                        n.bug_title,
-                        n.status,
-                        n.created_by,
-                        n.created_at,
-                        un.`read`,
-                        un.read_at
-                    FROM user_notifications un
-                    INNER JOIN notifications n ON un.notification_id = n.id
-                    WHERE BINARY un.user_id = BINARY ?
-                    ORDER BY n.created_at DESC
-                    LIMIT ? OFFSET ?
-                ";
-                
-                try {
-                    $stmt3 = $this->conn->prepare($query3);
-                    if ($stmt3) {
-                        $stmt3->execute([$userId, $limit, $offset]);
-                        $results = $stmt3->fetchAll(PDO::FETCH_ASSOC);
-                        error_log("NotificationManager::getUserNotifications - Query 3 (BINARY match): Found " . count($results) . " notifications");
-                    }
-                } catch (Exception $e3) {
-                    error_log("NotificationManager::getUserNotifications - Query 3 failed: " . $e3->getMessage());
+                    error_log("NotificationManager::getUserNotifications - Fallback query failed: " . $e2->getMessage());
                 }
             }
             
