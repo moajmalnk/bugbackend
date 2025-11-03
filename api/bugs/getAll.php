@@ -50,6 +50,20 @@ try {
     $user_id = $decoded->user_id;
     $user_role = $decoded->role;
     
+    // Check impersonation
+    $is_impersonated = false;
+    if (isset($decoded->impersonated)) {
+        $is_impersonated = $decoded->impersonated === true || $decoded->impersonated === 'true' || $decoded->impersonated === 1;
+    }
+    if (!$is_impersonated && isset($decoded->admin_id) && !empty($decoded->admin_id)) {
+        $is_impersonated = true;
+    }
+    
+    // Check if the actual admin (not the impersonated user) has admin role
+    $admin_role = isset($decoded->admin_role) ? strtolower(trim($decoded->admin_role)) : null;
+    $user_role_lower = strtolower(trim($user_role));
+    $isAdmin = ($user_role_lower === 'admin' && !$is_impersonated) || ($is_impersonated && $admin_role === 'admin');
+    
     $projectId = isset($_GET['project_id']) ? $_GET['project_id'] : null;
     $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
     $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 10;
@@ -70,8 +84,8 @@ try {
     
     $controller = new BugController();
     
-    // Admin users can see all bugs
-    if ($user_role === 'admin') {
+    // Admin users can see all bugs (real admins or admins impersonating)
+    if ($isAdmin) {
         $result = $controller->getAllBugs($projectId, $page, $limit);
         $api->setCache($cacheKey, $result, 300); // Cache for 5 minutes
         http_response_code(200);

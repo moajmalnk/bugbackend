@@ -70,12 +70,30 @@ try {
     }
 
     // Check permissions: admin can edit any bug, or user can edit their own bug
+    // Developers can edit status field for any bug
     $bugId = $data['id'];
     $userId = $decoded->user_id;
     $userRole = $decoded->role;
     
-    // Fetch bug to check reported_by
-    $stmt = $controller->getConnection()->prepare("SELECT reported_by FROM bugs WHERE id = ?");
+    // Check impersonation
+    $is_impersonated = false;
+    if (isset($decoded->impersonated)) {
+        $is_impersonated = $decoded->impersonated === true || $decoded->impersonated === 'true' || $decoded->impersonated === 1;
+    }
+    if (!$is_impersonated && isset($decoded->admin_id) && !empty($decoded->admin_id)) {
+        $is_impersonated = true;
+    }
+    
+    // Check if the actual admin (not the impersonated user) has admin role
+    $admin_role = isset($decoded->admin_role) ? strtolower(trim($decoded->admin_role)) : null;
+    $user_role_lower = strtolower(trim($userRole));
+    $isAdmin = ($user_role_lower === 'admin' && !$is_impersonated) || ($is_impersonated && $admin_role === 'admin');
+    
+    // Check if user is developer
+    $isDeveloper = $user_role_lower === 'developer';
+    
+    // Fetch bug to check reported_by and compare field changes
+    $stmt = $controller->getConnection()->prepare("SELECT * FROM bugs WHERE id = ?");
     $stmt->execute([$bugId]);
     $bug = $stmt->fetch(PDO::FETCH_ASSOC);
     
@@ -83,15 +101,67 @@ try {
         throw new Exception('Bug not found');
     }
     
-    // Check if user is admin or the bug creator
-    $isAdmin = $userRole === 'admin';
+    // Determine which fields are actually being changed (not just present)
+    $updatableFields = ['title', 'description', 'priority', 'status', 'expected_result', 'actual_result', 'fix_description', 'fixed_by'];
+    $fieldsBeingChanged = [];
+    foreach ($updatableFields as $field) {
+        if (isset($data[$field])) {
+            $oldValue = $bug[$field] ?? null;
+            $newValue = $data[$field];
+            
+            // Normalize values for comparison (handle null, empty string, etc.)
+            $oldValueNormalized = ($oldValue === null || $oldValue === '') ? null : $oldValue;
+            $newValueNormalized = ($newValue === null || $newValue === '') ? null : $newValue;
+            
+            // Check if the value is actually changing
+            if ($oldValueNormalized != $newValueNormalized) {
+                $fieldsBeingChanged[] = $field;
+            }
+        }
+    }
+    
+    // Check if only status is being changed (and potentially fixed_by, which is set automatically)
+    // Allow status-only updates or status + fixed_by (when status becomes "fixed")
+    $hasOnlyStatusChange = count($fieldsBeingChanged) === 1 && $fieldsBeingChanged[0] === 'status';
+    $hasStatusAndFixedBy = count($fieldsBeingChanged) === 2 && 
+                          in_array('status', $fieldsBeingChanged) && 
+                          in_array('fixed_by', $fieldsBeingChanged) &&
+                          isset($data['status']) && $data['status'] === 'fixed';
+    
+    $isOnlyStatusUpdate = ($hasOnlyStatusChange || $hasStatusAndFixedBy) &&
+                          empty($_FILES) && 
+                          (!isset($data['attachments_to_delete']) || empty($data['attachments_to_delete']));
+    
+    // Check if user is admin or the bug creator (using reported_by from bug array)
     $isCreator = $bug['reported_by'] === $userId;
     
-    if (!$isAdmin && !$isCreator) {
+    // Permission logic:
+    // 1. Admins can edit everything
+    // 2. Bug creators can edit everything
+    // 3. Developers can edit status only
+    $canEdit = false;
+    $errorMessage = 'You do not have permission to edit this bug.';
+    
+    if ($isAdmin || $isCreator) {
+        // Admins and creators can edit all fields
+        $canEdit = true;
+    } elseif ($isDeveloper && $isOnlyStatusUpdate) {
+        // Developers can edit status only
+        $canEdit = true;
+    } else {
+        // For other cases, determine specific error message
+        if ($isDeveloper && !$isOnlyStatusUpdate) {
+            $errorMessage = 'You do not have permission to edit this bug. Developers can only update the status field.';
+        } else {
+            $errorMessage = 'You do not have permission to edit this bug. Only admins and the bug creator can edit bugs.';
+        }
+    }
+    
+    if (!$canEdit) {
         http_response_code(403);
         echo json_encode([
             'success' => false,
-            'message' => 'You do not have permission to edit this bug. Only admins and the bug creator can edit bugs.'
+            'message' => $errorMessage
         ]);
         exit();
     }
