@@ -28,39 +28,24 @@ WHERE n.type IN ('bug_fixed', 'status_change')
     WHERE un.notification_id = n.id AND un.user_id = u.id
   );
 
--- Step 3: Link update_created/task_created/meet_created/doc_created/project_created to all users
--- Note: If project_id column doesn't exist, this will link to all admins only
+-- Step 3: Link update_created/new_update/task_created/meet_created/doc_created/project_created to all users
+-- Note: Both 'update_created' and 'new_update' are valid notification types
 
--- 3a: Try to link project-specific notifications to project members (if project_id exists)
--- If project_id column doesn't exist, this will be skipped
-INSERT INTO user_notifications (notification_id, user_id, `read`, created_at)
-SELECT DISTINCT n.id, pm.user_id, 0, n.created_at
-FROM notifications n
-JOIN project_members pm ON pm.project_id = (
-    SELECT project_id FROM notifications WHERE id = n.id AND project_id IS NOT NULL
-    LIMIT 1
-)
-WHERE n.type IN ('update_created', 'task_created', 'meet_created', 'doc_created', 'project_created')
-  AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'notifications' AND column_name = 'project_id')
-  AND NOT EXISTS (
-    SELECT 1 FROM user_notifications un 
-    WHERE un.notification_id = n.id AND un.user_id = pm.user_id
-  );
-
--- 3b: Link all update/task/meet/doc/project notifications to all admins
--- This works regardless of project_id column existence
+-- 3a: Link all update/task/meet/doc/project notifications to all admins
+-- This handles both 'update_created' and 'new_update' types
 INSERT INTO user_notifications (notification_id, user_id, `read`, created_at)
 SELECT DISTINCT n.id, u.id, 0, n.created_at
 FROM notifications n
 CROSS JOIN users u
-WHERE n.type IN ('update_created', 'task_created', 'meet_created', 'doc_created', 'project_created')
+WHERE n.type IN ('update_created', 'new_update', 'task_created', 'meet_created', 'doc_created', 'project_created')
   AND u.role = 'admin'
   AND NOT EXISTS (
     SELECT 1 FROM user_notifications un 
     WHERE un.notification_id = n.id AND un.user_id = u.id
   );
 
--- Step 4: Link all other notification types to all admins (fallback)
+-- Step 4: Link all other notification types (including new_update) to all admins (fallback)
+-- This ensures any notification type not covered above gets linked to admins
 INSERT INTO user_notifications (notification_id, user_id, `read`, created_at)
 SELECT DISTINCT n.id, u.id, 0, n.created_at
 FROM notifications n
