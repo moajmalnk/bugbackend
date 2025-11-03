@@ -13,17 +13,36 @@ require_once __DIR__ . '/../BaseAPI.php';
 header('Content-Type: application/json');
 
 try {
-    $api = new BaseAPI();
-    $userData = $api->validateToken();
+    // Get token from query string
+    $token = $_GET['token'] ?? null;
     
-    if (!$userData || !isset($userData->user_id)) {
-        http_response_code(401);
-        echo json_encode(['success' => false, 'message' => 'Unauthorized']);
-        exit();
+    // If token provided in query, set it in Authorization header so BaseAPI can read it
+    if ($token) {
+        $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . $token;
     }
     
-    $userId = (string)$userData->user_id;
-    $conn = $api->getConnection();
+    // Now use BaseAPI which will read from Authorization header
+    $api = new BaseAPI();
+    
+    try {
+        $userData = $api->validateToken();
+        if (!$userData || !isset($userData->user_id)) {
+            throw new Exception("Token validation failed - invalid user data");
+        }
+        
+        $userId = (string)$userData->user_id;
+        $conn = $api->getConnection();
+        
+    } catch (Exception $e) {
+        http_response_code(401);
+        echo json_encode([
+            'success' => false, 
+            'message' => 'Token validation failed',
+            'error' => $e->getMessage(),
+            'hint' => 'Provide token via ?token=YOUR_TOKEN or Authorization: Bearer YOUR_TOKEN header'
+        ]);
+        exit();
+    }
     
     $results = [
         'user_id' => $userId,
@@ -91,6 +110,39 @@ try {
     $test7->execute(["%$userId%"]);
     $likeMatches = $test7->fetchAll(PDO::FETCH_COLUMN);
     $results['tests']['like_pattern_matches'] = $likeMatches;
+    
+    // Test 8: Check if notification_ids in user_notifications match notifications table
+    $test8 = $conn->prepare("
+        SELECT 
+            COUNT(*) as orphaned_count
+        FROM user_notifications un
+        LEFT JOIN notifications n ON un.notification_id = n.id
+        WHERE un.user_id = ?
+        AND n.id IS NULL
+    ");
+    $test8->execute([$userId]);
+    $orphaned = $test8->fetch(PDO::FETCH_ASSOC)['orphaned_count'];
+    $results['tests']['orphaned_user_notifications'] = (int)$orphaned;
+    
+    // Test 9: Check notification_id type mismatch - sample of actual notification_ids
+    $test9 = $conn->prepare("
+        SELECT 
+            un.notification_id as un_notif_id,
+            n.id as n_id,
+            CASE 
+                WHEN n.id IS NULL THEN 'MISSING'
+                WHEN un.notification_id = n.id THEN 'MATCH'
+                ELSE 'MISMATCH'
+            END as match_status
+        FROM user_notifications un
+        LEFT JOIN notifications n ON un.notification_id = n.id
+        WHERE un.user_id = ?
+        ORDER BY un.created_at DESC
+        LIMIT 10
+    ");
+    $test9->execute([$userId]);
+    $idMatches = $test9->fetchAll(PDO::FETCH_ASSOC);
+    $results['tests']['notification_id_sample'] = $idMatches;
     
     $results['success'] = true;
     echo json_encode($results, JSON_PRETTY_PRINT);
