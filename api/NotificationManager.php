@@ -699,6 +699,30 @@ class NotificationManager extends BaseAPI {
             
             error_log("NotificationManager::getUserNotifications - UserId: $userId, Limit: $limit, Offset: $offset");
             
+            // Check if user_notifications table exists
+            try {
+                $tableCheck = $this->conn->query("SHOW TABLES LIKE 'user_notifications'");
+                if ($tableCheck->rowCount() === 0) {
+                    error_log("NotificationManager::getUserNotifications - WARNING: user_notifications table does not exist, returning empty array");
+                    return [];
+                }
+            } catch (Exception $tableEx) {
+                error_log("NotificationManager::getUserNotifications - Error checking table existence: " . $tableEx->getMessage());
+                return [];
+            }
+            
+            // Check if notifications table exists
+            try {
+                $tableCheck = $this->conn->query("SHOW TABLES LIKE 'notifications'");
+                if ($tableCheck->rowCount() === 0) {
+                    error_log("NotificationManager::getUserNotifications - WARNING: notifications table does not exist, returning empty array");
+                    return [];
+                }
+            } catch (Exception $tableEx) {
+                error_log("NotificationManager::getUserNotifications - Error checking notifications table: " . $tableEx->getMessage());
+                return [];
+            }
+            
             $query = "
                 SELECT 
                     n.id,
@@ -723,23 +747,51 @@ class NotificationManager extends BaseAPI {
             ";
             
             $stmt = $this->conn->prepare($query);
-            $stmt->execute([$userId, $limit, $offset]);
+            if (!$stmt) {
+                $errorInfo = $this->conn->errorInfo();
+                error_log("NotificationManager::getUserNotifications - ERROR: Failed to prepare statement: " . json_encode($errorInfo));
+                return [];
+            }
+            
+            $executeResult = $stmt->execute([$userId, $limit, $offset]);
+            if (!$executeResult) {
+                $errorInfo = $stmt->errorInfo();
+                error_log("NotificationManager::getUserNotifications - ERROR: Failed to execute query: " . json_encode($errorInfo));
+                return [];
+            }
+            
             $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
             error_log("NotificationManager::getUserNotifications - Found " . count($results) . " notifications for user $userId");
             
             // If no results, check what user_ids exist in user_notifications
             if (empty($results)) {
-                $debugQuery = "SELECT DISTINCT user_id FROM user_notifications LIMIT 10";
-                $debugStmt = $this->conn->query($debugQuery);
-                $existingUserIds = $debugStmt->fetchAll(PDO::FETCH_COLUMN);
-                error_log("NotificationManager::getUserNotifications - DEBUG: Existing user_ids in user_notifications: " . json_encode($existingUserIds));
-                error_log("NotificationManager::getUserNotifications - DEBUG: Searching for user_id: $userId (type: " . gettype($userId) . ")");
+                try {
+                    $debugQuery = "SELECT DISTINCT user_id FROM user_notifications LIMIT 10";
+                    $debugStmt = $this->conn->query($debugQuery);
+                    if ($debugStmt) {
+                        $existingUserIds = $debugStmt->fetchAll(PDO::FETCH_COLUMN);
+                        error_log("NotificationManager::getUserNotifications - DEBUG: Existing user_ids in user_notifications: " . json_encode($existingUserIds));
+                        error_log("NotificationManager::getUserNotifications - DEBUG: Searching for user_id: $userId (type: " . gettype($userId) . ")");
+                    }
+                } catch (Exception $debugEx) {
+                    // Ignore debug query errors
+                    error_log("NotificationManager::getUserNotifications - Debug query failed: " . $debugEx->getMessage());
+                }
             }
             
             return $results;
+        } catch (PDOException $e) {
+            error_log("PDO Error getting user notifications: " . $e->getMessage());
+            error_log("PDO Error code: " . $e->getCode());
+            error_log("PDO Error info: " . json_encode($e->errorInfo));
+            return [];
         } catch (Exception $e) {
             error_log("Error getting user notifications: " . $e->getMessage());
+            error_log("Error trace: " . $e->getTraceAsString());
+            return [];
+        } catch (Error $e) {
+            error_log("Fatal error getting user notifications: " . $e->getMessage());
             error_log("Error trace: " . $e->getTraceAsString());
             return [];
         }
