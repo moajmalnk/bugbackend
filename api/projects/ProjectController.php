@@ -36,20 +36,22 @@ class ProjectController extends BaseAPI
                 $is_impersonated = true;
             }
 
-            // Filter projects based on user role
-            // CRITICAL: If role is 'tester' or 'developer', ALWAYS filter by project_members (regardless of impersonation flag)
-            // Only real admins (role='admin' AND not impersonating) see all projects
+            // Check if the actual admin (not the impersonated user) has admin role
+            $admin_role = isset($decoded->admin_role) ? strtolower(trim($decoded->admin_role)) : null;
             $user_role_lower = strtolower(trim($user_role));
-            
-            if ($user_role_lower === 'admin' && !$is_impersonated) {
-                // Real admin (not impersonating) - see all projects
+            $is_admin = ($user_role_lower === 'admin' && !$is_impersonated) || ($is_impersonated && $admin_role === 'admin');
+
+            // Filter projects based on user role
+            // Admins (either real admins or admins impersonating) see all projects
+            // Non-admins only see projects they are members of
+            if ($is_admin) {
+                // Admin (real or impersonating) - see all projects
                 $query = "SELECT * FROM projects";
                 $stmt = $this->conn->prepare($query);
                 $stmt->execute();
                 $projects = $stmt->fetchAll(PDO::FETCH_ASSOC);
             } else {
-                // Non-admin role OR admin impersonating - return only assigned projects
-                // This covers: tester, developer, or admin impersonating another user
+                // Non-admin role - return only assigned projects
                 $query = "SELECT DISTINCT p.* FROM projects p
                           INNER JOIN project_members pm ON p.id = pm.project_id
                           WHERE pm.user_id = ?";

@@ -41,11 +41,11 @@ try {
     }
     
     // Create a test notification directly for this user
-    // Use 'new_bug' type since it's definitely in the ENUM (fallback compatibility)
+    // Now use 'bug_created' since it's in the ENUM after migration
     error_log("create_test_notification.php - Attempting to create notification for userId: $userId");
     
     $result = $notificationManager->createNotification(
-        'new_bug',  // Use 'new_bug' as it's definitely in the current ENUM
+        'bug_created',  // Now we can use bug_created after migration
         'Test Notification',
         'This is a test notification to verify the system is working',
         [$userId],
