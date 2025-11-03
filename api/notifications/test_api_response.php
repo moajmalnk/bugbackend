@@ -32,26 +32,57 @@ try {
     $userId = (string)$userData->user_id;
     $conn = $api->getConnection();
     
+    // Check if new columns exist
+    $columnsExist = [];
+    $colCheck = $conn->query("SHOW COLUMNS FROM notifications");
+    $existingCols = $colCheck->fetchAll(PDO::FETCH_COLUMN);
+    $columnsExist['entity_type'] = in_array('entity_type', $existingCols);
+    $columnsExist['entity_id'] = in_array('entity_id', $existingCols);
+    $columnsExist['project_id'] = in_array('project_id', $existingCols);
+    
     // Use the EXACT working query from test_query.php
     $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 50;
     $offset = isset($_GET['offset']) ? (int)$_GET['offset'] : 0;
     
+    // Build query based on column existence
+    $selectFields = [
+        'n.id',
+        'n.type',
+        'n.title',
+        'n.message',
+    ];
+    
+    if ($columnsExist['entity_type']) {
+        $selectFields[] = 'n.entity_type';
+    } else {
+        $selectFields[] = 'NULL as entity_type';
+    }
+    
+    if ($columnsExist['entity_id']) {
+        $selectFields[] = 'n.entity_id';
+    } else {
+        $selectFields[] = 'NULL as entity_id';
+    }
+    
+    if ($columnsExist['project_id']) {
+        $selectFields[] = 'n.project_id';
+    } else {
+        $selectFields[] = 'NULL as project_id';
+    }
+    
+    $selectFields = array_merge($selectFields, [
+        'n.bug_id',
+        'n.bug_title',
+        'n.status',
+        'n.created_by',
+        'n.created_at',
+        'un.`read`',
+        'un.read_at'
+    ]);
+    
     $query = "
         SELECT 
-            n.id,
-            n.type,
-            n.title,
-            n.message,
-            n.entity_type,
-            n.entity_id,
-            n.project_id,
-            n.bug_id,
-            n.bug_title,
-            n.status,
-            n.created_by,
-            n.created_at,
-            un.`read`,
-            un.read_at
+            " . implode(",\n            ", $selectFields) . "
         FROM user_notifications un
         JOIN notifications n ON un.notification_id = n.id
         WHERE un.user_id = ?
@@ -96,7 +127,9 @@ try {
         'debug' => [
             'user_id' => $userId,
             'raw_count' => count($notifications),
-            'query_used' => 'Direct JOIN (proven working)'
+            'query_used' => 'Direct JOIN (proven working)',
+            'columns_exist' => $columnsExist,
+            'migration_needed' => !($columnsExist['entity_type'] && $columnsExist['entity_id'] && $columnsExist['project_id'])
         ]
     ], JSON_PRETTY_PRINT);
     
