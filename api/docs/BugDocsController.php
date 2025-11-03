@@ -84,6 +84,20 @@ class BugDocsController extends BaseAPI {
             
             error_log("Bug document created: {$docId}");
             
+            // Send notifications to project members
+            try {
+                require_once __DIR__ . '/../NotificationManager.php';
+                $notificationManager = NotificationManager::getInstance();
+                $notificationManager->notifyDocCreated(
+                    $docId,
+                    "Bug - {$bugDetails['title']} - {$bugId}",
+                    $bugDetails['project_id'] ?? null,
+                    $userId
+                );
+            } catch (Exception $e) {
+                error_log("Failed to send doc creation notification: " . $e->getMessage());
+            }
+            
             return [
                 'success' => true,
                 'document_id' => $docId,
@@ -165,6 +179,20 @@ class BugDocsController extends BaseAPI {
             $insertId = $this->conn->lastInsertId();
             
             error_log("General document created: {$docId} for user: {$userId}");
+            
+            // Send notifications to project members
+            try {
+                require_once __DIR__ . '/../NotificationManager.php';
+                $notificationManager = NotificationManager::getInstance();
+                $notificationManager->notifyDocCreated(
+                    $docId,
+                    $docTitle,
+                    $projectId,
+                    $userId
+                );
+            } catch (Exception $e) {
+                error_log("Failed to send doc creation notification: " . $e->getMessage());
+            }
             
             return [
                 'success' => true,
@@ -800,6 +828,126 @@ class BugDocsController extends BaseAPI {
             
         } catch (Exception $e) {
             error_log("Error deleting document: " . $e->getMessage());
+            throw $e;
+        }
+    }
+    
+    /**
+     * Update a document title, project, and template
+     * 
+     * @param int $documentId Document ID from user_documents table
+     * @param string $userId User ID (for authorization)
+     * @param string $newTitle New document title
+     * @param bool $isAdmin Whether the user is an admin (admins can edit any document)
+     * @param string|null $projectId New project ID (optional, null to remove project association)
+     * @param int|null $templateId New template ID (optional, null to remove template association)
+     * @return array Success status and updated document info
+     */
+    public function updateDocument($documentId, $userId, $newTitle, $isAdmin = false, $projectId = null, $templateId = null) {
+        try {
+            // Get document details - admins can edit any document, others can only edit their own
+            if ($isAdmin) {
+                $stmt = $this->conn->prepare(
+                    "SELECT google_doc_id, creator_user_id, doc_title, project_id, template_id 
+                     FROM user_documents 
+                     WHERE id = ?"
+                );
+                $stmt->execute([$documentId]);
+            } else {
+                $stmt = $this->conn->prepare(
+                    "SELECT google_doc_id, creator_user_id, doc_title, project_id, template_id 
+                     FROM user_documents 
+                     WHERE id = ? AND creator_user_id = ?"
+                );
+                $stmt->execute([$documentId, $userId]);
+            }
+            $document = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$document) {
+                throw new Exception('Document not found or access denied');
+            }
+            
+            // For admin editing someone else's document, use the document owner's Google account
+            $googleAccountUserId = $isAdmin && $document['creator_user_id'] !== $userId 
+                ? $document['creator_user_id'] 
+                : $userId;
+            
+            // Get authenticated client - use document owner's account for Google Drive update
+            // (admins editing other users' docs will need the owner's Google account connected)
+            try {
+                $client = $this->authService->getClientForUser($googleAccountUserId);
+                $driveService = new Google\Service\Drive($client);
+                
+                // Update Google Drive file name
+                $file = new \Google\Service\Drive\DriveFile();
+                $file->setName($newTitle);
+                $driveService->files->update($document['google_doc_id'], $file);
+                error_log("Updated Google Doc title: {$document['google_doc_id']} to '{$newTitle}'");
+            } catch (Exception $e) {
+                // If admin is editing and Google Drive update fails (e.g., owner's account not connected),
+                // we still update the database for consistency
+                if ($isAdmin) {
+                    error_log("Warning: Admin editing document - Failed to update Google Drive title (owner's account may not be connected): " . $e->getMessage());
+                } else {
+                    error_log("Warning: Failed to update Google Drive title: " . $e->getMessage());
+                }
+                // Continue to update database even if Google Drive update fails
+            }
+            
+            // Prepare project_id - convert empty string to null
+            $finalProjectId = ($projectId !== null && $projectId !== '' && $projectId !== 'none') ? $projectId : null;
+            
+            // Prepare template_id - convert empty string or '0' to null
+            $finalTemplateId = ($templateId !== null && $templateId !== '' && $templateId !== '0' && $templateId !== 0) 
+                ? (int)$templateId 
+                : null;
+            
+            // Update database - update title, project_id, and template_id
+            $updateFields = ['doc_title = ?', 'updated_at = CURRENT_TIMESTAMP'];
+            $updateParams = [$newTitle];
+            
+            // Check if project_id column exists before updating
+            try {
+                $columnCheck = $this->conn->query("SHOW COLUMNS FROM user_documents LIKE 'project_id'");
+                if ($columnCheck && $columnCheck->rowCount() > 0) {
+                    $updateFields[] = 'project_id = ?';
+                    $updateParams[] = $finalProjectId;
+                }
+            } catch (Exception $e) {
+                error_log("Note: project_id column check: " . $e->getMessage());
+            }
+            
+            // Check if template_id column exists before updating
+            try {
+                $columnCheck = $this->conn->query("SHOW COLUMNS FROM user_documents LIKE 'template_id'");
+                if ($columnCheck && $columnCheck->rowCount() > 0) {
+                    $updateFields[] = 'template_id = ?';
+                    $updateParams[] = $finalTemplateId;
+                }
+            } catch (Exception $e) {
+                error_log("Note: template_id column check: " . $e->getMessage());
+            }
+            
+            $updateParams[] = $documentId;
+            
+            $stmt = $this->conn->prepare(
+                "UPDATE user_documents 
+                 SET " . implode(', ', $updateFields) . " 
+                 WHERE id = ?"
+            );
+            $stmt->execute($updateParams);
+            
+            return [
+                'success' => true,
+                'message' => "Document renamed to '{$newTitle}' successfully",
+                'data' => [
+                    'id' => $documentId,
+                    'doc_title' => $newTitle
+                ]
+            ];
+            
+        } catch (Exception $e) {
+            error_log("Error updating document: " . $e->getMessage());
             throw $e;
         }
     }

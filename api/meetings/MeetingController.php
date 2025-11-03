@@ -44,6 +44,21 @@ class MeetingController extends BaseAPI {
             error_log("Failed to log meeting creation activity: " . $e->getMessage());
         }
         
+        // Send notifications to project members (if project_id exists) or all admins
+        try {
+            require_once __DIR__ . '/../NotificationManager.php';
+            $notificationManager = NotificationManager::getInstance();
+            // Note: project_id is null for regular meetings, but can be added if available
+            $notificationManager->notifyMeetCreated(
+                (string)$meetingId,
+                $title,
+                null, // project_id not available in current implementation
+                $requestUserId
+            );
+        } catch (Exception $e) {
+            error_log("Failed to send meeting creation notification: " . $e->getMessage());
+        }
+        
         return [ 'success' => true, 'data' => ['id' => (int)$meetingId, 'code' => $code, 'title' => $title] ];
     }
 

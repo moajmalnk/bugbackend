@@ -199,6 +199,30 @@ class SharedTaskController extends BaseAPI {
             
             $this->conn->commit();
             
+            // Send notifications to task assignees + project members
+            try {
+                require_once __DIR__ . '/../NotificationManager.php';
+                $notificationManager = NotificationManager::getInstance();
+                
+                // Get project ID (use first project if multiple)
+                $projectId = null;
+                if (isset($data['project_ids']) && is_array($data['project_ids']) && count($data['project_ids']) > 0) {
+                    $projectId = $data['project_ids'][0];
+                } elseif (isset($data['project_id']) && !empty($data['project_id'])) {
+                    $projectId = $data['project_id'];
+                }
+                
+                $notificationManager->notifyTaskCreated(
+                    $taskId,
+                    $data['title'],
+                    $projectId,
+                    $assigneeIds,
+                    $data['created_by']
+                );
+            } catch (Exception $e) {
+                error_log("Failed to send task creation notification: " . $e->getMessage());
+            }
+            
             // Fetch the created task with all details
             $this->getSharedTaskById($taskId);
             

@@ -65,6 +65,20 @@ class UpdateController extends BaseAPI
                     error_log("Failed to log update creation activity: " . $e->getMessage());
                 }
                 
+                // Send notifications to admins + testers + developers of project
+                try {
+                    require_once __DIR__ . '/../NotificationManager.php';
+                    $notificationManager = NotificationManager::getInstance();
+                    $notificationManager->notifyUpdateCreated(
+                        $id,
+                        $data['title'],
+                        $projectId,
+                        $userId
+                    );
+                } catch (Exception $e) {
+                    error_log("Failed to send update creation notification: " . $e->getMessage());
+                }
+                
                 // Also fetch creator username for convenience
                 $username = null;
                 try {
