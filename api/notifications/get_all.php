@@ -123,19 +123,126 @@ try {
     
     // Debug logging
     error_log("get_all.php - UserId: $userId, Notifications returned: " . count($notifications));
+    
+    // Enhanced debugging if no notifications returned
     if (empty($notifications)) {
-        // Check if there are any notifications in the database at all (optional debug)
         try {
             $conn = $api->getConnection();
             if ($conn) {
+                // Check total notifications
                 $totalNotifications = $conn->query("SELECT COUNT(*) as count FROM notifications")->fetch(PDO::FETCH_ASSOC)['count'];
+                
+                // Check user_notifications count with direct match
                 $userNotificationsCount = $conn->prepare("SELECT COUNT(*) as count FROM user_notifications WHERE user_id = ?");
                 $userNotificationsCount->execute([$userId]);
                 $userNotificationCount = $userNotificationsCount->fetch(PDO::FETCH_ASSOC)['count'];
-                error_log("get_all.php - DEBUG: Total notifications in DB: $totalNotifications, User notifications: $userNotificationCount");
+                
+                // Check with CAST
+                $userNotificationsCountCast = $conn->prepare("SELECT COUNT(*) as count FROM user_notifications WHERE CAST(user_id AS CHAR) = CAST(? AS CHAR)");
+                $userNotificationsCountCast->execute([$userId]);
+                $userNotificationCountCast = $userNotificationsCountCast->fetch(PDO::FETCH_ASSOC)['count'];
+                
+                // Get sample user_ids from user_notifications
+                $sampleUserIds = $conn->query("SELECT DISTINCT user_id FROM user_notifications LIMIT 5")->fetchAll(PDO::FETCH_COLUMN);
+                
+                // Try to get notifications with direct query
+                $directQuery = $conn->prepare("
+                    SELECT COUNT(*) as count 
+                    FROM user_notifications un
+                    JOIN notifications n ON un.notification_id = n.id
+                    WHERE un.user_id = ?
+                ");
+                $directQuery->execute([$userId]);
+                $directCount = $directQuery->fetch(PDO::FETCH_ASSOC)['count'];
+                
+                error_log("get_all.php - DEBUG DETAILS:");
+                error_log("  - Total notifications in DB: $totalNotifications");
+                error_log("  - User notifications (direct match): $userNotificationCount");
+                error_log("  - User notifications (CAST match): $userNotificationCountCast");
+                error_log("  - Direct JOIN query count: $directCount");
+                error_log("  - Searching for user_id: $userId (type: " . gettype($userId) . ")");
+                error_log("  - Sample user_ids in user_notifications: " . json_encode($sampleUserIds));
+                
+                // If we have notifications but JOIN fails, try to get them directly
+                if ($userNotificationCount > 0 && $directCount == 0) {
+                    error_log("get_all.php - WARNING: user_notifications exist but JOIN query returns 0. This indicates a JOIN issue.");
+                    
+                    // Try alternative query with LEFT JOIN (handles missing notifications)
+                    $altQuery = $conn->prepare("
+                        SELECT 
+                            COALESCE(n.id, un.notification_id) as id,
+                            COALESCE(n.type, 'info') as type,
+                            COALESCE(n.title, 'Notification') as title,
+                            COALESCE(n.message, '') as message,
+                            n.entity_type,
+                            n.entity_id,
+                            n.project_id,
+                            n.bug_id,
+                            n.bug_title,
+                            n.status,
+                            COALESCE(n.created_by, 'system') as created_by,
+                            COALESCE(n.created_at, un.created_at) as created_at,
+                            un.`read`,
+                            un.read_at
+                        FROM user_notifications un
+                        LEFT JOIN notifications n ON un.notification_id = n.id
+                        WHERE un.user_id = ?
+                        ORDER BY COALESCE(n.created_at, un.created_at) DESC
+                        LIMIT ? OFFSET ?
+                    ");
+                    $altQuery->execute([$userId, $limit, $offset]);
+                    $altResults = $altQuery->fetchAll(PDO::FETCH_ASSOC);
+                    
+                    if (!empty($altResults)) {
+                        error_log("get_all.php - SUCCESS: Alternative query returned " . count($altResults) . " notifications");
+                        $notifications = $altResults;
+                    } else {
+                        // Last resort: Get just from user_notifications and try to match notifications
+                        error_log("get_all.php - Trying last resort query...");
+                        $lastResort = $conn->prepare("
+                            SELECT 
+                                un.notification_id as id,
+                                'info' as type,
+                                'Notification' as title,
+                                '' as message,
+                                NULL as entity_type,
+                                NULL as entity_id,
+                                NULL as project_id,
+                                NULL as bug_id,
+                                NULL as bug_title,
+                                NULL as status,
+                                'system' as created_by,
+                                un.created_at,
+                                un.`read`,
+                                un.read_at
+                            FROM user_notifications un
+                            WHERE un.user_id = ?
+                            ORDER BY un.created_at DESC
+                            LIMIT ? OFFSET ?
+                        ");
+                        $lastResort->execute([$userId, $limit, $offset]);
+                        $lastResortResults = $lastResort->fetchAll(PDO::FETCH_ASSOC);
+                        
+                        // Now try to enrich with notification data
+                        foreach ($lastResortResults as &$result) {
+                            $notifId = $result['id'];
+                            $notifQuery = $conn->prepare("SELECT * FROM notifications WHERE id = ?");
+                            $notifQuery->execute([$notifId]);
+                            $notifData = $notifQuery->fetch(PDO::FETCH_ASSOC);
+                            if ($notifData) {
+                                $result = array_merge($result, $notifData);
+                                $result['id'] = (int)$notifId;
+                            }
+                        }
+                        
+                        if (!empty($lastResortResults)) {
+                            error_log("get_all.php - Last resort query returned " . count($lastResortResults) . " notifications");
+                            $notifications = $lastResortResults;
+                        }
+                    }
+                }
             }
         } catch (Exception $debugEx) {
-            // Don't fail if debug query fails
             error_log("get_all.php - Debug query failed: " . $debugEx->getMessage());
         }
     }

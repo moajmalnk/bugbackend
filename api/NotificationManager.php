@@ -723,7 +723,11 @@ class NotificationManager extends BaseAPI {
                 return [];
             }
             
-            $query = "
+            // Try multiple query approaches to handle different user_id formats
+            $results = [];
+            
+            // Approach 1: Direct string comparison (most common)
+            $query1 = "
                 SELECT 
                     n.id,
                     n.type,
@@ -740,45 +744,126 @@ class NotificationManager extends BaseAPI {
                     un.`read`,
                     un.read_at
                 FROM user_notifications un
-                JOIN notifications n ON un.notification_id = n.id
-                WHERE CAST(un.user_id AS CHAR) = CAST(? AS CHAR)
+                INNER JOIN notifications n ON un.notification_id = n.id
+                WHERE un.user_id = ?
                 ORDER BY n.created_at DESC
                 LIMIT ? OFFSET ?
             ";
             
-            $stmt = $this->conn->prepare($query);
-            if (!$stmt) {
-                $errorInfo = $this->conn->errorInfo();
-                error_log("NotificationManager::getUserNotifications - ERROR: Failed to prepare statement: " . json_encode($errorInfo));
-                return [];
+            try {
+                $stmt = $this->conn->prepare($query1);
+                if ($stmt) {
+                    $stmt->execute([$userId, $limit, $offset]);
+                    $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                    error_log("NotificationManager::getUserNotifications - Query 1 (direct match): Found " . count($results) . " notifications");
+                }
+            } catch (Exception $e1) {
+                error_log("NotificationManager::getUserNotifications - Query 1 failed: " . $e1->getMessage());
             }
             
-            $executeResult = $stmt->execute([$userId, $limit, $offset]);
-            if (!$executeResult) {
-                $errorInfo = $stmt->errorInfo();
-                error_log("NotificationManager::getUserNotifications - ERROR: Failed to execute query: " . json_encode($errorInfo));
-                return [];
-            }
-            
-            $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            
-            error_log("NotificationManager::getUserNotifications - Found " . count($results) . " notifications for user $userId");
-            
-            // If no results, check what user_ids exist in user_notifications
+            // Approach 2: If no results, try with CAST comparison
             if (empty($results)) {
+                $query2 = "
+                    SELECT 
+                        n.id,
+                        n.type,
+                        n.title,
+                        n.message,
+                        n.entity_type,
+                        n.entity_id,
+                        n.project_id,
+                        n.bug_id,
+                        n.bug_title,
+                        n.status,
+                        n.created_by,
+                        n.created_at,
+                        un.`read`,
+                        un.read_at
+                    FROM user_notifications un
+                    INNER JOIN notifications n ON un.notification_id = n.id
+                    WHERE CAST(un.user_id AS CHAR) = CAST(? AS CHAR)
+                    ORDER BY n.created_at DESC
+                    LIMIT ? OFFSET ?
+                ";
+                
                 try {
-                    $debugQuery = "SELECT DISTINCT user_id FROM user_notifications LIMIT 10";
-                    $debugStmt = $this->conn->query($debugQuery);
-                    if ($debugStmt) {
-                        $existingUserIds = $debugStmt->fetchAll(PDO::FETCH_COLUMN);
-                        error_log("NotificationManager::getUserNotifications - DEBUG: Existing user_ids in user_notifications: " . json_encode($existingUserIds));
-                        error_log("NotificationManager::getUserNotifications - DEBUG: Searching for user_id: $userId (type: " . gettype($userId) . ")");
+                    $stmt2 = $this->conn->prepare($query2);
+                    if ($stmt2) {
+                        $stmt2->execute([$userId, $limit, $offset]);
+                        $results = $stmt2->fetchAll(PDO::FETCH_ASSOC);
+                        error_log("NotificationManager::getUserNotifications - Query 2 (CAST match): Found " . count($results) . " notifications");
                     }
-                } catch (Exception $debugEx) {
-                    // Ignore debug query errors
-                    error_log("NotificationManager::getUserNotifications - Debug query failed: " . $debugEx->getMessage());
+                } catch (Exception $e2) {
+                    error_log("NotificationManager::getUserNotifications - Query 2 failed: " . $e2->getMessage());
                 }
             }
+            
+            // Approach 3: If still no results, try BINARY comparison (exact match)
+            if (empty($results)) {
+                $query3 = "
+                    SELECT 
+                        n.id,
+                        n.type,
+                        n.title,
+                        n.message,
+                        n.entity_type,
+                        n.entity_id,
+                        n.project_id,
+                        n.bug_id,
+                        n.bug_title,
+                        n.status,
+                        n.created_by,
+                        n.created_at,
+                        un.`read`,
+                        un.read_at
+                    FROM user_notifications un
+                    INNER JOIN notifications n ON un.notification_id = n.id
+                    WHERE BINARY un.user_id = BINARY ?
+                    ORDER BY n.created_at DESC
+                    LIMIT ? OFFSET ?
+                ";
+                
+                try {
+                    $stmt3 = $this->conn->prepare($query3);
+                    if ($stmt3) {
+                        $stmt3->execute([$userId, $limit, $offset]);
+                        $results = $stmt3->fetchAll(PDO::FETCH_ASSOC);
+                        error_log("NotificationManager::getUserNotifications - Query 3 (BINARY match): Found " . count($results) . " notifications");
+                    }
+                } catch (Exception $e3) {
+                    error_log("NotificationManager::getUserNotifications - Query 3 failed: " . $e3->getMessage());
+                }
+            }
+            
+            // Debug: If still no results, check what's in the database
+            if (empty($results)) {
+                try {
+                    // Check user_notifications for this user
+                    $debugStmt = $this->conn->prepare("SELECT COUNT(*) as count FROM user_notifications WHERE user_id = ?");
+                    $debugStmt->execute([$userId]);
+                    $userCount = $debugStmt->fetch(PDO::FETCH_ASSOC)['count'];
+                    
+                    // Check all user_ids in user_notifications
+                    $debugQuery = "SELECT DISTINCT user_id, COUNT(*) as cnt FROM user_notifications GROUP BY user_id LIMIT 10";
+                    $debugStmt2 = $this->conn->query($debugQuery);
+                    $existingUserIds = $debugStmt2->fetchAll(PDO::FETCH_ASSOC);
+                    
+                    error_log("NotificationManager::getUserNotifications - DEBUG: User $userId has $userCount notifications in user_notifications");
+                    error_log("NotificationManager::getUserNotifications - DEBUG: Sample user_ids in database: " . json_encode($existingUserIds));
+                    
+                    // Try to find user_id with LIKE pattern
+                    $likeStmt = $this->conn->prepare("SELECT DISTINCT user_id FROM user_notifications WHERE user_id LIKE ? LIMIT 5");
+                    $likeStmt->execute(["%$userId%"]);
+                    $likeMatches = $likeStmt->fetchAll(PDO::FETCH_COLUMN);
+                    if (!empty($likeMatches)) {
+                        error_log("NotificationManager::getUserNotifications - DEBUG: Found similar user_ids with LIKE: " . json_encode($likeMatches));
+                    }
+                } catch (Exception $debugEx) {
+                    error_log("NotificationManager::getUserNotifications - Debug queries failed: " . $debugEx->getMessage());
+                }
+            }
+            
+            error_log("NotificationManager::getUserNotifications - Final result: Found " . count($results) . " notifications for user $userId");
             
             return $results;
         } catch (PDOException $e) {
