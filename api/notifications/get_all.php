@@ -14,8 +14,18 @@ require_once __DIR__ . '/../NotificationManager.php';
 try {
     $api = new BaseAPI();
     
-    // Validate authentication
-    $userData = $api->validateToken();
+    // Validate authentication (handle token errors gracefully)
+    try {
+        $userData = $api->validateToken();
+    } catch (Exception $e) {
+        // In production this often causes 500 if unhandled; return 401 instead
+        error_log("get_all.php - Token validation error: " . $e->getMessage());
+        http_response_code(401);
+        header('Content-Type: application/json');
+        echo json_encode(['success' => false, 'message' => 'Unauthorized: invalid token']);
+        exit();
+    }
+    
     if (!$userData || !isset($userData->user_id)) {
         http_response_code(401);
         header('Content-Type: application/json');
@@ -69,6 +79,7 @@ try {
         ];
     }, $notifications);
     
+    $debugEnabled = isset($_GET['debug']) && $_GET['debug'] === '1';
     echo json_encode([
         'success' => true,
         'data' => [
@@ -77,14 +88,18 @@ try {
             'limit' => $limit,
             'offset' => $offset
         ],
-        'debug' => [
+        // only include debug if explicitly requested
+        'debug' => $debugEnabled ? [
             'user_id' => $userId,
             'raw_count' => count($notifications)
-        ]
+        ] : null
     ]);
     
 } catch (Exception $e) {
-    error_log("Error in get_all.php: " . $e->getMessage());
+    error_log("get_all.php - EXCEPTION: " . $e->getMessage());
+    if (method_exists($e, 'getTraceAsString')) {
+        error_log("get_all.php - TRACE: " . $e->getTraceAsString());
+    }
     http_response_code(500);
     header('Content-Type: application/json');
     echo json_encode([
