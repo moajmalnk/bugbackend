@@ -13,13 +13,19 @@ class GoogleDocsController extends BaseAPI {
     
     /**
      * Create a new Google Doc for a bug
+     * @param string $bugId The bug ID
+     * @param string $userId The user ID (for database record ownership)
+     * @param string|null $googleAccountUserId The user ID to use for Google account (for impersonation support)
      */
-    public function createBugDocument($bugId, $userId) {
+    public function createBugDocument($bugId, $userId, $googleAccountUserId = null) {
         try {
-            error_log("Creating Google Doc for bug: " . $bugId . ", user: " . $userId);
+            // Use provided Google account user ID, or fallback to regular user ID
+            $googleUserId = $googleAccountUserId ?? $userId;
             
-            // Get user's refresh token from database
-            $tokenData = $this->oauthController->getRefreshToken($userId);
+            error_log("Creating Google Doc for bug: " . $bugId . ", user: " . $userId . ", googleAccountUserId: " . $googleUserId);
+            
+            // Get user's refresh token from database (use Google account user ID)
+            $tokenData = $this->oauthController->getRefreshToken($googleUserId);
             
             if (!$tokenData || empty($tokenData['refresh_token'])) {
                 throw new Exception('Google account not linked. Please connect your Google account first.');

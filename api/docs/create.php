@@ -23,6 +23,19 @@ try {
     
     $userId = $userData->user_id;
     
+    // Check impersonation
+    $is_impersonated = false;
+    $admin_id = null;
+    if (isset($userData->impersonated)) {
+        $is_impersonated = $userData->impersonated === true || $userData->impersonated === 'true' || $userData->impersonated === 1;
+    }
+    if (!$is_impersonated && isset($userData->admin_id) && !empty($userData->admin_id)) {
+        $is_impersonated = true;
+        $admin_id = $userData->admin_id;
+    } elseif (isset($userData->admin_id) && !empty($userData->admin_id)) {
+        $admin_id = $userData->admin_id;
+    }
+    
     // Get request data
     $data = $docsController->getRequestData();
     
@@ -37,10 +50,13 @@ try {
         throw new Exception('Invalid bug ID format');
     }
     
-    error_log("Creating document for bug: " . $bugId . ", user: " . $userId);
+    // Use admin's Google account if impersonating, otherwise use the user's account
+    $googleAccountUserId = $is_impersonated && $admin_id ? $admin_id : $userId;
+    
+    error_log("Creating document for bug: " . $bugId . ", user: " . $userId . ", googleAccountUserId: " . $googleAccountUserId . ", impersonated: " . ($is_impersonated ? 'yes' : 'no'));
     
     // Create the Google Document
-    $result = $docsController->createBugDocument($bugId, $userId);
+    $result = $docsController->createBugDocument($bugId, $userId, $googleAccountUserId);
     
     echo json_encode([
         'success' => true,

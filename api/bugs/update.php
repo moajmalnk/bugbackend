@@ -173,21 +173,47 @@ try {
     $hasFiles = !empty($_FILES['screenshots']) || !empty($_FILES['files']) || !empty($_FILES['voice_notes']);
     $hasAttachmentsToDelete = isset($data['attachments_to_delete']) && !empty($data['attachments_to_delete']);
 
+    // Debug logging for file uploads
+    $debugInfo = [];
+    if (strpos($_SERVER['HTTP_HOST'] ?? '', 'localhost') !== false) {
+        $debugInfo['files_received'] = [
+            'screenshots' => !empty($_FILES['screenshots']) ? count($_FILES['screenshots']['name'] ?? []) : 0,
+            'files' => !empty($_FILES['files']) ? count($_FILES['files']['name'] ?? []) : 0,
+            'voice_notes' => !empty($_FILES['voice_notes']) ? count($_FILES['voice_notes']['name'] ?? []) : 0,
+            'has_files' => $hasFiles,
+            'has_deletions' => $hasAttachmentsToDelete
+        ];
+        error_log("update.php - Files check: " . json_encode($debugInfo['files_received']));
+    }
+
     // If we have files or deletions, we need to handle them with updateBugWithAttachments
     if ($hasFiles || $hasAttachmentsToDelete) {
         $result = $controller->updateBugWithAttachments($data, $decoded->user_id);
+        if (isset($debugInfo['files_received'])) {
+            $debugInfo['method_used'] = 'updateBugWithAttachments';
+        }
     } else {
         // No files, just update the bug normally
         $result = $controller->updateBug($data);
+        if (isset($debugInfo['files_received'])) {
+            $debugInfo['method_used'] = 'updateBug';
+        }
     }
 
     // Send success response
     http_response_code(200);
-    echo json_encode([
+    $response = [
         'success' => true,
         'message' => 'Bug updated successfully',
         'data' => $result
-    ]);
+    ];
+    
+    // Add debug info in local development
+    if (!empty($debugInfo)) {
+        $response['_debug'] = $debugInfo;
+    }
+    
+    echo json_encode($response);
 
 } catch (Exception $e) {
     error_log("Bug update error: " . $e->getMessage());

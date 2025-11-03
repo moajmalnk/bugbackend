@@ -297,6 +297,9 @@ class BugController extends BaseAPI {
     
     public function getById($id) {
         try {
+            // Ensure ID is string for consistent comparison
+            $id = (string)$id;
+            
             $stmt = $this->conn->prepare("
                 SELECT b.*, 
                        p.name as project_name,
@@ -319,15 +322,40 @@ class BugController extends BaseAPI {
                 return;
             }
 
-            // Get attachments
+            // Get attachments - use CAST to handle type mismatches
             $attachStmt = $this->conn->prepare("
                 SELECT id, file_name, file_path, file_type, uploaded_by, created_at
                 FROM bug_attachments
-                WHERE bug_id = ?
+                WHERE CAST(bug_id AS CHAR) = CAST(? AS CHAR)
                 ORDER BY created_at ASC
             ");
             $attachStmt->execute([$id]);
             $attachments = $attachStmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            // Debug logging
+            error_log("BugController::getById - Bug ID: $id (type: " . gettype($id) . "), Attachments found: " . count($attachments));
+            if (count($attachments) > 0) {
+                error_log("BugController::getById - Sample attachment: " . json_encode($attachments[0]));
+            } else {
+                // Check if attachments exist at all - try multiple query methods
+                $checkStmt1 = $this->conn->prepare("SELECT COUNT(*) as count FROM bug_attachments WHERE bug_id = ?");
+                $checkStmt1->execute([$id]);
+                $checkResult1 = $checkStmt1->fetch(PDO::FETCH_ASSOC);
+                
+                $checkStmt2 = $this->conn->prepare("SELECT COUNT(*) as count FROM bug_attachments WHERE CAST(bug_id AS CHAR) = CAST(? AS CHAR)");
+                $checkStmt2->execute([$id]);
+                $checkResult2 = $checkStmt2->fetch(PDO::FETCH_ASSOC);
+                
+                // Also check raw bug_id values in database
+                $checkStmt3 = $this->conn->prepare("SELECT DISTINCT bug_id FROM bug_attachments LIMIT 10");
+                $checkStmt3->execute();
+                $sampleBugIds = $checkStmt3->fetchAll(PDO::FETCH_COLUMN);
+                
+                error_log("BugController::getById - Direct query count: " . ($checkResult1['count'] ?? 0));
+                error_log("BugController::getById - CAST query count: " . ($checkResult2['count'] ?? 0));
+                error_log("BugController::getById - Sample bug_ids in attachments table: " . json_encode($sampleBugIds));
+                error_log("BugController::getById - Looking for bug_id: " . $id);
+            }
 
             // Process attachments and add them to the bug object
             $bug['attachments'] = [];
@@ -368,6 +396,16 @@ class BugController extends BaseAPI {
                         'type' => $attachment['file_type']
                     ];
                 }
+            }
+            
+            // Add debug info to response in development
+            if (isset($_SERVER['HTTP_HOST']) && (strpos($_SERVER['HTTP_HOST'], 'localhost') !== false || strpos($_SERVER['HTTP_HOST'], '127.0.0.1') !== false)) {
+                $bug['_debug'] = [
+                    'bug_id' => $id,
+                    'bug_id_type' => gettype($id),
+                    'attachments_count' => count($attachments),
+                    'query_used' => 'CAST(bug_id AS CHAR) = CAST(? AS CHAR)'
+                ];
             }
             
             $this->handleSuccess("Bug details retrieved successfully", $bug);
@@ -476,14 +514,16 @@ class BugController extends BaseAPI {
                             "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by) 
                              VALUES (?, ?, ?, ?, ?, ?)"
                         );
+                        $bugIdForAttachment = (string)$id; // Ensure string type
                         $stmt->execute([
                             $attachmentId,
-                            $id,
+                            $bugIdForAttachment,
                             $fileName,
                             $relativePath,
                             $fileType,
                             $decoded->user_id
                         ]);
+                        error_log("BugController::create - Saved attachment: bug_id=$bugIdForAttachment, file=$fileName");
                         // Add the relative path to the list
                         $uploadedAttachments[] = $relativePath;
                         @unlink($tmp_name);
@@ -520,14 +560,16 @@ class BugController extends BaseAPI {
                             "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by) 
                              VALUES (?, ?, ?, ?, ?, ?)"
                         );
+                        $bugIdForAttachment = (string)$id; // Ensure string type
                         $stmt->execute([
                             $attachmentId,
-                            $id,
+                            $bugIdForAttachment,
                             $fileName,
                             $relativePath,
                             $fileType,
                             $decoded->user_id
                         ]);
+                        error_log("BugController::create - Saved attachment: bug_id=$bugIdForAttachment, file=$fileName");
                         // Add the relative path to the list
                         $uploadedAttachments[] = $relativePath;
                         @unlink($tmp_name);
@@ -575,14 +617,16 @@ class BugController extends BaseAPI {
                             "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by) 
                              VALUES (?, ?, ?, ?, ?, ?)"
                         );
+                        $bugIdForAttachment = (string)$id; // Ensure string type
                         $stmt->execute([
                             $attachmentId,
-                            $id,
+                            $bugIdForAttachment,
                             $fileName,
                             $relativePath,
                             $fileType,
                             $decoded->user_id
                         ]);
+                        error_log("BugController::create - Saved attachment: bug_id=$bugIdForAttachment, file=$fileName");
                         // Add the relative path to the list
                         $uploadedAttachments[] = $relativePath;
                         @unlink($tmp_name);
@@ -1185,33 +1229,59 @@ class BugController extends BaseAPI {
 
             // Handle new screenshots
             if (!empty($_FILES['screenshots'])) {
+                error_log("BugController::updateBugWithAttachments - Processing screenshots, count: " . count($_FILES['screenshots']['tmp_name'] ?? []));
                 $uploadDir = __DIR__ . '/../../uploads/screenshots/';
                 if (!file_exists($uploadDir)) {
                     mkdir($uploadDir, 0777, true);
                 }
 
                 foreach ($_FILES['screenshots']['tmp_name'] as $key => $tmp_name) {
-                    $fileName = $_FILES['screenshots']['name'][$key];
-                    $fileType = $_FILES['screenshots']['type'][$key];
+                    $fileName = $_FILES['screenshots']['name'][$key] ?? 'unknown';
+                    $fileType = $_FILES['screenshots']['type'][$key] ?? 'image/jpeg';
+                    $fileError = $_FILES['screenshots']['error'][$key] ?? UPLOAD_ERR_NO_FILE;
+                    
+                    error_log("BugController::updateBugWithAttachments - Screenshot [$key]: name=$fileName, type=$fileType, error=$fileError, tmp=$tmp_name");
+                    
+                    if ($fileError !== UPLOAD_ERR_OK) {
+                        error_log("BugController::updateBugWithAttachments - Upload error for screenshot $fileName: $fileError");
+                        continue;
+                    }
+                    
+                    if (empty($tmp_name) || !is_uploaded_file($tmp_name)) {
+                        error_log("BugController::updateBugWithAttachments - Invalid temp file for screenshot $fileName");
+                        continue;
+                    }
+                    
                     $filePath = $uploadDir . uniqid() . '_' . $fileName;
                     
                     if (move_uploaded_file($tmp_name, $filePath)) {
                         $attachmentId = $this->generateUUID();
                         $relativePath = str_replace(__DIR__ . '/../../uploads/', 'uploads/', $filePath);
+                        $bugIdForAttachment = (string)$data['id']; // Ensure string type
                         $stmt = $this->conn->prepare(
                             "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by) 
                              VALUES (?, ?, ?, ?, ?, ?)"
                         );
-                        $stmt->execute([
+                        $result = $stmt->execute([
                             $attachmentId,
-                            $data['id'],
+                            $bugIdForAttachment,
                             $fileName,
                             $relativePath,
                             $fileType,
                             $userId
                         ]);
+                        $insertId = $this->conn->lastInsertId();
+                        error_log("BugController::updateBugWithAttachments - Saved screenshot: bug_id=$bugIdForAttachment, file=$fileName, attachment_id=$attachmentId, insert_id=$insertId, success=" . ($result ? 'yes' : 'no'));
+                        if (!$result) {
+                            $errorInfo = $stmt->errorInfo();
+                            error_log("BugController::updateBugWithAttachments - SQL Error: " . json_encode($errorInfo));
+                        }
+                    } else {
+                        error_log("BugController::updateBugWithAttachments - Failed to move uploaded file: $tmp_name to $filePath");
                     }
                 }
+            } else {
+                error_log("BugController::updateBugWithAttachments - No screenshots in \$_FILES");
             }
 
             // Handle new files
@@ -1229,57 +1299,167 @@ class BugController extends BaseAPI {
                     if (move_uploaded_file($tmp_name, $filePath)) {
                         $attachmentId = $this->generateUUID();
                         $relativePath = str_replace(__DIR__ . '/../../uploads/', 'uploads/', $filePath);
+                        $bugIdForAttachment = (string)$data['id']; // Ensure string type
                         $stmt = $this->conn->prepare(
                             "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by) 
                              VALUES (?, ?, ?, ?, ?, ?)"
                         );
-                        $stmt->execute([
+                        $result = $stmt->execute([
                             $attachmentId,
-                            $data['id'],
+                            $bugIdForAttachment,
                             $fileName,
                             $relativePath,
                             $fileType,
                             $userId
                         ]);
+                        error_log("BugController::updateBugWithAttachments - Saved file: bug_id=$bugIdForAttachment, file=$fileName, success=" . ($result ? 'yes' : 'no'));
                     }
                 }
             }
 
             // Handle new voice notes
             if (!empty($_FILES['voice_notes'])) {
+                error_log("BugController::updateBugWithAttachments - Processing voice notes, count: " . count($_FILES['voice_notes']['tmp_name'] ?? []));
                 $uploadDir = __DIR__ . '/../../uploads/voice_notes/';
                 if (!file_exists($uploadDir)) {
                     mkdir($uploadDir, 0777, true);
                 }
 
                 foreach ($_FILES['voice_notes']['tmp_name'] as $key => $tmp_name) {
-                    $fileName = $_FILES['voice_notes']['name'][$key];
-                    $fileType = $_FILES['voice_notes']['type'][$key];
+                    $fileName = $_FILES['voice_notes']['name'][$key] ?? 'unknown';
+                    $fileType = $_FILES['voice_notes']['type'][$key] ?? 'audio/webm';
+                    $fileError = $_FILES['voice_notes']['error'][$key] ?? UPLOAD_ERR_NO_FILE;
+                    
+                    error_log("BugController::updateBugWithAttachments - Voice note [$key]: name=$fileName, type=$fileType, error=$fileError, tmp=$tmp_name");
+                    
+                    if ($fileError !== UPLOAD_ERR_OK) {
+                        error_log("BugController::updateBugWithAttachments - Upload error for voice note $fileName: $fileError");
+                        continue;
+                    }
+                    
+                    if (empty($tmp_name) || !is_uploaded_file($tmp_name)) {
+                        error_log("BugController::updateBugWithAttachments - Invalid temp file for voice note $fileName");
+                        continue;
+                    }
+                    
                     $filePath = $uploadDir . uniqid() . '_' . $fileName;
                     
                     if (move_uploaded_file($tmp_name, $filePath)) {
                         $attachmentId = $this->generateUUID();
                         $relativePath = str_replace(__DIR__ . '/../../uploads/', 'uploads/', $filePath);
+                        $bugIdForAttachment = (string)$data['id']; // Ensure string type
                         $stmt = $this->conn->prepare(
                             "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by) 
                              VALUES (?, ?, ?, ?, ?, ?)"
                         );
-                        $stmt->execute([
+                        $result = $stmt->execute([
                             $attachmentId,
-                            $data['id'],
+                            $bugIdForAttachment,
                             $fileName,
                             $relativePath,
                             $fileType,
                             $userId
                         ]);
+                        $insertId = $this->conn->lastInsertId();
+                        error_log("BugController::updateBugWithAttachments - Saved voice note: bug_id=$bugIdForAttachment, file=$fileName, attachment_id=$attachmentId, insert_id=$insertId, success=" . ($result ? 'yes' : 'no'));
+                        if (!$result) {
+                            $errorInfo = $stmt->errorInfo();
+                            error_log("BugController::updateBugWithAttachments - SQL Error: " . json_encode($errorInfo));
+                        }
+                    } else {
+                        error_log("BugController::updateBugWithAttachments - Failed to move uploaded file: $tmp_name to $filePath");
                     }
                 }
+            } else {
+                error_log("BugController::updateBugWithAttachments - No voice notes in \$_FILES");
             }
 
-            // Get updated bug data
-            $stmt = $this->conn->prepare("SELECT * FROM bugs WHERE id = ?");
-            $stmt->execute([$data['id']]);
+            // Get updated bug data with attachments (same format as getById)
+            $bugIdForQuery = (string)$data['id']; // Ensure string type for consistent querying
+            $stmt = $this->conn->prepare("
+                SELECT b.*, 
+                       p.name as project_name,
+                       reporter.username as reporter_name,
+                       updater.username as updated_by_name,
+                       fixer.username as fixed_by_name
+                FROM bugs b
+                LEFT JOIN projects p ON b.project_id = p.id
+                LEFT JOIN users reporter ON b.reported_by = reporter.id
+                LEFT JOIN users updater ON b.updated_by = updater.id
+                LEFT JOIN users fixer ON b.fixed_by = fixer.id
+                WHERE CAST(b.id AS CHAR) = CAST(? AS CHAR)
+            ");
+            $stmt->execute([$bugIdForQuery]);
             $updatedBug = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$updatedBug) {
+                throw new Exception("Failed to retrieve updated bug");
+            }
+
+            // Get attachments (same logic as getById) - use CAST for type safety
+            $attachStmt = $this->conn->prepare("
+                SELECT id, file_name, file_path, file_type, uploaded_by, created_at
+                FROM bug_attachments
+                WHERE CAST(bug_id AS CHAR) = CAST(? AS CHAR)
+                ORDER BY created_at ASC
+            ");
+            $attachStmt->execute([$bugIdForQuery]);
+            $attachments = $attachStmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            // Debug logging
+            error_log("BugController::updateBugWithAttachments - After update, Bug ID: $bugIdForQuery, Attachments found: " . count($attachments));
+            if (count($attachments) > 0) {
+                error_log("BugController::updateBugWithAttachments - Sample attachment: " . json_encode($attachments[0]));
+            }
+
+            // Process attachments and add them to the bug object (same format as getById)
+            $updatedBug['attachments'] = [];
+            $updatedBug['screenshots'] = [];
+            $updatedBug['files'] = [];
+            
+            foreach ($attachments as $attachment) {
+                $path = $attachment['file_path'];
+                $fullPath = $this->getFullPath($path);
+                
+                // Create attachment object for frontend
+                $attachmentObj = [
+                    'id' => $attachment['id'],
+                    'file_name' => $attachment['file_name'],
+                    'file_path' => $attachment['file_path'],
+                    'file_type' => $attachment['file_type'],
+                    'uploaded_by' => $attachment['uploaded_by'],
+                    'created_at' => $attachment['created_at']
+                ];
+                
+                $updatedBug['attachments'][] = $attachmentObj;
+                
+                // Also categorize them for backward compatibility
+                if (strpos($attachment['file_type'], 'image/') === 0 || 
+                    preg_match('/\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i', $attachment['file_name'])) {
+                    $updatedBug['screenshots'][] = [
+                        'id' => $attachment['id'],
+                        'name' => $attachment['file_name'],
+                        'path' => $fullPath,
+                        'type' => $attachment['file_type']
+                    ];
+                } else if (strpos($attachment['file_type'], 'audio/') === 0 || 
+                          preg_match('/\.(wav|mp3|m4a|ogg|webm)$/i', $attachment['file_name'])) {
+                    // Voice notes go into files array
+                    $updatedBug['files'][] = [
+                        'id' => $attachment['id'],
+                        'name' => $attachment['file_name'],
+                        'path' => $fullPath,
+                        'type' => $attachment['file_type']
+                    ];
+                } else {
+                    $updatedBug['files'][] = [
+                        'id' => $attachment['id'],
+                        'name' => $attachment['file_name'],
+                        'path' => $fullPath,
+                        'type' => $attachment['file_type']
+                    ];
+                }
+            }
 
             // Commit if we started the transaction
             if ($startedTransaction) {
