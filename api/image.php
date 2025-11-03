@@ -47,7 +47,7 @@ header('Cache-Control: public, max-age=3600');
 // Additional CORS headers for images
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin');
+header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Impersonate-User, X-User-Id');
 
 // If ?download=1 is present, force download
 if (isset($_GET['download']) && $_GET['download'] == '1') {
