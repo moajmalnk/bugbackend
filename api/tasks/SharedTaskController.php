@@ -223,6 +223,30 @@ class SharedTaskController extends BaseAPI {
                 error_log("Failed to send task creation notification: " . $e->getMessage());
             }
             
+            // Send WhatsApp notifications to assigned users
+            if (!empty($assigneeIds)) {
+                try {
+                    $whatsappPath = __DIR__ . '/../../utils/whatsapp.php';
+                    require_once $whatsappPath;
+                    
+                    error_log("📱 Sending WhatsApp notifications for task assignment to " . count($assigneeIds) . " users");
+                    
+                    sendTaskAssignmentWhatsApp(
+                        $this->conn,
+                        $assigneeIds,
+                        $taskId,
+                        $data['title'],
+                        $data['priority'] ?? 'medium',
+                        $data['due_date'] ?? null,
+                        $data['created_by']
+                    );
+                } catch (Exception $e) {
+                    // Don't fail task creation if WhatsApp fails
+                    error_log("⚠️ Failed to send task assignment WhatsApp notification: " . $e->getMessage());
+                    error_log("⚠️ Exception trace: " . $e->getTraceAsString());
+                }
+            }
+            
             // Fetch the created task with all details
             $this->getSharedTaskById($taskId);
             
@@ -401,9 +425,23 @@ class SharedTaskController extends BaseAPI {
             }
             
             // Update assignees mapping if provided
+            $newAssigneeIds = [];
             if (isset($data['assigned_to_ids']) && is_array($data['assigned_to_ids'])) {
+                // Get current assignees before updating
+                $getCurrentAssignees = $this->conn->prepare("SELECT assigned_to FROM shared_task_assignees WHERE shared_task_id = ?");
+                $getCurrentAssignees->execute([$taskId]);
+                $currentAssignees = [];
+                while ($row = $getCurrentAssignees->fetch(PDO::FETCH_ASSOC)) {
+                    $currentAssignees[] = $row['assigned_to'];
+                }
+                
                 // Remove duplicates before updating
                 $assigneeIds = array_values(array_unique($data['assigned_to_ids']));
+                $newAssigneeIds = $assigneeIds;
+                
+                // Find newly assigned users (users in new list but not in old list)
+                $newlyAssigned = array_diff($assigneeIds, $currentAssignees);
+                
                 $deleteAssignees = $this->conn->prepare("DELETE FROM shared_task_assignees WHERE shared_task_id = ?");
                 $deleteAssignees->execute([$taskId]);
                 if (count($assigneeIds) > 0) {
@@ -416,6 +454,36 @@ class SharedTaskController extends BaseAPI {
                     // Keep primary assigned_to as first for backward compatibility
                     $primary = $assigneeIds[0];
                     $this->conn->prepare("UPDATE shared_tasks SET assigned_to = ? WHERE id = ?")->execute([$primary, $taskId]);
+                }
+                
+                // Send WhatsApp notifications to newly assigned users
+                if (!empty($newlyAssigned)) {
+                    try {
+                        $whatsappPath = __DIR__ . '/../../utils/whatsapp.php';
+                        require_once $whatsappPath;
+                        
+                        // Get task details for the message
+                        $taskStmt = $this->conn->prepare("SELECT title, priority, due_date FROM shared_tasks WHERE id = ?");
+                        $taskStmt->execute([$taskId]);
+                        $taskDetails = $taskStmt->fetch(PDO::FETCH_ASSOC);
+                        
+                        if ($taskDetails) {
+                            error_log("📱 Sending WhatsApp notifications for task assignment update to " . count($newlyAssigned) . " newly assigned users");
+                            
+                            sendTaskAssignmentWhatsApp(
+                                $this->conn,
+                                array_values($newlyAssigned),
+                                $taskId,
+                                $taskDetails['title'],
+                                $taskDetails['priority'] ?? 'medium',
+                                $taskDetails['due_date'] ?? null,
+                                $userId
+                            );
+                        }
+                    } catch (Exception $e) {
+                        // Don't fail task update if WhatsApp fails
+                        error_log("⚠️ Failed to send task assignment update WhatsApp notification: " . $e->getMessage());
+                    }
                 }
             }
 

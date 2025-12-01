@@ -678,6 +678,54 @@ class BugController extends BaseAPI {
                 error_log("Failed to send bug creation notification: " . $e->getMessage());
             }
             
+            // Send WhatsApp notifications to project developers and admins
+            try {
+                $whatsappPath = __DIR__ . '/../../utils/whatsapp.php';
+                require_once $whatsappPath;
+                
+                // Get users to notify (same logic as NotificationManager)
+                $developers = getProjectDevelopers($this->conn, $data['project_id']);
+                $admins = getAllAdmins($this->conn);
+                
+                // Combine and remove duplicates, exclude creator
+                $userIds = array_unique(array_merge($developers, $admins));
+                $userIds = array_filter($userIds, function($userId) use ($decoded) {
+                    return (string)$userId !== (string)$decoded->user_id;
+                });
+                
+                // Fallback to admins if no users
+                if (empty($userIds)) {
+                    $allAdmins = getAllAdmins($this->conn);
+                    $userIds = array_filter($allAdmins, function($userId) use ($decoded) {
+                        return (string)$userId !== (string)$decoded->user_id;
+                    });
+                    if (empty($userIds)) {
+                        $userIds = [$decoded->user_id]; // Notify creator as fallback
+                    }
+                }
+                
+                if (!empty($userIds)) {
+                    // Get project name
+                    $projectName = getProjectName($this->conn, $data['project_id']);
+                    
+                    error_log("📱 Sending WhatsApp notifications for bug creation to " . count($userIds) . " users");
+                    
+                    sendBugAssignmentWhatsApp(
+                        $this->conn,
+                        array_values($userIds),
+                        $id,
+                        $data['title'],
+                        $priority,
+                        $projectName,
+                        $decoded->user_id
+                    );
+                }
+            } catch (Exception $e) {
+                // Don't fail bug creation if WhatsApp fails
+                error_log("⚠️ Failed to send bug creation WhatsApp notification: " . $e->getMessage());
+                error_log("⚠️ Exception trace: " . $e->getTraceAsString());
+            }
+            
             // Use the IST time we already calculated for the response
             $bug = [
                 'id' => $id,
