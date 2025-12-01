@@ -62,6 +62,25 @@ class WorkSubmissionController extends BaseAPI {
 
             error_log("🔍 WorkSubmissionController::submit - Saved submission for user: " . $userId . " on date: " . $date);
             
+            // Prepare notification data (shared for email and WhatsApp)
+            $userStmt = $this->conn->prepare("SELECT username, email FROM users WHERE id = ? LIMIT 1");
+            $userStmt->execute([$userId]);
+            $user = $userStmt->fetch(PDO::FETCH_ASSOC);
+            $userName = $user['username'] ?? 'User';
+            $userEmail = $user['email'] ?? '';
+            
+            $submissionData = [
+                'submission_date' => $date,
+                'start_time' => $start,
+                'hours_today' => $hours,
+                'overtime_hours' => $overtime,
+                'completed_tasks' => $completed,
+                'pending_tasks' => $pending,
+                'ongoing_tasks' => $ongoing,
+                'notes' => $notes,
+                'is_update' => $isUpdate
+            ];
+            
             // Send email notification to admins
             error_log("EMAIL_NOTIFICATION: About to start email notification process");
             try {
@@ -71,14 +90,6 @@ class WorkSubmissionController extends BaseAPI {
                 error_log("EMAIL_NOTIFICATION: email.php required successfully");
                 
                 error_log("📧 Starting daily work update email notification process...");
-                
-                // Get user information
-                $userStmt = $this->conn->prepare("SELECT username, email FROM users WHERE id = ? LIMIT 1");
-                $userStmt->execute([$userId]);
-                $user = $userStmt->fetch(PDO::FETCH_ASSOC);
-                $userName = $user['username'] ?? 'User';
-                $userEmail = $user['email'] ?? '';
-                
                 error_log("📧 User info - Name: $userName, Email: " . ($userEmail ?: 'EMPTY'));
                 
                 // Get admin emails
@@ -94,18 +105,6 @@ class WorkSubmissionController extends BaseAPI {
                 } elseif (empty($userEmail)) {
                     error_log("⚠️ User email is empty - skipping email notification");
                 } else {
-                    $submissionData = [
-                        'submission_date' => $date,
-                        'start_time' => $start,
-                        'hours_today' => $hours,
-                        'overtime_hours' => $overtime,
-                        'completed_tasks' => $completed,
-                        'pending_tasks' => $pending,
-                        'ongoing_tasks' => $ongoing,
-                        'notes' => $notes,
-                        'is_update' => $isUpdate
-                    ];
-                    
                     error_log("📧 Calling sendDailyWorkUpdateEmailToAdmins with data: " . json_encode([
                         'admin_emails_count' => count($adminEmails),
                         'user_name' => $userName,
@@ -119,6 +118,31 @@ class WorkSubmissionController extends BaseAPI {
             } catch (Exception $e) {
                 // Don't fail the submission if email fails
                 error_log("⚠️ Failed to send daily work update email notification: " . $e->getMessage());
+                error_log("⚠️ Exception trace: " . $e->getTraceAsString());
+            }
+            
+            // Send WhatsApp notification to admins
+            error_log("📱 Starting daily work update WhatsApp notification process...");
+            try {
+                $whatsappPath = __DIR__ . '/../../utils/whatsapp.php';
+                error_log("📱 Requiring whatsapp.php from: " . $whatsappPath);
+                require_once $whatsappPath;
+                error_log("📱 whatsapp.php required successfully");
+                
+                if (empty($userEmail)) {
+                    error_log("⚠️ User email is empty - skipping WhatsApp notification");
+                } else {
+                    error_log("📱 Calling sendDailyWorkUpdateWhatsAppToAdmins");
+                    $whatsappResult = sendDailyWorkUpdateWhatsAppToAdmins($userName, $userEmail, $submissionData);
+                    if ($whatsappResult) {
+                        error_log("✅ Daily work update WhatsApp sent to admins successfully");
+                    } else {
+                        error_log("❌ Failed to send daily work update WhatsApp to admins");
+                    }
+                }
+            } catch (Exception $e) {
+                // Don't fail the submission if WhatsApp fails
+                error_log("⚠️ Failed to send daily work update WhatsApp notification: " . $e->getMessage());
                 error_log("⚠️ Exception trace: " . $e->getTraceAsString());
             }
             
