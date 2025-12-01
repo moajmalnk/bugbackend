@@ -6,7 +6,7 @@
 // WhatsApp API configuration
 define('WHATSAPP_API_URL', 'http://148.251.129.118/wapp/api/send');
 define('WHATSAPP_API_KEY', 'ff7a6e6fcca94f7f9a4cfa444b494188');
-define('WHATSAPP_ADMIN_NUMBERS', '8848676627,8075002575');
+define('WHATSAPP_ADMIN_NUMBERS', '8848676627,97450372450');
 
 /**
  * Send WhatsApp message using the API
