@@ -79,6 +79,27 @@ class UpdateController extends BaseAPI
                     error_log("Failed to send update creation notification: " . $e->getMessage());
                 }
                 
+                // Send WhatsApp notifications to project developers and admins
+                try {
+                    $whatsappPath = __DIR__ . '/../../utils/whatsapp.php';
+                    require_once $whatsappPath;
+                    
+                    error_log("📱 Sending WhatsApp notifications for update creation to developers and admins");
+                    
+                    sendUpdateCreationWhatsApp(
+                        $this->conn,
+                        $id,
+                        $data['title'],
+                        $data['type'],
+                        $projectId,
+                        $userId
+                    );
+                } catch (Exception $e) {
+                    // Don't fail update creation if WhatsApp fails
+                    error_log("⚠️ Failed to send update creation WhatsApp notification: " . $e->getMessage());
+                    error_log("⚠️ Exception trace: " . $e->getTraceAsString());
+                }
+                
                 // Also fetch creator username for convenience
                 $username = null;
                 try {

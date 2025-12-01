@@ -717,7 +717,10 @@ class BugController extends BaseAPI {
                         $data['title'],
                         $priority,
                         $projectName,
-                        $decoded->user_id
+                        $decoded->user_id,
+                        $data['description'] ?? null,
+                        $expectedResult,
+                        $actualResult
                     );
                 }
             } catch (Exception $e) {
