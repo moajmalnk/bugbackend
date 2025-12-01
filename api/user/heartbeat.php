@@ -53,9 +53,15 @@ class HeartbeatController extends BaseAPI {
 
     private function trackActivitySession($userId, $timestamp) {
         try {
+            // Check if user_activity_sessions table exists
+            $tableExists = $this->conn->query("SHOW TABLES LIKE 'user_activity_sessions'")->rowCount() > 0;
+            if (!$tableExists) {
+                return;
+            }
+
             // Check if there's an active session for this user
             $checkStmt = $this->conn->prepare("
-                SELECT id, session_start 
+                SELECT id, session_start, session_end, updated_at
                 FROM user_activity_sessions 
                 WHERE user_id = ? AND is_active = TRUE 
                 ORDER BY session_start DESC 
@@ -65,21 +71,25 @@ class HeartbeatController extends BaseAPI {
             $activeSession = $checkStmt->fetch(PDO::FETCH_ASSOC);
 
             if ($activeSession) {
-                // Check if the last activity was more than 5 minutes ago
-                $lastActivity = new DateTime($activeSession['session_start']);
+                // Check if the last update was more than 5 minutes ago (idle timeout)
+                // Use updated_at if available, otherwise use session_start
+                $lastUpdateTime = $activeSession['updated_at'] ?? $activeSession['session_start'];
+                $lastUpdate = new DateTime($lastUpdateTime);
                 $currentTime = new DateTime($timestamp);
-                $diffMinutes = $currentTime->diff($lastActivity)->i;
+                $diffSeconds = $currentTime->getTimestamp() - $lastUpdate->getTimestamp();
+                $diffMinutes = floor($diffSeconds / 60);
 
                 if ($diffMinutes >= 5) {
-                    // Close the previous session and start a new one
-                    $this->closeActivitySession($activeSession['id'], $timestamp);
+                    // User was idle for 5+ minutes, close the previous session
+                    $this->closeActivitySession($activeSession['id'], $lastUpdate);
+                    // Start a new session for current activity
                     $this->startNewActivitySession($userId, $timestamp);
                 } else {
-                    // Update the existing session
+                    // User is still active, update the existing session
                     $this->updateActivitySession($activeSession['id'], $timestamp);
                 }
             } else {
-                // Start a new session
+                // No active session, start a new one
                 $this->startNewActivitySession($userId, $timestamp);
             }
         } catch (Exception $e) {
@@ -89,22 +99,21 @@ class HeartbeatController extends BaseAPI {
     }
 
     private function startNewActivitySession($userId, $timestamp) {
-        $sessionId = $this->utils->generateUUID();
-        
-        // Check if user_activity_sessions table exists
-        $tableExists = $this->conn->query("SHOW TABLES LIKE 'user_activity_sessions'")->rowCount() > 0;
-        
-        if (!$tableExists) {
-            // Table doesn't exist, skip activity tracking
-            return;
-        }
-        
         try {
+            // Check if user_activity_sessions table exists
+            $tableExists = $this->conn->query("SHOW TABLES LIKE 'user_activity_sessions'")->rowCount() > 0;
+            if (!$tableExists) {
+                return;
+            }
+            
+            $sessionId = $this->utils->generateUUID();
+            
+            // Start new session with session_start and initial session_end (will be updated on each heartbeat)
             $stmt = $this->conn->prepare("
-                INSERT INTO user_activity_sessions (id, user_id, session_start, is_active) 
-                VALUES (?, ?, ?, TRUE)
+                INSERT INTO user_activity_sessions (id, user_id, session_start, session_end, is_active, created_at, updated_at) 
+                VALUES (?, ?, ?, ?, TRUE, NOW(), NOW())
             ");
-            $stmt->execute([$sessionId, $userId, $timestamp]);
+            $stmt->execute([$sessionId, $userId, $timestamp, $timestamp]);
         } catch (Exception $e) {
             // If activity tracking fails, log but don't fail the heartbeat
             error_log("Activity session creation failed: " . $e->getMessage());
@@ -113,6 +122,8 @@ class HeartbeatController extends BaseAPI {
 
     private function updateActivitySession($sessionId, $timestamp) {
         try {
+            // Update session_end to current time and updated_at timestamp
+            // This extends the session duration as long as user is active
             $stmt = $this->conn->prepare("
                 UPDATE user_activity_sessions 
                 SET session_end = ?, updated_at = NOW() 
@@ -124,14 +135,32 @@ class HeartbeatController extends BaseAPI {
         }
     }
 
-    private function closeActivitySession($sessionId, $timestamp) {
+    private function closeActivitySession($sessionId, $endTime) {
         try {
+            // Get session start time to calculate duration
             $stmt = $this->conn->prepare("
-                UPDATE user_activity_sessions 
-                SET session_end = ?, is_active = FALSE, updated_at = NOW() 
-                WHERE id = ?
+                SELECT session_start FROM user_activity_sessions WHERE id = ?
             ");
-            $stmt->execute([$timestamp, $sessionId]);
+            $stmt->execute([$sessionId]);
+            $session = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($session) {
+                $sessionStart = new DateTime($session['session_start']);
+                $sessionEnd = $endTime instanceof DateTime ? $endTime : new DateTime($endTime);
+                $durationMinutes = (int)(($sessionEnd->getTimestamp() - $sessionStart->getTimestamp()) / 60);
+                
+                // Close session with calculated duration
+                $stmt = $this->conn->prepare("
+                    UPDATE user_activity_sessions 
+                    SET session_end = ?, 
+                        session_duration_minutes = ?,
+                        is_active = FALSE, 
+                        updated_at = NOW() 
+                    WHERE id = ?
+                ");
+                $endTimeStr = $endTime instanceof DateTime ? $endTime->format('Y-m-d H:i:s') : $endTime;
+                $stmt->execute([$endTimeStr, $durationMinutes, $sessionId]);
+            }
         } catch (Exception $e) {
             error_log("Activity session close failed: " . $e->getMessage());
         }

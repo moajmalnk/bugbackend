@@ -698,11 +698,14 @@ class UserController extends BaseAPI {
             $endDate = $dateRange['end'];
 
             // Calculate active hours for the period
+            // Use session_duration_minutes if available, otherwise calculate from session_start to session_end
             $query = "
                 SELECT 
                     DATE(session_start) as date,
                     SUM(
                         CASE 
+                            WHEN session_duration_minutes IS NOT NULL AND session_duration_minutes > 0 THEN 
+                                session_duration_minutes
                             WHEN session_end IS NOT NULL THEN 
                                 TIMESTAMPDIFF(MINUTE, session_start, session_end)
                             ELSE 
