@@ -1009,5 +1009,109 @@ function sendUpdateCreationWhatsApp($conn, $updateId, $updateTitle, $updateType,
         return false;
     }
 }
+
+/**
+ * Format welcome message for WhatsApp
+ * 
+ * @param string $username User's username
+ * @param string|null $loginLink Login link (optional)
+ * @param string|null $email User's email (optional)
+ * @param string|null $password User's password (optional, for new accounts)
+ * @param string|null $role User's role (optional)
+ * @return string Formatted WhatsApp message
+ */
+function formatWelcomeForWhatsApp($username, $loginLink = null, $email = null, $password = null, $role = null) {
+    $message = "🎉 *Welcome to BugRicer!*\n";
+    $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
+    $message .= "👋 Hello *$username*,\n\n";
+    $message .= "Welcome to BugRicer! Your account has been successfully created and you're ready to start tracking bugs and managing your projects.\n\n";
+    $message .= "You can now log in to your account and start exploring all the features we have to offer.\n\n";
+    
+    // Add login credentials if provided
+    if ($email || $password || $role) {
+        $message .= "━━━━━━━━━━━━━━━━━━━━\n";
+        $message .= "🔑 *Login Details:*\n\n";
+        
+        if ($email) {
+            $message .= "📧 *Email:* $email\n";
+        }
+        
+        if ($password) {
+            $message .= "🔒 *Password:* $password\n";
+        }
+        
+        if ($role) {
+            $message .= "👤 *Role:* " . ucfirst($role) . "\n";
+        }
+        
+        $message .= "\n";
+    }
+    
+    $message .= "━━━━━━━━━━━━━━━━━━━━\n";
+    $message .= "🎯 *What's Next?*\n\n";
+    $message .= "✅ Create your first project\n";
+    $message .= "🐛 Start reporting bugs\n";
+    $message .= "👥 Collaborate with your team\n";
+    $message .= "📊 Track progress and updates\n\n";
+    
+    if ($loginLink) {
+        $message .= "━━━━━━━━━━━━━━━━━━━━\n";
+        $message .= "🔗 *Login Link:*\n";
+        $message .= "$loginLink\n\n";
+        $message .= "💡 *Note:* You'll be redirected to your role-specific dashboard after login.\n";
+    }
+    
+    $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
+    $message .= "💬 If you have any questions or need assistance, please don't hesitate to contact our support team.\n\n";
+    $message .= "Best regards,\n";
+    $message .= "The BugRicer Team\n\n";
+    $message .= "━━━━━━━━━━━━━━━━━━━━\n";
+    $message .= "🐞 _BugRicer Automated Notification_";
+    
+    return $message;
+}
+
+/**
+ * Send welcome WhatsApp notification to new user
+ * 
+ * @param string $phoneNumber User's phone number
+ * @param string $username User's username
+ * @param string|null $loginLink Login link (optional)
+ * @param string|null $email User's email (optional)
+ * @param string|null $password User's password (optional, for new accounts)
+ * @param string|null $role User's role (optional)
+ * @return bool Success status
+ */
+function sendWelcomeWhatsApp($phoneNumber, $username, $loginLink = null, $email = null, $password = null, $role = null) {
+    try {
+        error_log("📱 sendWelcomeWhatsApp called for user: $username ($phoneNumber)");
+        
+        if (empty(trim($phoneNumber))) {
+            error_log("⚠️ No phone number provided for welcome WhatsApp");
+            return false;
+        }
+        
+        // Format welcome message
+        $message = formatWelcomeForWhatsApp($username, $loginLink, $email, $password, $role);
+        
+        error_log("📱 Formatted welcome WhatsApp message length: " . strlen($message) . " characters");
+        
+        // Send WhatsApp message
+        $result = sendWhatsAppMessage($phoneNumber, $message);
+        
+        if ($result) {
+            error_log("✅ Successfully sent welcome WhatsApp to $username");
+        } else {
+            error_log("❌ Failed to send welcome WhatsApp to $username");
+        }
+        
+        return $result;
+        
+    } catch (Exception $e) {
+        error_log("⚠️ Exception in sendWelcomeWhatsApp: " . $e->getMessage());
+        error_log("⚠️ Exception trace: " . $e->getTraceAsString());
+        return false;
+    }
+}
 ?>
 

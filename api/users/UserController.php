@@ -524,6 +524,26 @@ class UserController extends BaseAPI {
                     </div>
                 ";
                 $emailSent = sendWelcomeEmail($email, $subject, $body);
+                
+                // Send welcome WhatsApp notification if phone number is provided
+                if (!empty(trim($phone))) {
+                    try {
+                        require_once __DIR__ . '/../../utils/whatsapp.php';
+                        error_log("📱 Sending welcome WhatsApp notification to new user: $username");
+                        
+                        sendWelcomeWhatsApp(
+                            $phone,
+                            $username,
+                            $loginLink,
+                            $email,
+                            $password, // Original password before hashing
+                            $role
+                        );
+                    } catch (Exception $e) {
+                        // Don't fail user creation if WhatsApp fails
+                        error_log("⚠️ Failed to send welcome WhatsApp notification: " . $e->getMessage());
+                    }
+                }
             }
 
             $message = "User '{$username}' created successfully";
@@ -654,7 +674,33 @@ class UserController extends BaseAPI {
                     error_log("Failed to log user update activity: " . $e->getMessage());
                 }
                 
-                $this->sendJsonResponse(200, "User updated successfully");
+                // Fetch and return the updated user data
+                $fetchStmt = $conn->prepare("
+                    SELECT 
+                        id, 
+                        username, 
+                        email, 
+                        phone, 
+                        role, 
+                        role_id,
+                        created_at, 
+                        updated_at, 
+                        last_active_at,
+                        COALESCE(
+                            (SELECT username FROM users WHERE id = ?),
+                            username
+                        ) as name
+                    FROM users 
+                    WHERE id = ?
+                ");
+                $fetchStmt->execute([$id, $id]);
+                $updatedUser = $fetchStmt->fetch(PDO::FETCH_ASSOC);
+                
+                if ($updatedUser) {
+                    $this->sendJsonResponse(200, "User updated successfully", $updatedUser);
+                } else {
+                    $this->sendJsonResponse(200, "User updated successfully");
+                }
             } else {
                 $this->sendJsonResponse(500, "Failed to update user");
             }
