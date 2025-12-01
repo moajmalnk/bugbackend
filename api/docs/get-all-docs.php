@@ -2,7 +2,7 @@
 /**
  * Get All Documents Endpoint (Admin Only)
  * GET /api/docs/get-all-docs
- * Returns all documents from all users grouped by project (admin only)
+ * Returns all documents from all users (admins, developers, testers, and others) grouped by project (admin only)
  */
 
 require_once __DIR__ . '/../../config/cors.php';

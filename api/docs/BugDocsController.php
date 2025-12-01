@@ -341,7 +341,7 @@ class BugDocsController extends BaseAPI {
     }
     
     /**
-     * List all documents for admin users, grouped by project
+     * List all documents from all users (admins, developers, testers, and others) for admin users, grouped by project
      * 
      * @param string $userId User ID (should be admin)
      * @param bool $includeArchived Include archived documents (default: false)
