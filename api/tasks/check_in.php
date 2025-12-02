@@ -243,7 +243,7 @@ class CheckInController extends BaseAPI {
                 
                 // Admin email and phone
                 $adminEmail = 'moajmalnk@gmail.com';
-                $adminPhone = '8848676627';
+                $adminPhone = '8848676627, 9497792540';
                 
                 // Send email notification
                 try {

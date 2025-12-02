@@ -9,7 +9,7 @@ date_default_timezone_set('Asia/Kolkata');
 // WhatsApp API configuration
 define('WHATSAPP_API_URL', 'http://148.251.129.118/wapp/api/send');
 define('WHATSAPP_API_KEY', 'ff7a6e6fcca94f7f9a4cfa444b494188');
-define('WHATSAPP_ADMIN_NUMBERS', '8848676627');
+define('WHATSAPP_ADMIN_NUMBERS', '8848676627, 9497792540');
 
 /**
  * Normalize phone number for WhatsApp API
