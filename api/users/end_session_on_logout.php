@@ -62,9 +62,10 @@ try {
     $now = date('Y-m-d H:i:s');
     $closedCount = 0;
     
+    $istTimezone = new DateTimeZone('Asia/Kolkata');
     foreach ($activeSessions as $session) {
-        $sessionStart = new DateTime($session['session_start']);
-        $sessionEnd = new DateTime($now);
+        $sessionStart = new DateTime($session['session_start'], $istTimezone);
+        $sessionEnd = new DateTime($now, $istTimezone);
         $durationMinutes = (int)(($sessionEnd->getTimestamp() - $sessionStart->getTimestamp()) / 60);
         
         $closeStmt = $conn->prepare("

@@ -92,8 +92,9 @@ class SessionController extends BaseAPI {
             }
             
             $sessionId = $activeSession['id'];
-            $sessionStart = new DateTime($activeSession['session_start']);
-            $sessionEnd = new DateTime();
+            $istTimezone = new DateTimeZone('Asia/Kolkata');
+            $sessionStart = new DateTime($activeSession['session_start'], $istTimezone);
+            $sessionEnd = new DateTime('now', $istTimezone);
             $durationMinutes = $sessionEnd->diff($sessionStart)->i + ($sessionEnd->diff($sessionStart)->h * 60);
             
             $sql = "UPDATE user_activity_sessions SET session_end = NOW(), session_duration_minutes = ? WHERE id = ?";
@@ -195,9 +196,10 @@ class SessionController extends BaseAPI {
             $sessions = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
             // Calculate current duration for each session
+            $istTimezone = new DateTimeZone('Asia/Kolkata');
             foreach ($sessions as &$session) {
-                $sessionStart = new DateTime($session['session_start']);
-                $now = new DateTime();
+                $sessionStart = new DateTime($session['session_start'], $istTimezone);
+                $now = new DateTime('now', $istTimezone);
                 $durationMinutes = $now->diff($sessionStart)->i + ($now->diff($sessionStart)->h * 60);
                 $session['current_duration_minutes'] = $durationMinutes;
                 $session['current_duration_hours'] = round($durationMinutes / 60, 2);
@@ -266,8 +268,9 @@ class SessionController extends BaseAPI {
                 return;
             }
             
-            $sessionStart = new DateTime($session['session_start']);
-            $sessionEnd = new DateTime();
+            $istTimezone = new DateTimeZone('Asia/Kolkata');
+            $sessionStart = new DateTime($session['session_start'], $istTimezone);
+            $sessionEnd = new DateTime('now', $istTimezone);
             $durationMinutes = $sessionEnd->diff($sessionStart)->i + ($sessionEnd->diff($sessionStart)->h * 60);
             
             $sql = "UPDATE user_activity_sessions SET session_end = NOW(), session_duration_minutes = ? WHERE id = ?";

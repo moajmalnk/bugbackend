@@ -47,9 +47,42 @@ try {
     // Get request data
     $input = json_decode(file_get_contents('php://input'), true);
     $meetingTitle = $input['meeting_title'] ?? 'BugMeet Session';
+    $participantEmails = $input['participant_emails'] ?? []; // Array of email addresses to invite
+    $startTime = $input['start_time'] ?? null; // ISO 8601 format datetime string
+    $endTime = $input['end_time'] ?? null; // ISO 8601 format datetime string
     
     if (empty($meetingTitle)) {
         throw new Exception('Meeting title is required');
+    }
+    
+    // Prepare start and end times
+    $startDateTime = null;
+    $endDateTime = null;
+    
+    if ($startTime && $endTime) {
+        try {
+            // Parse ISO 8601 datetime strings
+            $startDateTime = new DateTime($startTime);
+            $endDateTime = new DateTime($endTime);
+            
+            // Ensure times are in Asia/Kolkata timezone
+            $startDateTime->setTimezone(new DateTimeZone('Asia/Kolkata'));
+            $endDateTime->setTimezone(new DateTimeZone('Asia/Kolkata'));
+        } catch (Exception $e) {
+            error_log("Invalid datetime format provided: " . $e->getMessage());
+            // Fall back to current time if parsing fails
+            $startDateTime = null;
+            $endDateTime = null;
+        }
+    }
+    
+    // Default to current time if not provided or parsing failed
+    if (!$startDateTime) {
+        $startDateTime = new DateTime('now', new DateTimeZone('Asia/Kolkata'));
+    }
+    if (!$endDateTime) {
+        $endDateTime = clone $startDateTime;
+        $endDateTime->modify('+1 hour'); // Default to 1 hour duration
     }
     
     // Initialize Google Auth Service
@@ -81,12 +114,12 @@ try {
         'summary' => $meetingTitle,
         'description' => 'BugMeet Session - ' . $meetingTitle,
         'start' => [
-            'dateTime' => date('c'), // Current time
-            'timeZone' => 'UTC'
+            'dateTime' => $startDateTime->format('c'), // ISO 8601 format
+            'timeZone' => 'Asia/Kolkata'
         ],
         'end' => [
-            'dateTime' => date('c', strtotime('+1 hour')), // 1 hour from now
-            'timeZone' => 'UTC'
+            'dateTime' => $endDateTime->format('c'), // ISO 8601 format
+            'timeZone' => 'Asia/Kolkata'
         ],
         'conferenceData' => [
             'createRequest' => [
@@ -106,15 +139,48 @@ try {
         throw new Exception('Failed to generate meeting link');
     }
     
+    // Extract meeting code
+    $meetingCode = extractMeetingCode($meetingUri);
+    
     // Log the successful creation
     error_log("Google Meet space created successfully for user: " . $bugricerUserId . " - URI: " . $meetingUri);
+    
+    // Send WhatsApp notifications to participants if provided
+    if (!empty($participantEmails) && is_array($participantEmails)) {
+        try {
+            require_once __DIR__ . '/../../utils/whatsapp.php';
+            
+            // Format start time for WhatsApp message (use the actual meeting start time)
+            $formattedStartTime = $startDateTime->format('M d, Y h:i A') . ' IST';
+            
+            error_log("📱 Sending meeting invitation WhatsApp notifications to " . count($participantEmails) . " participants");
+            
+            // Get database connection
+            $conn = $api->getConnection();
+            
+            sendMeetingInvitationWhatsApp(
+                $conn,
+                $participantEmails,
+                $meetingTitle,
+                $meetingCode,
+                $meetingUri,
+                $bugricerUserId,
+                $formattedStartTime
+            );
+            
+            error_log("✅ Meeting invitation WhatsApp notifications sent");
+        } catch (Exception $e) {
+            // Don't fail meeting creation if WhatsApp fails
+            error_log("⚠️ Failed to send meeting invitation WhatsApp notifications: " . $e->getMessage());
+        }
+    }
     
     // Return success response
     echo json_encode([
         'success' => true,
         'meetingUri' => $meetingUri,
         'eventId' => $createdEvent->getId(),
-        'meetingCode' => extractMeetingCode($meetingUri)
+        'meetingCode' => $meetingCode
     ]);
     
 } catch (Exception $e) {

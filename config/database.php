@@ -171,7 +171,7 @@ class Database {
                 
                 // Store in connection pool
                 self::$connectionPool[$connectionKey] = $this->conn;
-                $this->conn->exec("SET time_zone = '+00:00'");
+                $this->conn->exec("SET time_zone = '+05:30'");
                 return $this->conn;
                 
             } catch(PDOException $e) {
@@ -203,7 +203,7 @@ class Database {
                     
                     error_log("Database created and connected successfully!");
                     self::$connectionPool[$connectionKey] = $this->conn;
-                    $this->conn->exec("SET time_zone = '+00:00'");
+                    $this->conn->exec("SET time_zone = '+05:30'");
                     return $this->conn;
                     
                 } catch(PDOException $createE) {
@@ -240,7 +240,7 @@ class Database {
                     
                     // Store in connection pool
                     self::$connectionPool[$connectionKey] = $this->conn;
-                    $this->conn->exec("SET time_zone = '+00:00'");
+                    $this->conn->exec("SET time_zone = '+05:30'");
                     return $this->conn;
                     
                 } catch(PDOException $e) {
@@ -266,7 +266,7 @@ class Database {
                     $this->conn->query("SELECT 1");
                     error_log("Alternative host connection successful!");
                     self::$connectionPool[$connectionKey] = $this->conn;
-                    $this->conn->exec("SET time_zone = '+00:00'");
+                    $this->conn->exec("SET time_zone = '+05:30'");
                     return $this->conn;
                     
                 } catch(PDOException $altE) {

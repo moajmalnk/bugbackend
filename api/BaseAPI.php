@@ -1,5 +1,5 @@
 <?php
-date_default_timezone_set('UTC');
+date_default_timezone_set('Asia/Kolkata');
 
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../config/utils.php';

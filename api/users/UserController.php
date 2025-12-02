@@ -475,84 +475,102 @@ class UserController extends BaseAPI {
                 error_log("Failed to log user creation activity: " . $e->getMessage());
             }
 
-            // If user created successfully, send welcome email
+            // If user created successfully, send welcome email and WhatsApp to ALL users
             $emailSent = false;
-            if ($role === 'developer' || $role === 'tester') {
-                // Generate role-based login URL
-                $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
-                $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-                
-                // Determine if we're in development or production
-                if (strpos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false) {
-                    // Development - use localhost with role-based routing
-                    $loginLink = "http://localhost:8080/login";
-                } else {
-                    // Production - use the bug tracker domain with role-based routing
-                    $loginLink = "https://bugs.bugricer.com/login";
-                }
-                
-                $subject = 'Welcome to BugRicer!';
-                $body = "
-                    <div style=\"font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;\">
-                        <div style=\"max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">
-                            <div style=\"background-color: #2563eb; color: #ffffff; padding: 20px; text-align: center;\">
-                                <h1 style=\"margin: 0; font-size: 24px;\">Welcome to BugRicer!</h1>
-                                <p style=\"margin: 5px 0 0 0; font-size: 16px;\">Your account has been created.</p>
+            
+            // Generate role-based login URL
+            $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
+            $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+            
+            // Determine if we're in development or production
+            if (strpos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false) {
+                // Development - use localhost with role-based routing
+                $loginLink = "http://localhost:8080/login";
+            } else {
+                // Production - use the bug tracker domain with role-based routing
+                $loginLink = "https://bugs.bugricer.com/login";
+            }
+            
+            $subject = 'Welcome to BugRicer!';
+            $body = "
+                <div style=\"font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;\">
+                    <div style=\"max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">
+                        <div style=\"background-color: #2563eb; color: #ffffff; padding: 20px; text-align: center;\">
+                            <h1 style=\"margin: 0; font-size: 24px;\">Welcome to BugRicer!</h1>
+                            <p style=\"margin: 5px 0 0 0; font-size: 16px;\">Your account has been created.</p>
+                        </div>
+                        <div style=\"padding: 20px; border-bottom: 1px solid #e2e8f0;\">
+                            <h3 style=\"margin-top: 0; color: #1e293b; font-size: 18px;\">Hello {$username},</h3>
+                            <p>Welcome to the team! Your BugRicer account is ready. You can now log in to collaborate on projects, report bugs, and track updates.</p>
+                            <p>Here are your login details:</p>
+                            <div style=\"background-color: #f8fafc; padding: 15px; border-radius: 5px; margin-bottom: 15px;\">
+                                <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Username:</strong> {$username}</p>
+                                <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Email:</strong> {$email}</p>
+                                <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Password:</strong> {$password}</p>
+                                <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Role:</strong> " . ucfirst($role) . "</p>
                             </div>
-                            <div style=\"padding: 20px; border-bottom: 1px solid #e2e8f0;\">
-                                <h3 style=\"margin-top: 0; color: #1e293b; font-size: 18px;\">Hello {$username},</h3>
-                                <p>Welcome to the team! Your BugRicer account is ready. You can now log in to collaborate on projects, report bugs, and track updates.</p>
-                                <p>Here are your login details:</p>
-                                <div style=\"background-color: #f8fafc; padding: 15px; border-radius: 5px; margin-bottom: 15px;\">
-                                    <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Username:</strong> {$username}</p>
-                                    <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Email:</strong> {$email}</p>
-                                    <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Password:</strong> {$password}</p>
-                                    <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Role:</strong> " . ucfirst($role) . "</p>
-                                </div>
-                                <p style=\"text-align: center;\">
-                                    <a href=\"{$loginLink}\" style=\"background-color: #2563eb; color: #ffffff; padding: 12px 25px; text-decoration: none; border-radius: 5px; display: inline-block;\">Access Your Dashboard</a>
-                                </p>
-                                <p style=\"font-size: 14px; color: #64748b; text-align: center; margin-top: 15px;\">
-                                    <strong>Note:</strong> You'll be redirected to your role-specific dashboard after login.
-                                </p>
-                            </div>
-                            <div style=\"background-color: #f8fafc; color: #64748b; padding: 20px; text-align: center; font-size: 12px;\">
-                                <p style=\"margin: 0;\">This is an automated notification. Please do not reply to this email.</p>
-                                <p style=\"margin: 5px 0 0 0;\">&copy; " . date('Y') . " BugRicer. All rights reserved.</p>
-                            </div>
+                            <p style=\"text-align: center;\">
+                                <a href=\"{$loginLink}\" style=\"background-color: #2563eb; color: #ffffff; padding: 12px 25px; text-decoration: none; border-radius: 5px; display: inline-block;\">Access Your Dashboard</a>
+                            </p>
+                            <p style=\"font-size: 14px; color: #64748b; text-align: center; margin-top: 15px;\">
+                                <strong>Note:</strong> You'll be redirected to your role-specific dashboard after login.
+                            </p>
+                        </div>
+                        <div style=\"background-color: #f8fafc; color: #64748b; padding: 20px; text-align: center; font-size: 12px;\">
+                            <p style=\"margin: 0;\">This is an automated notification. Please do not reply to this email.</p>
+                            <p style=\"margin: 5px 0 0 0;\">&copy; " . date('Y') . " BugRicer. All rights reserved.</p>
                         </div>
                     </div>
-                ";
+                </div>
+            ";
+            
+            // Send email notification
+            try {
+                error_log("📧 Sending welcome email notification to new user: $username ($email)");
                 $emailSent = sendWelcomeEmail($email, $subject, $body);
                 
-                // Send welcome WhatsApp notification if phone number is provided
-                if (!empty(trim($phone))) {
-                    try {
-                        require_once __DIR__ . '/../../utils/whatsapp.php';
-                        error_log("📱 Sending welcome WhatsApp notification to new user: $username");
-                        
-                        sendWelcomeWhatsApp(
-                            $phone,
-                            $username,
-                            $loginLink,
-                            $email,
-                            $password, // Original password before hashing
-                            $role
-                        );
-                    } catch (Exception $e) {
-                        // Don't fail user creation if WhatsApp fails
-                        error_log("⚠️ Failed to send welcome WhatsApp notification: " . $e->getMessage());
-                    }
+                if ($emailSent) {
+                    error_log("✅ Successfully sent welcome email to: $email");
+                } else {
+                    error_log("❌ Failed to send welcome email to: $email");
                 }
+            } catch (Exception $e) {
+                error_log("⚠️ Failed to send welcome email notification: " . $e->getMessage());
+            }
+            
+            // Send welcome WhatsApp notification if phone number is provided
+            if (!empty(trim($phone))) {
+                try {
+                    require_once __DIR__ . '/../../utils/whatsapp.php';
+                    error_log("📱 Sending welcome WhatsApp notification to new user: $username");
+                    
+                    $whatsappSent = sendWelcomeWhatsApp(
+                        $phone,
+                        $username,
+                        $loginLink,
+                        $email,
+                        $password, // Original password before hashing
+                        $role
+                    );
+                    
+                    if ($whatsappSent) {
+                        error_log("✅ Successfully sent welcome WhatsApp notification to: $phone");
+                    } else {
+                        error_log("❌ Failed to send welcome WhatsApp notification to: $phone");
+                    }
+                } catch (Exception $e) {
+                    // Don't fail user creation if WhatsApp fails
+                    error_log("⚠️ Failed to send welcome WhatsApp notification: " . $e->getMessage());
+                }
+            } else {
+                error_log("⚠️ No phone number provided for user $username, skipping WhatsApp notification");
             }
 
             $message = "User '{$username}' created successfully";
-            if ($role === 'developer' || $role === 'tester') {
-                if ($emailSent) {
-                    $message .= " and a welcome email has been sent.";
-                } else {
-                    $message .= ", but the welcome email could not be sent.";
-                }
+            if ($emailSent) {
+                $message .= " and a welcome email has been sent.";
+            } else {
+                $message .= ", but the welcome email could not be sent.";
             }
 
             $this->sendJsonResponse(201, $message, [
@@ -809,8 +827,9 @@ class UserController extends BaseAPI {
     }
 
     private function getDateRange($period) {
-        $now = new DateTime();
-        $start = new DateTime();
+        $istTimezone = new DateTimeZone('Asia/Kolkata');
+        $now = new DateTime('now', $istTimezone);
+        $start = new DateTime('now', $istTimezone);
 
         switch ($period) {
             case 'daily':

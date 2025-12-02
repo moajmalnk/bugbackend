@@ -33,6 +33,7 @@ ini_set('log_errors', 1);
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/BugController.php';
 require_once __DIR__ . '/../../config/utils.php';
+require_once __DIR__ . '/../projects/ProjectMemberController.php';
 
 // Handle preflight requests
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
@@ -135,23 +136,32 @@ try {
     // Check if user is admin or the bug creator (using reported_by from bug array)
     $isCreator = $bug['reported_by'] === $userId;
     
+    // Check if developer is a member of the project
+    $isProjectMember = false;
+    if ($isDeveloper && isset($bug['project_id']) && $bug['project_id']) {
+        $projectMemberController = new ProjectMemberController();
+        $isProjectMember = $projectMemberController->hasProjectAccess($userId, $bug['project_id']);
+    }
+    
     // Permission logic:
     // 1. Admins can edit everything
     // 2. Bug creators can edit everything
-    // 3. Developers can edit status only
+    // 3. Developers can edit status only if they are members of the project
     $canEdit = false;
     $errorMessage = 'You do not have permission to edit this bug.';
     
     if ($isAdmin || $isCreator) {
         // Admins and creators can edit all fields
         $canEdit = true;
-    } elseif ($isDeveloper && $isOnlyStatusUpdate) {
-        // Developers can edit status only
+    } elseif ($isDeveloper && $isOnlyStatusUpdate && $isProjectMember) {
+        // Developers can edit status only if they are project members
         $canEdit = true;
     } else {
         // For other cases, determine specific error message
         if ($isDeveloper && !$isOnlyStatusUpdate) {
             $errorMessage = 'You do not have permission to edit this bug. Developers can only update the status field.';
+        } elseif ($isDeveloper && !$isProjectMember) {
+            $errorMessage = 'You do not have permission to edit this bug. You must be a member of the project to update bug status.';
         } else {
             $errorMessage = 'You do not have permission to edit this bug. Only admins and the bug creator can edit bugs.';
         }

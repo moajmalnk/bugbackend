@@ -55,7 +55,8 @@ try {
     $calendarService = new Google\Service\Calendar($googleClient);
     
     // Get time range: 7 days ago to 24 hours from now
-    $now = new DateTime();
+    $istTimezone = new DateTimeZone('Asia/Kolkata');
+    $now = new DateTime('now', $istTimezone);
     $startTime = clone $now;
     $startTime->sub(new DateInterval('P7D')); // 7 days ago
     $endTime = clone $now;
@@ -94,8 +95,8 @@ try {
                     error_log("DEBUG: Found event with Meet link: " . $event->getSummary() . " (URI: " . $meetingUri . ")");
                     
                     // Check meeting status
-                    $startTime = new DateTime($start->getDateTime() ?? $start->getDate());
-                    $endTime = new DateTime($end->getDateTime() ?? $end->getDate());
+                    $startTime = new DateTime($start->getDateTime() ?? $start->getDate(), $istTimezone);
+                    $endTime = new DateTime($end->getDateTime() ?? $end->getDate(), $istTimezone);
                     
                     $isActive = $now >= $startTime && $now <= $endTime;
                     $isCompleted = $now > $endTime;

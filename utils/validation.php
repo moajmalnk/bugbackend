@@ -93,7 +93,8 @@ function validatePasswordConfirmation($password, $confirm_password) {
  * Validate date format
  */
 function validateDate($date, $format = 'Y-m-d H:i:s') {
-    $d = DateTime::createFromFormat($format, $date);
+    $istTimezone = new DateTimeZone('Asia/Kolkata');
+    $d = DateTime::createFromFormat($format, $date, $istTimezone);
     return $d && $d->format($format) === $date;
 }
 

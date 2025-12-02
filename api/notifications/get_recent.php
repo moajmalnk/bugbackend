@@ -45,8 +45,9 @@ class NotificationAPI extends BaseAPI {
             ];
             
             $sinceDateTime = null;
+            $istTimezone = new DateTimeZone('Asia/Kolkata');
             foreach ($dateFormats as $format) {
-                $sinceDateTime = DateTime::createFromFormat($format, $since);
+                $sinceDateTime = DateTime::createFromFormat($format, $since, $istTimezone);
                 if ($sinceDateTime !== false) {
                     break;
                 }

@@ -53,6 +53,89 @@ try {
     $api->clearCache('project_members_list_' . $project_id);
     $api->clearCache('user_projects_' . $user_id);
 
+    // Send email and WhatsApp notifications to the newly added member
+    try {
+        $conn = $api->getConnection();
+        
+        // Fetch user details (email, username, role)
+        $userStmt = $conn->prepare("SELECT username, email, role FROM users WHERE id = ? LIMIT 1");
+        $userStmt->execute([$user_id]);
+        $user = $userStmt->fetch(PDO::FETCH_ASSOC);
+        
+        // Fetch project details
+        $projectStmt = $conn->prepare("SELECT name FROM projects WHERE id = ? LIMIT 1");
+        $projectStmt->execute([$project_id]);
+        $project = $projectStmt->fetch(PDO::FETCH_ASSOC);
+        
+        // Fetch admin details (who added the member)
+        $adminStmt = $conn->prepare("SELECT username FROM users WHERE id = ? LIMIT 1");
+        $adminStmt->execute([$decoded->user_id]);
+        $admin = $adminStmt->fetch(PDO::FETCH_ASSOC);
+        
+        if ($user && $project) {
+            $username = $user['username'] ?? 'User';
+            $userEmail = $user['email'] ?? null;
+            $userRole = $user['role'] ?? 'user';
+            $projectName = $project['name'] ?? 'Project';
+            $addedByName = $admin['username'] ?? 'Admin';
+            
+            // Load utility files
+            require_once __DIR__ . '/../../utils/whatsapp.php';
+            require_once __DIR__ . '/../../utils/email.php';
+            
+            // Generate role-based project URL using helper function
+            $projectLink = generateRoleBasedProjectUrl($userRole, $project_id);
+            
+            // Send email notification
+            if ($userEmail) {
+                try {
+                    error_log("📧 Sending project member added email notification to: $userEmail");
+                    
+                    $emailSent = sendProjectMemberAddedEmail(
+                        $userEmail,
+                        $username,
+                        $projectName,
+                        $role,
+                        $addedByName,
+                        $projectLink
+                    );
+                    
+                    if ($emailSent) {
+                        error_log("✅ Successfully sent project member added email to: $userEmail");
+                    } else {
+                        error_log("❌ Failed to send project member added email to: $userEmail");
+                    }
+                } catch (Exception $e) {
+                    error_log("⚠️ Failed to send project member added email notification: " . $e->getMessage());
+                }
+            }
+            
+            // Send WhatsApp notification
+            try {
+                error_log("📱 Sending project member added WhatsApp notification to user: $username");
+                
+                $whatsappSent = sendProjectMemberAddedWhatsApp(
+                    $conn,
+                    $user_id,
+                    $project_id,
+                    $role,
+                    $decoded->user_id
+                );
+                
+                if ($whatsappSent) {
+                    error_log("✅ Successfully sent project member added WhatsApp notification");
+                } else {
+                    error_log("⚠️ Failed to send project member added WhatsApp notification (user may not have phone number)");
+                }
+            } catch (Exception $e) {
+                error_log("⚠️ Failed to send project member added WhatsApp notification: " . $e->getMessage());
+            }
+        }
+    } catch (Exception $e) {
+        // Don't fail member addition if notifications fail
+        error_log("⚠️ Error sending project member added notifications: " . $e->getMessage());
+    }
+
     $api->sendJsonResponse(200, 'Member added successfully to project');
 
 } catch (Exception $e) {

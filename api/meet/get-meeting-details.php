@@ -152,8 +152,9 @@ function extractMeetingCode($meetingUri) {
  */
 function generateMockSessionAnalytics($meetingDetails) {
     $participants = $meetingDetails['participants'];
-    $startTime = new DateTime($meetingDetails['startTime']);
-    $endTime = new DateTime($meetingDetails['endTime']);
+    $istTimezone = new DateTimeZone('Asia/Kolkata');
+    $startTime = new DateTime($meetingDetails['startTime'], $istTimezone);
+    $endTime = new DateTime($meetingDetails['endTime'], $istTimezone);
     
     $analytics = [];
     
@@ -184,7 +185,7 @@ function generateMockSessionAnalytics($meetingDetails) {
             'leaveTime' => $leaveTime->format('c'),
             'duration' => $sessionDuration,
             'durationFormatted' => formatDuration($sessionDuration),
-            'status' => $leaveTime < new DateTime() ? 'completed' : 'active'
+            'status' => $leaveTime < new DateTime('now', $istTimezone) ? 'completed' : 'active'
         ];
     }
     

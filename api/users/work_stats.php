@@ -28,14 +28,15 @@ class UserWorkStatsController extends BaseAPI {
             }
 
             // Get current custom month period (6th to 5th of next month)
-            $today = new DateTime();
+            $istTimezone = new DateTimeZone('Asia/Kolkata');
+            $today = new DateTime('now', $istTimezone);
             $day = (int)$today->format('d');
             
             // Determine current period
             if ($day >= 6) {
                 // Current period: 6th of this month to 5th of next month
-                $periodStartDate = new DateTime($today->format('Y-m-06'));
-                $periodEndDate = new DateTime($today->format('Y-m-06'));
+                $periodStartDate = new DateTime($today->format('Y-m-06'), $istTimezone);
+                $periodEndDate = new DateTime($today->format('Y-m-06'), $istTimezone);
                 $periodEndDate->modify('+1 month')->modify('-1 day'); // Go to 5th of next month
                 
                 $periodStart = $periodStartDate->format('Y-m-d');
@@ -43,9 +44,9 @@ class UserWorkStatsController extends BaseAPI {
                 $periodName = $periodStartDate->format('M') . ' 06 - ' . $periodEndDate->format('M 05');
             } else {
                 // Current period: 6th of last month to 5th of this month
-                $periodStartDate = new DateTime($today->format('Y-m-06'));
+                $periodStartDate = new DateTime($today->format('Y-m-06'), $istTimezone);
                 $periodStartDate->modify('-1 month');
-                $periodEndDate = new DateTime($today->format('Y-m-05'));
+                $periodEndDate = new DateTime($today->format('Y-m-05'), $istTimezone);
                 
                 $periodStart = $periodStartDate->format('Y-m-d');
                 $periodEnd = $periodEndDate->format('Y-m-d');
@@ -137,7 +138,8 @@ class UserWorkStatsController extends BaseAPI {
             
             // Get last 6 custom periods for trend analysis
             $trendData = [];
-            $currentDate = new DateTime();
+            $istTimezone = new DateTimeZone('Asia/Kolkata');
+            $currentDate = new DateTime('now', $istTimezone);
             
             // Generate 6 custom periods (6th to 5th of next month)
             for ($i = 0; $i < 6; $i++) {
@@ -148,9 +150,9 @@ class UserWorkStatsController extends BaseAPI {
                     $periodName = $periodName;
                 } else {
                     // Go back i months
-                    $periodStartDate = new DateTime($currentDate->format('Y-m-06'));
+                    $periodStartDate = new DateTime($currentDate->format('Y-m-06'), $istTimezone);
                     $periodStartDate->modify("-{$i} months");
-                    $periodEndDate = new DateTime($currentDate->format('Y-m-06'));
+                    $periodEndDate = new DateTime($currentDate->format('Y-m-06'), $istTimezone);
                     $periodEndDate->modify("-{$i} months")->modify('+1 month')->modify('-1 day');
                     
                     $periodStartStr = $periodStartDate->format('Y-m-d');

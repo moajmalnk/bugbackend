@@ -23,6 +23,8 @@ class WorkSubmissionController extends BaseAPI {
             $pending = $payload['pending_tasks'] ?? null;
             $notes = $payload['notes'] ?? null;
             $ongoing = $payload['ongoing_tasks'] ?? null;
+            $plannedProjects = isset($payload['planned_projects']) && is_array($payload['planned_projects']) ? json_encode($payload['planned_projects']) : null;
+            $plannedWork = $payload['planned_work'] ?? null;
 
             // Auto-migrate: add ongoing_tasks column if missing
             try {
@@ -44,6 +46,36 @@ class WorkSubmissionController extends BaseAPI {
                 // ignore; migration may fail if no permissions
             }
 
+            // Auto-migrate: add check_in_time column if missing
+            try {
+                $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'check_in_time'");
+                if ($check->rowCount() === 0) {
+                    $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN check_in_time TIMESTAMP NULL DEFAULT NULL AFTER start_time");
+                }
+            } catch (Exception $e) {
+                // ignore; migration may fail if no permissions
+            }
+
+            // Auto-migrate: add planned_projects column if missing
+            try {
+                $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'planned_projects'");
+                if ($check->rowCount() === 0) {
+                    $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN planned_projects JSON NULL DEFAULT NULL AFTER check_in_time");
+                }
+            } catch (Exception $e) {
+                // ignore; migration may fail if no permissions
+            }
+
+            // Auto-migrate: add planned_work column if missing
+            try {
+                $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'planned_work'");
+                if ($check->rowCount() === 0) {
+                    $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN planned_work TEXT NULL DEFAULT NULL AFTER planned_projects");
+                }
+            } catch (Exception $e) {
+                // ignore; migration may fail if no permissions
+            }
+
             // Calculate overtime: if hours > 8, overtime = hours - 8, otherwise 0
             $overtime = $hours > 8 ? $hours - 8 : 0;
 
@@ -53,12 +85,28 @@ class WorkSubmissionController extends BaseAPI {
             $existing = $checkStmt->fetch(PDO::FETCH_ASSOC);
             $isUpdate = ($existing['cnt'] ?? 0) > 0;
 
-            $sql = "INSERT INTO work_submissions (user_id, submission_date, start_time, hours_today, overtime_hours, total_working_days, total_hours_cumulative, completed_tasks, pending_tasks, ongoing_tasks, notes)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
-                    ON DUPLICATE KEY UPDATE start_time=VALUES(start_time), hours_today=VALUES(hours_today), overtime_hours=VALUES(overtime_hours), total_working_days=VALUES(total_working_days),
-                    total_hours_cumulative=VALUES(total_hours_cumulative), completed_tasks=VALUES(completed_tasks), pending_tasks=VALUES(pending_tasks), ongoing_tasks=VALUES(ongoing_tasks), notes=VALUES(notes)";
-            $stmt = $this->conn->prepare($sql);
-            $stmt->execute([$userId, $date, $start, $hours, $overtime, $days, $cumulative, $completed, $pending, $ongoing, $notes]);
+            // Check if planned_projects and planned_work columns exist
+            $columnsCheck = $this->conn->query("SHOW COLUMNS FROM work_submissions");
+            $columns = $columnsCheck->fetchAll(PDO::FETCH_COLUMN);
+            $hasPlannedProjects = in_array('planned_projects', $columns);
+            $hasPlannedWork = in_array('planned_work', $columns);
+            
+            if ($hasPlannedProjects && $hasPlannedWork) {
+                $sql = "INSERT INTO work_submissions (user_id, submission_date, start_time, hours_today, overtime_hours, total_working_days, total_hours_cumulative, completed_tasks, pending_tasks, ongoing_tasks, notes, planned_projects, planned_work)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        ON DUPLICATE KEY UPDATE start_time=VALUES(start_time), hours_today=VALUES(hours_today), overtime_hours=VALUES(overtime_hours), total_working_days=VALUES(total_working_days),
+                        total_hours_cumulative=VALUES(total_hours_cumulative), completed_tasks=VALUES(completed_tasks), pending_tasks=VALUES(pending_tasks), ongoing_tasks=VALUES(ongoing_tasks), notes=VALUES(notes),
+                        planned_projects=VALUES(planned_projects), planned_work=VALUES(planned_work)";
+                $stmt = $this->conn->prepare($sql);
+                $stmt->execute([$userId, $date, $start, $hours, $overtime, $days, $cumulative, $completed, $pending, $ongoing, $notes, $plannedProjects, $plannedWork]);
+            } else {
+                $sql = "INSERT INTO work_submissions (user_id, submission_date, start_time, hours_today, overtime_hours, total_working_days, total_hours_cumulative, completed_tasks, pending_tasks, ongoing_tasks, notes)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                        ON DUPLICATE KEY UPDATE start_time=VALUES(start_time), hours_today=VALUES(hours_today), overtime_hours=VALUES(overtime_hours), total_working_days=VALUES(total_working_days),
+                        total_hours_cumulative=VALUES(total_hours_cumulative), completed_tasks=VALUES(completed_tasks), pending_tasks=VALUES(pending_tasks), ongoing_tasks=VALUES(ongoing_tasks), notes=VALUES(notes)";
+                $stmt = $this->conn->prepare($sql);
+                $stmt->execute([$userId, $date, $start, $hours, $overtime, $days, $cumulative, $completed, $pending, $ongoing, $notes]);
+            }
 
             error_log("🔍 WorkSubmissionController::submit - Saved submission for user: " . $userId . " on date: " . $date);
             
@@ -69,17 +117,44 @@ class WorkSubmissionController extends BaseAPI {
             $userName = $user['username'] ?? 'User';
             $userEmail = $user['email'] ?? '';
             
+            // Fetch planned_projects and planned_work from database if they exist
+            $plannedProjectsData = null;
+            $plannedWorkData = null;
+            if ($hasPlannedProjects && $hasPlannedWork) {
+                $fetchStmt = $this->conn->prepare("SELECT planned_projects, planned_work FROM work_submissions WHERE user_id = ? AND submission_date = ? LIMIT 1");
+                $fetchStmt->execute([$userId, $date]);
+                $plannedData = $fetchStmt->fetch(PDO::FETCH_ASSOC);
+                if ($plannedData) {
+                    $plannedProjectsData = $plannedData['planned_projects'] ? json_decode($plannedData['planned_projects'], true) : null;
+                    $plannedWorkData = $plannedData['planned_work'];
+                }
+            }
+            
             $submissionData = [
                 'submission_date' => $date,
                 'start_time' => $start,
+                'check_in_time' => null, // Will be fetched from DB if exists
                 'hours_today' => $hours,
                 'overtime_hours' => $overtime,
                 'completed_tasks' => $completed,
                 'pending_tasks' => $pending,
                 'ongoing_tasks' => $ongoing,
                 'notes' => $notes,
-                'is_update' => $isUpdate
+                'planned_projects' => $plannedProjectsData,
+                'planned_work' => $plannedWorkData,
+                'is_update' => $isUpdate,
+                '_db_conn' => $this->conn // Pass connection for project name lookup
             ];
+            
+            // Fetch check_in_time if it exists
+            if ($hasPlannedProjects) {
+                $checkInStmt = $this->conn->prepare("SELECT check_in_time FROM work_submissions WHERE user_id = ? AND submission_date = ? LIMIT 1");
+                $checkInStmt->execute([$userId, $date]);
+                $checkInData = $checkInStmt->fetch(PDO::FETCH_ASSOC);
+                if ($checkInData && $checkInData['check_in_time']) {
+                    $submissionData['check_in_time'] = $checkInData['check_in_time'];
+                }
+            }
             
             // Send email notification to admins
             error_log("EMAIL_NOTIFICATION: About to start email notification process");
@@ -240,10 +315,22 @@ class WorkSubmissionController extends BaseAPI {
             $sub = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
 
             $hours = number_format((float)($sub['hours_today'] ?? 0), 0);
+            // Use check_in_time if available, otherwise fallback to start_time
+            $checkInTime = $sub['check_in_time'] ?? null;
             $startRaw = $sub['start_time'] ?? null;
-            // Format 24h time to 12h with AM/PM for readability
-            if ($startRaw) {
-                $start = date('h:i A', strtotime($startRaw));
+            $timeToUse = $checkInTime ? $checkInTime : $startRaw;
+            
+            // Format time to 12h with AM/PM for readability
+            if ($timeToUse) {
+                // Handle both TIME and TIMESTAMP formats
+                if (strpos($timeToUse, ' ') !== false) {
+                    // TIMESTAMP format: extract time part
+                    $timePart = explode(' ', $timeToUse)[1];
+                    $start = date('h:i A', strtotime($timePart));
+                } else {
+                    // TIME format
+                    $start = date('h:i A', strtotime($timeToUse));
+                }
             } else {
                 $start = '----';
             }

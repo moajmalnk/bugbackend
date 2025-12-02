@@ -74,8 +74,9 @@ class HeartbeatController extends BaseAPI {
                 // Check if the last update was more than 5 minutes ago (idle timeout)
                 // Use updated_at if available, otherwise use session_start
                 $lastUpdateTime = $activeSession['updated_at'] ?? $activeSession['session_start'];
-                $lastUpdate = new DateTime($lastUpdateTime);
-                $currentTime = new DateTime($timestamp);
+                $istTimezone = new DateTimeZone('Asia/Kolkata');
+                $lastUpdate = new DateTime($lastUpdateTime, $istTimezone);
+                $currentTime = new DateTime($timestamp, $istTimezone);
                 $diffSeconds = $currentTime->getTimestamp() - $lastUpdate->getTimestamp();
                 $diffMinutes = floor($diffSeconds / 60);
 
@@ -145,8 +146,9 @@ class HeartbeatController extends BaseAPI {
             $session = $stmt->fetch(PDO::FETCH_ASSOC);
             
             if ($session) {
-                $sessionStart = new DateTime($session['session_start']);
-                $sessionEnd = $endTime instanceof DateTime ? $endTime : new DateTime($endTime);
+                $istTimezone = new DateTimeZone('Asia/Kolkata');
+                $sessionStart = new DateTime($session['session_start'], $istTimezone);
+                $sessionEnd = $endTime instanceof DateTime ? $endTime : new DateTime($endTime, $istTimezone);
                 $durationMinutes = (int)(($sessionEnd->getTimestamp() - $sessionStart->getTimestamp()) / 60);
                 
                 // Close session with calculated duration

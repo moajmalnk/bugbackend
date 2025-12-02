@@ -3,6 +3,9 @@
  * WhatsApp utility functions for BugRicer
  */
 
+// Set timezone to IST
+date_default_timezone_set('Asia/Kolkata');
+
 // WhatsApp API configuration
 define('WHATSAPP_API_URL', 'http://148.251.129.118/wapp/api/send');
 define('WHATSAPP_API_KEY', 'ff7a6e6fcca94f7f9a4cfa444b494188');
@@ -156,14 +159,24 @@ function formatWorkUpdateForWhatsApp($userName, $userEmail, $submissionData) {
     $date = $submissionData['submission_date'] ?? date('Y-m-d');
     $dateFormatted = date('j/n/Y l', strtotime($date));
     
-    // Format start time
+    // Format check-in time (preferred) or start time
+    $checkInTime = $submissionData['check_in_time'] ?? null;
     $startTime = $submissionData['start_time'] ?? null;
-    $startTimeFormatted = $startTime ? date('h:i A', strtotime($startTime)) : '----';
+    $timeFormatted = '----';
+    if ($checkInTime) {
+        $timeFormatted = date('h:i A', strtotime($checkInTime));
+    } elseif ($startTime) {
+        $timeFormatted = date('h:i A', strtotime($startTime));
+    }
     
     // Hours worked
     $hours = number_format((float)($submissionData['hours_today'] ?? 0), 2);
     $overtimeHours = number_format((float)($submissionData['overtime_hours'] ?? 0), 2);
     $regularHours = min((float)($submissionData['hours_today'] ?? 0), 8);
+    
+    // Planned projects and work
+    $plannedProjects = $submissionData['planned_projects'] ?? null;
+    $plannedWork = trim($submissionData['planned_work'] ?? '');
     
     // Tasks
     $completedTasks = trim($submissionData['completed_tasks'] ?? '');
@@ -196,12 +209,54 @@ function formatWorkUpdateForWhatsApp($userName, $userEmail, $submissionData) {
     }
     $message .= "\n";
     $message .= "📅 *Date:* $dateFormatted\n";
-    $message .= "🕘 *Start Time:* $startTimeFormatted\n";
+    $message .= "🕘 *Check-in Time:* $timeFormatted\n";
     $message .= "⏱ *Working Hours:* $hours Hours\n";
     
     if ($overtimeHours > 0) {
         $message .= "📊 *Regular:* $regularHours Hours\n";
         $message .= "⏰ *Overtime:* $overtimeHours Hours\n";
+    }
+    
+    // Add planned projects and work if available
+    if (!empty($plannedProjects) || !empty($plannedWork)) {
+        $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
+        $message .= "*📋 Planning Details:*\n";
+        
+        if (!empty($plannedProjects) && is_array($plannedProjects)) {
+            // Get project names from database if connection available
+            $projectNames = [];
+            if (isset($submissionData['_db_conn']) && $submissionData['_db_conn']) {
+                try {
+                    $conn = $submissionData['_db_conn'];
+                    $placeholders = str_repeat('?,', count($plannedProjects) - 1) . '?';
+                    $projectStmt = $conn->prepare("SELECT id, name FROM projects WHERE id IN ($placeholders)");
+                    $projectStmt->execute($plannedProjects);
+                    $projectRows = $projectStmt->fetchAll(PDO::FETCH_ASSOC);
+                    foreach ($projectRows as $row) {
+                        $projectNames[] = $row['name'];
+                    }
+                } catch (Exception $e) {
+                    error_log("⚠️ Could not fetch project names: " . $e->getMessage());
+                    $projectNames = $plannedProjects; // Fallback to IDs
+                }
+            } else {
+                $projectNames = $plannedProjects; // Fallback to IDs
+            }
+            
+            if (!empty($projectNames)) {
+                $message .= "\n📁 *Projects:* " . implode(', ', $projectNames) . "\n";
+            }
+        }
+        
+        if (!empty($plannedWork)) {
+            $message .= "\n📝 *Planned Work:*\n";
+            // Truncate if too long
+            $plannedWorkPreview = $plannedWork;
+            if (strlen($plannedWorkPreview) > 300) {
+                $plannedWorkPreview = substr($plannedWorkPreview, 0, 297) . '...';
+            }
+            $message .= $plannedWorkPreview . "\n";
+        }
     }
     
     $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
@@ -516,7 +571,7 @@ function generateRoleBasedTaskUrl($role, $taskId) {
         $rolePath = $role;
     }
     
-    return $baseUrl . "/" . $rolePath . "/my-tasks?tab=shared-tasks";
+    return $baseUrl . "/" . $rolePath . "/my-tasks?tab=shared-tasks&task=" . $taskId;
 }
 
 /**
@@ -1109,6 +1164,387 @@ function sendWelcomeWhatsApp($phoneNumber, $username, $loginLink = null, $email 
         
     } catch (Exception $e) {
         error_log("⚠️ Exception in sendWelcomeWhatsApp: " . $e->getMessage());
+        error_log("⚠️ Exception trace: " . $e->getTraceAsString());
+        return false;
+    }
+}
+
+/**
+ * Generate role-based project URL
+ * 
+ * @param string $role User role (admin, developer, tester, user)
+ * @param int|string $projectId Project ID
+ * @return string Role-based project URL
+ */
+function generateRoleBasedProjectUrl($role, $projectId) {
+    $baseUrl = getFrontendBaseUrl();
+    
+    // Normalize role to lowercase
+    $role = strtolower($role ?? 'user');
+    
+    // Map roles to URL paths
+    $rolePath = 'user'; // Default fallback
+    if (in_array($role, ['admin', 'developer', 'tester', 'user'])) {
+        $rolePath = $role;
+    }
+    
+    return $baseUrl . "/" . $rolePath . "/projects/" . $projectId;
+}
+
+/**
+ * Format project member added message for WhatsApp
+ * 
+ * @param string $projectName Project name
+ * @param string $projectRole Member's role in the project
+ * @param string|null $addedByName Name of person who added them
+ * @param string|null $projectLink Link to project
+ * @return string Formatted WhatsApp message
+ */
+function formatProjectMemberAddedForWhatsApp($projectName, $projectRole, $addedByName = null, $projectLink = null) {
+    $message = "🎉 *Added to Project!*\n";
+    $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
+    $message .= "Hello! Great news! You've been added to a project on BugRicer.\n\n";
+    $message .= "🏢 *Project:* " . $projectName . "\n";
+    $message .= "👤 *Your Role:* " . ucfirst(strtolower($projectRole ?: 'Member')) . "\n";
+    
+    if ($addedByName) {
+        $message .= "✍️ *Added by:* " . $addedByName . "\n";
+    }
+    
+    $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
+    $message .= "🎯 *What You Can Do:*\n\n";
+    $message .= "✅ View and manage project bugs\n";
+    $message .= "📋 Access shared tasks and updates\n";
+    $message .= "👥 Collaborate with team members\n";
+    $message .= "📊 Track project progress\n";
+    
+    $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
+    
+    if ($projectLink) {
+        $message .= "🔗 *View Project:*\n";
+        $message .= "$projectLink\n\n";
+    }
+    
+    $message .= "━━━━━━━━━━━━━━━━━━━━\n";
+    $message .= "💬 If you have any questions, please contact our support team.\n\n";
+    $message .= "Best regards,\n";
+    $message .= "The BugRicer Team\n\n";
+    $message .= "🐞 _BugRicer Automated Notification_";
+    
+    return $message;
+}
+
+/**
+ * Send project member added WhatsApp notification to the newly added member
+ * 
+ * @param PDO $conn Database connection
+ * @param string $userId User ID of the newly added member
+ * @param string $projectId Project ID
+ * @param string $projectRole Member's role in the project
+ * @param string|null $addedById User ID who added the member
+ * @return bool Success status
+ */
+function sendProjectMemberAddedWhatsApp($conn, $userId, $projectId, $projectRole, $addedById = null) {
+    try {
+        error_log("📱 sendProjectMemberAddedWhatsApp called for user: $userId, project: $projectId");
+        
+        // Get user details (phone and role)
+        $userStmt = $conn->prepare("SELECT username, phone, role FROM users WHERE id = ? LIMIT 1");
+        $userStmt->execute([$userId]);
+        $user = $userStmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$user || empty($user['phone'])) {
+            error_log("⚠️ User $userId has no phone number for WhatsApp notification");
+            return false;
+        }
+        
+        $phoneNumber = trim($user['phone']);
+        $userRole = $user['role'] ?? 'user';
+        $username = $user['username'] ?? 'User';
+        
+        // Get project name
+        $projectName = getProjectName($conn, $projectId);
+        if (!$projectName) {
+            error_log("⚠️ Could not get project name for project: $projectId");
+            $projectName = 'Project';
+        }
+        
+        // Get admin name who added the member
+        $addedByName = null;
+        if ($addedById) {
+            try {
+                $adminStmt = $conn->prepare("SELECT username FROM users WHERE id = ? LIMIT 1");
+                $adminStmt->execute([$addedById]);
+                $admin = $adminStmt->fetch(PDO::FETCH_ASSOC);
+                if ($admin) {
+                    $addedByName = $admin['username'];
+                }
+            } catch (Exception $e) {
+                error_log("⚠️ Could not get admin name: " . $e->getMessage());
+            }
+        }
+        
+        // Generate role-based project URL
+        $projectLink = generateRoleBasedProjectUrl($userRole, $projectId);
+        
+        // Format message
+        $message = formatProjectMemberAddedForWhatsApp($projectName, $projectRole, $addedByName, $projectLink);
+        
+        error_log("📱 Sending project member added WhatsApp to user $username (role: $userRole): $phoneNumber");
+        error_log("📱 Role-based project URL: $projectLink");
+        
+        // Send WhatsApp message
+        $result = sendWhatsAppMessage($phoneNumber, $message);
+        
+        if ($result) {
+            error_log("✅ Successfully sent project member added WhatsApp to user $username");
+        } else {
+            error_log("❌ Failed to send project member added WhatsApp to user $username");
+        }
+        
+        return $result;
+        
+    } catch (Exception $e) {
+        error_log("⚠️ Exception in sendProjectMemberAddedWhatsApp: " . $e->getMessage());
+        error_log("⚠️ Exception trace: " . $e->getTraceAsString());
+        return false;
+    }
+}
+
+/**
+ * Format meeting invitation message for WhatsApp
+ * 
+ * @param string $meetingTitle Meeting title
+ * @param string $meetingCode Meeting code
+ * @param string|null $meetingUri Meeting URI/link
+ * @param string|null $creatorName Name of meeting creator
+ * @param string|null $startTime Meeting start time (formatted)
+ * @return string Formatted WhatsApp message
+ */
+function formatMeetingInvitationForWhatsApp($meetingTitle, $meetingCode, $meetingUri = null, $creatorName = null, $startTime = null) {
+    $message = "📹 *Meeting Invitation*\n";
+    $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
+    $message .= "You've been invited to join a meeting on BugMeet!\n\n";
+    $message .= "📌 *Meeting:* " . $meetingTitle . "\n";
+    $message .= "🔢 *Code:* " . $meetingCode . "\n";
+    
+    if ($creatorName) {
+        $message .= "👤 *Created by:* " . $creatorName . "\n";
+    }
+    
+    if ($startTime) {
+        $message .= "⏰ *Time:* " . $startTime . "\n";
+    }
+    
+    $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
+    
+    if ($meetingUri) {
+        $message .= "🔗 *Join Meeting:*\n";
+        $message .= "$meetingUri\n\n";
+    } else {
+        $message .= "🔗 *Join Meeting:*\n";
+        $message .= "https://meet.google.com/" . strtolower($meetingCode) . "\n\n";
+    }
+    
+    $message .= "━━━━━━━━━━━━━━━━━━━━\n";
+    $message .= "💡 You can join using the link above or enter the meeting code manually.\n\n";
+    $message .= "Best regards,\n";
+    $message .= "The BugRicer Team\n\n";
+    $message .= "🐞 _BugRicer Automated Notification_";
+    
+    return $message;
+}
+
+/**
+ * Send meeting invitation WhatsApp notifications to participants
+ * 
+ * @param PDO $conn Database connection
+ * @param array $participantEmails Array of participant email addresses
+ * @param string $meetingTitle Meeting title
+ * @param string $meetingCode Meeting code
+ * @param string|null $meetingUri Meeting URI/link
+ * @param string|null $creatorId User ID of meeting creator
+ * @param string|null $startTime Meeting start time (formatted)
+ * @return array Array of results with email => success status
+ */
+function sendMeetingInvitationWhatsApp($conn, $participantEmails, $meetingTitle, $meetingCode, $meetingUri = null, $creatorId = null, $startTime = null) {
+    try {
+        error_log("📱 sendMeetingInvitationWhatsApp called for meeting: $meetingTitle");
+        
+        if (empty($participantEmails)) {
+            error_log("⚠️ No participant emails provided, skipping WhatsApp notification");
+            return [];
+        }
+        
+        // Remove duplicates
+        $participantEmails = array_values(array_unique(array_filter($participantEmails)));
+        
+        // Get creator name if provided
+        $creatorName = null;
+        if ($creatorId) {
+            try {
+                $creatorStmt = $conn->prepare("SELECT username FROM users WHERE id = ? LIMIT 1");
+                $creatorStmt->execute([$creatorId]);
+                $creator = $creatorStmt->fetch(PDO::FETCH_ASSOC);
+                if ($creator) {
+                    $creatorName = $creator['username'];
+                }
+            } catch (Exception $e) {
+                error_log("⚠️ Could not get creator name: " . $e->getMessage());
+            }
+        }
+        
+        // Get phone numbers for participant emails
+        $placeholders = str_repeat('?,', count($participantEmails) - 1) . '?';
+        $phoneStmt = $conn->prepare("SELECT email, phone FROM users WHERE email IN ($placeholders) AND phone IS NOT NULL AND phone != ''");
+        $phoneStmt->execute($participantEmails);
+        $usersWithPhones = $phoneStmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        if (empty($usersWithPhones)) {
+            error_log("⚠️ No phone numbers found for participant emails");
+            return [];
+        }
+        
+        error_log("📱 Sending meeting invitation WhatsApp to " . count($usersWithPhones) . " participants");
+        
+        // Send to each participant
+        $results = [];
+        foreach ($usersWithPhones as $user) {
+            $email = $user['email'];
+            $phoneNumber = trim($user['phone']);
+            
+            if (empty($phoneNumber)) {
+                continue;
+            }
+            
+            // Format message
+            $message = formatMeetingInvitationForWhatsApp($meetingTitle, $meetingCode, $meetingUri, $creatorName, $startTime);
+            
+            error_log("📱 Sending meeting invitation WhatsApp to: $email ($phoneNumber)");
+            
+            $result = sendWhatsAppMessage($phoneNumber, $message);
+            $results[$email] = $result;
+            
+            if ($result) {
+                error_log("✅ Successfully sent meeting invitation WhatsApp to: $email");
+            } else {
+                error_log("❌ Failed to send meeting invitation WhatsApp to: $email");
+            }
+            
+            // Add delay between messages
+            if (count($usersWithPhones) > 1) {
+                usleep(500000); // 0.5 second delay
+            }
+        }
+        
+        return $results;
+        
+    } catch (Exception $e) {
+        error_log("⚠️ Exception in sendMeetingInvitationWhatsApp: " . $e->getMessage());
+        error_log("⚠️ Exception trace: " . $e->getTraceAsString());
+        return [];
+    }
+}
+
+/**
+ * Format check-in notification message for WhatsApp
+ * 
+ * @param string $username User's username
+ * @param string $checkInTime Check-in time (datetime format)
+ * @param string $date Check-in date
+ * @param array|null $plannedProjects Array of planned project names or IDs
+ * @param string|null $plannedWork Planned work description
+ * @return string Formatted WhatsApp message
+ */
+function formatCheckInNotificationForWhatsApp($username, $checkInTime, $date, $plannedProjects = null, $plannedWork = null) {
+    $message = "⏰ *Check-in Notification*\n";
+    $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
+    $message .= "A team member has checked in for their work day.\n\n";
+    
+    // Format date
+    $dateFormatted = date('F j, Y (l)', strtotime($date));
+    
+    // Format check-in time
+    $timeFormatted = date('h:i A', strtotime($checkInTime));
+    
+    $message .= "👤 *User:* " . $username . "\n";
+    $message .= "📅 *Date:* " . $dateFormatted . "\n";
+    $message .= "🕘 *Check-in Time:* " . $timeFormatted . "\n";
+    
+    // Add planned projects if available
+    if (!empty($plannedProjects)) {
+        $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
+        $message .= "*📁 Planned Projects:*\n";
+        
+        if (is_array($plannedProjects)) {
+            if (count($plannedProjects) > 0) {
+                $message .= implode("\n• ", array_map(function($p) {
+                    return "• " . (is_array($p) ? ($p['name'] ?? $p['id'] ?? '') : $p);
+                }, $plannedProjects));
+            } else {
+                $message .= "None";
+            }
+        } else {
+            $message .= "• " . $plannedProjects;
+        }
+    }
+    
+    // Add planned work if available
+    if (!empty($plannedWork) && trim($plannedWork) !== '') {
+        $message .= "\n\n━━━━━━━━━━━━━━━━━━━━\n";
+        $message .= "*📝 Planned Work:*\n";
+        // Truncate if too long
+        $workText = trim($plannedWork);
+        if (strlen($workText) > 500) {
+            $workText = substr($workText, 0, 497) . '...';
+        }
+        $message .= $workText;
+    }
+    
+    $message .= "\n\n━━━━━━━━━━━━━━━━━━━━\n";
+    $message .= "🐞 _BugRicer Automated Notification_";
+    
+    return $message;
+}
+
+/**
+ * Send check-in notification WhatsApp to admin
+ * 
+ * @param string $adminPhone Admin phone number
+ * @param string $username User's username
+ * @param string $checkInTime Check-in time (datetime format)
+ * @param string $date Check-in date
+ * @param array|null $plannedProjects Array of planned project names or IDs
+ * @param string|null $plannedWork Planned work description
+ * @return bool Success status
+ */
+function sendCheckInNotificationWhatsApp($adminPhone, $username, $checkInTime, $date, $plannedProjects = null, $plannedWork = null) {
+    try {
+        error_log("📱 sendCheckInNotificationWhatsApp called for user: $username");
+        
+        if (empty(trim($adminPhone))) {
+            error_log("⚠️ Admin phone number is empty, skipping WhatsApp notification");
+            return false;
+        }
+        
+        // Format message
+        $message = formatCheckInNotificationForWhatsApp($username, $checkInTime, $date, $plannedProjects, $plannedWork);
+        
+        error_log("📱 Sending check-in notification WhatsApp to admin: $adminPhone");
+        
+        // Send WhatsApp message
+        $result = sendWhatsAppMessage($adminPhone, $message);
+        
+        if ($result) {
+            error_log("✅ Successfully sent check-in notification WhatsApp to admin");
+        } else {
+            error_log("❌ Failed to send check-in notification WhatsApp to admin");
+        }
+        
+        return $result;
+        
+    } catch (Exception $e) {
+        error_log("⚠️ Exception in sendCheckInNotificationWhatsApp: " . $e->getMessage());
         error_log("⚠️ Exception trace: " . $e->getTraceAsString());
         return false;
     }

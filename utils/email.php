@@ -3,6 +3,9 @@
  * Email utility functions for BugRicer
  */
 
+// Set timezone to IST
+date_default_timezone_set('Asia/Kolkata');
+
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
@@ -265,14 +268,24 @@ function sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $
     $date = $submissionData['submission_date'] ?? date('Y-m-d');
     $dateFormatted = date('j/n/Y l', strtotime($date));
     
-    // Format start time
+    // Format check-in time (preferred) or start time
+    $checkInTime = $submissionData['check_in_time'] ?? null;
     $startTime = $submissionData['start_time'] ?? null;
-    $startTimeFormatted = $startTime ? date('h:i A', strtotime($startTime)) : '----';
+    $timeFormatted = '----';
+    if ($checkInTime) {
+        $timeFormatted = date('h:i A', strtotime($checkInTime));
+    } elseif ($startTime) {
+        $timeFormatted = date('h:i A', strtotime($startTime));
+    }
     
     // Hours worked
     $hours = number_format((float)($submissionData['hours_today'] ?? 0), 2);
     $overtimeHours = number_format((float)($submissionData['overtime_hours'] ?? 0), 2);
     $regularHours = min((float)($submissionData['hours_today'] ?? 0), 8);
+    
+    // Planned projects and work
+    $plannedProjects = $submissionData['planned_projects'] ?? null;
+    $plannedWork = trim($submissionData['planned_work'] ?? '');
     
     // Tasks
     $completedTasks = trim($submissionData['completed_tasks'] ?? '');
@@ -319,8 +332,8 @@ function sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $
           </div>
           
           <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0f9ff; border-left: 4px solid #0ea5e9; border-radius: 4px;\">
-            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;\"><strong>🕘 Start Time:</strong></p>
-            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\">$startTimeFormatted</p>
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;\"><strong>🕘 Check-in Time:</strong></p>
+            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\">$timeFormatted</p>
           </div>
           
           <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0f9ff; border-left: 4px solid #0ea5e9; border-radius: 4px;\">
@@ -380,17 +393,47 @@ function sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $
     </div>
     ";
     
+    // Build planned projects text
+    $plannedProjectsText = "";
+    if (!empty($plannedProjects) && is_array($plannedProjects)) {
+        $projectNames = [];
+        if (isset($submissionData['_db_conn']) && $submissionData['_db_conn']) {
+            try {
+                $conn = $submissionData['_db_conn'];
+                $placeholders = str_repeat('?,', count($plannedProjects) - 1) . '?';
+                $projectStmt = $conn->prepare("SELECT id, name FROM projects WHERE id IN ($placeholders)");
+                $projectStmt->execute($plannedProjects);
+                $projectRows = $projectStmt->fetchAll(PDO::FETCH_ASSOC);
+                foreach ($projectRows as $row) {
+                    $projectNames[] = $row['name'];
+                }
+            } catch (Exception $e) {
+                error_log("⚠️ Could not fetch project names for email text: " . $e->getMessage());
+                $projectNames = $plannedProjects; // Fallback to IDs
+            }
+        } else {
+            $projectNames = $plannedProjects; // Fallback to IDs
+        }
+        
+        if (!empty($projectNames)) {
+            $plannedProjectsText = "Projects: " . implode(', ', $projectNames) . "\n";
+        }
+    }
+    
+    $plannedWorkText = !empty($plannedWork) ? "Planned Work:\n" . $plannedWork . "\n\n" : "";
+    $planningSection = (!empty($plannedProjectsText) || !empty($plannedWorkText)) ? "📋 Planning Details:\n" . $plannedProjectsText . $plannedWorkText . "\n" : "";
+    
     $text_body = "
 Daily Work Update $actionText - BugRicer
 
 User: $userName ($userEmail)
 Date: $dateFormatted
-Start Time: $startTimeFormatted
+Check-in Time: $timeFormatted
 Working Hours: $hours Hours" . ($overtimeHours > 0 ? "
 Regular Hours: $regularHours Hours
 Overtime Hours: $overtimeHours Hours" : "") . "
 
-" . ($completedCount > 0 ? "✅ Completed Tasks ($completedCount):\n" . $completedTasks . "\n\n" : "") . 
+" . $planningSection . ($completedCount > 0 ? "✅ Completed Tasks ($completedCount):\n" . $completedTasks . "\n\n" : "") . 
 ($pendingCount > 0 ? "⌛ Pending Tasks ($pendingCount):\n" . $pendingTasks . "\n\n" : "") .
 ($ongoingCount > 0 ? "🔄 Ongoing Tasks ($ongoingCount):\n" . $ongoingTasks . "\n\n" : "") .
 ($upcomingCount > 0 ? "🔥 Upcoming Tasks ($upcomingCount):\n" . $upcomingTasks . "\n\n" : "") . 
@@ -420,5 +463,183 @@ Overtime Hours: $overtimeHours Hours" : "") . "
     
     error_log("📧 Email sending complete. Results: " . json_encode($results));
     return $results;
+}
+
+function sendProjectMemberAddedEmail($email, $username, $projectName, $projectRole, $addedByName, $projectLink) {
+    $subject = "Added to Project - BugRicer";
+    
+    $html_body = "
+    <div style=\"font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;\">
+      <div style=\"max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">
+        
+        <!-- Header -->
+        <div style=\"background-color: #2563eb; color: #ffffff; padding: 20px; text-align: center;\">
+           <h1 style=\"margin: 0; font-size: 24px; display: flex; align-items: center; justify-content: center;\">
+            <img src=\"https://fonts.gstatic.com/s/e/notoemoji/16.0/1f41e/32.png\" alt=\"BugRicer Logo\" style=\"width: 30px; height: 30px; margin-right: 10px; vertical-align: middle;\">
+            BugRicer Notification
+          </h1>
+          <p style=\"margin: 5px 0 0 0; font-size: 16px;\">Added to Project</p>
+        </div>
+        
+        <!-- Body -->
+        <div style=\"padding: 20px; border-bottom: 1px solid #e2e8f0;\">
+          <h3 style=\"margin-top: 0; color: #1e293b; font-size: 18px;\">Hello $username,</h3>
+          <p style=\"white-space: pre-line; margin-bottom: 15px; font-size: 14px;\">Great news! You've been added to a project on BugRicer. You can now collaborate with your team, track bugs, and manage tasks.</p>
+          
+          <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0f9ff; border-left: 4px solid #0ea5e9; border-radius: 4px;\">
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;\"><strong>📋 Project Details:</strong></p>
+            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\"><strong>Project:</strong> " . htmlspecialchars($projectName) . "</p>
+            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\"><strong>Your Role:</strong> " . htmlspecialchars(ucfirst($projectRole)) . "</p>
+            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\"><strong>Added by:</strong> " . htmlspecialchars($addedByName) . "</p>
+          </div>
+          
+          <div style=\"margin: 20px 0; text-align: center;\">
+            <a href=\"" . htmlspecialchars($projectLink) . "\" style=\"background-color: #2563eb; color: #ffffff; padding: 12px 25px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: 500; font-size: 16px;\">View Project</a>
+          </div>
+          
+          <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0fdf4; border-left: 4px solid #22c55e; border-radius: 4px;\">
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #166534;\"><strong>🎯 What You Can Do:</strong></p>
+            <p style=\"margin: 0; font-size: 14px; color: #166534;\">• View and manage project bugs<br/>• Access shared tasks and updates<br/>• Collaborate with team members<br/>• Track project progress</p>
+          </div>
+          
+          <p style=\"font-size: 14px; margin-bottom: 0;\">If you have any questions or need assistance, please don't hesitate to contact our support team.</p>
+          <p style=\"font-size: 14px; margin-bottom: 0;\">Best regards,<br>The BugRicer Team</p>
+        </div>
+        
+        <!-- Footer -->
+        <div style=\"background-color: #f8fafc; color: #64748b; padding: 20px; text-align: center; font-size: 12px;\">
+          <p style=\"margin: 0;\">This is an automated notification from BugRicer. Please do not reply to this email.</p>
+          <p style=\"margin: 5px 0 0 0;\">&copy; " . date('Y') . " BugRicer. All rights reserved.</p>
+        </div>
+        
+      </div>
+    </div>
+    ";
+    
+    $text_body = "
+Added to Project - BugRicer
+
+Hello $username,
+
+Great news! You've been added to a project on BugRicer. You can now collaborate with your team, track bugs, and manage tasks.
+
+Project Details:
+Project: " . htmlspecialchars($projectName) . "
+Your Role: " . htmlspecialchars(ucfirst($projectRole)) . "
+Added by: " . htmlspecialchars($addedByName) . "
+
+View Project: " . htmlspecialchars($projectLink) . "
+
+What You Can Do:
+• View and manage project bugs
+• Access shared tasks and updates
+• Collaborate with team members
+• Track project progress
+
+If you have any questions or need assistance, please don't hesitate to contact our support team.
+
+Best regards,
+The BugRicer Team
+
+© " . date('Y') . " BugRicer. All rights reserved.
+    ";
+    
+    return sendEmail($email, $subject, $html_body, $text_body);
+}
+
+function sendCheckInNotificationEmail($adminEmail, $username, $checkInTime, $date, $plannedProjects = null, $plannedWork = null) {
+    $subject = "Check-in Notification - " . $username;
+    
+    // Format date
+    $dateFormatted = date('F j, Y (l)', strtotime($date));
+    
+    // Format check-in time
+    $timeFormatted = date('h:i A', strtotime($checkInTime));
+    
+    // Format planned projects
+    $projectsList = 'None';
+    if (!empty($plannedProjects)) {
+        if (is_array($plannedProjects)) {
+            $projectsList = implode(', ', $plannedProjects);
+        } else {
+            $projectsList = $plannedProjects;
+        }
+    }
+    
+    // Format planned work
+    $workText = !empty($plannedWork) ? trim($plannedWork) : 'No planned work specified';
+    
+    $html_body = "
+    <div style=\"font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;\">
+      <div style=\"max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">
+        
+        <!-- Header -->
+        <div style=\"background-color: #10b981; color: #ffffff; padding: 20px; text-align: center;\">
+           <h1 style=\"margin: 0; font-size: 24px; display: flex; align-items: center; justify-content: center;\">
+            <span style=\"font-size: 28px; margin-right: 10px;\">⏰</span>
+            Check-in Notification
+          </h1>
+          <p style=\"margin: 5px 0 0 0; font-size: 16px;\">User Check-in Alert</p>
+        </div>
+        
+        <!-- Body -->
+        <div style=\"padding: 20px; border-bottom: 1px solid #e2e8f0;\">
+          <h3 style=\"margin-top: 0; color: #1e293b; font-size: 18px;\">Hello Admin,</h3>
+          <p style=\"white-space: pre-line; margin-bottom: 15px; font-size: 14px;\">A team member has checked in for their work day.</p>
+          
+          <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0fdf4; border-left: 4px solid #10b981; border-radius: 4px;\">
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #166534;\"><strong>📋 Check-in Details:</strong></p>
+            <p style=\"margin: 0; font-size: 14px; color: #166534;\"><strong>User:</strong> " . htmlspecialchars($username) . "</p>
+            <p style=\"margin: 0; font-size: 14px; color: #166534;\"><strong>Date:</strong> " . htmlspecialchars($dateFormatted) . "</p>
+            <p style=\"margin: 0; font-size: 14px; color: #166534;\"><strong>Check-in Time:</strong> " . htmlspecialchars($timeFormatted) . "</p>
+          </div>
+          
+          <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0f9ff; border-left: 4px solid #0ea5e9; border-radius: 4px;\">
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;\"><strong>📁 Planned Projects:</strong></p>
+            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\">" . htmlspecialchars($projectsList) . "</p>
+          </div>
+          
+          <div style=\"margin-bottom: 15px; padding: 12px; background-color: #fef3c7; border-left: 4px solid #f59e0b; border-radius: 4px;\">
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #92400e;\"><strong>📝 Planned Work:</strong></p>
+            <p style=\"margin: 0; font-size: 14px; color: #92400e; white-space: pre-wrap;\">" . htmlspecialchars($workText) . "</p>
+          </div>
+          
+          <p style=\"font-size: 14px; margin-bottom: 0;\">Best regards,<br>The BugRicer Team</p>
+        </div>
+        
+        <!-- Footer -->
+        <div style=\"background-color: #f8fafc; color: #64748b; padding: 20px; text-align: center; font-size: 12px;\">
+          <p style=\"margin: 0;\">This is an automated notification from BugRicer. Please do not reply to this email.</p>
+          <p style=\"margin: 5px 0 0 0;\">&copy; " . date('Y') . " BugRicer. All rights reserved.</p>
+        </div>
+        
+      </div>
+    </div>
+    ";
+    
+    $text_body = "
+Check-in Notification - BugRicer
+
+Hello Admin,
+
+A team member has checked in for their work day.
+
+Check-in Details:
+User: " . htmlspecialchars($username) . "
+Date: " . htmlspecialchars($dateFormatted) . "
+Check-in Time: " . htmlspecialchars($timeFormatted) . "
+
+Planned Projects: " . htmlspecialchars($projectsList) . "
+
+Planned Work:
+" . htmlspecialchars($workText) . "
+
+Best regards,
+The BugRicer Team
+
+© " . date('Y') . " BugRicer. All rights reserved.
+    ";
+    
+    return sendEmail($adminEmail, $subject, $html_body, $text_body);
 }
 ?>
