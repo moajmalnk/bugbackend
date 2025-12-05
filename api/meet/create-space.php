@@ -110,9 +110,10 @@ try {
     $calendarService = new Google\Service\Calendar($googleClient);
     
     // Create a calendar event with Google Meet link
+    // Configure event to allow anyone to join
     $event = new Google\Service\Calendar\Event([
         'summary' => $meetingTitle,
-        'description' => 'BugMeet Session - ' . $meetingTitle,
+        'description' => 'BugMeet Session - ' . $meetingTitle . "\n\nAnyone with the meeting link or code can join this meeting.",
         'start' => [
             'dateTime' => $startDateTime->format('c'), // ISO 8601 format
             'timeZone' => 'Asia/Kolkata'
@@ -127,6 +128,10 @@ try {
                 'conferenceSolutionKey' => ['type' => 'hangoutsMeet']
             ]
         ],
+        // Allow anyone to join the meeting
+        'visibility' => 'public', // Make event visible to anyone
+        'guestsCanInviteOthers' => true, // Allow guests to invite others
+        'anyoneCanAddSelf' => true, // Allow anyone to add themselves to the event
     ]);
     
     // Create the event with conference data
