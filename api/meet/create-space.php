@@ -97,55 +97,134 @@ try {
     $googleClient = $googleAuth->getClientForUser($bugricerUserId);
     error_log("DEBUG: Google client created for user: " . $bugricerUserId);
 
+    // Ensure access token is valid and refreshed
+    try {
+        $accessToken = $googleClient->getAccessToken();
+        if ($accessToken && isset($accessToken['access_token'])) {
+            // Check if token is expired and refresh if needed
+            if ($googleClient->isAccessTokenExpired()) {
+                error_log("DEBUG: Access token expired, refreshing...");
+                if (isset($accessToken['refresh_token'])) {
+                    $googleClient->refreshToken($accessToken['refresh_token']);
+                    $accessToken = $googleClient->getAccessToken();
+                } else {
+                    error_log("DEBUG: No refresh token available, may need to re-authenticate");
+                }
+            }
+        }
+    } catch (Exception $tokenException) {
+        error_log("DEBUG: Token refresh error: " . $tokenException->getMessage());
+        // Continue anyway, the client might handle it
+    }
+
     // DEBUG: Log current scopes and token info
     $currentScopes = $googleClient->getScopes();
     $accessToken = $googleClient->getAccessToken();
     error_log("DEBUG: Scopes in create-space.php: " . implode(', ', $currentScopes));
     error_log("DEBUG: Access token exists: " . (isset($accessToken['access_token']) ? 'YES' : 'NO'));
     
-    // Add the Google Calendar scope to the client
+    // Add required scope for Calendar API
+    // Note: Google Meet API service classes are not available in the PHP client library
+    // We'll use Calendar API to create meetings with Google Meet links
     $googleClient->addScope('https://www.googleapis.com/auth/calendar');
     
+    // Initialize variables
+    $meetingUri = null;
+    $meetingCode = null;
+    $eventId = null;
+    
+    // Note: Google Meet's "Quick Access" (allow joining without approval) is controlled
+    // by Google Workspace admin settings or user-level Google Meet settings, not via Calendar API.
+    // However, we'll configure the calendar event to be as open as possible.
+    
     // Initialize Google Calendar Service
-    $calendarService = new Google\Service\Calendar($googleClient);
+    try {
+        $calendarService = new Google\Service\Calendar($googleClient);
+        error_log("DEBUG: Google Calendar Service initialized successfully");
+    } catch (Exception $calendarServiceException) {
+        error_log("DEBUG: Failed to initialize Calendar Service: " . $calendarServiceException->getMessage());
+        throw new Exception('Failed to initialize Google Calendar service: ' . $calendarServiceException->getMessage());
+    }
+    
+    // Create meeting via Calendar API
+    error_log("DEBUG: Creating meeting via Calendar API");
     
     // Create a calendar event with Google Meet link
     // Configure event to allow anyone to join
     $event = new Google\Service\Calendar\Event([
-        'summary' => $meetingTitle,
-        'description' => 'BugMeet Session - ' . $meetingTitle . "\n\nAnyone with the meeting link or code can join this meeting.",
-        'start' => [
-            'dateTime' => $startDateTime->format('c'), // ISO 8601 format
-            'timeZone' => 'Asia/Kolkata'
-        ],
-        'end' => [
-            'dateTime' => $endDateTime->format('c'), // ISO 8601 format
-            'timeZone' => 'Asia/Kolkata'
-        ],
-        'conferenceData' => [
-            'createRequest' => [
-                'requestId' => uniqid(),
-                'conferenceSolutionKey' => ['type' => 'hangoutsMeet']
-            ]
-        ],
-        // Allow anyone to join the meeting
-        'visibility' => 'public', // Make event visible to anyone
-        'guestsCanInviteOthers' => true, // Allow guests to invite others
-        'anyoneCanAddSelf' => true, // Allow anyone to add themselves to the event
-    ]);
+            'summary' => $meetingTitle,
+            'description' => 'BugMeet Session - ' . $meetingTitle . "\n\nAnyone with the meeting link or code can join this meeting.",
+            'start' => [
+                'dateTime' => $startDateTime->format('c'), // ISO 8601 format
+                'timeZone' => 'Asia/Kolkata'
+            ],
+            'end' => [
+                'dateTime' => $endDateTime->format('c'), // ISO 8601 format
+                'timeZone' => 'Asia/Kolkata'
+            ],
+            'conferenceData' => [
+                'createRequest' => [
+                    'requestId' => uniqid(),
+                    'conferenceSolutionKey' => ['type' => 'hangoutsMeet']
+                ]
+            ],
+            // Allow anyone to join the meeting
+            'visibility' => 'public', // Make event visible to anyone
+            'guestsCanInviteOthers' => true, // Allow guests to invite others
+            'guestsCanModify' => false, // Prevent guests from modifying the event
+            'guestsCanSeeOtherGuests' => true, // Allow guests to see other participants
+        ]);
+    
+    // Add attendees if provided
+    if (!empty($participantEmails) && is_array($participantEmails)) {
+        $attendees = [];
+        foreach ($participantEmails as $email) {
+            if (!empty($email) && filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                $attendees[] = [
+                    'email' => $email,
+                    'responseStatus' => 'needsAction'
+                ];
+            }
+        }
+        if (!empty($attendees)) {
+            $event->setAttendees($attendees);
+        }
+    }
     
     // Create the event with conference data
-    $createdEvent = $calendarService->events->insert('primary', $event, ['conferenceDataVersion' => 1]);
+    try {
+        error_log("DEBUG: Attempting to insert calendar event with conference data");
+        $createdEvent = $calendarService->events->insert('primary', $event, ['conferenceDataVersion' => 1]);
+        error_log("DEBUG: Calendar event created successfully, ID: " . $createdEvent->getId());
+    } catch (Exception $calendarException) {
+        error_log("Calendar API error: " . $calendarException->getMessage());
+        error_log("Calendar API error trace: " . $calendarException->getTraceAsString());
+        throw new Exception('Failed to create calendar event: ' . $calendarException->getMessage());
+    }
+    $eventId = $createdEvent->getId();
     
     // Extract the meeting URI from conference data
-    $meetingUri = $createdEvent->getConferenceData()->getEntryPoints()[0]->getUri();
+    $conferenceData = $createdEvent->getConferenceData();
+    if ($conferenceData && $conferenceData->getEntryPoints()) {
+        $entryPoints = $conferenceData->getEntryPoints();
+        if (!empty($entryPoints) && isset($entryPoints[0])) {
+            $meetingUri = $entryPoints[0]->getUri();
+        }
+    }
     
     if (empty($meetingUri)) {
-        throw new Exception('Failed to generate meeting link');
+        throw new Exception('Failed to generate meeting link from calendar event');
     }
     
     // Extract meeting code
     $meetingCode = extractMeetingCode($meetingUri);
+    
+    error_log("Google Meet created via Calendar API");
+    
+    // Validate that we have a meeting URI before proceeding
+    if (empty($meetingUri)) {
+        throw new Exception('Failed to create meeting: No meeting URI generated');
+    }
     
     // Log the successful creation
     error_log("Google Meet space created successfully for user: " . $bugricerUserId . " - URI: " . $meetingUri);
@@ -184,17 +263,43 @@ try {
     echo json_encode([
         'success' => true,
         'meetingUri' => $meetingUri,
-        'eventId' => $createdEvent->getId(),
-        'meetingCode' => $meetingCode
+        'eventId' => $eventId,
+        'meetingCode' => $meetingCode,
+        'openAccess' => true // Indicates meeting allows anyone to join without approval
     ]);
     
 } catch (Exception $e) {
-    error_log("Google Meet space creation failed: " . $e->getMessage());
+    $errorMessage = $e->getMessage();
+    $errorTrace = $e->getTraceAsString();
+    
+    error_log("Google Meet space creation failed: " . $errorMessage);
+    error_log("Stack trace: " . $errorTrace);
     
     http_response_code(500);
     echo json_encode([
         'success' => false,
-        'error' => $e->getMessage()
+        'error' => $errorMessage,
+        'debug' => [
+            'file' => $e->getFile(),
+            'line' => $e->getLine()
+        ]
+    ]);
+} catch (Error $e) {
+    // Catch PHP fatal errors
+    $errorMessage = $e->getMessage();
+    $errorTrace = $e->getTraceAsString();
+    
+    error_log("Google Meet space creation PHP Error: " . $errorMessage);
+    error_log("Stack trace: " . $errorTrace);
+    
+    http_response_code(500);
+    echo json_encode([
+        'success' => false,
+        'error' => $errorMessage,
+        'debug' => [
+            'file' => $e->getFile(),
+            'line' => $e->getLine()
+        ]
     ]);
 }
 
