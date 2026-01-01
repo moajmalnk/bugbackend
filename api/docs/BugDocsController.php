@@ -112,6 +112,55 @@ class BugDocsController extends BaseAPI {
     }
     
     /**
+     * Get user role from database
+     * 
+     * @param string $userId User ID
+     * @return string User role (admin, developer, tester, user)
+     */
+    private function getUserRole($userId) {
+        try {
+            $stmt = $this->conn->prepare("SELECT role FROM users WHERE id = ?");
+            $stmt->execute([$userId]);
+            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+            return $user ? strtolower($user['role']) : 'user';
+        } catch (Exception $e) {
+            error_log("Error getting user role: " . $e->getMessage());
+            return 'user';
+        }
+    }
+    
+    /**
+     * Build SQL filter for role-based access
+     * 
+     * @param string $userRole User's role
+     * @param string $tableAlias Table alias for user_documents (default: 'd')
+     * @return string SQL WHERE clause for role filtering
+     */
+    private function getRoleFilterSQL($userRole, $tableAlias = 'd') {
+        $filter = '';
+        
+        // Admins can see all documents
+        if ($userRole === 'admin') {
+            $filter = "({$tableAlias}.role IS NULL OR {$tableAlias}.role IN ('all', 'admins', 'developers', 'testers'))";
+        }
+        // Developers can see: all, developers
+        else if ($userRole === 'developer') {
+            $filter = "({$tableAlias}.role IS NULL OR {$tableAlias}.role IN ('all', 'developers'))";
+        }
+        // Testers can see: all, testers
+        else if ($userRole === 'tester') {
+            $filter = "({$tableAlias}.role IS NULL OR {$tableAlias}.role IN ('all', 'testers'))";
+        }
+        // Regular users can only see 'all'
+        else {
+            $filter = "({$tableAlias}.role IS NULL OR {$tableAlias}.role = 'all')";
+        }
+        
+        error_log("🔐 Role Filter - User Role: {$userRole}, Filter: {$filter}");
+        return $filter;
+    }
+    
+    /**
      * Create a general user document
      * 
      * @param string $userId User ID
@@ -119,9 +168,10 @@ class BugDocsController extends BaseAPI {
      * @param int|null $templateId Template ID (optional)
      * @param string $docType Document type (default: 'general')
      * @param string|null $projectId Project ID (optional)
+     * @param string $role Role access (default: 'all')
      * @return array Document details with URL
      */
-    public function createGeneralDocument($userId, $docTitle, $templateId = null, $docType = 'general', $projectId = null) {
+    public function createGeneralDocument($userId, $docTitle, $templateId = null, $docType = 'general', $projectId = null, $role = 'all') {
         try {
             // Get authenticated client
             $client = $this->authService->getClientForUser($userId);
@@ -169,16 +219,26 @@ class BugDocsController extends BaseAPI {
                 error_log("Note: project_id column check/add failed (may already exist): " . $e->getMessage());
             }
             
+            // Check if role column exists, if not, try to add it
+            try {
+                $checkRoleColumn = $this->conn->query("SHOW COLUMNS FROM user_documents LIKE 'role'");
+                if ($checkRoleColumn->rowCount() == 0) {
+                    $this->conn->exec("ALTER TABLE user_documents ADD COLUMN role VARCHAR(20) DEFAULT 'all' COMMENT 'Role access: all, admins, developers, testers'");
+                }
+            } catch (Exception $e) {
+                error_log("Note: role column check/add failed (may already exist): " . $e->getMessage());
+            }
+            
             // Save to user_documents table
             $stmt = $this->conn->prepare(
                 "INSERT INTO user_documents 
-                (doc_title, google_doc_id, google_doc_url, creator_user_id, template_id, doc_type, project_id) 
-                VALUES (?, ?, ?, ?, ?, ?, ?)"
+                (doc_title, google_doc_id, google_doc_url, creator_user_id, template_id, doc_type, project_id, role) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
             );
-            $stmt->execute([$docTitle, $docId, $docUrl, $userId, $templateId, $docType, $projectId]);
+            $stmt->execute([$docTitle, $docId, $docUrl, $userId, $templateId, $docType, $projectId, $role]);
             $insertId = $this->conn->lastInsertId();
             
-            error_log("General document created: {$docId} for user: {$userId}");
+            error_log("General document created: {$docId} for user: {$userId} with role: {$role}");
             
             // Send notifications to project members
             try {
@@ -218,6 +278,9 @@ class BugDocsController extends BaseAPI {
      */
     public function listUserDocuments($userId, $includeArchived = false, $projectId = null) {
         try {
+            // Get user role for filtering
+            $userRole = $this->getUserRole($userId);
+            
             // Check if project_id column exists by trying to select it
             $hasProjectColumn = false;
             try {
@@ -235,6 +298,20 @@ class BugDocsController extends BaseAPI {
                 }
             }
             
+            // Check if role column exists
+            $hasRoleColumn = false;
+            try {
+                $testStmt = $this->conn->query("SHOW COLUMNS FROM user_documents WHERE Field = 'role'");
+                $hasRoleColumn = $testStmt->rowCount() > 0;
+            } catch (Exception $e) {
+                try {
+                    $testStmt = $this->conn->query("SELECT role FROM user_documents LIMIT 1");
+                    $hasRoleColumn = true;
+                } catch (Exception $e2) {
+                    $hasRoleColumn = false;
+                }
+            }
+            
             $sql = "SELECT 
                         d.id,
                         d.doc_title,
@@ -249,6 +326,10 @@ class BugDocsController extends BaseAPI {
             
             if ($hasProjectColumn) {
                 $sql .= ", d.project_id, COALESCE(p.name, '') as project_name";
+            }
+            
+            if ($hasRoleColumn) {
+                $sql .= ", d.role";
             }
             
             $sql .= " FROM user_documents d
@@ -271,10 +352,16 @@ class BugDocsController extends BaseAPI {
                 $params[] = $projectId;
             }
             
+            // Add role-based filtering
+            if ($hasRoleColumn) {
+                $sql .= " AND " . $this->getRoleFilterSQL($userRole, 'd');
+            }
+            
             $sql .= " ORDER BY d.created_at DESC";
             
             error_log("Executing SQL: " . $sql);
             error_log("Params: " . print_r($params, true));
+            error_log("User role: " . $userRole);
             
             try {
                 $stmt = $this->conn->prepare($sql);
@@ -295,8 +382,13 @@ class BugDocsController extends BaseAPI {
                                 d.created_at,
                                 d.updated_at,
                                 d.last_accessed_at,
-                                t.template_name
-                            FROM user_documents d
+                                t.template_name";
+                    
+                    if ($hasRoleColumn) {
+                        $sql .= ", d.role";
+                    }
+                    
+                    $sql .= " FROM user_documents d
                             LEFT JOIN doc_templates t ON d.template_id = t.id
                             WHERE d.creator_user_id = ?";
                     
@@ -304,6 +396,11 @@ class BugDocsController extends BaseAPI {
             
             if (!$includeArchived) {
                 $sql .= " AND d.is_archived = 0";
+            }
+            
+            // Add role-based filtering
+            if ($hasRoleColumn) {
+                $sql .= " AND " . $this->getRoleFilterSQL($userRole, 'd');
             }
             
             $sql .= " ORDER BY d.created_at DESC";
@@ -324,6 +421,9 @@ class BugDocsController extends BaseAPI {
                 }
                 if (!isset($doc['project_name'])) {
                     $doc['project_name'] = null;
+                }
+                if (!isset($doc['role'])) {
+                    $doc['role'] = 'all';
                 }
             }
             unset($doc);
@@ -363,6 +463,20 @@ class BugDocsController extends BaseAPI {
                 }
             }
             
+            // Check if role column exists
+            $hasRoleColumn = false;
+            try {
+                $testStmt = $this->conn->query("SHOW COLUMNS FROM user_documents WHERE Field = 'role'");
+                $hasRoleColumn = $testStmt->rowCount() > 0;
+            } catch (Exception $e) {
+                try {
+                    $testStmt = $this->conn->query("SELECT role FROM user_documents LIMIT 1");
+                    $hasRoleColumn = true;
+                } catch (Exception $e2) {
+                    $hasRoleColumn = false;
+                }
+            }
+            
             $sql = "SELECT 
                         d.id,
                         d.doc_title,
@@ -381,6 +495,10 @@ class BugDocsController extends BaseAPI {
                 $sql .= ", d.project_id, COALESCE(p.name, '') as project_name";
             } else {
                 $sql .= ", NULL as project_id, '' as project_name";
+            }
+            
+            if ($hasRoleColumn) {
+                $sql .= ", d.role";
             }
             
             $sql .= " FROM user_documents d
@@ -413,6 +531,9 @@ class BugDocsController extends BaseAPI {
                 }
                 if (!isset($doc['creator_name'])) {
                     $doc['creator_name'] = null;
+                }
+                if (!isset($doc['role'])) {
+                    $doc['role'] = 'all';
                 }
             }
             unset($doc);
@@ -455,6 +576,9 @@ class BugDocsController extends BaseAPI {
      */
     public function listSharedDocuments($userId, $includeArchived = false) {
         try {
+            // Get user role for filtering
+            $userRole = $this->getUserRole($userId);
+            
             $memberController = new ProjectMemberController();
             $userProjects = $memberController->getUserProjects($userId);
             
@@ -491,6 +615,20 @@ class BugDocsController extends BaseAPI {
                 ];
             }
             
+            // Check if role column exists
+            $hasRoleColumn = false;
+            try {
+                $testStmt = $this->conn->query("SHOW COLUMNS FROM user_documents WHERE Field = 'role'");
+                $hasRoleColumn = $testStmt->rowCount() > 0;
+            } catch (Exception $e) {
+                try {
+                    $testStmt = $this->conn->query("SELECT role FROM user_documents LIMIT 1");
+                    $hasRoleColumn = true;
+                } catch (Exception $e2) {
+                    $hasRoleColumn = false;
+                }
+            }
+            
             // Build placeholders for IN clause
             $placeholders = implode(',', array_fill(0, count($projectIds), '?'));
             
@@ -508,8 +646,13 @@ class BugDocsController extends BaseAPI {
                         u.username as creator_name,
                         t.template_name,
                         d.project_id,
-                        COALESCE(p.name, '') as project_name
-                    FROM user_documents d
+                        COALESCE(p.name, '') as project_name";
+            
+            if ($hasRoleColumn) {
+                $sql .= ", d.role";
+            }
+            
+            $sql .= " FROM user_documents d
                     LEFT JOIN doc_templates t ON d.template_id = t.id
                     LEFT JOIN users u ON d.creator_user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
                     LEFT JOIN projects p ON d.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci
@@ -521,7 +664,15 @@ class BugDocsController extends BaseAPI {
                 $sql .= " AND d.is_archived = 0";
             }
             
+            // Add role-based filtering
+            if ($hasRoleColumn) {
+                $sql .= " AND " . $this->getRoleFilterSQL($userRole, 'd');
+            }
+            
             $sql .= " ORDER BY d.created_at DESC";
+            
+            error_log("Shared docs SQL: " . $sql);
+            error_log("User role: " . $userRole);
             
             $stmt = $this->conn->prepare($sql);
             $stmt->execute($params);
@@ -537,6 +688,9 @@ class BugDocsController extends BaseAPI {
                 }
                 if (!isset($doc['creator_name'])) {
                     $doc['creator_name'] = null;
+                }
+                if (!isset($doc['role'])) {
+                    $doc['role'] = 'all';
                 }
             }
             unset($doc);
@@ -841,9 +995,10 @@ class BugDocsController extends BaseAPI {
      * @param bool $isAdmin Whether the user is an admin (admins can edit any document)
      * @param string|null $projectId New project ID (optional, null to remove project association)
      * @param int|null $templateId New template ID (optional, null to remove template association)
+     * @param string $role Role access (default: 'all')
      * @return array Success status and updated document info
      */
-    public function updateDocument($documentId, $userId, $newTitle, $isAdmin = false, $projectId = null, $templateId = null) {
+    public function updateDocument($documentId, $userId, $newTitle, $isAdmin = false, $projectId = null, $templateId = null, $role = 'all') {
         try {
             // Get document details - admins can edit any document, others can only edit their own
             if ($isAdmin) {
@@ -902,7 +1057,7 @@ class BugDocsController extends BaseAPI {
                 ? (int)$templateId 
                 : null;
             
-            // Update database - update title, project_id, and template_id
+            // Update database - update title, project_id, template_id, and role
             $updateFields = ['doc_title = ?', 'updated_at = CURRENT_TIMESTAMP'];
             $updateParams = [$newTitle];
             
@@ -928,6 +1083,17 @@ class BugDocsController extends BaseAPI {
                 error_log("Note: template_id column check: " . $e->getMessage());
             }
             
+            // Check if role column exists before updating
+            try {
+                $columnCheck = $this->conn->query("SHOW COLUMNS FROM user_documents LIKE 'role'");
+                if ($columnCheck && $columnCheck->rowCount() > 0) {
+                    $updateFields[] = 'role = ?';
+                    $updateParams[] = $role;
+                }
+            } catch (Exception $e) {
+                error_log("Note: role column check: " . $e->getMessage());
+            }
+            
             $updateParams[] = $documentId;
             
             $stmt = $this->conn->prepare(
@@ -939,7 +1105,7 @@ class BugDocsController extends BaseAPI {
             
             return [
                 'success' => true,
-                'message' => "Document renamed to '{$newTitle}' successfully",
+                'message' => 'Document updated successfully',
                 'data' => [
                     'id' => $documentId,
                     'doc_title' => $newTitle

@@ -83,14 +83,21 @@ try {
     // Get optional fields
     $projectId = isset($input['project_id']) ? ($input['project_id'] === 'none' || $input['project_id'] === '' ? null : $input['project_id']) : null;
     $templateId = isset($input['template_id']) ? ($input['template_id'] === '0' || $input['template_id'] === '' || $input['template_id'] === 0 ? null : (int)$input['template_id']) : null;
+    $role = isset($input['role']) ? $input['role'] : 'all';
     
-    error_log("Updating document ID: {$documentId} for user: {$userId}, new title: {$docTitle}, project: " . ($projectId ?? 'none') . ", template: " . ($templateId ?? 'none'));
+    // Validate role
+    $validRoles = ['all', 'admins', 'developers', 'testers'];
+    if (!in_array($role, $validRoles)) {
+        $role = 'all';
+    }
+    
+    error_log("Updating document ID: {$documentId} for user: {$userId}, new title: {$docTitle}, project: " . ($projectId ?? 'none') . ", template: " . ($templateId ?? 'none') . ", role: {$role}");
     
     // Check if user is admin
     $isAdmin = isset($userData->role) && $userData->role === 'admin';
     
     // Update document (allow admin to edit any document)
-    $result = $controller->updateDocument($documentId, $userId, $docTitle, $isAdmin, $projectId, $templateId);
+    $result = $controller->updateDocument($documentId, $userId, $docTitle, $isAdmin, $projectId, $templateId, $role);
     
     http_response_code(200);
     echo json_encode($result);
