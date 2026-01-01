@@ -177,6 +177,7 @@ try {
                             n.entity_type,
                             n.entity_id,
                             n.project_id,
+                            p.name as project_name,
                             n.bug_id,
                             n.bug_title,
                             n.status,
@@ -186,6 +187,7 @@ try {
                             un.read_at
                         FROM user_notifications un
                         LEFT JOIN notifications n ON un.notification_id = n.id
+                        LEFT JOIN projects p ON n.project_id = p.id
                         WHERE un.user_id = ?
                         ORDER BY COALESCE(n.created_at, un.created_at) DESC
                         LIMIT ? OFFSET ?
@@ -260,6 +262,7 @@ try {
             'entity_type' => $notification['entity_type'] ?? null,
             'entity_id' => $notification['entity_id'] ?? null,
             'project_id' => $notification['project_id'] ?? null,
+            'project_name' => $notification['project_name'] ?? null,
             'bug_id' => $notification['bug_id'] ?? null,
             'bug_title' => $notification['bug_title'] ?? null,
             'status' => $notification['status'] ?? null,

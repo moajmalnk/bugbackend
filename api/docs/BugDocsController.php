@@ -139,17 +139,27 @@ class BugDocsController extends BaseAPI {
     private function getRoleFilterSQL($userRole, $tableAlias = 'd') {
         $filter = '';
         
+        // Map user roles to their database values
+        $roleMap = [
+            'admin' => 'admins',
+            'developer' => 'developers',
+            'tester' => 'testers'
+        ];
+        $dbRole = isset($roleMap[$userRole]) ? $roleMap[$userRole] : $userRole;
+        
         // Admins can see all documents
         if ($userRole === 'admin') {
-            $filter = "({$tableAlias}.role IS NULL OR {$tableAlias}.role IN ('all', 'admins', 'developers', 'testers'))";
+            // Admins can see: all, admins, or any document containing 'admins' in comma-separated list
+            // Use FIND_IN_SET for precise comma-separated matching, or LIKE as fallback
+            $filter = "({$tableAlias}.role IS NULL OR {$tableAlias}.role = 'all' OR {$tableAlias}.role = 'admins' OR FIND_IN_SET('admins', {$tableAlias}.role) > 0 OR {$tableAlias}.role LIKE 'admins,%' OR {$tableAlias}.role LIKE '%,admins' OR {$tableAlias}.role LIKE '%,admins,%')";
         }
-        // Developers can see: all, developers
+        // Developers can see: all, developers, or documents containing 'developers' in comma-separated list
         else if ($userRole === 'developer') {
-            $filter = "({$tableAlias}.role IS NULL OR {$tableAlias}.role IN ('all', 'developers'))";
+            $filter = "({$tableAlias}.role IS NULL OR {$tableAlias}.role = 'all' OR {$tableAlias}.role = 'developers' OR FIND_IN_SET('developers', {$tableAlias}.role) > 0 OR {$tableAlias}.role LIKE 'developers,%' OR {$tableAlias}.role LIKE '%,developers' OR {$tableAlias}.role LIKE '%,developers,%')";
         }
-        // Testers can see: all, testers
+        // Testers can see: all, testers, or documents containing 'testers' in comma-separated list
         else if ($userRole === 'tester') {
-            $filter = "({$tableAlias}.role IS NULL OR {$tableAlias}.role IN ('all', 'testers'))";
+            $filter = "({$tableAlias}.role IS NULL OR {$tableAlias}.role = 'all' OR {$tableAlias}.role = 'testers' OR FIND_IN_SET('testers', {$tableAlias}.role) > 0 OR {$tableAlias}.role LIKE 'testers,%' OR {$tableAlias}.role LIKE '%,testers' OR {$tableAlias}.role LIKE '%,testers,%')";
         }
         // Regular users can only see 'all'
         else {
@@ -210,20 +220,44 @@ class BugDocsController extends BaseAPI {
             }
             
             // Check if project_id column exists, if not, try to add it (graceful fallback)
+            // If it exists, check if it needs to be resized for comma-separated values
             try {
                 $checkColumn = $this->conn->query("SHOW COLUMNS FROM user_documents LIKE 'project_id'");
                 if ($checkColumn->rowCount() == 0) {
-                    $this->conn->exec("ALTER TABLE user_documents ADD COLUMN project_id VARCHAR(36) DEFAULT NULL COMMENT 'Reference to projects.id'");
+                    $this->conn->exec("ALTER TABLE user_documents ADD COLUMN project_id VARCHAR(500) DEFAULT NULL COMMENT 'Reference to projects.id (comma-separated for multiple projects)'");
+                } else {
+                    // Check if column needs to be resized (if it's VARCHAR(36), expand it)
+                    $columnInfo = $this->conn->query("SHOW COLUMNS FROM user_documents WHERE Field = 'project_id'")->fetch(PDO::FETCH_ASSOC);
+                    if ($columnInfo && isset($columnInfo['Type']) && strpos($columnInfo['Type'], 'varchar(36)') !== false) {
+                        try {
+                            $this->conn->exec("ALTER TABLE user_documents MODIFY COLUMN project_id VARCHAR(500) DEFAULT NULL COMMENT 'Reference to projects.id (comma-separated for multiple projects)'");
+                            error_log("✅ Expanded project_id column from VARCHAR(36) to VARCHAR(500) for multi-select support");
+                        } catch (Exception $e) {
+                            error_log("Note: project_id column resize failed (may not be necessary): " . $e->getMessage());
+                        }
+                    }
                 }
             } catch (Exception $e) {
                 error_log("Note: project_id column check/add failed (may already exist): " . $e->getMessage());
             }
             
             // Check if role column exists, if not, try to add it
+            // If it exists, check if it needs to be resized for comma-separated values
             try {
                 $checkRoleColumn = $this->conn->query("SHOW COLUMNS FROM user_documents LIKE 'role'");
                 if ($checkRoleColumn->rowCount() == 0) {
-                    $this->conn->exec("ALTER TABLE user_documents ADD COLUMN role VARCHAR(20) DEFAULT 'all' COMMENT 'Role access: all, admins, developers, testers'");
+                    $this->conn->exec("ALTER TABLE user_documents ADD COLUMN role VARCHAR(100) DEFAULT 'all' COMMENT 'Role access: all, admins, developers, testers (comma-separated for multiple)'");
+                } else {
+                    // Check if column needs to be resized (if it's VARCHAR(20), expand it)
+                    $columnInfo = $this->conn->query("SHOW COLUMNS FROM user_documents WHERE Field = 'role'")->fetch(PDO::FETCH_ASSOC);
+                    if ($columnInfo && isset($columnInfo['Type']) && strpos($columnInfo['Type'], 'varchar(20)') !== false) {
+                        try {
+                            $this->conn->exec("ALTER TABLE user_documents MODIFY COLUMN role VARCHAR(100) DEFAULT 'all' COMMENT 'Role access: all, admins, developers, testers (comma-separated for multiple)'");
+                            error_log("✅ Expanded role column from VARCHAR(20) to VARCHAR(100) for multi-select support");
+                        } catch (Exception $e) {
+                            error_log("Note: role column resize failed (may not be necessary): " . $e->getMessage());
+                        }
+                    }
                 }
             } catch (Exception $e) {
                 error_log("Note: role column check/add failed (may already exist): " . $e->getMessage());
@@ -348,8 +382,12 @@ class BugDocsController extends BaseAPI {
             }
             
             if ($projectId !== null && $hasProjectColumn) {
-                $sql .= " AND CONVERT(d.project_id, CHAR) COLLATE utf8mb4_unicode_ci = ?";
-                $params[] = $projectId;
+                // Support comma-separated project IDs: check if the project ID is in the list
+                $sql .= " AND (d.project_id = ? OR d.project_id LIKE ? OR d.project_id LIKE ? OR d.project_id LIKE ?)";
+                $params[] = $projectId; // Exact match
+                $params[] = $projectId . ',%'; // At start of list
+                $params[] = '%,' . $projectId; // At end of list
+                $params[] = '%,' . $projectId . ',%'; // In middle of list
             }
             
             // Add role-based filtering
@@ -582,15 +620,70 @@ class BugDocsController extends BaseAPI {
             $memberController = new ProjectMemberController();
             $userProjects = $memberController->getUserProjects($userId);
             
-            if (empty($userProjects)) {
+            $projectIds = array_column($userProjects, 'project_id');
+            
+            // If user has no projects, still show documents with no project (project_id IS NULL)
+            // that match their role (developers can see 'all' and 'developers' role docs)
+            if (empty($projectIds)) {
+                // Only return documents with no project that match role
+                $hasRoleColumn = false;
+                try {
+                    $testStmt = $this->conn->query("SHOW COLUMNS FROM user_documents WHERE Field = 'role'");
+                    $hasRoleColumn = $testStmt->rowCount() > 0;
+                } catch (Exception $e) {
+                    try {
+                        $testStmt = $this->conn->query("SELECT role FROM user_documents LIMIT 1");
+                        $hasRoleColumn = true;
+                    } catch (Exception $e2) {
+                        $hasRoleColumn = false;
+                    }
+                }
+                
+                $sql = "SELECT 
+                            d.id,
+                            d.doc_title,
+                            d.google_doc_id,
+                            d.google_doc_url,
+                            d.doc_type,
+                            d.is_archived,
+                            d.created_at,
+                            d.updated_at,
+                            d.last_accessed_at,
+                            d.creator_user_id,
+                            u.username as creator_name,
+                            t.template_name,
+                            d.project_id,
+                            '' as project_name";
+                
+                if ($hasRoleColumn) {
+                    $sql .= ", d.role";
+                }
+                
+                $sql .= " FROM user_documents d
+                        LEFT JOIN doc_templates t ON d.template_id = t.id
+                        LEFT JOIN users u ON d.creator_user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
+                        WHERE d.project_id IS NULL";
+                
+                if (!$includeArchived) {
+                    $sql .= " AND d.is_archived = 0";
+                }
+                
+                if ($hasRoleColumn) {
+                    $sql .= " AND " . $this->getRoleFilterSQL($userRole, 'd');
+                }
+                
+                $sql .= " ORDER BY d.created_at DESC";
+                
+                $stmt = $this->conn->prepare($sql);
+                $stmt->execute();
+                $documents = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                
                 return [
                     'success' => true,
-                    'documents' => [],
-                    'count' => 0
+                    'documents' => $documents,
+                    'count' => count($documents)
                 ];
             }
-            
-            $projectIds = array_column($userProjects, 'project_id');
             
             // Check if project_id column exists
             $hasProjectColumn = false;
@@ -656,17 +749,44 @@ class BugDocsController extends BaseAPI {
                     LEFT JOIN doc_templates t ON d.template_id = t.id
                     LEFT JOIN users u ON d.creator_user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
                     LEFT JOIN projects p ON d.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci
-                    WHERE CONVERT(d.project_id, CHAR) COLLATE utf8mb4_unicode_ci IN ($placeholders)";
+                    WHERE 1=1";
             
-            $params = $projectIds;
+            $params = [];
+            
+            // For developers: show ALL documents that match their role (role='developers' or role='all')
+            // regardless of project association. This ensures they see all accessible documents.
+            // Developers should see: 6 docs with role='developers' + 7 docs with role='all' = 13 total
+            if ($userRole === 'developer' && $hasRoleColumn) {
+                // Developers can see all documents with role='developers' or role='all', regardless of project
+                // This is the key fix: don't filter by project for developers, only by role
+                $sql .= " AND " . $this->getRoleFilterSQL($userRole, 'd');
+            } else {
+                // For other roles (testers, regular users): only show documents from their projects OR documents with no project
+                // Support comma-separated project IDs: check if any of the user's projects match
+                if (!empty($projectIds)) {
+                    // Build conditions for each project ID to check if it's in the comma-separated list
+                    $projectConditions = [];
+                    foreach ($projectIds as $pid) {
+                        $projectConditions[] = "(d.project_id = ? OR d.project_id LIKE ? OR d.project_id LIKE ? OR d.project_id LIKE ?)";
+                        $params[] = $pid; // Exact match
+                        $params[] = $pid . ',%'; // At start of list
+                        $params[] = '%,' . $pid; // At end of list
+                        $params[] = '%,' . $pid . ',%'; // In middle of list
+                    }
+                    $sql .= " AND ((" . implode(' OR ', $projectConditions) . ") OR d.project_id IS NULL)";
+                } else {
+                    // No projects, only show documents with no project
+                    $sql .= " AND d.project_id IS NULL";
+                }
+                
+                // Add role-based filtering
+                if ($hasRoleColumn) {
+                    $sql .= " AND " . $this->getRoleFilterSQL($userRole, 'd');
+                }
+            }
             
             if (!$includeArchived) {
                 $sql .= " AND d.is_archived = 0";
-            }
-            
-            // Add role-based filtering
-            if ($hasRoleColumn) {
-                $sql .= " AND " . $this->getRoleFilterSQL($userRole, 'd');
             }
             
             $sql .= " ORDER BY d.created_at DESC";
@@ -774,9 +894,15 @@ class BugDocsController extends BaseAPI {
                     LEFT JOIN doc_templates t ON d.template_id = t.id
                     LEFT JOIN users u ON d.creator_user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
                     LEFT JOIN projects p ON d.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci
-                    WHERE CONVERT(d.project_id, CHAR) COLLATE utf8mb4_unicode_ci = ?";
+                    WHERE (d.project_id = ? OR d.project_id LIKE ? OR d.project_id LIKE ? OR d.project_id LIKE ?)";
             
-            $params = [$projectId];
+            // Support comma-separated project IDs: check if the project ID is in the list
+            $params = [
+                $projectId, // Exact match
+                $projectId . ',%', // At start of list
+                '%,' . $projectId, // At end of list
+                '%,' . $projectId . ',%' // In middle of list
+            ];
             
             if (!$includeArchived) {
                 $sql .= " AND d.is_archived = 0";
@@ -897,12 +1023,20 @@ class BugDocsController extends BaseAPI {
                 $projects = $projectStmt->fetchAll(PDO::FETCH_ASSOC);
             }
             
-            // Get document counts for each project
+            // Get document counts for each project (support comma-separated project IDs)
             foreach ($projects as &$project) {
                 $countStmt = $this->conn->prepare(
-                    "SELECT COUNT(*) as count FROM user_documents WHERE CONVERT(project_id, CHAR) COLLATE utf8mb4_unicode_ci = ? AND is_archived = 0"
+                    "SELECT COUNT(*) as count FROM user_documents 
+                     WHERE (project_id = ? OR project_id LIKE ? OR project_id LIKE ? OR project_id LIKE ?) 
+                     AND is_archived = 0"
                 );
-                $countStmt->execute([$project['id']]);
+                $projectId = $project['id'];
+                $countStmt->execute([
+                    $projectId, // Exact match
+                    $projectId . ',%', // At start of list
+                    '%,' . $projectId, // At end of list
+                    '%,' . $projectId . ',%' // In middle of list
+                ]);
                 $countResult = $countStmt->fetch(PDO::FETCH_ASSOC);
                 $project['document_count'] = (int)$countResult['count'];
             }

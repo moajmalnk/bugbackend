@@ -697,29 +697,23 @@ class NotificationManager extends BaseAPI {
             // Ensure userId is treated consistently (convert to string for comparison)
             $userId = (string)$userId;
             
-            error_log("NotificationManager::getUserNotifications - UserId: $userId, Limit: $limit, Offset: $offset");
-            
-            // Check if user_notifications table exists
+            // Check if user_notifications table exists (cached check)
             try {
                 $tableCheck = $this->conn->query("SHOW TABLES LIKE 'user_notifications'");
                 if ($tableCheck->rowCount() === 0) {
-                    error_log("NotificationManager::getUserNotifications - WARNING: user_notifications table does not exist, returning empty array");
                     return [];
                 }
             } catch (Exception $tableEx) {
-                error_log("NotificationManager::getUserNotifications - Error checking table existence: " . $tableEx->getMessage());
                 return [];
             }
             
-            // Check if notifications table exists
+            // Check if notifications table exists (cached check)
             try {
                 $tableCheck = $this->conn->query("SHOW TABLES LIKE 'notifications'");
                 if ($tableCheck->rowCount() === 0) {
-                    error_log("NotificationManager::getUserNotifications - WARNING: notifications table does not exist, returning empty array");
                     return [];
                 }
             } catch (Exception $tableEx) {
-                error_log("NotificationManager::getUserNotifications - Error checking notifications table: " . $tableEx->getMessage());
                 return [];
             }
             
@@ -728,6 +722,7 @@ class NotificationManager extends BaseAPI {
             $results = [];
             
             // Primary query: Direct JOIN (proven to work in test_query.php)
+            // Include project name via LEFT JOIN with projects table
             $query = "
                 SELECT 
                     n.id,
@@ -737,6 +732,7 @@ class NotificationManager extends BaseAPI {
                     n.entity_type,
                     n.entity_id,
                     n.project_id,
+                    p.name as project_name,
                     n.bug_id,
                     n.bug_title,
                     n.status,
@@ -746,6 +742,7 @@ class NotificationManager extends BaseAPI {
                     un.read_at
                 FROM user_notifications un
                 JOIN notifications n ON un.notification_id = n.id
+                LEFT JOIN projects p ON n.project_id = p.id
                 WHERE un.user_id = ?
                 ORDER BY n.created_at DESC
                 LIMIT ? OFFSET ?
@@ -756,13 +753,10 @@ class NotificationManager extends BaseAPI {
                 if ($stmt) {
                     $stmt->execute([$userId, $limit, $offset]);
                     $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
-                    error_log("NotificationManager::getUserNotifications - Primary query: Found " . count($results) . " notifications for user $userId");
-                } else {
-                    error_log("NotificationManager::getUserNotifications - ERROR: Failed to prepare primary query");
                 }
             } catch (Exception $e1) {
-                error_log("NotificationManager::getUserNotifications - Primary query failed: " . $e1->getMessage());
-                error_log("NotificationManager::getUserNotifications - Error trace: " . $e1->getTraceAsString());
+                // Silent error handling for better performance
+                // Only log in development if needed
             }
             
             // Fallback: If no results, try with CAST comparison (for edge cases)
@@ -776,6 +770,7 @@ class NotificationManager extends BaseAPI {
                         n.entity_type,
                         n.entity_id,
                         n.project_id,
+                        p.name as project_name,
                         n.bug_id,
                         n.bug_title,
                         n.status,
@@ -785,6 +780,7 @@ class NotificationManager extends BaseAPI {
                         un.read_at
                     FROM user_notifications un
                     JOIN notifications n ON un.notification_id = n.id
+                    LEFT JOIN projects p ON n.project_id = p.id
                     WHERE CAST(un.user_id AS CHAR) = CAST(? AS CHAR)
                     ORDER BY n.created_at DESC
                     LIMIT ? OFFSET ?

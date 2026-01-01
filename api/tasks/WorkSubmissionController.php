@@ -25,6 +25,8 @@ class WorkSubmissionController extends BaseAPI {
             $ongoing = $payload['ongoing_tasks'] ?? null;
             $plannedProjects = isset($payload['planned_projects']) && is_array($payload['planned_projects']) ? json_encode($payload['planned_projects']) : null;
             $plannedWork = $payload['planned_work'] ?? null;
+            $plannedWorkStatus = $payload['planned_work_status'] ?? 'not_started';
+            $plannedWorkNotes = $payload['planned_work_notes'] ?? null;
 
             // Auto-migrate: add ongoing_tasks column if missing
             try {
@@ -76,6 +78,26 @@ class WorkSubmissionController extends BaseAPI {
                 // ignore; migration may fail if no permissions
             }
 
+            // Auto-migrate: add planned_work_status column if missing
+            try {
+                $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'planned_work_status'");
+                if ($check->rowCount() === 0) {
+                    $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN planned_work_status ENUM('not_started', 'in_progress', 'completed', 'blocked', 'cancelled') NULL DEFAULT 'not_started' AFTER planned_work");
+                }
+            } catch (Exception $e) {
+                // ignore; migration may fail if no permissions
+            }
+
+            // Auto-migrate: add planned_work_notes column if missing
+            try {
+                $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'planned_work_notes'");
+                if ($check->rowCount() === 0) {
+                    $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN planned_work_notes TEXT NULL DEFAULT NULL AFTER planned_work_status");
+                }
+            } catch (Exception $e) {
+                // ignore; migration may fail if no permissions
+            }
+
             // Calculate overtime: if hours > 8, overtime = hours - 8, otherwise 0
             $overtime = $hours > 8 ? $hours - 8 : 0;
 
@@ -85,13 +107,31 @@ class WorkSubmissionController extends BaseAPI {
             $existing = $checkStmt->fetch(PDO::FETCH_ASSOC);
             $isUpdate = ($existing['cnt'] ?? 0) > 0;
 
-            // Check if planned_projects and planned_work columns exist
+            // Check if planned_projects, planned_work, planned_work_status, and planned_work_notes columns exist
             $columnsCheck = $this->conn->query("SHOW COLUMNS FROM work_submissions");
             $columns = $columnsCheck->fetchAll(PDO::FETCH_COLUMN);
             $hasPlannedProjects = in_array('planned_projects', $columns);
             $hasPlannedWork = in_array('planned_work', $columns);
+            $hasPlannedWorkStatus = in_array('planned_work_status', $columns);
+            $hasPlannedWorkNotes = in_array('planned_work_notes', $columns);
             
-            if ($hasPlannedProjects && $hasPlannedWork) {
+            if ($hasPlannedProjects && $hasPlannedWork && $hasPlannedWorkStatus && $hasPlannedWorkNotes) {
+                $sql = "INSERT INTO work_submissions (user_id, submission_date, start_time, hours_today, overtime_hours, total_working_days, total_hours_cumulative, completed_tasks, pending_tasks, ongoing_tasks, notes, planned_projects, planned_work, planned_work_status, planned_work_notes)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        ON DUPLICATE KEY UPDATE start_time=VALUES(start_time), hours_today=VALUES(hours_today), overtime_hours=VALUES(overtime_hours), total_working_days=VALUES(total_working_days),
+                        total_hours_cumulative=VALUES(total_hours_cumulative), completed_tasks=VALUES(completed_tasks), pending_tasks=VALUES(pending_tasks), ongoing_tasks=VALUES(ongoing_tasks), notes=VALUES(notes),
+                        planned_projects=VALUES(planned_projects), planned_work=VALUES(planned_work), planned_work_status=VALUES(planned_work_status), planned_work_notes=VALUES(planned_work_notes)";
+                $stmt = $this->conn->prepare($sql);
+                $stmt->execute([$userId, $date, $start, $hours, $overtime, $days, $cumulative, $completed, $pending, $ongoing, $notes, $plannedProjects, $plannedWork, $plannedWorkStatus, $plannedWorkNotes]);
+            } elseif ($hasPlannedProjects && $hasPlannedWork && $hasPlannedWorkStatus) {
+                $sql = "INSERT INTO work_submissions (user_id, submission_date, start_time, hours_today, overtime_hours, total_working_days, total_hours_cumulative, completed_tasks, pending_tasks, ongoing_tasks, notes, planned_projects, planned_work, planned_work_status)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        ON DUPLICATE KEY UPDATE start_time=VALUES(start_time), hours_today=VALUES(hours_today), overtime_hours=VALUES(overtime_hours), total_working_days=VALUES(total_working_days),
+                        total_hours_cumulative=VALUES(total_hours_cumulative), completed_tasks=VALUES(completed_tasks), pending_tasks=VALUES(pending_tasks), ongoing_tasks=VALUES(ongoing_tasks), notes=VALUES(notes),
+                        planned_projects=VALUES(planned_projects), planned_work=VALUES(planned_work), planned_work_status=VALUES(planned_work_status)";
+                $stmt = $this->conn->prepare($sql);
+                $stmt->execute([$userId, $date, $start, $hours, $overtime, $days, $cumulative, $completed, $pending, $ongoing, $notes, $plannedProjects, $plannedWork, $plannedWorkStatus]);
+            } elseif ($hasPlannedProjects && $hasPlannedWork) {
                 $sql = "INSERT INTO work_submissions (user_id, submission_date, start_time, hours_today, overtime_hours, total_working_days, total_hours_cumulative, completed_tasks, pending_tasks, ongoing_tasks, notes, planned_projects, planned_work)
                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                         ON DUPLICATE KEY UPDATE start_time=VALUES(start_time), hours_today=VALUES(hours_today), overtime_hours=VALUES(overtime_hours), total_working_days=VALUES(total_working_days),
@@ -117,17 +157,43 @@ class WorkSubmissionController extends BaseAPI {
             $userName = $user['username'] ?? 'User';
             $userEmail = $user['email'] ?? '';
             
-            // Fetch planned_projects and planned_work from database if they exist
+            // Fetch planned_projects, planned_work, planned_work_status, and planned_work_notes from database if they exist
             $plannedProjectsData = null;
             $plannedWorkData = null;
+            $plannedWorkStatusData = 'not_started';
+            $plannedWorkNotesData = null;
             if ($hasPlannedProjects && $hasPlannedWork) {
-                $fetchStmt = $this->conn->prepare("SELECT planned_projects, planned_work FROM work_submissions WHERE user_id = ? AND submission_date = ? LIMIT 1");
+                $selectFields = "planned_projects, planned_work";
+                if ($hasPlannedWorkStatus) {
+                    $selectFields .= ", planned_work_status";
+                }
+                if ($hasPlannedWorkNotes) {
+                    $selectFields .= ", planned_work_notes";
+                }
+                $fetchStmt = $this->conn->prepare("SELECT $selectFields FROM work_submissions WHERE user_id = ? AND submission_date = ? LIMIT 1");
                 $fetchStmt->execute([$userId, $date]);
                 $plannedData = $fetchStmt->fetch(PDO::FETCH_ASSOC);
                 if ($plannedData) {
                     $plannedProjectsData = $plannedData['planned_projects'] ? json_decode($plannedData['planned_projects'], true) : null;
                     $plannedWorkData = $plannedData['planned_work'];
+                    $plannedWorkStatusData = $plannedData['planned_work_status'] ?? 'not_started';
+                    $plannedWorkNotesData = $plannedData['planned_work_notes'] ?? null;
                 }
+            }
+            
+            // Fetch total_working_days and total_hours_cumulative from database
+            $totalWorkingDays = null;
+            $totalHoursCumulative = null;
+            try {
+                $totalStmt = $this->conn->prepare("SELECT total_working_days, total_hours_cumulative FROM work_submissions WHERE user_id = ? AND submission_date = ? LIMIT 1");
+                $totalStmt->execute([$userId, $date]);
+                $totalData = $totalStmt->fetch(PDO::FETCH_ASSOC);
+                if ($totalData) {
+                    $totalWorkingDays = $totalData['total_working_days'] ?? 0;
+                    $totalHoursCumulative = $totalData['total_hours_cumulative'] ?? 0;
+                }
+            } catch (Exception $e) {
+                error_log("⚠️ Could not fetch total working days/hours: " . $e->getMessage());
             }
             
             $submissionData = [
@@ -136,12 +202,16 @@ class WorkSubmissionController extends BaseAPI {
                 'check_in_time' => null, // Will be fetched from DB if exists
                 'hours_today' => $hours,
                 'overtime_hours' => $overtime,
+                'total_working_days' => $totalWorkingDays ?? 0,
+                'total_hours_cumulative' => $totalHoursCumulative ?? 0,
                 'completed_tasks' => $completed,
                 'pending_tasks' => $pending,
                 'ongoing_tasks' => $ongoing,
                 'notes' => $notes,
                 'planned_projects' => $plannedProjectsData,
                 'planned_work' => $plannedWorkData,
+                'planned_work_status' => $plannedWorkStatusData,
+                'planned_work_notes' => $plannedWorkNotesData,
                 'is_update' => $isUpdate,
                 '_db_conn' => $this->conn // Pass connection for project name lookup
             ];
@@ -156,15 +226,28 @@ class WorkSubmissionController extends BaseAPI {
                 }
             }
             
+            // Send response immediately (non-blocking) for faster user experience
+            $this->sendJsonResponse(200, 'Submission saved');
+            
+            // Send notifications asynchronously (non-blocking) after response is sent
+            // This makes the save feel instant while notifications happen in background
+            if (function_exists('fastcgi_finish_request')) {
+                fastcgi_finish_request(); // Flush response to client immediately
+            }
+            
+            // Now send notifications in background (won't block user)
+            // Send notifications to admins for BOTH new submissions AND updates
+            // This ensures admins are notified whenever developers or admins submit/update their work
+            $updateStatus = $isUpdate ? 'UPDATE' : 'NEW SUBMISSION';
+            error_log("📢 NOTIFICATION: Sending admin notifications for work $updateStatus by $userName ($userEmail)");
+            
             // Send email notification to admins
-            error_log("EMAIL_NOTIFICATION: About to start email notification process");
+            error_log("EMAIL_NOTIFICATION: Starting async email notification process");
             try {
                 $emailPath = __DIR__ . '/../../utils/email.php';
-                error_log("EMAIL_NOTIFICATION: Requiring email.php from: " . $emailPath);
                 require_once $emailPath;
-                error_log("EMAIL_NOTIFICATION: email.php required successfully");
                 
-                error_log("📧 Starting daily work update email notification process...");
+                error_log("📧 Starting daily work $updateStatus email notification process...");
                 error_log("📧 User info - Name: $userName, Email: " . ($userEmail ?: 'EMPTY'));
                 
                 // Get admin emails
@@ -180,48 +263,45 @@ class WorkSubmissionController extends BaseAPI {
                 } elseif (empty($userEmail)) {
                     error_log("⚠️ User email is empty - skipping email notification");
                 } else {
-                    error_log("📧 Calling sendDailyWorkUpdateEmailToAdmins with data: " . json_encode([
+                    error_log("📧 Calling sendDailyWorkUpdateEmailToAdmins for $updateStatus with data: " . json_encode([
                         'admin_emails_count' => count($adminEmails),
                         'user_name' => $userName,
                         'user_email' => $userEmail,
-                        'submission_date' => $date
+                        'submission_date' => $date,
+                        'is_update' => $isUpdate
                     ]));
                     
                     $emailResults = sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $submissionData);
-                    error_log("📧 Daily work update emails sent to admins. Results: " . json_encode($emailResults));
+                    error_log("📧 Daily work $updateStatus emails sent to admins. Results: " . json_encode($emailResults));
                 }
             } catch (Exception $e) {
                 // Don't fail the submission if email fails
-                error_log("⚠️ Failed to send daily work update email notification: " . $e->getMessage());
+                error_log("⚠️ Failed to send daily work $updateStatus email notification: " . $e->getMessage());
                 error_log("⚠️ Exception trace: " . $e->getTraceAsString());
             }
             
             // Send WhatsApp notification to admins
-            error_log("📱 Starting daily work update WhatsApp notification process...");
+            error_log("📱 Starting daily work $updateStatus WhatsApp notification process...");
             try {
                 $whatsappPath = __DIR__ . '/../../utils/whatsapp.php';
-                error_log("📱 Requiring whatsapp.php from: " . $whatsappPath);
                 require_once $whatsappPath;
-                error_log("📱 whatsapp.php required successfully");
                 
                 if (empty($userEmail)) {
                     error_log("⚠️ User email is empty - skipping WhatsApp notification");
                 } else {
-                    error_log("📱 Calling sendDailyWorkUpdateWhatsAppToAdmins");
+                    error_log("📱 Calling sendDailyWorkUpdateWhatsAppToAdmins for $updateStatus");
                     $whatsappResult = sendDailyWorkUpdateWhatsAppToAdmins($userName, $userEmail, $submissionData);
                     if ($whatsappResult) {
-                        error_log("✅ Daily work update WhatsApp sent to admins successfully");
+                        error_log("✅ Daily work $updateStatus WhatsApp sent to admins successfully");
                     } else {
-                        error_log("❌ Failed to send daily work update WhatsApp to admins");
+                        error_log("❌ Failed to send daily work $updateStatus WhatsApp to admins");
                     }
                 }
             } catch (Exception $e) {
                 // Don't fail the submission if WhatsApp fails
-                error_log("⚠️ Failed to send daily work update WhatsApp notification: " . $e->getMessage());
+                error_log("⚠️ Failed to send daily work $updateStatus WhatsApp notification: " . $e->getMessage());
                 error_log("⚠️ Exception trace: " . $e->getTraceAsString());
             }
-            
-            $this->sendJsonResponse(200, 'Submission saved');
         } catch (Exception $e) {
             error_log('WorkSubmission submit error: ' . $e->getMessage());
             $this->sendJsonResponse(500, 'Failed to save submission');

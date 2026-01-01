@@ -280,6 +280,146 @@ class UserWorkStatsController extends BaseAPI {
             $this->sendJsonResponse(500, 'Failed to retrieve work statistics');
         }
     }
+
+    public function getPeriodDetails($userId, $periodStart, $periodEnd) {
+        try {
+            // Validate token
+            $decoded = $this->validateToken();
+            if (!$decoded || !isset($decoded->user_id)) {
+                $this->sendJsonResponse(401, 'Invalid token or user_id missing');
+                return;
+            }
+
+            // Check if user has permission to view stats
+            $currentUserId = $decoded->user_id;
+            
+            // Allow users to view their own stats, or SUPER_ADMIN/USERS_VIEW to view others
+            if ($currentUserId !== $userId) {
+                $pm = PermissionManager::getInstance();
+                
+                // Check for SUPER_ADMIN or USERS_VIEW permission
+                if (!$pm->hasPermission($currentUserId, 'SUPER_ADMIN') && 
+                    !$pm->hasPermission($currentUserId, 'USERS_VIEW')) {
+                    $this->sendJsonResponse(403, 'Access denied');
+                    return;
+                }
+            }
+
+            // Get all work submissions for the period with all details
+            $stmt = $this->conn->prepare("
+                SELECT 
+                    submission_date,
+                    hours_today,
+                    start_time,
+                    completed_tasks,
+                    pending_tasks,
+                    ongoing_tasks,
+                    notes,
+                    planned_work,
+                    planned_work_status,
+                    planned_work_notes
+                FROM work_submissions 
+                WHERE user_id = ? 
+                AND submission_date >= ? 
+                AND submission_date <= ?
+                ORDER BY submission_date DESC
+            ");
+            
+            $stmt->execute([$userId, $periodStart, $periodEnd]);
+            $submissions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            // Process submissions to extract tasks
+            $allCompleted = [];
+            $allPending = [];
+            $allOngoing = [];
+            $allUpcoming = [];
+            $allNotes = [];
+            $dailyBreakdown = [];
+
+            foreach ($submissions as $submission) {
+                $date = $submission['submission_date'];
+                
+                // Extract completed tasks
+                $completedTasks = $submission['completed_tasks'] ?? '';
+                $completedLines = array_filter(array_map('trim', explode("\n", $completedTasks)), function($line) {
+                    return !empty($line);
+                });
+                foreach ($completedLines as $task) {
+                    $allCompleted[] = ['date' => $date, 'task' => $task];
+                }
+
+                // Extract pending tasks
+                $pendingTasks = $submission['pending_tasks'] ?? '';
+                $pendingLines = array_filter(array_map('trim', explode("\n", $pendingTasks)), function($line) {
+                    return !empty($line);
+                });
+                foreach ($pendingLines as $task) {
+                    $allPending[] = ['date' => $date, 'task' => $task];
+                }
+
+                // Extract ongoing tasks
+                $ongoingTasks = $submission['ongoing_tasks'] ?? '';
+                $ongoingLines = array_filter(array_map('trim', explode("\n", $ongoingTasks)), function($line) {
+                    return !empty($line);
+                });
+                foreach ($ongoingLines as $task) {
+                    $allOngoing[] = ['date' => $date, 'task' => $task];
+                }
+
+                // Extract upcoming tasks (from notes field)
+                $upcomingTasks = $submission['notes'] ?? '';
+                $upcomingLines = array_filter(array_map('trim', explode("\n", $upcomingTasks)), function($line) {
+                    return !empty($line);
+                });
+                foreach ($upcomingLines as $task) {
+                    $allUpcoming[] = ['date' => $date, 'task' => $task];
+                }
+
+                // Extract work notes
+                if (!empty($submission['notes'])) {
+                    $notesLines = array_filter(array_map('trim', explode("\n", $submission['notes'])), function($line) {
+                        return !empty($line);
+                    });
+                    foreach ($notesLines as $note) {
+                        $allNotes[] = ['date' => $date, 'note' => $note];
+                    }
+                }
+
+                // Daily breakdown
+                $dailyBreakdown[] = [
+                    'date' => $date,
+                    'hours' => (float)($submission['hours_today'] ?? 0),
+                    'start_time' => $submission['start_time'] ?? null,
+                    'completed_count' => count($completedLines),
+                    'pending_count' => count($pendingLines),
+                    'ongoing_count' => count($ongoingLines),
+                    'upcoming_count' => count($upcomingLines),
+                    'planned_work' => $submission['planned_work'] ?? null,
+                    'planned_work_status' => $submission['planned_work_status'] ?? null,
+                    'planned_work_notes' => $submission['planned_work_notes'] ?? null
+                ];
+            }
+
+            $details = [
+                'period_start' => $periodStart,
+                'period_end' => $periodEnd,
+                'submissions' => $dailyBreakdown,
+                'tasks' => [
+                    'completed' => $allCompleted,
+                    'pending' => $allPending,
+                    'ongoing' => $allOngoing,
+                    'upcoming' => $allUpcoming
+                ],
+                'notes' => $allNotes
+            ];
+
+            $this->sendJsonResponse(200, 'Period details retrieved successfully', $details);
+            
+        } catch (Exception $e) {
+            error_log('UserWorkStatsController::getPeriodDetails error: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Failed to retrieve period details');
+        }
+    }
 }
 
 // Handle CORS preflight
@@ -296,12 +436,26 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
 }
 
 $userId = $_GET['id'] ?? null;
-if (!$userId) {
-    http_response_code(400);
-    echo json_encode(['success' => false, 'message' => 'User ID is required']);
-    exit();
-}
+$periodStart = $_GET['period_start'] ?? null;
+$periodEnd = $_GET['period_end'] ?? null;
 
 $controller = new UserWorkStatsController();
-$controller->getUserWorkStats($userId);
+
+// If period_start and period_end are provided, get period details
+if ($periodStart && $periodEnd) {
+    if (!$userId) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'User ID is required']);
+        exit();
+    }
+    $controller->getPeriodDetails($userId, $periodStart, $periodEnd);
+} else {
+    // Otherwise, get work stats
+    if (!$userId) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'User ID is required']);
+        exit();
+    }
+    $controller->getUserWorkStats($userId);
+}
 ?>

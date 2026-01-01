@@ -664,7 +664,35 @@ class BugController extends BaseAPI {
             
             error_log("BugController::create - Bug created successfully with " . count($processedAttachments) . " attachments: " . json_encode(array_column($processedAttachments, 'file_name')));
             
+            // Use the IST time we already calculated for the response
+            $bug = [
+                'id' => $id,
+                'title' => $data['title'],
+                'description' => $data['description'],
+                'project_id' => $data['project_id'],
+                'reported_by' => $decoded->user_id,
+                'priority' => $priority,
+                'status' => $status,
+                'created_at' => $istTimeStr,
+                'updated_at' => $istTimeStr,
+                'attachments' => $processedAttachments
+            ];
+            
+            // Send response immediately (non-blocking) for faster user experience
+            $this->sendJsonResponse(200, "Bug created successfully", [
+                'bug' => $bug,
+                'uploadedAttachments' => $uploadedAttachments
+            ]);
+            
+            // Send notifications asynchronously (non-blocking) after response is sent
+            // This makes the submission feel instant while notifications happen in background
+            if (function_exists('fastcgi_finish_request')) {
+                fastcgi_finish_request(); // Flush response to client immediately
+            }
+            
+            // Now send notifications in background (won't block user)
             // Send notifications to project developers + admins
+            error_log("📢 NOTIFICATION: Starting async notification process for bug creation");
             try {
                 require_once __DIR__ . '/../NotificationManager.php';
                 $notificationManager = NotificationManager::getInstance();
@@ -674,8 +702,9 @@ class BugController extends BaseAPI {
                     $data['project_id'],
                     $decoded->user_id
                 );
+                error_log("✅ Bug creation notifications sent successfully");
             } catch (Exception $e) {
-                error_log("Failed to send bug creation notification: " . $e->getMessage());
+                error_log("⚠️ Failed to send bug creation notification: " . $e->getMessage());
             }
             
             // Send WhatsApp notifications to project developers and admins
@@ -722,31 +751,13 @@ class BugController extends BaseAPI {
                         $expectedResult,
                         $actualResult
                     );
+                    error_log("✅ Bug creation WhatsApp notifications sent successfully");
                 }
             } catch (Exception $e) {
                 // Don't fail bug creation if WhatsApp fails
                 error_log("⚠️ Failed to send bug creation WhatsApp notification: " . $e->getMessage());
                 error_log("⚠️ Exception trace: " . $e->getTraceAsString());
             }
-            
-            // Use the IST time we already calculated for the response
-            $bug = [
-                'id' => $id,
-                'title' => $data['title'],
-                'description' => $data['description'],
-                'project_id' => $data['project_id'],
-                'reported_by' => $decoded->user_id,
-                'priority' => $priority,
-                'status' => $status,
-                'created_at' => $istTimeStr,
-                'updated_at' => $istTimeStr,
-                'attachments' => $processedAttachments
-            ];
-            
-            $this->sendJsonResponse(200, "Bug created successfully", [
-                'bug' => $bug,
-                'uploadedAttachments' => $uploadedAttachments
-            ]);
             
         } catch (Exception $e) {
             error_log("BugController::create - Exception: " . $e->getMessage() . " | Trace: " . $e->getTraceAsString());
@@ -1153,7 +1164,7 @@ class BugController extends BaseAPI {
 
             $this->conn->commit();
 
-            // Log activity
+            // Log activity (non-blocking, but synchronous for now)
             try {
                 $logger = ActivityLogger::getInstance();
                 $logger->logBugUpdated(
@@ -1171,21 +1182,14 @@ class BugController extends BaseAPI {
                 error_log("Failed to log bug update activity: " . $e->getMessage());
             }
 
-            // Send notification if status changed to "fixed"
-            if (isset($data['status']) && $data['status'] === 'fixed') {
-                try {
-                    require_once __DIR__ . '/../NotificationManager.php';
-                    $notificationManager = NotificationManager::getInstance();
-                    $notificationManager->notifyBugFixed(
-                        $data['id'],
-                        $updatedBug['title'],
-                        $updatedBug['project_id'],
-                        $data['updated_by']
-                    );
-                } catch (Exception $e) {
-                    error_log("Failed to send bug fixed notification: " . $e->getMessage());
-                }
-            }
+            // Store notification data for async sending (will be sent after response)
+            $updatedBug['_notification_data'] = [
+                'status' => $data['status'] ?? null,
+                'bug_id' => $data['id'],
+                'bug_title' => $updatedBug['title'],
+                'project_id' => $updatedBug['project_id'],
+                'updated_by' => $data['updated_by'] ?? null
+            ];
 
             return $updatedBug;
 
@@ -1517,30 +1521,14 @@ class BugController extends BaseAPI {
                 $this->conn->commit();
             }
 
-            // Send notification if status changed to "fixed"
-            if (isset($data['status']) && $data['status'] === 'fixed') {
-                try {
-                    require_once __DIR__ . '/../NotificationManager.php';
-                    $notificationManager = NotificationManager::getInstance();
-                    $notificationManager->notifyBugFixed(
-                        $data['id'],
-                        $updatedBug['title'],
-                        $updatedBug['project_id'],
-                        $data['updated_by'] ?? $userId
-                    );
-                } catch (Exception $e) {
-                    error_log("Failed to send bug fixed notification: " . $e->getMessage());
-                }
-            }
-
-            // Log activity
+            // Log activity (non-blocking, but synchronous for now)
             try {
                 $logger = ActivityLogger::getInstance();
                 $logger->logBugUpdated(
-                    $data['updated_by'],
+                    $data['updated_by'] ?? $userId,
                     $data['project_id'],
                     $data['id'],
-                    $data['title'] ?? 'Bug',
+                    $data['title'] ?? $updatedBug['title'] ?? 'Bug',
                     [
                         'priority' => $data['priority'] ?? null,
                         'status' => $data['status'] ?? null,
@@ -1549,6 +1537,15 @@ class BugController extends BaseAPI {
             } catch (Exception $e) {
                 error_log("Failed to log bug update activity: " . $e->getMessage());
             }
+
+            // Store notification data for async sending (will be sent after response)
+            $updatedBug['_notification_data'] = [
+                'status' => $data['status'] ?? null,
+                'bug_id' => $data['id'],
+                'bug_title' => $updatedBug['title'],
+                'project_id' => $updatedBug['project_id'],
+                'updated_by' => $data['updated_by'] ?? $userId
+            ];
 
             return $updatedBug;
 

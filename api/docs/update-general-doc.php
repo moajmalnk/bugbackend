@@ -85,9 +85,21 @@ try {
     $templateId = isset($input['template_id']) ? ($input['template_id'] === '0' || $input['template_id'] === '' || $input['template_id'] === 0 ? null : (int)$input['template_id']) : null;
     $role = isset($input['role']) ? $input['role'] : 'all';
     
-    // Validate role
+    // Validate role (support comma-separated roles for multi-select)
     $validRoles = ['all', 'admins', 'developers', 'testers'];
-    if (!in_array($role, $validRoles)) {
+    if ($role !== 'all' && strpos($role, ',') !== false) {
+        // Comma-separated roles: validate each role
+        $roles = array_map('trim', explode(',', $role));
+        $validRolesList = [];
+        foreach ($roles as $r) {
+            if (in_array($r, $validRoles) && $r !== 'all') {
+                $validRolesList[] = $r;
+            }
+        }
+        // If all roles are valid, join them; otherwise default to 'all'
+        $role = count($validRolesList) === count($roles) ? implode(',', $validRolesList) : 'all';
+    } else if (!in_array($role, $validRoles)) {
+        // Single role validation
         $role = 'all';
     }
     

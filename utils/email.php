@@ -262,7 +262,12 @@ The BugRicer Team
 }
 
 function sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $submissionData) {
-    $subject = "Daily Work Update Submitted - BugRicer";
+    // Determine if this is an update or new submission
+    $isUpdate = isset($submissionData['is_update']) && $submissionData['is_update'];
+    $actionText = $isUpdate ? 'Updated' : 'Submitted';
+    $subject = "Daily Work Update $actionText - BugRicer";
+    
+    error_log("📧 sendDailyWorkUpdateEmailToAdmins - Action: $actionText, User: $userName ($userEmail)");
     
     // Format date
     $date = $submissionData['submission_date'] ?? date('Y-m-d');
@@ -282,6 +287,10 @@ function sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $
     $hours = number_format((float)($submissionData['hours_today'] ?? 0), 2);
     $overtimeHours = number_format((float)($submissionData['overtime_hours'] ?? 0), 2);
     $regularHours = min((float)($submissionData['hours_today'] ?? 0), 8);
+    
+    // Total working days and cumulative hours
+    $totalWorkingDays = $submissionData['total_working_days'] ?? 0;
+    $totalHoursCompleted = number_format((float)($submissionData['total_hours_cumulative'] ?? 0), 2);
     
     // Planned projects and work
     $plannedProjects = $submissionData['planned_projects'] ?? null;
@@ -305,9 +314,6 @@ function sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $
     $ongoingCount = $countItems($ongoingTasks);
     $upcomingCount = $countItems($upcomingTasks);
     
-    $isUpdate = isset($submissionData['is_update']) && $submissionData['is_update'];
-    $actionText = $isUpdate ? 'Updated' : 'Submitted';
-    
     $html_body = "
     <div style=\"font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;\">
       <div style=\"max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">
@@ -323,8 +329,7 @@ function sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $
         
         <!-- Body -->
         <div style=\"padding: 20px; border-bottom: 1px solid #e2e8f0;\">
-          <h3 style=\"margin-top: 0; color: #1e293b; font-size: 18px;\">New Daily Work Update</h3>
-          <p style=\"white-space: pre-line; margin-bottom: 15px; font-size: 14px;\"><strong>User:</strong> $userName ($userEmail)</p>
+          <h3 style=\"margin-top: 0; color: #1e293b; font-size: 20px; font-weight: 700; margin-bottom: 20px;\">🧾 CODO Daily Work Update — $userName</h3>
           
           <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0f9ff; border-left: 4px solid #0ea5e9; border-radius: 4px;\">
             <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;\"><strong>📅 Date:</strong></p>
@@ -337,7 +342,7 @@ function sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $
           </div>
           
           <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0f9ff; border-left: 4px solid #0ea5e9; border-radius: 4px;\">
-            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;\"><strong>⏱ Working Hours:</strong></p>
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;\"><strong>⏱ Today's Working Hours:</strong></p>
             <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\">$hours Hours";
     
     if ($overtimeHours > 0) {
@@ -345,12 +350,78 @@ function sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $
     }
     
     $html_body .= "</p>
+          </div>
+          
+          <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0f9ff; border-left: 4px solid #0ea5e9; border-radius: 4px;\">
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;\"><strong>📊 Total Working Days (Since 6 December):</strong></p>
+            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\">$totalWorkingDays Days</p>
+          </div>
+          
+          <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0f9ff; border-left: 4px solid #0ea5e9; border-radius: 4px;\">
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;\"><strong>🧮 Total Hours Completed:</strong></p>
+            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\">$totalHoursCompleted hours</p>
           </div>";
+    
+    // Add Planning Details section if available
+    $hasPlanningDetails = false;
+    $planningDetailsHtml = "";
+    
+    // Get project names for HTML
+    $projectNames = [];
+    if (!empty($plannedProjects) && is_array($plannedProjects)) {
+        if (isset($submissionData['_db_conn']) && $submissionData['_db_conn']) {
+            try {
+                $conn = $submissionData['_db_conn'];
+                $placeholders = str_repeat('?,', count($plannedProjects) - 1) . '?';
+                $projectStmt = $conn->prepare("SELECT id, name FROM projects WHERE id IN ($placeholders)");
+                $projectStmt->execute($plannedProjects);
+                $projectRows = $projectStmt->fetchAll(PDO::FETCH_ASSOC);
+                foreach ($projectRows as $row) {
+                    $projectNames[] = $row['name'];
+                }
+            } catch (Exception $e) {
+                error_log("⚠️ Could not fetch project names for email HTML: " . $e->getMessage());
+                $projectNames = $plannedProjects; // Fallback to IDs
+            }
+        } else {
+            $projectNames = $plannedProjects; // Fallback to IDs
+        }
+    }
+    
+    if (!empty($projectNames) || !empty($plannedWork)) {
+        $hasPlanningDetails = true;
+        $planningDetailsHtml .= "
+          <div style=\"margin-bottom: 20px; padding: 16px; background-color: #f8fafc; border: 2px solid #e2e8f0; border-radius: 8px;\">
+            <h4 style=\"margin: 0 0 12px 0; font-size: 16px; font-weight: 700; color: #1e293b;\">📋 Planning Details:</h4>";
+        
+        if (!empty($projectNames)) {
+            $planningDetailsHtml .= "
+            <div style=\"margin-bottom: 12px;\">
+              <p style=\"margin: 0 0 4px 0; font-size: 14px; font-weight: 600; color: #475569;\">📁 Projects:</p>
+              <p style=\"margin: 0; font-size: 14px; color: #64748b; line-height: 1.6;\">" . htmlspecialchars(implode(', ', $projectNames)) . "</p>
+            </div>";
+        }
+        
+        if (!empty($plannedWork)) {
+            $planningDetailsHtml .= "
+            <div style=\"margin-bottom: 12px;\">
+              <p style=\"margin: 0 0 4px 0; font-size: 14px; font-weight: 600; color: #475569;\">📝 Planned Work:</p>
+              <p style=\"margin: 0; font-size: 14px; color: #64748b; white-space: pre-line; line-height: 1.6;\">" . htmlspecialchars($plannedWork) . "</p>
+            </div>";
+        }
+        
+        $planningDetailsHtml .= "
+          </div>";
+    }
+    
+    if ($hasPlanningDetails) {
+        $html_body .= $planningDetailsHtml;
+    }
     
     if ($completedCount > 0) {
         $html_body .= "
           <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0fdf4; border-left: 4px solid #22c55e; border-radius: 4px;\">
-            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #166534;\"><strong>✅ Completed Tasks ($completedCount):</strong></p>
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #166534;\"><strong>✅ Completed ($completedCount):</strong></p>
             <p style=\"margin: 0; font-size: 14px; color: #166534; white-space: pre-line;\">" . htmlspecialchars($completedTasks) . "</p>
           </div>";
     }
@@ -358,7 +429,7 @@ function sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $
     if ($pendingCount > 0) {
         $html_body .= "
           <div style=\"margin-bottom: 15px; padding: 12px; background-color: #fefce8; border-left: 4px solid #eab308; border-radius: 4px;\">
-            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #854d0e;\"><strong>⌛ Pending Tasks ($pendingCount):</strong></p>
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #854d0e;\"><strong>⌛ Pending ($pendingCount):</strong></p>
             <p style=\"margin: 0; font-size: 14px; color: #854d0e; white-space: pre-line;\">" . htmlspecialchars($pendingTasks) . "</p>
           </div>";
     }
@@ -366,7 +437,7 @@ function sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $
     if ($ongoingCount > 0) {
         $html_body .= "
           <div style=\"margin-bottom: 15px; padding: 12px; background-color: #eff6ff; border-left: 4px solid #3b82f6; border-radius: 4px;\">
-            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #1e40af;\"><strong>🔄 Ongoing Tasks ($ongoingCount):</strong></p>
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #1e40af;\"><strong>🔄 Ongoing ($ongoingCount):</strong></p>
             <p style=\"margin: 0; font-size: 14px; color: #1e40af; white-space: pre-line;\">" . htmlspecialchars($ongoingTasks) . "</p>
           </div>";
     }
@@ -374,8 +445,38 @@ function sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $
     if ($upcomingCount > 0) {
         $html_body .= "
           <div style=\"margin-bottom: 15px; padding: 12px; background-color: #faf5ff; border-left: 4px solid #a855f7; border-radius: 4px;\">
-            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #6b21a8;\"><strong>🔥 Upcoming Tasks ($upcomingCount):</strong></p>
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #6b21a8;\"><strong>🔥 Upcoming ($upcomingCount):</strong></p>
             <p style=\"margin: 0; font-size: 14px; color: #6b21a8; white-space: pre-line;\">" . htmlspecialchars($upcomingTasks) . "</p>
+          </div>";
+    }
+    
+    // Add Planned Work Status if available
+    $plannedWorkStatus = $submissionData['planned_work_status'] ?? null;
+    if (!empty($plannedWorkStatus) && $plannedWorkStatus !== 'not_started') {
+        $statusLabels = [
+            'not_started' => 'Not Started',
+            'in_progress' => 'In Progress',
+            'completed' => 'Completed',
+            'on_hold' => 'On Hold',
+            'blocked' => 'Blocked',
+            'cancelled' => 'Cancelled'
+        ];
+        $statusLabel = $statusLabels[$plannedWorkStatus] ?? ucfirst(str_replace('_', ' ', $plannedWorkStatus));
+        $html_body .= "
+          <div style=\"margin-bottom: 15px; padding: 12px; background-color: #eef2ff; border-left: 4px solid #6366f1; border-radius: 4px;\">
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #4338ca;\"><strong>📊 Planned Work Status:</strong></p>
+            <p style=\"margin: 0; font-size: 14px; color: #4338ca;\">$statusLabel</p>
+          </div>";
+    }
+    
+    // Add Work Notes if available
+    $plannedWorkNotes = trim($submissionData['planned_work_notes'] ?? '');
+    if (!empty($plannedWorkNotes)) {
+        $workNotesCount = $countItems($plannedWorkNotes);
+        $html_body .= "
+          <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0fdfa; border-left: 4px solid #14b8a6; border-radius: 4px;\">
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0f766e;\"><strong>📝 Work Notes" . ($workNotesCount > 0 ? " ($workNotesCount)" : "") . ":</strong></p>
+            <p style=\"margin: 0; font-size: 14px; color: #0f766e; white-space: pre-line;\">" . htmlspecialchars($plannedWorkNotes) . "</p>
           </div>";
     }
     
@@ -421,22 +522,50 @@ function sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $
     }
     
     $plannedWorkText = !empty($plannedWork) ? "Planned Work:\n" . $plannedWork . "\n\n" : "";
-    $planningSection = (!empty($plannedProjectsText) || !empty($plannedWorkText)) ? "📋 Planning Details:\n" . $plannedProjectsText . $plannedWorkText . "\n" : "";
+    
+    // Add Planned Work Status if available
+    $plannedWorkStatus = $submissionData['planned_work_status'] ?? null;
+    $plannedWorkStatusText = "";
+    if (!empty($plannedWorkStatus) && $plannedWorkStatus !== 'not_started') {
+        $statusLabels = [
+            'not_started' => 'Not Started',
+            'in_progress' => 'In Progress',
+            'completed' => 'Completed',
+            'on_hold' => 'On Hold',
+            'blocked' => 'Blocked',
+            'cancelled' => 'Cancelled'
+        ];
+        $statusLabel = $statusLabels[$plannedWorkStatus] ?? ucfirst(str_replace('_', ' ', $plannedWorkStatus));
+        $plannedWorkStatusText = "📊 Planned Work Status: $statusLabel\n\n";
+    }
+    
+    // Add Work Notes if available
+    $plannedWorkNotes = trim($submissionData['planned_work_notes'] ?? '');
+    $workNotesText = "";
+    if (!empty($plannedWorkNotes)) {
+        $workNotesCount = $countItems($plannedWorkNotes);
+        $workNotesText = "📝 Work Notes" . ($workNotesCount > 0 ? " ($workNotesCount)" : "") . ":\n" . $plannedWorkNotes . "\n\n";
+    }
+    
+    $planningSection = (!empty($plannedProjectsText) || !empty($plannedWorkText) || !empty($plannedWorkStatusText) || !empty($workNotesText)) ? "📋 Planning Details:\n" . $plannedProjectsText . $plannedWorkText . $plannedWorkStatusText . $workNotesText . "\n" : "";
     
     $text_body = "
-Daily Work Update $actionText - BugRicer
+🧾 CODO Daily Work Update — $userName
 
-User: $userName ($userEmail)
-Date: $dateFormatted
-Check-in Time: $timeFormatted
-Working Hours: $hours Hours" . ($overtimeHours > 0 ? "
-Regular Hours: $regularHours Hours
-Overtime Hours: $overtimeHours Hours" : "") . "
+📅 Date: $dateFormatted
+🕘 Check-in Time: $timeFormatted
+⏱ Today's Working Hours: $hours Hours" . ($overtimeHours > 0 ? "
+📊 Regular Hours: $regularHours Hours
+⏰ Overtime Hours: $overtimeHours Hours" : "") . "
+📊 Total Working Days (Since 6 December): $totalWorkingDays Days
+🧮 Total Hours Completed: $totalHoursCompleted hours
 
-" . $planningSection . ($completedCount > 0 ? "✅ Completed Tasks ($completedCount):\n" . $completedTasks . "\n\n" : "") . 
-($pendingCount > 0 ? "⌛ Pending Tasks ($pendingCount):\n" . $pendingTasks . "\n\n" : "") .
-($ongoingCount > 0 ? "🔄 Ongoing Tasks ($ongoingCount):\n" . $ongoingTasks . "\n\n" : "") .
-($upcomingCount > 0 ? "🔥 Upcoming Tasks ($upcomingCount):\n" . $upcomingTasks . "\n\n" : "") . 
+" . $planningSection . ($completedCount > 0 ? "✅ Completed ($completedCount):\n" . $completedTasks . "\n\n" : "") . 
+($pendingCount > 0 ? "⌛ Pending ($pendingCount):\n" . $pendingTasks . "\n\n" : "") .
+($ongoingCount > 0 ? "🔄 Ongoing ($ongoingCount):\n" . $ongoingTasks . "\n\n" : "") .
+($upcomingCount > 0 ? "🔥 Upcoming ($upcomingCount):\n" . $upcomingTasks . "\n\n" : "") . 
+($workNotesText ? $workNotesText : "") .
+($plannedWorkStatusText ? $plannedWorkStatusText : "") .
 "Submitted On: " . date('Y-m-d H:i:s') . "
 
 © " . date('Y') . " BugRicer. All rights reserved.

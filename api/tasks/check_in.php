@@ -52,6 +52,7 @@ class CheckInController extends BaseAPI {
             $submissionDate = $input['submission_date'] ?? date('Y-m-d');
             $plannedProjects = $input['planned_projects'] ?? [];
             $plannedWork = $input['planned_work'] ?? '';
+            $plannedWorkStatus = $input['planned_work_status'] ?? 'not_started';
             
             error_log("🔍 CheckInController - User ID: $userId, Submission Date: $submissionDate");
             error_log("🔍 CheckInController - Planned Projects: " . json_encode($plannedProjects));
@@ -126,6 +127,23 @@ class CheckInController extends BaseAPI {
                 error_log("⚠️ CheckInController - planned_work column migration error (non-fatal): " . $e->getMessage());
             }
 
+            // Auto-migrate: add planned_work_status column if missing
+            try {
+                $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'planned_work_status'");
+                if ($check->rowCount() === 0) {
+                    error_log("🔧 CheckInController - Adding planned_work_status column to work_submissions table");
+                    $alterResult = $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN planned_work_status ENUM('not_started', 'in_progress', 'completed', 'blocked', 'cancelled') NULL DEFAULT 'not_started' AFTER planned_work");
+                    if ($alterResult === false) {
+                        $errorInfo = $this->conn->errorInfo();
+                        error_log("❌ CheckInController - Failed to add planned_work_status column: " . implode(", ", $errorInfo));
+                    } else {
+                        error_log("✅ CheckInController - Successfully added planned_work_status column");
+                    }
+                }
+            } catch (Exception $e) {
+                error_log("⚠️ CheckInController - planned_work_status column migration error (non-fatal): " . $e->getMessage());
+            }
+
             $checkInTime = date('Y-m-d H:i:s');
             
             // Use check-then-update/insert pattern for better compatibility
@@ -146,13 +164,20 @@ class CheckInController extends BaseAPI {
                 // Update existing record
                 error_log("🔍 CheckInController - Updating existing record (ID: " . $existing['id'] . ")");
                 
-                // Check if planned_projects and planned_work columns exist
+                // Check if planned_projects, planned_work, and planned_work_status columns exist
                 $columnsCheck = $this->conn->query("SHOW COLUMNS FROM work_submissions");
                 $columns = $columnsCheck->fetchAll(PDO::FETCH_COLUMN);
                 $hasPlannedProjects = in_array('planned_projects', $columns);
                 $hasPlannedWork = in_array('planned_work', $columns);
+                $hasPlannedWorkStatus = in_array('planned_work_status', $columns);
                 
-                if ($hasPlannedProjects && $hasPlannedWork) {
+                if ($hasPlannedProjects && $hasPlannedWork && $hasPlannedWorkStatus) {
+                    $updateStmt = $this->conn->prepare("UPDATE work_submissions SET check_in_time = ?, planned_projects = ?, planned_work = ?, planned_work_status = ? WHERE user_id = ? AND submission_date = ?");
+                    if (!$updateStmt) {
+                        throw new Exception("Failed to prepare update statement: " . implode(", ", $this->conn->errorInfo()));
+                    }
+                    $updateResult = $updateStmt->execute([$checkInTime, $plannedProjectsJson, $plannedWork, $plannedWorkStatus, $userId, $submissionDate]);
+                } elseif ($hasPlannedProjects && $hasPlannedWork) {
                     $updateStmt = $this->conn->prepare("UPDATE work_submissions SET check_in_time = ?, planned_projects = ?, planned_work = ? WHERE user_id = ? AND submission_date = ?");
                     if (!$updateStmt) {
                         throw new Exception("Failed to prepare update statement: " . implode(", ", $this->conn->errorInfo()));
@@ -175,13 +200,20 @@ class CheckInController extends BaseAPI {
                 // Insert new record
                 error_log("🔍 CheckInController - Inserting new record");
                 
-                // Check if planned_projects and planned_work columns exist
+                // Check if planned_projects, planned_work, and planned_work_status columns exist
                 $columnsCheck = $this->conn->query("SHOW COLUMNS FROM work_submissions");
                 $columns = $columnsCheck->fetchAll(PDO::FETCH_COLUMN);
                 $hasPlannedProjects = in_array('planned_projects', $columns);
                 $hasPlannedWork = in_array('planned_work', $columns);
+                $hasPlannedWorkStatus = in_array('planned_work_status', $columns);
                 
-                if ($hasPlannedProjects && $hasPlannedWork) {
+                if ($hasPlannedProjects && $hasPlannedWork && $hasPlannedWorkStatus) {
+                    $insertStmt = $this->conn->prepare("INSERT INTO work_submissions (user_id, submission_date, check_in_time, planned_projects, planned_work, planned_work_status, hours_today) VALUES (?, ?, ?, ?, ?, ?, 0)");
+                    if (!$insertStmt) {
+                        throw new Exception("Failed to prepare insert statement: " . implode(", ", $this->conn->errorInfo()));
+                    }
+                    $insertResult = $insertStmt->execute([$userId, $submissionDate, $checkInTime, $plannedProjectsJson, $plannedWork, $plannedWorkStatus]);
+                } elseif ($hasPlannedProjects && $hasPlannedWork) {
                     $insertStmt = $this->conn->prepare("INSERT INTO work_submissions (user_id, submission_date, check_in_time, planned_projects, planned_work, hours_today) VALUES (?, ?, ?, ?, ?, 0)");
                     if (!$insertStmt) {
                         throw new Exception("Failed to prepare insert statement: " . implode(", ", $this->conn->errorInfo()));
@@ -240,12 +272,36 @@ class CheckInController extends BaseAPI {
                         $projectNames = $plannedProjects; // Fallback to IDs
                     }
                 }
-                
+            } catch (Exception $e) {
+                // Don't fail check-in if project name lookup fails
+                error_log("⚠️ Error fetching project names: " . $e->getMessage());
+            }
+
+            // Send response immediately (non-blocking) for faster user experience
+            $responseData = [
+                'check_in_time' => $checkInTime,
+                'submission_date' => $submissionDate,
+                'planned_projects' => $plannedProjects,
+                'planned_work' => $plannedWork,
+                'planned_work_status' => $plannedWorkStatus
+            ];
+            
+            error_log("🔍 CheckInController - Sending success response: " . json_encode($responseData));
+            $this->sendJsonResponse(200, "Checked in successfully", $responseData);
+            
+            // Send notifications asynchronously (non-blocking) after response is sent
+            // This makes the check-in feel instant while notifications happen in background
+            if (function_exists('fastcgi_finish_request')) {
+                fastcgi_finish_request(); // Flush response to client immediately
+            }
+            
+            // Now send notifications in background (won't block user)
+            try {
                 // Admin email and phone
                 $adminEmail = 'moajmalnk@gmail.com';
                 $adminPhone = '8848676627, 9497792540';
                 
-                // Send email notification
+                // Send email notification (async)
                 try {
                     require_once __DIR__ . '/../../utils/email.php';
                     error_log("📧 Sending check-in email notification to admin: $adminEmail");
@@ -268,7 +324,7 @@ class CheckInController extends BaseAPI {
                     error_log("⚠️ Failed to send check-in email notification: " . $e->getMessage());
                 }
                 
-                // Send WhatsApp notification
+                // Send WhatsApp notification (async)
                 try {
                     require_once __DIR__ . '/../../utils/whatsapp.php';
                     error_log("📱 Sending check-in WhatsApp notification to admin: $adminPhone");
@@ -294,17 +350,7 @@ class CheckInController extends BaseAPI {
                 // Don't fail check-in if notifications fail
                 error_log("⚠️ Error sending check-in notifications: " . $e->getMessage());
             }
-
-            // Ensure we send a proper JSON response
-            $responseData = [
-                'check_in_time' => $checkInTime,
-                'submission_date' => $submissionDate,
-                'planned_projects' => $plannedProjects,
-                'planned_work' => $plannedWork
-            ];
             
-            error_log("🔍 CheckInController - Sending success response: " . json_encode($responseData));
-            $this->sendJsonResponse(200, "Checked in successfully", $responseData);
             return; // Explicit return to prevent any further execution
 
         } catch (PDOException $e) {

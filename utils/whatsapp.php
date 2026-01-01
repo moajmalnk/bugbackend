@@ -257,6 +257,33 @@ function formatWorkUpdateForWhatsApp($userName, $userEmail, $submissionData) {
             }
             $message .= $plannedWorkPreview . "\n";
         }
+        
+        // Add Planned Work Status if available
+        $plannedWorkStatus = $submissionData['planned_work_status'] ?? null;
+        if (!empty($plannedWorkStatus) && $plannedWorkStatus !== 'not_started') {
+            $statusLabels = [
+                'not_started' => 'Not Started',
+                'in_progress' => 'In Progress',
+                'completed' => 'Completed',
+                'on_hold' => 'On Hold',
+                'blocked' => 'Blocked',
+                'cancelled' => 'Cancelled'
+            ];
+            $statusLabel = $statusLabels[$plannedWorkStatus] ?? ucfirst(str_replace('_', ' ', $plannedWorkStatus));
+            $message .= "\n📊 *Planned Work Status:* $statusLabel\n";
+        }
+        
+        // Add Work Notes if available
+        $plannedWorkNotes = trim($submissionData['planned_work_notes'] ?? '');
+        if (!empty($plannedWorkNotes)) {
+            $message .= "\n📝 *Work Notes:*\n";
+            // Truncate if too long
+            $workNotesPreview = $plannedWorkNotes;
+            if (strlen($workNotesPreview) > 300) {
+                $workNotesPreview = substr($workNotesPreview, 0, 297) . '...';
+            }
+            $message .= $workNotesPreview . "\n";
+        }
     }
     
     $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";

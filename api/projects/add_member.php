@@ -53,7 +53,22 @@ try {
     $api->clearCache('project_members_list_' . $project_id);
     $api->clearCache('user_projects_' . $user_id);
 
-    // Send email and WhatsApp notifications to the newly added member
+    // Send response immediately for fast user experience
+    $api->sendJsonResponse(200, 'Member added successfully to project');
+
+    // Send notifications asynchronously (non-blocking) after response
+    // This prevents blocking the API response and improves user experience
+    if (function_exists('fastcgi_finish_request')) {
+        fastcgi_finish_request(); // Finish request to client immediately
+    } else {
+        // For non-FastCGI environments, set output buffering
+        if (ob_get_level()) {
+            ob_end_flush();
+        }
+        flush();
+    }
+
+    // Now send notifications in background (non-blocking)
     try {
         $conn = $api->getConnection();
         
@@ -86,7 +101,7 @@ try {
             // Generate role-based project URL using helper function
             $projectLink = generateRoleBasedProjectUrl($userRole, $project_id);
             
-            // Send email notification
+            // Send email notification (non-blocking)
             if ($userEmail) {
                 try {
                     error_log("📧 Sending project member added email notification to: $userEmail");
@@ -110,7 +125,7 @@ try {
                 }
             }
             
-            // Send WhatsApp notification
+            // Send WhatsApp notification (non-blocking)
             try {
                 error_log("📱 Sending project member added WhatsApp notification to user: $username");
                 
@@ -135,8 +150,6 @@ try {
         // Don't fail member addition if notifications fail
         error_log("⚠️ Error sending project member added notifications: " . $e->getMessage());
     }
-
-    $api->sendJsonResponse(200, 'Member added successfully to project');
 
 } catch (Exception $e) {
     error_log("Error in add_member.php: " . $e->getMessage());
