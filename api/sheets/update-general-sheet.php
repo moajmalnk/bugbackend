@@ -1,12 +1,12 @@
 <?php
 /**
- * Update General Document Endpoint
- * PUT/PATCH /api/docs/update-general-doc/{id}
- * Updates a general document title
+ * Update General Sheet Endpoint
+ * PUT/PATCH /api/sheets/update-general-sheet/{id}
+ * Updates a general sheet title
  */
 
 require_once __DIR__ . '/../../config/cors.php';
-require_once __DIR__ . '/BugDocsController.php';
+require_once __DIR__ . '/BugSheetsController.php';
 require_once __DIR__ . '/../BaseAPI.php';
 
 header('Content-Type: application/json');
@@ -24,7 +24,7 @@ if (!in_array($_SERVER['REQUEST_METHOD'], ['PUT', 'PATCH', 'POST'])) {
 
 try {
     // Initialize controller
-    $controller = new BugDocsController();
+    $controller = new BugSheetsController();
     
     // Validate user authentication
     $userData = $controller->validateToken();
@@ -38,45 +38,45 @@ try {
     // Get request body
     $input = $controller->getRequestData();
     
-    // Get document ID
-    $documentId = null;
+    // Get sheet ID
+    $sheetId = null;
     
     // Try to get from URL path
     $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
     $pathParts = explode('/', $path);
     $lastPart = end($pathParts);
     if (is_numeric($lastPart)) {
-        $documentId = (int)$lastPart;
+        $sheetId = (int)$lastPart;
     }
     
     // Fallback to query parameter
-    if (!$documentId && isset($_GET['id'])) {
-        $documentId = (int)$_GET['id'];
+    if (!$sheetId && isset($_GET['id'])) {
+        $sheetId = (int)$_GET['id'];
     }
     
     // Fallback to request body
-    if (!$documentId && isset($input['id'])) {
-        $documentId = (int)$input['id'];
+    if (!$sheetId && isset($input['id'])) {
+        $sheetId = (int)$input['id'];
     }
     
-    if (!$documentId) {
+    if (!$sheetId) {
         http_response_code(400);
-        echo json_encode(['success' => false, 'message' => 'Document ID is required']);
+        echo json_encode(['success' => false, 'message' => 'Sheet ID is required']);
         exit();
     }
     
     // Validate input
-    if (empty($input['doc_title'])) {
+    if (empty($input['sheet_title'])) {
         http_response_code(400);
-        echo json_encode(['success' => false, 'message' => 'Document title is required']);
+        echo json_encode(['success' => false, 'message' => 'Sheet title is required']);
         exit();
     }
     
-    $docTitle = trim($input['doc_title']);
+    $sheetTitle = trim($input['sheet_title']);
     
-    if (strlen($docTitle) === 0) {
+    if (strlen($sheetTitle) === 0) {
         http_response_code(400);
-        echo json_encode(['success' => false, 'message' => 'Document title cannot be empty']);
+        echo json_encode(['success' => false, 'message' => 'Sheet title cannot be empty']);
         exit();
     }
     
@@ -108,19 +108,19 @@ try {
         }
     }
     
-    error_log("Updating document ID: {$documentId} for user: {$userId}, new title: {$docTitle}, project: " . ($projectId ?? 'none') . ", template: " . ($templateId ?? 'none') . ", role: {$role}");
+    error_log("Updating sheet ID: {$sheetId} for user: {$userId}, new title: {$sheetTitle}, project: " . ($projectId ?? 'none') . ", template: " . ($templateId ?? 'none') . ", role: {$role}");
     
     // Check if user is admin
     $isAdmin = isset($userData->role) && $userData->role === 'admin';
     
-    // Update document (allow admin to edit any document)
-    $result = $controller->updateDocument($documentId, $userId, $docTitle, $isAdmin, $projectId, $templateId, $role);
+    // Update sheet (allow admin to edit any sheet)
+    $result = $controller->updateSheet($sheetId, $userId, $sheetTitle, $isAdmin, $projectId, $templateId, $role);
     
     http_response_code(200);
     echo json_encode($result);
     
 } catch (Exception $e) {
-    error_log("Error in update-general-doc.php: " . $e->getMessage());
+    error_log("Error in update-general-sheet.php: " . $e->getMessage());
     
     http_response_code(400);
     echo json_encode([

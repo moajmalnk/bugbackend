@@ -7,9 +7,9 @@
 date_default_timezone_set('Asia/Kolkata');
 
 // WhatsApp API configuration
-define('WHATSAPP_API_URL', 'http://148.251.129.118/wapp/api/send');
-define('WHATSAPP_API_KEY', 'ff7a6e6fcca94f7f9a4cfa444b494188');
-define('WHATSAPP_ADMIN_NUMBERS', '8848676627, 9497792540');
+define('WHATSAPP_API_URL', 'https://notifyapi.bugricer.com/wapp/api/send');
+define('WHATSAPP_API_KEY', 'c9b175ddaec8904c2c26cc1e6ca2953c');
+define('WHATSAPP_ADMIN_NUMBERS', '9497792540,8848676627');
 
 /**
  * Normalize phone number for WhatsApp API
@@ -60,7 +60,7 @@ function getPhoneFormatsForWhatsApp($phone) {
 function sendWhatsAppMessageSingle($mobile, $message) {
     try {
         $url = WHATSAPP_API_URL . '?apikey=' . urlencode(WHATSAPP_API_KEY) . 
-               '&mobile=' . urlencode($mobile) . 
+               '&number=' . urlencode($mobile) . 
                '&msg=' . urlencode($message);
         
         error_log("📱 Trying format: $mobile");

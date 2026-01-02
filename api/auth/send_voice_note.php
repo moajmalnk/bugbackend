@@ -131,7 +131,7 @@ try {
     $voiceNoteId = $pdo->lastInsertId();
 
     // Send via WhatsApp API
-    $apikey = "05ce7a9046414e42b3983330611f8bf5";
+    $apikey = "c9b175ddaec8904c2c26cc1e6ca2953c";
     
     // For voice notes, we need to use a different endpoint or method
     // This depends on your WhatsApp API provider
@@ -141,7 +141,7 @@ try {
     $whatsappMessage .= "🐞 _Voice note attached_";
 
     // Send text message first (as fallback)
-    $textUrl = "http://148.251.129.118/whatsapp/api/send?mobile=$phone&msg=" . urlencode($whatsappMessage) . "&apikey=$apikey";
+    $textUrl = "https://notifyapi.bugricer.com/wapp/api/send?apikey=$apikey&number=$phone&msg=" . urlencode($whatsappMessage);
     $textResponse = file_get_contents($textUrl);
     
     // Log the response
@@ -149,7 +149,7 @@ try {
 
     // For actual voice note sending, you would need to implement file upload to your WhatsApp API
     // This is a placeholder for the voice note sending logic
-    $voiceUrl = "http://148.251.129.118/whatsapp/api/send-voice";
+    $voiceUrl = "https://notifyapi.bugricer.com/wapp/api/send-voice";
     
     // Create cURL request for voice note
     $ch = curl_init();

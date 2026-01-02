@@ -14,16 +14,44 @@ class AnnouncementController extends BaseAPI {
         }
 
         try {
-            $this->validateToken(); // All authenticated users can see announcements
+            $decoded = $this->validateToken(); // All authenticated users can see announcements
+            $userRole = $decoded->role ?? 'user';
+            
+            // Determine user's role for filtering
+            $roleMap = ['admin' => 'admins', 'developer' => 'developers', 'tester' => 'testers'];
+            $userRoleFilter = $roleMap[$userRole] ?? null;
 
-            $query = "SELECT id, title, content, is_active, expiry_date, created_at, last_broadcast_at FROM announcements 
+            // Build role filter condition
+            // Announcements are visible if:
+            // 1. role is NULL or 'all' (legacy support)
+            // 2. role exactly matches user's role (e.g., 'admins')
+            // 3. role contains user's role in comma-separated list (e.g., 'admins,developers')
+            $roleCondition = "AND (role IS NULL OR role = '' OR role = 'all'";
+            $params = [];
+            
+            if ($userRoleFilter) {
+                // Check for exact match
+                $roleCondition .= " OR role = ?";
+                $params[] = $userRoleFilter;
+                
+                // Check for comma-separated values (role starts with userRole, role ends with userRole, or role contains ,userRole,)
+                $roleCondition .= " OR role LIKE ? OR role LIKE ? OR role LIKE ?";
+                $params[] = "{$userRoleFilter},%";  // Starts with role
+                $params[] = "%,{$userRoleFilter}";  // Ends with role
+                $params[] = "%,{$userRoleFilter},%"; // Contains role in middle
+            }
+            
+            $roleCondition .= ")";
+
+            $query = "SELECT id, title, content, is_active, expiry_date, role, created_at, last_broadcast_at FROM announcements 
                       WHERE is_active = 1 
                       AND (expiry_date IS NULL OR expiry_date > NOW())
+                      {$roleCondition}
                       ORDER BY created_at DESC 
                       LIMIT 1";
             
             $stmt = $this->conn->prepare($query);
-            $stmt->execute();
+            $stmt->execute($params);
             
             $announcement = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -50,7 +78,7 @@ class AnnouncementController extends BaseAPI {
                 return $this->sendJsonResponse(403, "Forbidden: You are not authorized to perform this action.");
             }
 
-            $query = "SELECT * FROM announcements ORDER BY created_at DESC";
+            $query = "SELECT id, title, content, is_active, expiry_date, role, created_at, updated_at, last_broadcast_at FROM announcements ORDER BY created_at DESC";
             $stmt = $this->conn->prepare($query);
             $stmt->execute();
             $announcements = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -80,17 +108,19 @@ class AnnouncementController extends BaseAPI {
                 return $this->sendJsonResponse(400, "Title and content are required");
             }
 
-            $query = "INSERT INTO announcements (title, content, is_active, expiry_date) VALUES (?, ?, ?, ?)";
+            $query = "INSERT INTO announcements (title, content, is_active, expiry_date, role) VALUES (?, ?, ?, ?, ?)";
             $stmt = $this->conn->prepare($query);
 
             $isActive = isset($data['is_active']) ? (int)$data['is_active'] : 0;
             $expiryDate = isset($data['expiry_date']) ? $data['expiry_date'] : null;
+            $role = isset($data['role']) ? $data['role'] : 'all';
 
             $stmt->execute([
                 $data['title'],
                 $data['content'],
                 $isActive,
-                $expiryDate
+                $expiryDate,
+                $role
             ]);
             
             $lastInsertId = $this->conn->lastInsertId();
@@ -100,6 +130,7 @@ class AnnouncementController extends BaseAPI {
                 'content' => $data['content'],
                 'is_active' => $isActive,
                 'expiry_date' => $expiryDate,
+                'role' => $role,
             ];
 
             // Log announcement creation activity
@@ -158,6 +189,10 @@ class AnnouncementController extends BaseAPI {
             if (array_key_exists('expiry_date', $data)) { // Allow setting expiry_date to null
                 $updateFields[] = "expiry_date = ?";
                 $params[] = $data['expiry_date'];
+            }
+            if (isset($data['role'])) {
+                $updateFields[] = "role = ?";
+                $params[] = $data['role'];
             }
     
             if (empty($updateFields)) {

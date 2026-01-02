@@ -16,9 +16,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 try {
     $api = new BaseAPI();
     
-    // Use cached query for better performance
+    // Use cached query for better performance - include phone number
     $testers = $api->fetchCached(
-        "SELECT id, username, email, role FROM users WHERE role = 'tester' ORDER BY username ASC",
+        "SELECT id, username, email, phone, role FROM users WHERE role = 'tester' ORDER BY username ASC",
         [],
         'testers_data',
         600 // Cache for 10 minutes

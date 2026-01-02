@@ -16,18 +16,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 try {
     $api = new BaseAPI();
     
-    // Use cached query for better performance
-    $emails = $api->fetchCached(
-        "SELECT email FROM users WHERE role = 'developer'",
+    // Use cached query for better performance - include phone number
+    $users = $api->fetchCached(
+        "SELECT email, phone FROM users WHERE role = 'developer'",
         [],
-        'developers_emails',
+        'developers_data',
         600 // Cache for 10 minutes
     );
     
-    // Extract just the email values from the result
-    $emailList = array_column($emails, 'email');
+    // Extract just the email values from the result for backward compatibility
+    $emailList = array_column($users, 'email');
     
-    echo json_encode(['success' => true, 'emails' => $emailList]);
+    // Return both emails and full user data with phone numbers
+    echo json_encode([
+        'success' => true, 
+        'emails' => $emailList,
+        'data' => $users
+    ]);
 } catch (Exception $e) {
     http_response_code(500);
     echo json_encode(['success' => false, 'message' => $e->getMessage()]);

@@ -629,6 +629,52 @@ class NotificationManager extends BaseAPI {
     }
 
     /**
+     * Notify when a sheet is created
+     * Send to: project members (if project exists) or all admins (if no project)
+     * 
+     * @param string $sheetId Sheet ID (Google Sheet ID)
+     * @param string $sheetTitle Sheet title
+     * @param string|null $projectId Project ID (optional)
+     * @param string $createdBy User ID who created the sheet
+     * @return int|false Notification ID or false
+     */
+    public function notifySheetCreated($sheetId, $sheetTitle, $projectId, $createdBy) {
+        $userIds = [];
+        
+        // If project exists, notify project members
+        if ($projectId) {
+            $userIds = $this->getProjectMembersByRole($projectId, null);
+        } else {
+            // If no project, notify all admins
+            $userIds = $this->getAllAdmins();
+        }
+        
+        // Remove creator
+        $userIds = array_filter($userIds, function($id) use ($createdBy) {
+            return $id !== $createdBy;
+        });
+
+        // Get creator name
+        $creatorName = $this->getUserName($createdBy);
+
+        // Use fallback if 'sheet_created' is not in ENUM
+        $notificationType = $this->getValidNotificationType('sheet_created', 'doc_created');
+
+        return $this->createNotification(
+            $notificationType,
+            'New Sheet Created',
+            "A new sheet has been created: {$sheetTitle}",
+            array_values($userIds),
+            [
+                'entity_type' => 'sheet',
+                'entity_id' => $sheetId,
+                'project_id' => $projectId,
+                'created_by' => $creatorName
+            ]
+        );
+    }
+
+    /**
      * Notify when a project is created
      * Send to: all admins
      * 
