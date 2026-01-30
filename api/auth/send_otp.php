@@ -66,7 +66,7 @@ try {
     $msg .= "⚠️ *Do not share this code with anyone.*\n";
     $msg .= "If you did not request this, please ignore this message.\n\n";
     $msg .= "🐞 _Sent from BugRicer_";
-    $apikey = "c9b175ddaec8904c2c26cc1e6ca2953c";
+    $apikey = "dfedcb5f0d514809f40f26b078eba6b8";
     $url = "https://notifyapi.bugricer.com/wapp/api/send?apikey=$apikey&number=$phone&msg=" . urlencode($msg);
     $response = file_get_contents($url);
     error_log('WhatsApp API response: ' . $response);

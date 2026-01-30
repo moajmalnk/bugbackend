@@ -6,10 +6,25 @@
 // Set timezone to IST
 date_default_timezone_set('Asia/Kolkata');
 
-// WhatsApp API configuration
-define('WHATSAPP_API_URL', 'https://notifyapi.bugricer.com/wapp/api/send');
-define('WHATSAPP_API_KEY', 'c9b175ddaec8904c2c26cc1e6ca2953c');
-define('WHATSAPP_ADMIN_NUMBERS', '9497792540,8848676627');
+// WhatsApp API configuration - BugRicer Notify API
+// Prefer env vars if set (e.g. in .env), fallback to defaults
+$envDir = dirname(__DIR__);
+$envFile = $envDir . DIRECTORY_SEPARATOR . '.env';
+if (file_exists($envFile) && is_readable($envFile)) {
+    $lines = file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    foreach ($lines as $line) {
+        if (strpos(trim($line), '#') === 0) continue;
+        if (preg_match('/^WHATSAPP_API_KEY=(.+)$/', $line, $m)) {
+            define('WHATSAPP_API_KEY', trim($m[1], " \t\n\r\0\x0B\"'"));
+        }
+        if (preg_match('/^WHATSAPP_ADMIN_NUMBERS=(.+)$/', $line, $m)) {
+            define('WHATSAPP_ADMIN_NUMBERS', trim($m[1], " \t\n\r\0\x0B\"'"));
+        }
+    }
+}
+if (!defined('WHATSAPP_API_URL')) define('WHATSAPP_API_URL', 'https://notifyapi.bugricer.com/wapp/api/send');
+if (!defined('WHATSAPP_API_KEY')) define('WHATSAPP_API_KEY', 'dfedcb5f0d514809f40f26b078eba6b8');
+if (!defined('WHATSAPP_ADMIN_NUMBERS')) define('WHATSAPP_ADMIN_NUMBERS', '9497792540,8848676627');
 
 /**
  * Normalize phone number for WhatsApp API
@@ -624,6 +639,34 @@ function generateRoleBasedBugUrl($role, $bugId) {
 }
 
 /**
+ * Format new bug reported message for WhatsApp (for admins / broadcast)
+ */
+function formatNewBugReportedForWhatsApp($bugTitle, $priority, $projectName = null, $reportedByName = null, $bugLink = null, $description = null, $expectedResult = null, $actualResult = null) {
+    $message = "🐛 *New Bug Reported*\n";
+    $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
+    $message .= "📌 *Title:* " . $bugTitle . "\n";
+    $message .= "🎯 *Priority:* " . ucfirst(strtolower($priority ?: 'Medium')) . "\n";
+    if ($projectName) $message .= "📁 *Project:* " . $projectName . "\n";
+    if ($reportedByName) $message .= "👤 *Reported by:* " . $reportedByName . "\n";
+    if ($description && trim($description)) {
+        $descText = strlen($description) > 300 ? substr(trim($description), 0, 297) . '...' : trim($description);
+        $message .= "\n📝 *Description:*\n" . $descText . "\n";
+    }
+    if ($expectedResult && trim($expectedResult)) {
+        $expText = strlen($expectedResult) > 300 ? substr(trim($expectedResult), 0, 297) . '...' : trim($expectedResult);
+        $message .= "\n✅ *Expected Result:*\n" . $expText . "\n";
+    }
+    if ($actualResult && trim($actualResult)) {
+        $actText = strlen($actualResult) > 300 ? substr(trim($actualResult), 0, 297) . '...' : trim($actualResult);
+        $message .= "\n❌ *Actual Result:*\n" . $actText . "\n";
+    }
+    $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
+    if ($bugLink) $message .= "🔗 View Bug:\n" . $bugLink . "\n";
+    $message .= "\n🐞 _BugRicer Automated Notification_";
+    return $message;
+}
+
+/**
  * Format bug assignment message for WhatsApp
  * 
  * @param string $bugTitle Bug title
@@ -822,6 +865,49 @@ function sendBugAssignmentWhatsApp($conn, $assignedUserIds, $bugId, $bugTitle, $
         error_log("⚠️ Exception trace: " . $e->getTraceAsString());
         return false;
     }
+}
+
+/**
+ * Send new bug notification to configured admin numbers via BugRicer Notify API
+ * Ensures admins always receive WhatsApp notifications even if not in project
+ *
+ * @param string $bugId Bug ID
+ * @param string $bugTitle Bug title
+ * @param string $priority Bug priority
+ * @param string|null $projectName Project name
+ * @param string|null $reportedByName Reporter name
+ * @param string|null $description Bug description
+ * @param string|null $expectedResult Expected result
+ * @param string|null $actualResult Actual result
+ * @return bool True if at least one message sent
+ */
+function sendNewBugToAdminNumbers($bugId, $bugTitle, $priority = 'medium', $projectName = null, $reportedByName = null, $description = null, $expectedResult = null, $actualResult = null) {
+    $adminNumbers = explode(',', WHATSAPP_ADMIN_NUMBERS);
+    $adminNumbers = array_map('trim', array_filter($adminNumbers));
+    if (empty($adminNumbers)) {
+        error_log("📱 sendNewBugToAdminNumbers: No admin numbers configured");
+        return false;
+    }
+    $bugLink = getFrontendBaseUrl() . '/bugs/' . $bugId;
+    $message = formatBugAssignmentForWhatsApp(
+        $bugTitle,
+        $priority,
+        $projectName,
+        $reportedByName ?: 'BugRicer',
+        $bugLink,
+        $description,
+        $expectedResult,
+        $actualResult
+    );
+    $sent = 0;
+    foreach ($adminNumbers as $phone) {
+        if (empty($phone)) continue;
+        $result = sendWhatsAppMessage($phone, $message);
+        if ($result) $sent++;
+        if (count($adminNumbers) > 1) usleep(400000);
+    }
+    error_log("📱 sendNewBugToAdminNumbers: Sent to $sent/" . count($adminNumbers) . " admin numbers");
+    return $sent > 0;
 }
 
 /**

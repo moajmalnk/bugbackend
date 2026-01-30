@@ -131,7 +131,7 @@ try {
     $voiceNoteId = $pdo->lastInsertId();
 
     // Send via WhatsApp API
-    $apikey = "c9b175ddaec8904c2c26cc1e6ca2953c";
+    $apikey = "dfedcb5f0d514809f40f26b078eba6b8";
     
     // For voice notes, we need to use a different endpoint or method
     // This depends on your WhatsApp API provider

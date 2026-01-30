@@ -707,38 +707,60 @@ class BugController extends BaseAPI {
                 error_log("⚠️ Failed to send bug creation notification: " . $e->getMessage());
             }
             
-            // Send WhatsApp notifications to project developers and admins
+            // Load WhatsApp utils for BugRicer Notify API
+            $whatsappPath = __DIR__ . '/../../utils/whatsapp.php';
+            require_once $whatsappPath;
+            $projectName = getProjectName($this->conn, $data['project_id']);
+            $creatorName = null;
             try {
-                $whatsappPath = __DIR__ . '/../../utils/whatsapp.php';
-                require_once $whatsappPath;
-                
-                // Get users to notify (same logic as NotificationManager)
+                $stmt = $this->conn->prepare("SELECT username FROM users WHERE id = ? LIMIT 1");
+                $stmt->execute([$decoded->user_id]);
+                $u = $stmt->fetch(PDO::FETCH_ASSOC);
+                if ($u) $creatorName = $u['username'];
+            } catch (Exception $e) { /* ignore */ }
+            $bugUrl = getFrontendBaseUrl() . '/bugs/' . $id;
+
+            // Send email notifications to project developers and admins
+            try {
+                require_once __DIR__ . '/../../utils/send_email.php';
                 $developers = getProjectDevelopers($this->conn, $data['project_id']);
                 $admins = getAllAdmins($this->conn);
-                
-                // Combine and remove duplicates, exclude creator
+                $userIds = array_unique(array_merge($developers, $admins));
+                $userIds = array_filter($userIds, function($uid) use ($decoded) { return (string)$uid !== (string)$decoded->user_id; });
+                if (empty($userIds)) {
+                    $userIds = array_values(array_filter(getAllAdmins($this->conn), function($uid) use ($decoded) { return (string)$uid !== (string)$decoded->user_id; }));
+                }
+                if (empty($userIds)) {
+                    $userIds = [$decoded->user_id];
+                }
+                $placeholders = str_repeat('?,', count($userIds) - 1) . '?';
+                $stmt = $this->conn->prepare("SELECT email FROM users WHERE id IN ($placeholders) AND email IS NOT NULL AND email != ''");
+                $stmt->execute(array_values($userIds));
+                $emails = $stmt->fetchAll(PDO::FETCH_COLUMN);
+                if (!empty($emails)) {
+                    sendBugCreatedEmail($emails, $id, $data['title'], $projectName, $creatorName ?: 'BugRicer', $priority, $data['description'] ?? null, $expectedResult, $actualResult, $bugUrl);
+                    error_log("✅ Bug creation email notifications sent to " . count($emails) . " recipients");
+                }
+            } catch (Exception $e) {
+                error_log("⚠️ Failed to send bug creation email: " . $e->getMessage());
+            }
+
+            // Send WhatsApp via BugRicer Notify API to project developers and admins
+            try {
+                $developers = getProjectDevelopers($this->conn, $data['project_id']);
+                $admins = getAllAdmins($this->conn);
                 $userIds = array_unique(array_merge($developers, $admins));
                 $userIds = array_filter($userIds, function($userId) use ($decoded) {
                     return (string)$userId !== (string)$decoded->user_id;
                 });
-                
-                // Fallback to admins if no users
                 if (empty($userIds)) {
-                    $allAdmins = getAllAdmins($this->conn);
-                    $userIds = array_filter($allAdmins, function($userId) use ($decoded) {
-                        return (string)$userId !== (string)$decoded->user_id;
-                    });
+                    $userIds = array_filter(getAllAdmins($this->conn), function($userId) use ($decoded) { return (string)$userId !== (string)$decoded->user_id; });
                     if (empty($userIds)) {
-                        $userIds = [$decoded->user_id]; // Notify creator as fallback
+                        $userIds = [$decoded->user_id];
                     }
                 }
-                
                 if (!empty($userIds)) {
-                    // Get project name
-                    $projectName = getProjectName($this->conn, $data['project_id']);
-                    
-                    error_log("📱 Sending WhatsApp notifications for bug creation to " . count($userIds) . " users");
-                    
+                    error_log("📱 Sending WhatsApp (Notify API) for bug creation to " . count($userIds) . " users");
                     sendBugAssignmentWhatsApp(
                         $this->conn,
                         array_values($userIds),
@@ -753,8 +775,9 @@ class BugController extends BaseAPI {
                     );
                     error_log("✅ Bug creation WhatsApp notifications sent successfully");
                 }
+                // Also send to configured admin numbers (ensures admins always receive)
+                sendNewBugToAdminNumbers($id, $data['title'], $priority, $projectName, $creatorName, $data['description'] ?? null, $expectedResult, $actualResult);
             } catch (Exception $e) {
-                // Don't fail bug creation if WhatsApp fails
                 error_log("⚠️ Failed to send bug creation WhatsApp notification: " . $e->getMessage());
                 error_log("⚠️ Exception trace: " . $e->getTraceAsString());
             }
