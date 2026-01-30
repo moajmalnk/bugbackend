@@ -889,7 +889,7 @@ function sendNewBugToAdminNumbers($bugId, $bugTitle, $priority = 'medium', $proj
         return false;
     }
     $bugLink = getFrontendBaseUrl() . '/bugs/' . $bugId;
-    $message = formatBugAssignmentForWhatsApp(
+    $message = formatNewBugReportedForWhatsApp(
         $bugTitle,
         $priority,
         $projectName,

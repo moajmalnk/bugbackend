@@ -720,10 +720,17 @@ class BugController extends BaseAPI {
             } catch (Exception $e) { /* ignore */ }
             $bugUrl = getFrontendBaseUrl() . '/bugs/' . $id;
 
-            // Send email notifications to project developers and admins
+            // Send email notifications to project developers and admins (if enabled)
             try {
-                require_once __DIR__ . '/../../utils/send_email.php';
-                $developers = getProjectDevelopers($this->conn, $data['project_id']);
+                $emailEnabled = true;
+                $settingsStmt = $this->conn->prepare("SELECT value FROM settings WHERE key_name = 'email_notifications_enabled' LIMIT 1");
+                if ($settingsStmt && $settingsStmt->execute()) {
+                    $row = $settingsStmt->fetch(PDO::FETCH_ASSOC);
+                    if ($row && $row['value'] === '0') $emailEnabled = false;
+                }
+                if ($emailEnabled) {
+                    require_once __DIR__ . '/../../utils/send_email.php';
+                    $developers = getProjectDevelopers($this->conn, $data['project_id']);
                 $admins = getAllAdmins($this->conn);
                 $userIds = array_unique(array_merge($developers, $admins));
                 $userIds = array_filter($userIds, function($uid) use ($decoded) { return (string)$uid !== (string)$decoded->user_id; });
@@ -740,6 +747,7 @@ class BugController extends BaseAPI {
                 if (!empty($emails)) {
                     sendBugCreatedEmail($emails, $id, $data['title'], $projectName, $creatorName ?: 'BugRicer', $priority, $data['description'] ?? null, $expectedResult, $actualResult, $bugUrl);
                     error_log("✅ Bug creation email notifications sent to " . count($emails) . " recipients");
+                }
                 }
             } catch (Exception $e) {
                 error_log("⚠️ Failed to send bug creation email: " . $e->getMessage());
