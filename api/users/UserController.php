@@ -569,6 +569,7 @@ class UserController extends BaseAPI {
                 $message .= ", but the welcome email could not be sent.";
             }
 
+            
             $this->sendJsonResponse(201, $message, [
                 "id" => $id,
                 "username" => $username,
