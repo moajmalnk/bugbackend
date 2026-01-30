@@ -1,6 +1,7 @@
 <?php
+require_once __DIR__ . '/../../config/cors.php';
 header('Content-Type: application/json');
-require_once 'UserController.php';
+require_once __DIR__ . '/UserController.php';
 
 try {
     $controller = new UserController();

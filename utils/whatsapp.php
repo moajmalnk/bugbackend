@@ -24,7 +24,7 @@ if (file_exists($envFile) && is_readable($envFile)) {
 }
 if (!defined('WHATSAPP_API_URL')) define('WHATSAPP_API_URL', 'https://notifyapi.bugricer.com/wapp/api/send');
 if (!defined('WHATSAPP_API_KEY')) define('WHATSAPP_API_KEY', 'dfedcb5f0d514809f40f26b078eba6b8');
-if (!defined('WHATSAPP_ADMIN_NUMBERS')) define('WHATSAPP_ADMIN_NUMBERS', '9497792540,8848676627');
+if (!defined('WHATSAPP_ADMIN_NUMBERS')) define('WHATSAPP_ADMIN_NUMBERS', '919497792540,918848676627');
 
 /**
  * Normalize phone number for WhatsApp API
@@ -56,6 +56,11 @@ function getPhoneFormatsForWhatsApp($phone) {
         $formats[] = '0' . $digits; // Add leading zero
         $formats[] = $digits; // Try as-is
         error_log("📱 Possible local Qatar number (8 digits). Formats to try: " . implode(', ', $formats));
+    } elseif (strlen($digits) == 10 && substr($digits, 0, 1) !== '0') {
+        // Likely Indian number (10 digits) - API needs international format without +
+        $formats[] = '91' . $digits; // India country code (primary)
+        $formats[] = $digits; // Try as-is
+        error_log("📱 Possible Indian number (10 digits). Formats to try: " . implode(', ', $formats));
     } else {
         // For other numbers, just use the cleaned digits
         $formats[] = $digits;
@@ -74,18 +79,25 @@ function getPhoneFormatsForWhatsApp($phone) {
  */
 function sendWhatsAppMessageSingle($mobile, $message) {
     try {
+        // API requires POST (per BugRicer Notify API docs). Use international format WITHOUT + sign.
+        $mobile = preg_replace('/\D/', '', $mobile); // Strip + and any non-digits
+        if (empty($mobile)) {
+            error_log("📱 Invalid/empty phone number");
+            return ['success' => false, 'response' => 'Invalid phone', 'httpCode' => 0, 'error' => 'invalid_phone'];
+        }
         $url = WHATSAPP_API_URL . '?apikey=' . urlencode(WHATSAPP_API_KEY) . 
                '&number=' . urlencode($mobile) . 
                '&msg=' . urlencode($message);
         
         error_log("📱 Trying format: $mobile");
         
-        // Use cURL to send the request
         $ch = curl_init();
         curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, '');
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 8);
         
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);

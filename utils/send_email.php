@@ -4,8 +4,10 @@
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
-// Make sure PHPMailer is properly included
-require_once __DIR__ . '/../vendor/autoload.php'; // Adjust path as needed
+// Make sure PHPMailer is properly included (loaded on first use)
+if (!class_exists('PHPMailer\PHPMailer\PHPMailer')) {
+    require_once __DIR__ . '/../vendor/autoload.php';
+}
 
 function sendBugNotification($to, $subject, $body, $attachments = []) {
     // Log function call
@@ -72,42 +74,32 @@ function sendBugNotification($to, $subject, $body, $attachments = []) {
 $to = 'moajmalnk@gmail.com';
 // sendBugNotification($to, 'New Bug Assigned', '<b>A new bug has been assigned to you.</b>');
 
-/**
- * Format HTML body for new bug notification email
- */
 function formatBugCreatedEmailBody($bugId, $bugTitle, $projectName, $reportedByName, $priority, $description, $expectedResult, $actualResult, $bugUrl) {
-    $priorityBadge = strtoupper($priority ?: 'medium');
-    $desc = htmlspecialchars($description ? substr($description, 0, 500) . (strlen($description) > 500 ? '...' : ''));
-    $exp = htmlspecialchars($expectedResult ? substr($expectedResult, 0, 300) . (strlen($expectedResult) > 300 ? '...' : ''));
-    $act = htmlspecialchars($actualResult ? substr($actualResult, 0, 300) . (strlen($actualResult) > 300 ? '...' : ''));
-    $project = htmlspecialchars($projectName ?: 'N/A');
-    $reporter = htmlspecialchars($reportedByName ?: 'BugRicer');
-    return "
-    <div style=\"font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;\">
-      <div style=\"max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">
-        <div style=\"background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%); color: #ffffff; padding: 20px; text-align: center;\">
-          <h1 style=\"margin: 0; font-size: 22px;\">🐛 New Bug Reported</h1>
-          <p style=\"margin: 8px 0 0 0; font-size: 14px; opacity: 0.95;\">BugRicer Notification</p>
-        </div>
-        <div style=\"padding: 24px;\">
-          <h2 style=\"margin: 0 0 16px 0; color: #1e293b; font-size: 18px;\">{$bugTitle}</h2>
-          <table style=\"width: 100%; border-collapse: collapse; margin-bottom: 16px;\">
-            <tr><td style=\"padding: 8px 0; color: #64748b; width: 140px;\">Project</td><td style=\"padding: 8px 0;\">{$project}</td></tr>
-            <tr><td style=\"padding: 8px 0; color: #64748b;\">Priority</td><td><span style=\"background: #fef3c7; color: #92400e; padding: 4px 10px; border-radius: 4px; font-weight: 600;\">{$priorityBadge}</span></td></tr>
-            <tr><td style=\"padding: 8px 0; color: #64748b;\">Reported by</td><td>{$reporter}</td></tr>
-          </table>
-          " . ($desc ? "<p style=\"margin: 0 0 12px 0;\"><strong>Description:</strong></p><p style=\"margin: 0 0 16px 0; background: #f8fafc; padding: 12px; border-radius: 4px; font-size: 14px;\">{$desc}</p>" : "") . "
-          " . ($exp ? "<p style=\"margin: 0 0 8px 0;\"><strong>Expected Result:</strong></p><p style=\"margin: 0 0 16px 0; background: #ecfdf5; padding: 12px; border-radius: 4px; font-size: 14px;\">{$exp}</p>" : "") . "
-          " . ($act ? "<p style=\"margin: 0 0 8px 0;\"><strong>Actual Result:</strong></p><p style=\"margin: 0 0 16px 0; background: #fef2f2; padding: 12px; border-radius: 4px; font-size: 14px;\">{$act}</p>" : "") . "
-          <div style=\"margin-top: 24px; text-align: center;\">
-            <a href=\"{$bugUrl}\" style=\"background: #dc2626; color: #fff !important; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;\">View Bug #{$bugId}</a>
-          </div>
-        </div>
-        <div style=\"background: #f8fafc; color: #64748b; padding: 16px; text-align: center; font-size: 12px;\">
-          © " . date('Y') . " BugRicer. Automated notification.
-        </div>
-      </div>
-    </div>";
+    $priorityBadge = strtoupper(($priority !== null && trim($priority) !== '') ? $priority : 'medium');
+    $desc = htmlspecialchars(($description !== null && $description !== '') ? (strlen($description) > 500 ? substr($description, 0, 500) . '...' : $description) : '');
+    $exp = htmlspecialchars(($expectedResult !== null && $expectedResult !== '') ? (strlen($expectedResult) > 300 ? substr($expectedResult, 0, 300) . '...' : $expectedResult) : '');
+    $act = htmlspecialchars(($actualResult !== null && $actualResult !== '') ? (strlen($actualResult) > 300 ? substr($actualResult, 0, 300) . '...' : $actualResult) : '');
+    $project = htmlspecialchars(($projectName !== null && trim($projectName) !== '') ? $projectName : 'N/A');
+    $reporter = htmlspecialchars(($reportedByName !== null && trim($reportedByName) !== '') ? $reportedByName : 'BugRicer');
+    return '<div style="font-family: Segoe UI, Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;">'
+      . '<div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">'
+      . '<div style="background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%); color: #ffffff; padding: 20px; text-align: center;">'
+      . '<h1 style="margin: 0; font-size: 22px;">New Bug Reported</h1>'
+      . '<p style="margin: 8px 0 0 0; font-size: 14px; opacity: 0.95;">BugRicer Notification</p></div>'
+      . '<div style="padding: 24px;">'
+      . '<h2 style="margin: 0 0 16px 0; color: #1e293b; font-size: 18px;">' . htmlspecialchars($bugTitle) . '</h2>'
+      . '<table style="width: 100%; border-collapse: collapse; margin-bottom: 16px;">'
+      . '<tr><td style="padding: 8px 0; color: #64748b; width: 140px;">Project</td><td style="padding: 8px 0;">' . $project . '</td></tr>'
+      . '<tr><td style="padding: 8px 0; color: #64748b;">Priority</td><td><span style="background: #fef3c7; color: #92400e; padding: 4px 10px; border-radius: 4px; font-weight: 600;">' . $priorityBadge . '</span></td></tr>'
+      . '<tr><td style="padding: 8px 0; color: #64748b;">Reported by</td><td>' . $reporter . '</td></tr></table>'
+      . ($desc ? '<p style="margin: 0 0 12px 0;"><strong>Description:</strong></p><p style="margin: 0 0 16px 0; background: #f8fafc; padding: 12px; border-radius: 4px; font-size: 14px;">' . $desc . '</p>' : '')
+      . ($exp ? '<p style="margin: 0 0 8px 0;"><strong>Expected Result:</strong></p><p style="margin: 0 0 16px 0; background: #ecfdf5; padding: 12px; border-radius: 4px; font-size: 14px;">' . $exp . '</p>' : '')
+      . ($act ? '<p style="margin: 0 0 8px 0;"><strong>Actual Result:</strong></p><p style="margin: 0 0 16px 0; background: #fef2f2; padding: 12px; border-radius: 4px; font-size: 14px;">' . $act . '</p>' : '')
+      . '<div style="margin-top: 24px; text-align: center;">'
+      . '<a href="' . htmlspecialchars($bugUrl) . '" style="background: #dc2626; color: #fff !important; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">View Bug #' . htmlspecialchars($bugId) . '</a>'
+      . '</div></div>'
+      . '<div style="background: #f8fafc; color: #64748b; padding: 16px; text-align: center; font-size: 12px;">'
+      . '&copy; ' . date('Y') . ' BugRicer. Automated notification.</div></div></div>';
 }
 
 /**

@@ -1,7 +1,6 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../ActivityLogger.php';
-require_once __DIR__ . '/../../utils/send_email.php';
 
 class UserController extends BaseAPI {
     public function getUsers() {
@@ -21,30 +20,26 @@ class UserController extends BaseAPI {
                 return;
             }
 
-            // Check if phone column exists
-            $checkPhoneColumn = $this->conn->query("SHOW COLUMNS FROM users LIKE 'phone'");
-            $phoneColumnExists = $checkPhoneColumn->rowCount() > 0;
-
-            // Get all users with phone field and status calculation
-            if ($phoneColumnExists) {
-                $query = "SELECT id, username, email, phone, role, role_id, created_at, updated_at, last_active_at,
-                    CASE 
-                        WHEN last_active_at IS NULL THEN 'offline'
-                        WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 120 THEN 'active'
-                        WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 900 THEN 'idle'
-                        ELSE 'offline'
-                    END as status
-                    FROM users ORDER BY created_at DESC";
-            } else {
-                $query = "SELECT id, username, email, role, role_id, created_at, updated_at, last_active_at,
-                    CASE 
-                        WHEN last_active_at IS NULL THEN 'offline'
-                        WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 120 THEN 'active'
-                        WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 900 THEN 'idle'
-                        ELSE 'offline'
-                    END as status
-                    FROM users ORDER BY created_at DESC";
+            // Check which columns exist (phone, last_active_at)
+            $cols = [];
+            $res = $this->conn->query("SHOW COLUMNS FROM users");
+            if ($res) {
+                while ($row = $res->fetch(PDO::FETCH_ASSOC)) {
+                    $cols[] = $row['Field'];
+                }
             }
+            $hasPhone = in_array('phone', $cols);
+            $hasLastActive = in_array('last_active_at', $cols);
+
+            $select = ['id', 'username', 'email', 'role', 'role_id', 'created_at', 'updated_at'];
+            if ($hasPhone) $select[] = 'phone';
+            if ($hasLastActive) {
+                $select[] = 'last_active_at';
+                $select[] = "(CASE WHEN last_active_at IS NULL THEN 'offline' WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 120 THEN 'active' WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 900 THEN 'idle' ELSE 'offline' END) as status";
+            } else {
+                $select[] = "'offline' as status";
+            }
+            $query = "SELECT " . implode(', ', $select) . " FROM users ORDER BY created_at DESC";
             
             $stmt = $this->conn->prepare($query);
             
@@ -526,6 +521,7 @@ class UserController extends BaseAPI {
             
             // Send email notification
             try {
+                require_once __DIR__ . '/../../utils/send_email.php';
                 error_log("📧 Sending welcome email notification to new user: $username ($email)");
                 $emailSent = sendWelcomeEmail($email, $subject, $body);
                 

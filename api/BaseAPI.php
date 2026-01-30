@@ -220,7 +220,9 @@ class BaseAPI {
         
             return $result;
         } catch (Exception $e) {
-            $this->sendJsonResponse(500, "Token validation failed: " . $e->getMessage());
+            $msg = $e->getMessage();
+            $code = (strpos($msg, 'expired') !== false || strpos($msg, 'invalid') !== false || strpos($msg, 'No token') !== false) ? 401 : 500;
+            $this->sendJsonResponse($code, "Token validation failed: " . $msg);
         }
     }
 
