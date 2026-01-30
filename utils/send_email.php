@@ -21,7 +21,7 @@ function sendBugNotification($to, $subject, $body, $attachments = []) {
         $mail->Host = 'smtp.gmail.com';
         $mail->SMTPAuth = true;
         $mail->Username = 'codo.bugricer@gmail.com';
-        $mail->Password = 'ieka afeu uhds qkam';
+        $mail->Password = 'gwgh vtlm fzkx rdkj';
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port = 587;
         
@@ -133,7 +133,7 @@ function sendWelcomeEmail($to, $subject, $body) {
         $mail->Host = 'smtp.gmail.com';
         $mail->SMTPAuth = true;
         $mail->Username = 'codo.bugricer@gmail.com';
-        $mail->Password = 'ieka afeu uhds qkam';
+        $mail->Password = 'gwgh vtlm fzkx rdkj';
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port = 587;
         
@@ -165,7 +165,7 @@ function sendOtpEmail($to, $otp) {
         $mail->Host = 'smtp.gmail.com';
         $mail->SMTPAuth = true;
         $mail->Username = 'codo.bugricer@gmail.com';
-        $mail->Password = 'ieka afeu uhds qkam';
+        $mail->Password = 'gwgh vtlm fzkx rdkj';
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port = 587;
         $mail->setFrom('codo.bugricer@gmail.com', 'BugRicer');
