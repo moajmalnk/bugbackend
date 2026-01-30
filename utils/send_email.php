@@ -102,6 +102,7 @@ function formatBugCreatedEmailBody($bugId, $bugTitle, $projectName, $reportedByN
       . '&copy; ' . date('Y') . ' BugRicer. Automated notification.</div></div></div>';
 }
 
+
 /**
  * Send new bug notification email to developers and admins
  * @param array $emails Array of email addresses
