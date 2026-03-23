@@ -26,12 +26,76 @@ class OwnWorkSubmissionController extends WorkSubmissionController {
         $pending = $payload['pending_tasks'] ?? null;
         $notes = $payload['notes'] ?? null;
         $ongoing = $payload['ongoing_tasks'] ?? null;
+        $requestedExtraHours = isset($payload['requested_extra_hours']) ? (float)$payload['requested_extra_hours'] : 0.0;
+        $approvalReason = isset($payload['approval_reason']) ? trim((string)$payload['approval_reason']) : null;
+        $breakEntriesPayload = isset($payload['break_entries']) && is_array($payload['break_entries']) ? $payload['break_entries'] : [];
+        $breakEntries = array_values(array_filter(array_map(function ($entry) {
+            return trim((string)$entry);
+        }, $breakEntriesPayload), function ($entry) {
+            return $entry !== '';
+        }));
+        $totalBreakMinutes = isset($payload['total_break_minutes']) ? (int)$payload['total_break_minutes'] : 0;
+        if ($totalBreakMinutes < 0) {
+            $totalBreakMinutes = 0;
+        }
+        if ($totalBreakMinutes === 0 && !empty($breakEntries)) {
+            $computedMins = 0;
+            foreach ($breakEntries as $entry) {
+                if (preg_match('/\((\d+)\s*min\)/i', $entry, $matches)) {
+                    $computedMins += (int)$matches[1];
+                }
+            }
+            $totalBreakMinutes = $computedMins;
+        }
+        if ($requestedExtraHours < 0) {
+            $requestedExtraHours = 0.0;
+        }
         
         // Auto-migrate: add ongoing_tasks column if missing
         try {
             $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'ongoing_tasks'");
             if ($check->rowCount() === 0) {
                 $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN ongoing_tasks MEDIUMTEXT AFTER pending_tasks");
+            }
+        } catch (Exception $e) {
+            // ignore; migration may fail if no permissions
+        }
+
+        // Auto-migrate: add break_entries column if missing
+        try {
+            $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'break_entries'");
+            if ($check->rowCount() === 0) {
+                $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN break_entries JSON NULL DEFAULT NULL AFTER approval_reason");
+            }
+        } catch (Exception $e) {
+            // ignore; migration may fail if no permissions
+        }
+
+        // Auto-migrate: add total_break_minutes column if missing
+        try {
+            $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'total_break_minutes'");
+            if ($check->rowCount() === 0) {
+                $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN total_break_minutes INT DEFAULT 0 AFTER break_entries");
+            }
+        } catch (Exception $e) {
+            // ignore; migration may fail if no permissions
+        }
+
+        // Auto-migrate: add requested_extra_hours column if missing
+        try {
+            $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'requested_extra_hours'");
+            if ($check->rowCount() === 0) {
+                $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN requested_extra_hours DECIMAL(6,2) DEFAULT 0 AFTER overtime_hours");
+            }
+        } catch (Exception $e) {
+            // ignore; migration may fail if no permissions
+        }
+
+        // Auto-migrate: add approval_reason column if missing
+        try {
+            $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'approval_reason'");
+            if ($check->rowCount() === 0) {
+                $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN approval_reason TEXT NULL AFTER requested_extra_hours");
             }
         } catch (Exception $e) {
             // ignore; migration may fail if no permissions
@@ -47,8 +111,8 @@ class OwnWorkSubmissionController extends WorkSubmissionController {
             // ignore; migration may fail if no permissions
         }
         
-        // Calculate overtime: if hours > 8, overtime = hours - 8, otherwise 0
-        $overtime = $hours > 8 ? $hours - 8 : 0;
+        // Keep overtime aligned with explicit extra-hours requests.
+        $overtime = max(($hours > 8 ? $hours - 8 : 0), $requestedExtraHours);
         
         // Check if this is an update before inserting
         $checkStmt = $this->conn->prepare("SELECT COUNT(*) as cnt FROM work_submissions WHERE user_id = ? AND submission_date = ?");
@@ -62,6 +126,41 @@ class OwnWorkSubmissionController extends WorkSubmissionController {
                 total_hours_cumulative=VALUES(total_hours_cumulative), completed_tasks=VALUES(completed_tasks), pending_tasks=VALUES(pending_tasks), ongoing_tasks=VALUES(ongoing_tasks), notes=VALUES(notes)";
         $stmt = $this->conn->prepare($sql);
         $stmt->execute([$userId, $date, $start, $hours, $overtime, $days, $cumulative, $completed, $pending, $ongoing, $notes]);
+
+        // Persist OT request fields if these columns exist.
+        $columnsCheck = $this->conn->query("SHOW COLUMNS FROM work_submissions");
+        $columns = $columnsCheck->fetchAll(PDO::FETCH_COLUMN);
+        $hasRequestedExtraHours = in_array('requested_extra_hours', $columns);
+        $hasApprovalReason = in_array('approval_reason', $columns);
+        $hasBreakEntries = in_array('break_entries', $columns);
+        $hasTotalBreakMinutes = in_array('total_break_minutes', $columns);
+        if ($hasRequestedExtraHours || $hasApprovalReason || $hasBreakEntries || $hasTotalBreakMinutes) {
+            $extraUpdateParts = [];
+            $extraUpdateValues = [];
+            if ($hasRequestedExtraHours) {
+                $extraUpdateParts[] = "requested_extra_hours = ?";
+                $extraUpdateValues[] = $requestedExtraHours;
+            }
+            if ($hasApprovalReason) {
+                $extraUpdateParts[] = "approval_reason = ?";
+                $extraUpdateValues[] = $approvalReason;
+            }
+            if ($hasBreakEntries) {
+                $extraUpdateParts[] = "break_entries = ?";
+                $extraUpdateValues[] = !empty($breakEntries) ? json_encode($breakEntries) : null;
+            }
+            if ($hasTotalBreakMinutes) {
+                $extraUpdateParts[] = "total_break_minutes = ?";
+                $extraUpdateValues[] = $totalBreakMinutes;
+            }
+            if (!empty($extraUpdateParts)) {
+                $extraUpdateValues[] = $userId;
+                $extraUpdateValues[] = $date;
+                $extraUpdateSql = "UPDATE work_submissions SET " . implode(", ", $extraUpdateParts) . " WHERE user_id = ? AND submission_date = ?";
+                $extraUpdateStmt = $this->conn->prepare($extraUpdateSql);
+                $extraUpdateStmt->execute($extraUpdateValues);
+            }
+        }
         
         error_log("🔍 OwnWorkSubmissionController::submitOwnWork - Saved submission for user: " . $userId . " on date: " . $date . $impersonationInfo);
         
@@ -77,6 +176,10 @@ class OwnWorkSubmissionController extends WorkSubmissionController {
             'start_time' => $start,
             'hours_today' => $hours,
             'overtime_hours' => $overtime,
+            'requested_extra_hours' => $requestedExtraHours,
+            'approval_reason' => $approvalReason,
+            'break_entries' => $breakEntries,
+            'total_break_minutes' => $totalBreakMinutes,
             'completed_tasks' => $completed,
             'pending_tasks' => $pending,
             'ongoing_tasks' => $ongoing,
