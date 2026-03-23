@@ -678,18 +678,56 @@ class BugController extends BaseAPI {
                 'attachments' => $processedAttachments
             ];
             
-            // Trigger notifications in background (non-blocking, won't delay response)
-            $triggerScript = realpath(__DIR__ . '/../../trigger-bug-notifications.php');
-            if ($triggerScript && file_exists($triggerScript)) {
-                $cmd = 'php ' . escapeshellarg($triggerScript) . ' ' . escapeshellarg((string)$id) . ' > /dev/null 2>&1 &';
-                if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
-                    pclose(popen('start /B php ' . escapeshellarg($triggerScript) . ' ' . escapeshellarg((string)$id), 'r'));
-                } else {
-                    exec($cmd);
+            // Trigger notifications in background so response returns immediately (better UX)
+            $execDisabled = in_array('exec', array_map('trim', explode(',', (string)ini_get('disable_functions'))));
+            $spawned = false;
+
+            if (!$execDisabled) {
+                $triggerScript = realpath(__DIR__ . '/../../trigger-bug-notifications.php');
+                $phpBin = 'php';
+                if (defined('PHP_BINARY') && PHP_BINARY) {
+                    $phpBin = PHP_BINARY;
+                } elseif (strtoupper(substr(PHP_OS, 0, 3)) !== 'WIN' && file_exists('/usr/bin/php')) {
+                    $phpBin = '/usr/bin/php';
+                } elseif (file_exists('/Applications/XAMPP/bin/php')) {
+                    $phpBin = '/Applications/XAMPP/bin/php';
+                }
+                if ($triggerScript && file_exists($triggerScript)) {
+                    if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
+                        @pclose(@popen('start /B ' . escapeshellarg($phpBin) . ' ' . escapeshellarg($triggerScript) . ' ' . escapeshellarg((string)$id), 'r'));
+                        $spawned = true;
+                    } else {
+                        @exec('nohup ' . escapeshellarg($phpBin) . ' ' . escapeshellarg($triggerScript) . ' ' . escapeshellarg((string)$id) . ' > /dev/null 2>&1 &');
+                        $spawned = true;
+                    }
+                }
+                // Fallback: fire HTTP request in background (works when PHP CLI not in path)
+                if (!$spawned) {
+                    $base = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http') . '://' . ($_SERVER['HTTP_HOST'] ?? 'localhost');
+                    $path = dirname(dirname($_SERVER['SCRIPT_NAME'] ?? '')); // from api/bugs/create.php -> api
+                    $url = rtrim($base . $path, '/') . '/notifications/trigger-bug.php';
+                    $payload = 'bug_id=' . urlencode((string)$id);
+                    $curl = 'curl';
+                    if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
+                        @pclose(@popen('start /B curl -s -X POST -d "' . addslashes($payload) . '" "' . addslashes($url) . '"', 'r'));
+                        $spawned = true;
+                    } elseif (trim(@shell_exec('which curl 2>/dev/null'))) {
+                        @exec('curl -s -X POST -d ' . escapeshellarg($payload) . ' ' . escapeshellarg($url) . ' > /dev/null 2>&1 &');
+                        $spawned = true;
+                    }
                 }
             }
-            
-            // Return immediately to client (fast response)
+
+            if (!$spawned) {
+                try {
+                    require_once __DIR__ . '/../../utils/bug_notifications.php';
+                    runBugCreatedNotifications($this->conn, $id, $data, $decoded, $priority, $expectedResult, $actualResult);
+                } catch (Exception $e) {
+                    error_log("⚠️ Bug $id: Inline notifications failed: " . $e->getMessage());
+                }
+            }
+
+            // Return to client immediately
             $this->sendJsonResponse(200, "Bug created successfully", [
                 'bug' => $bug,
                 'uploadedAttachments' => $uploadedAttachments
