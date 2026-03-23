@@ -719,12 +719,7 @@ class BugController extends BaseAPI {
             }
 
             if (!$spawned) {
-                try {
-                    require_once __DIR__ . '/../../utils/bug_notifications.php';
-                    runBugCreatedNotifications($this->conn, $id, $data, $decoded, $priority, $expectedResult, $actualResult);
-                } catch (Exception $e) {
-                    error_log("⚠️ Bug $id: Inline notifications failed: " . $e->getMessage());
-                }
+                error_log("⚠️ Bug $id: async notification trigger not spawned; skipping inline notifications to keep create response fast.");
             }
 
             // Return to client immediately
