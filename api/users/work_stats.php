@@ -3,6 +3,64 @@ require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../PermissionManager.php';
 
 class UserWorkStatsController extends BaseAPI {
+    private function splitTaskLines($text) {
+        $raw = explode("\n", (string)$text);
+        $cleaned = [];
+        $skipOvertimeReasonBlock = false;
+        foreach ($raw as $line) {
+            $line = trim($line);
+            if ($line === '') continue;
+
+            if (stripos($line, '[OVERTIME APPROVAL REQUEST]') === 0) {
+                $skipOvertimeReasonBlock = true;
+                continue;
+            }
+            if ($skipOvertimeReasonBlock && preg_match('/^(Requested Extra Hours:|Reason:)/i', $line)) {
+                continue;
+            }
+            if (preg_match('/^\[BREAK\]/i', $line)) {
+                continue;
+            }
+            $skipOvertimeReasonBlock = false;
+            $cleaned[] = $line;
+        }
+        return $cleaned;
+    }
+
+    private function parseBreakEntries($breakEntriesRaw, $notesRaw) {
+        $entries = [];
+        if (is_string($breakEntriesRaw) && trim($breakEntriesRaw) !== '') {
+            $decoded = json_decode($breakEntriesRaw, true);
+            if (is_array($decoded)) {
+                foreach ($decoded as $entry) {
+                    $entry = trim((string)$entry);
+                    if ($entry !== '') $entries[] = $entry;
+                }
+            }
+        }
+        if (empty($entries)) {
+            $noteMatches = [];
+            if (preg_match_all('/^\[BREAK\].*$/im', (string)$notesRaw, $noteMatches)) {
+                foreach (($noteMatches[0] ?? []) as $line) {
+                    $line = trim((string)$line);
+                    if ($line !== '') $entries[] = $line;
+                }
+            }
+        }
+        return array_values(array_unique($entries));
+    }
+
+    private function getBreakMinutesFromEntries($entries) {
+        $total = 0;
+        if (!is_array($entries)) return 0;
+        foreach ($entries as $entry) {
+            if (preg_match('/\((\d+)\s*min\)/i', (string)$entry, $matches)) {
+                $total += (int)$matches[1];
+            }
+        }
+        return $total;
+    }
+
     public function getUserWorkStats($userId) {
         try {
             // Validate token
@@ -84,7 +142,12 @@ class UserWorkStatsController extends BaseAPI {
                     completed_tasks,
                     pending_tasks,
                     ongoing_tasks,
-                    notes
+                    notes,
+                    overtime_hours,
+                    requested_extra_hours,
+                    approval_reason,
+                    break_entries,
+                    total_break_minutes
                 FROM work_submissions 
                 WHERE user_id = ? 
                 AND submission_date >= ? 
@@ -98,35 +161,41 @@ class UserWorkStatsController extends BaseAPI {
             $pending = 0;
             $ongoing = 0;
             $upcoming = 0;
+            $overtimeHours = 0.0;
+            $requestedExtraHours = 0.0;
+            $approvalRequests = 0;
+            $breakMinutes = 0;
             
             foreach ($submissionTasks as $submission) {
                 // Count completed tasks (non-empty lines)
-                $completedTasks = $submission['completed_tasks'] ?? '';
-                $completedLines = array_filter(array_map('trim', explode("\n", $completedTasks)), function($line) {
-                    return !empty($line);
-                });
+                $completedLines = $this->splitTaskLines($submission['completed_tasks'] ?? '');
                 $completed += count($completedLines);
                 
                 // Count pending tasks (non-empty lines)
-                $pendingTasks = $submission['pending_tasks'] ?? '';
-                $pendingLines = array_filter(array_map('trim', explode("\n", $pendingTasks)), function($line) {
-                    return !empty($line);
-                });
+                $pendingLines = $this->splitTaskLines($submission['pending_tasks'] ?? '');
                 $pending += count($pendingLines);
                 
                 // Count ongoing tasks (non-empty lines)
-                $ongoingTasks = $submission['ongoing_tasks'] ?? '';
-                $ongoingLines = array_filter(array_map('trim', explode("\n", $ongoingTasks)), function($line) {
-                    return !empty($line);
-                });
+                $ongoingLines = $this->splitTaskLines($submission['ongoing_tasks'] ?? '');
                 $ongoing += count($ongoingLines);
                 
                 // Count upcoming tasks (notes field, non-empty lines)
-                $upcomingTasks = $submission['notes'] ?? '';
-                $upcomingLines = array_filter(array_map('trim', explode("\n", $upcomingTasks)), function($line) {
-                    return !empty($line);
-                });
+                $upcomingLines = $this->splitTaskLines($submission['notes'] ?? '');
                 $upcoming += count($upcomingLines);
+
+                $overtimeHours += (float)($submission['overtime_hours'] ?? 0);
+                $requested = (float)($submission['requested_extra_hours'] ?? 0);
+                $requestedExtraHours += $requested;
+                if ($requested > 0 || trim((string)($submission['approval_reason'] ?? '')) !== '') {
+                    $approvalRequests++;
+                }
+
+                $entryList = $this->parseBreakEntries($submission['break_entries'] ?? null, $submission['notes'] ?? '');
+                $rowBreakMinutes = (int)($submission['total_break_minutes'] ?? 0);
+                if ($rowBreakMinutes <= 0) {
+                    $rowBreakMinutes = $this->getBreakMinutesFromEntries($entryList);
+                }
+                $breakMinutes += $rowBreakMinutes;
             }
             
             $currentTaskData = [
@@ -179,7 +248,12 @@ class UserWorkStatsController extends BaseAPI {
                         completed_tasks,
                         pending_tasks,
                         ongoing_tasks,
-                        notes
+                        notes,
+                        overtime_hours,
+                        requested_extra_hours,
+                        approval_reason,
+                        break_entries,
+                        total_break_minutes
                     FROM work_submissions 
                     WHERE user_id = ? 
                     AND submission_date >= ? 
@@ -193,35 +267,40 @@ class UserWorkStatsController extends BaseAPI {
                 $periodPending = 0;
                 $periodOngoing = 0;
                 $periodUpcoming = 0;
+                $periodOvertime = 0.0;
+                $periodRequestedExtra = 0.0;
+                $periodApprovalRequests = 0;
+                $periodBreakMinutes = 0;
                 
                 foreach ($periodSubmissionTasks as $submission) {
                     // Count completed tasks (non-empty lines)
-                    $completedTasks = $submission['completed_tasks'] ?? '';
-                    $completedLines = array_filter(array_map('trim', explode("\n", $completedTasks)), function($line) {
-                        return !empty($line);
-                    });
+                    $completedLines = $this->splitTaskLines($submission['completed_tasks'] ?? '');
                     $periodCompleted += count($completedLines);
                     
                     // Count pending tasks (non-empty lines)
-                    $pendingTasks = $submission['pending_tasks'] ?? '';
-                    $pendingLines = array_filter(array_map('trim', explode("\n", $pendingTasks)), function($line) {
-                        return !empty($line);
-                    });
+                    $pendingLines = $this->splitTaskLines($submission['pending_tasks'] ?? '');
                     $periodPending += count($pendingLines);
                     
                     // Count ongoing tasks (non-empty lines)
-                    $ongoingTasks = $submission['ongoing_tasks'] ?? '';
-                    $ongoingLines = array_filter(array_map('trim', explode("\n", $ongoingTasks)), function($line) {
-                        return !empty($line);
-                    });
+                    $ongoingLines = $this->splitTaskLines($submission['ongoing_tasks'] ?? '');
                     $periodOngoing += count($ongoingLines);
                     
                     // Count upcoming tasks (notes field, non-empty lines)
-                    $upcomingTasks = $submission['notes'] ?? '';
-                    $upcomingLines = array_filter(array_map('trim', explode("\n", $upcomingTasks)), function($line) {
-                        return !empty($line);
-                    });
+                    $upcomingLines = $this->splitTaskLines($submission['notes'] ?? '');
                     $periodUpcoming += count($upcomingLines);
+
+                    $periodOvertime += (float)($submission['overtime_hours'] ?? 0);
+                    $periodRequested = (float)($submission['requested_extra_hours'] ?? 0);
+                    $periodRequestedExtra += $periodRequested;
+                    if ($periodRequested > 0 || trim((string)($submission['approval_reason'] ?? '')) !== '') {
+                        $periodApprovalRequests++;
+                    }
+                    $periodBreakEntries = $this->parseBreakEntries($submission['break_entries'] ?? null, $submission['notes'] ?? '');
+                    $periodBreakRowMinutes = (int)($submission['total_break_minutes'] ?? 0);
+                    if ($periodBreakRowMinutes <= 0) {
+                        $periodBreakRowMinutes = $this->getBreakMinutesFromEntries($periodBreakEntries);
+                    }
+                    $periodBreakMinutes += $periodBreakRowMinutes;
                 }
                 
                 $taskData = [
@@ -236,6 +315,10 @@ class UserWorkStatsController extends BaseAPI {
                     'period_name' => $periodName,
                     'days' => (int)($periodData['days'] ?? 0),
                     'hours' => (float)($periodData['hours'] ?? 0),
+                    'overtime_hours' => round($periodOvertime, 2),
+                    'requested_extra_hours' => round($periodRequestedExtra, 2),
+                    'approval_requests' => (int)$periodApprovalRequests,
+                    'break_minutes' => (int)$periodBreakMinutes,
                     'task_counts' => [
                         'completed' => (int)($taskData['completed'] ?? 0),
                         'pending' => (int)($taskData['pending'] ?? 0),
@@ -260,6 +343,10 @@ class UserWorkStatsController extends BaseAPI {
                     'period_name' => $monthName,
                     'days' => $totalDays,
                     'hours' => round($totalHours, 1),
+                    'overtime_hours' => round($overtimeHours, 2),
+                    'requested_extra_hours' => round($requestedExtraHours, 2),
+                    'approval_requests' => (int)$approvalRequests,
+                    'break_minutes' => (int)$breakMinutes,
                     'task_counts' => [
                         'completed' => (int)($currentTaskData['completed'] ?? 0),
                         'pending' => (int)($currentTaskData['pending'] ?? 0),
@@ -311,6 +398,11 @@ class UserWorkStatsController extends BaseAPI {
                     submission_date,
                     hours_today,
                     start_time,
+                    overtime_hours,
+                    requested_extra_hours,
+                    approval_reason,
+                    break_entries,
+                    total_break_minutes,
                     completed_tasks,
                     pending_tasks,
                     ongoing_tasks,
@@ -335,60 +427,68 @@ class UserWorkStatsController extends BaseAPI {
             $allUpcoming = [];
             $allNotes = [];
             $dailyBreakdown = [];
+            $totalOvertimeHours = 0.0;
+            $totalRequestedExtraHours = 0.0;
+            $totalBreakMinutes = 0;
+            $totalApprovalRequests = 0;
 
             foreach ($submissions as $submission) {
                 $date = $submission['submission_date'];
                 
                 // Extract completed tasks
-                $completedTasks = $submission['completed_tasks'] ?? '';
-                $completedLines = array_filter(array_map('trim', explode("\n", $completedTasks)), function($line) {
-                    return !empty($line);
-                });
+                $completedLines = $this->splitTaskLines($submission['completed_tasks'] ?? '');
                 foreach ($completedLines as $task) {
                     $allCompleted[] = ['date' => $date, 'task' => $task];
                 }
 
                 // Extract pending tasks
-                $pendingTasks = $submission['pending_tasks'] ?? '';
-                $pendingLines = array_filter(array_map('trim', explode("\n", $pendingTasks)), function($line) {
-                    return !empty($line);
-                });
+                $pendingLines = $this->splitTaskLines($submission['pending_tasks'] ?? '');
                 foreach ($pendingLines as $task) {
                     $allPending[] = ['date' => $date, 'task' => $task];
                 }
 
                 // Extract ongoing tasks
-                $ongoingTasks = $submission['ongoing_tasks'] ?? '';
-                $ongoingLines = array_filter(array_map('trim', explode("\n", $ongoingTasks)), function($line) {
-                    return !empty($line);
-                });
+                $ongoingLines = $this->splitTaskLines($submission['ongoing_tasks'] ?? '');
                 foreach ($ongoingLines as $task) {
                     $allOngoing[] = ['date' => $date, 'task' => $task];
                 }
 
                 // Extract upcoming tasks (from notes field)
-                $upcomingTasks = $submission['notes'] ?? '';
-                $upcomingLines = array_filter(array_map('trim', explode("\n", $upcomingTasks)), function($line) {
-                    return !empty($line);
-                });
+                $upcomingLines = $this->splitTaskLines($submission['notes'] ?? '');
                 foreach ($upcomingLines as $task) {
                     $allUpcoming[] = ['date' => $date, 'task' => $task];
                 }
 
                 // Extract work notes
                 if (!empty($submission['notes'])) {
-                    $notesLines = array_filter(array_map('trim', explode("\n", $submission['notes'])), function($line) {
-                        return !empty($line);
-                    });
+                    $notesLines = $this->splitTaskLines($submission['notes']);
                     foreach ($notesLines as $note) {
                         $allNotes[] = ['date' => $date, 'note' => $note];
                     }
                 }
 
+                $breakEntries = $this->parseBreakEntries($submission['break_entries'] ?? null, $submission['notes'] ?? '');
+                $breakMinutes = (int)($submission['total_break_minutes'] ?? 0);
+                if ($breakMinutes <= 0) {
+                    $breakMinutes = $this->getBreakMinutesFromEntries($breakEntries);
+                }
+                $totalOvertimeHours += (float)($submission['overtime_hours'] ?? 0);
+                $requestedExtra = (float)($submission['requested_extra_hours'] ?? 0);
+                $totalRequestedExtraHours += $requestedExtra;
+                if ($requestedExtra > 0 || trim((string)($submission['approval_reason'] ?? '')) !== '') {
+                    $totalApprovalRequests++;
+                }
+                $totalBreakMinutes += $breakMinutes;
+
                 // Daily breakdown
                 $dailyBreakdown[] = [
                     'date' => $date,
                     'hours' => (float)($submission['hours_today'] ?? 0),
+                    'overtime_hours' => (float)($submission['overtime_hours'] ?? 0),
+                    'requested_extra_hours' => (float)($submission['requested_extra_hours'] ?? 0),
+                    'approval_reason' => $submission['approval_reason'] ?? null,
+                    'break_minutes' => $breakMinutes,
+                    'break_entries' => $breakEntries,
                     'start_time' => $submission['start_time'] ?? null,
                     'completed_count' => count($completedLines),
                     'pending_count' => count($pendingLines),
@@ -403,6 +503,12 @@ class UserWorkStatsController extends BaseAPI {
             $details = [
                 'period_start' => $periodStart,
                 'period_end' => $periodEnd,
+                'summary' => [
+                    'overtime_hours' => round($totalOvertimeHours, 2),
+                    'requested_extra_hours' => round($totalRequestedExtraHours, 2),
+                    'approval_requests' => (int)$totalApprovalRequests,
+                    'break_minutes' => (int)$totalBreakMinutes
+                ],
                 'submissions' => $dailyBreakdown,
                 'tasks' => [
                     'completed' => $allCompleted,
