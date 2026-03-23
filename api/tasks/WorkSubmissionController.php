@@ -452,6 +452,32 @@ class WorkSubmissionController extends BaseAPI {
         $this->sendJsonResponse(200, 'OK', $rows);
     }
 
+    public function allRequestSubmissions($q) {
+        $decoded = $this->validateToken();
+        $role = strtolower((string)($decoded->role ?? ''));
+        if ($role !== 'admin') {
+            $this->sendJsonResponse(403, 'Access denied');
+            return;
+        }
+
+        $from = $q['from'] ?? date('Y-m-01');
+        $to = $q['to'] ?? date('Y-m-t');
+
+        $sql = "SELECT ws.*, u.username, u.role
+                FROM work_submissions ws
+                INNER JOIN users u ON u.id = ws.user_id
+                WHERE ws.submission_date BETWEEN ? AND ?
+                  AND (
+                    COALESCE(ws.requested_extra_hours, 0) > 0
+                    OR COALESCE(TRIM(ws.approval_reason), '') <> ''
+                  )
+                ORDER BY ws.submission_date DESC, ws.id DESC";
+        $stmt = $this->conn->prepare($sql);
+        $stmt->execute([$from, $to]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $this->sendJsonResponse(200, 'OK', $rows);
+    }
+
     public function deleteSubmission($payload) {
         try {
             $decoded = $this->validateToken();
