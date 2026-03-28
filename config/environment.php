@@ -34,7 +34,13 @@ class Environment {
             'DB_HOST',
             'DB_NAME',
             'DB_USER',
-            'DB_PASS'
+            'DB_PASS',
+            'SMTP_HOST',
+            'SMTP_PORT',
+            'SMTP_USER',
+            'SMTP_PASS',
+            'SMTP_FROM_EMAIL',
+            'SMTP_FROM_NAME',
         ];
         
         foreach ($envVars as $var) {

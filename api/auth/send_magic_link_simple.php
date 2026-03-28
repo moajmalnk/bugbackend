@@ -110,7 +110,10 @@ try {
     
     if (!$email_sent) {
         http_response_code(500);
-        echo json_encode(['success' => false, 'message' => 'Failed to send magic link email']);
+        echo json_encode([
+            'success' => false,
+            'message' => 'Failed to send magic link email. The server could not send mail—set SMTP_USER and SMTP_PASS in backend/.env (Gmail: use an App Password).',
+        ]);
         exit();
     }
     

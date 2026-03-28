@@ -11,6 +11,7 @@ use PHPMailer\PHPMailer\Exception;
 
 // Make sure PHPMailer is properly included
 require_once __DIR__ . '/../vendor/autoload.php';
+require_once __DIR__ . '/../config/environment.php';
 
 function sendPasswordResetEmail($email, $username, $reset_link) {
     $subject = "Password Reset Request - BugRicer";
@@ -83,23 +84,35 @@ The BugRicer Team
 }
 
 function sendEmail($to, $subject, $html_body, $text_body = '') {
-    // Use PHPMailer with SMTP for all environments
     try {
         error_log("📧 sendEmail called - To: $to, Subject: $subject");
-        
+
+        $smtpUser = Environment::get('SMTP_USER');
+        $smtpPass = Environment::get('SMTP_PASS');
+        if ($smtpUser === null || $smtpUser === '' || $smtpPass === null || $smtpPass === '') {
+            error_log('❌ SMTP not configured: set SMTP_USER and SMTP_PASS in backend/.env (see .env.example)');
+            return false;
+        }
+
+        $smtpHost = Environment::get('SMTP_HOST', 'smtp.gmail.com');
+        $smtpPort = (int) Environment::get('SMTP_PORT', '587');
+        if ($smtpPort < 1 || $smtpPort > 65535) {
+            $smtpPort = 587;
+        }
+        $fromEmail = Environment::get('SMTP_FROM_EMAIL', $smtpUser);
+        $fromName = Environment::get('SMTP_FROM_NAME', 'BugRicer');
+
         $mail = new PHPMailer(true);
-        
-        // GMAIL SMTP CONFIGURATION
+
         $mail->isSMTP();
-        $mail->Host = 'smtp.gmail.com';
+        $mail->Host = $smtpHost;
         $mail->SMTPAuth = true;
-        $mail->Username = 'codo.bugricer@gmail.com';
-        $mail->Password = 'ieka afeu uhds qkam';
+        $mail->Username = $smtpUser;
+        $mail->Password = $smtpPass;
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-        $mail->Port = 587;
-        
-        // Recipients
-        $mail->setFrom('codo.bugricer@gmail.com', 'BugRicer');
+        $mail->Port = $smtpPort;
+
+        $mail->setFrom($fromEmail, $fromName);
         $mail->addAddress($to);
         
         // Content
