@@ -425,6 +425,8 @@ class UserWorkStatsController extends BaseAPI {
             $stmt = $this->conn->prepare("
                 SELECT 
                     submission_date,
+                    created_at,
+                    check_in_time,
                     hours_today,
                     start_time,
                     overtime_hours,
@@ -514,6 +516,8 @@ class UserWorkStatsController extends BaseAPI {
                 // Daily breakdown
                 $dailyBreakdown[] = [
                     'date' => $date,
+                    'created_at' => $submission['created_at'] ?? null,
+                    'check_in_time' => $submission['check_in_time'] ?? null,
                     'hours' => (float)($submission['hours_today'] ?? 0),
                     'overtime_hours' => br_effective_overtime_hours_for_stats($submission),
                     'requested_extra_hours' => (float)($submission['requested_extra_hours'] ?? 0),
