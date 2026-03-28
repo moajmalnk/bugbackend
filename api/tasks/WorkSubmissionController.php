@@ -456,6 +456,32 @@ class WorkSubmissionController extends BaseAPI {
         $this->sendJsonResponse(200, 'OK', $rows);
     }
 
+    /**
+     * Rolling 12 calendar months ending on the last day of the current month (same as frontend getSubmissionWindow).
+     * Always use server time here: a wrong laptop/system clock must not hide real submissions in the DB.
+     */
+    protected function extraHoursAdminQueryWindow(): array {
+        $tzName = @date_default_timezone_get() ?: 'Asia/Kolkata';
+        $tz = new DateTimeZone($tzName);
+        $base = new DateTime('now', $tz);
+        $y = (int) $base->format('Y');
+        $m = (int) $base->format('n');
+        $windowEnd = DateTime::createFromFormat('Y-m-d', sprintf('%04d-%02d-01', $y, $m), $tz);
+        if (!$windowEnd) {
+            $windowEnd = clone $base;
+        }
+        $windowEnd->modify('last day of this month');
+        $windowStart = DateTime::createFromFormat('Y-m-d', sprintf('%04d-%02d-01', $y, $m), $tz);
+        if (!$windowStart) {
+            $windowStart = clone $base;
+        }
+        $windowStart->modify('-11 months');
+        return [
+            'from' => $windowStart->format('Y-m-d'),
+            'to' => $windowEnd->format('Y-m-d'),
+        ];
+    }
+
     public function allRequestSubmissions($q) {
         $decoded = $this->validateToken();
         $role = strtolower((string)($decoded->role ?? ''));
@@ -466,28 +492,48 @@ class WorkSubmissionController extends BaseAPI {
 
         $this->ensureExtraHoursApprovalColumns();
 
-        $from = $q['from'] ?? date('Y-m-01');
-        $to = $q['to'] ?? date('Y-m-t');
+        $win = $this->extraHoursAdminQueryWindow();
+        $tzName = @date_default_timezone_get() ?: 'Asia/Kolkata';
+        $tz = new DateTimeZone($tzName);
+        $now = new DateTime('now', $tz);
+        $wideStart = (clone $now)->modify('-6 years')->format('Y-m-d');
+        $wideEnd = (clone $now)->modify('+6 years')->format('Y-m-d');
+        // Merge rolling 12-month window with a wide envelope so wrong system clocks (same bad date in
+        // browser and PHP) do not hide real rows dated years ahead or behind.
+        $from = min($win['from'], $wideStart);
+        $to = max($win['to'], $wideEnd);
 
         $pendingOnly = isset($q['pending_only']) && $q['pending_only'] === '1';
         $statusSql = $pendingOnly
             ? " AND COALESCE(ws.extra_hours_approval_status, 'none') = 'pending' "
             : '';
 
-        $sql = "SELECT ws.*, u.username, u.role
+        // Match frontend hasApprovalRequest(): row fields OR legacy/request text in notes.
+        // DATE(submission_date): safe if column is DATETIME. LEFT JOIN: still list rows if user row is missing.
+        $sql = "SELECT ws.*,
+                       COALESCE(NULLIF(TRIM(u.username), ''), CONCAT('user #', ws.user_id)) AS username,
+                       COALESCE(u.role, '') AS role
                 FROM work_submissions ws
-                INNER JOIN users u ON u.id = ws.user_id
-                WHERE ws.submission_date BETWEEN ? AND ?
+                LEFT JOIN users u ON u.id = ws.user_id
+                WHERE DATE(ws.submission_date) BETWEEN ? AND ?
                   AND (
                     COALESCE(ws.requested_extra_hours, 0) > 0
-                    OR COALESCE(TRIM(ws.approval_reason), '') <> ''
+                    OR NULLIF(TRIM(COALESCE(ws.approval_reason, '')), '') IS NOT NULL
+                    OR (ws.notes IS NOT NULL AND (
+                        ws.notes LIKE '%Requested Extra Hours:%'
+                        OR ws.notes LIKE '%[OVERTIME APPROVAL REQUEST]%'
+                    ))
                   )
                   $statusSql
                 ORDER BY ws.submission_date DESC, ws.id DESC";
         $stmt = $this->conn->prepare($sql);
         $stmt->execute([$from, $to]);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        $this->sendJsonResponse(200, 'OK', $rows);
+        $this->sendJsonResponse(200, 'OK', [
+            'submissions' => $rows,
+            'window' => ['from' => $from, 'to' => $to],
+            'focus_window' => $win,
+        ]);
     }
 
     public function deleteSubmission($payload) {
@@ -696,7 +742,7 @@ class WorkSubmissionController extends BaseAPI {
                 return;
             }
 
-            $stmt = $this->conn->prepare("SELECT ws.*, u.username FROM work_submissions ws INNER JOIN users u ON u.id = ws.user_id WHERE ws.id = ? LIMIT 1");
+            $stmt = $this->conn->prepare("SELECT ws.*, u.username FROM work_submissions ws LEFT JOIN users u ON u.id = ws.user_id WHERE ws.id = ? LIMIT 1");
             $stmt->execute([$id]);
             $row = $stmt->fetch(PDO::FETCH_ASSOC);
             if (!$row) {
@@ -704,30 +750,40 @@ class WorkSubmissionController extends BaseAPI {
                 return;
             }
 
+            // Keep in sync with allRequestSubmissions(): structured fields, legacy text in notes, or any row
+            // already in the extra-hours workflow (so admins can re-review after data quirks).
             $req = (float)($row['requested_extra_hours'] ?? 0) > 0;
             $reason = trim((string)($row['approval_reason'] ?? ''));
-            if (!$req && $reason === '') {
+            $notes = (string)($row['notes'] ?? '');
+            $legacyNotesRequest =
+                (stripos($notes, 'Requested Extra Hours:') !== false)
+                || (strpos($notes, '[OVERTIME APPROVAL REQUEST]') !== false);
+            $statusNorm = strtolower(trim((string)($row['extra_hours_approval_status'] ?? 'none')));
+            $inWorkflow = in_array($statusNorm, ['pending', 'approved', 'rejected', 'changed'], true);
+            if (!$req && $reason === '' && !$legacyNotesRequest && !$inWorkflow) {
                 $this->sendJsonResponse(400, 'This submission has no extra-hour approval request');
-                return;
-            }
-
-            $status = strtolower((string)($row['extra_hours_approval_status'] ?? 'none'));
-            if ($status !== 'pending') {
-                $this->sendJsonResponse(400, 'Only pending requests can be reviewed (current: ' . $status . ')');
                 return;
             }
 
             $adminId = (int)$decoded->user_id;
             $now = date('Y-m-d H:i:s');
             $note = trim((string)($payload['admin_note'] ?? ''));
-            $currentOt = (float)($row['overtime_hours'] ?? 0);
+            if ($action === 'approve' && $note === '') {
+                $note = trim((string)($row['extra_hours_admin_note'] ?? ''));
+            }
+            $extraNote = $note !== '' ? $note : null;
+            $reqH = (float)($row['requested_extra_hours'] ?? 0);
+            $otNow = (float)($row['overtime_hours'] ?? 0);
+            $prevAppr = (float)($row['extra_hours_approved_amount'] ?? 0);
+            // Approve: prefer requested hours (e.g. after reject OT was cleared); else keep best-known approved/OT.
+            $otToApprove = $reqH > 0 ? $reqH : max($otNow, $prevAppr);
 
             if ($action === 'approve') {
                 $upd = $this->conn->prepare("UPDATE work_submissions SET extra_hours_approval_status = 'approved', extra_hours_approved_amount = ?, overtime_hours = ?, extra_hours_reviewed_by = ?, extra_hours_reviewed_at = ?, extra_hours_admin_note = ? WHERE id = ?");
-                $upd->execute([$currentOt, $currentOt, $adminId, $now, $note !== '' ? $note : null, $id]);
+                $upd->execute([$otToApprove, $otToApprove, $adminId, $now, $extraNote, $id]);
             } elseif ($action === 'reject') {
                 $upd = $this->conn->prepare("UPDATE work_submissions SET extra_hours_approval_status = 'rejected', extra_hours_approved_amount = 0, overtime_hours = 0, extra_hours_reviewed_by = ?, extra_hours_reviewed_at = ?, extra_hours_admin_note = ? WHERE id = ?");
-                $upd->execute([$adminId, $now, $note !== '' ? $note : null, $id]);
+                $upd->execute([$adminId, $now, $extraNote, $id]);
             } else {
                 $approvedHours = isset($payload['approved_hours']) ? (float)$payload['approved_hours'] : -1;
                 if ($approvedHours < 0.25 || $approvedHours > 16) {
@@ -735,10 +791,10 @@ class WorkSubmissionController extends BaseAPI {
                     return;
                 }
                 $upd = $this->conn->prepare("UPDATE work_submissions SET extra_hours_approval_status = 'changed', extra_hours_approved_amount = ?, overtime_hours = ?, extra_hours_reviewed_by = ?, extra_hours_reviewed_at = ?, extra_hours_admin_note = ? WHERE id = ?");
-                $upd->execute([$approvedHours, $approvedHours, $adminId, $now, $note !== '' ? $note : null, $id]);
+                $upd->execute([$approvedHours, $approvedHours, $adminId, $now, $extraNote, $id]);
             }
 
-            $stmt2 = $this->conn->prepare("SELECT ws.*, u.username, u.role FROM work_submissions ws INNER JOIN users u ON u.id = ws.user_id WHERE ws.id = ? LIMIT 1");
+            $stmt2 = $this->conn->prepare("SELECT ws.*, u.username, u.role FROM work_submissions ws LEFT JOIN users u ON u.id = ws.user_id WHERE ws.id = ? LIMIT 1");
             $stmt2->execute([$id]);
             $out = $stmt2->fetch(PDO::FETCH_ASSOC);
             $this->sendJsonResponse(200, 'OK', $out);

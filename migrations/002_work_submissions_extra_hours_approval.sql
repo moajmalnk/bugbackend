@@ -20,6 +20,8 @@ ALTER TABLE work_submissions
   ADD COLUMN extra_hours_admin_note TEXT NULL DEFAULT NULL
     AFTER extra_hours_reviewed_at;
 
--- Optional: normalize legacy rows (otherwise `none` + request still counts OT until user resaves)
+-- Optional grandfather: only rows with extra_hours_approval_status = 'none' are updated.
+-- Rows already saved as 'pending' (or 'approved' / 'rejected') by the app are NOT changed.
 -- UPDATE work_submissions SET extra_hours_approval_status = 'approved', extra_hours_approved_amount = overtime_hours
--- WHERE (COALESCE(requested_extra_hours,0) > 0 OR TRIM(COALESCE(approval_reason,'')) <> '') AND extra_hours_approval_status = 'none';
+-- WHERE (COALESCE(requested_extra_hours,0) > 0 OR NULLIF(TRIM(COALESCE(approval_reason,'')),'') IS NOT NULL)
+--   AND extra_hours_approval_status = 'none';

@@ -79,6 +79,11 @@ class UpdateController extends BaseAPI
             $expectedDate = $data['expected_date'] ?? null;
             $expectedTime = $data['expected_time'] ?? null;
 
+            $roleStmt = $this->conn->prepare("SELECT role FROM users WHERE id = ?");
+            $roleStmt->execute([$userId]);
+            $dbUserRole = $roleStmt->fetchColumn();
+            $canSetDevFields = in_array($dbUserRole, ['admin', 'developer'], true);
+
             // Use ProjectMemberController for access check (admins, testers, developers assigned)
             $pmc = new ProjectMemberController();
             if (!$pmc->hasProjectAccess($userId, $projectId)) {
@@ -113,6 +118,19 @@ class UpdateController extends BaseAPI
                 $fields[] = 'expected_time';
                 $values[] = $expectedTime;
                 $placeholders[] = '?';
+            }
+
+            if ($canSetDevFields) {
+                if (isset($data['calculated_hours']) && $data['calculated_hours'] !== '' && is_numeric($data['calculated_hours'])) {
+                    $fields[] = 'calculated_hours';
+                    $values[] = round((float) $data['calculated_hours'], 2);
+                    $placeholders[] = '?';
+                }
+                if (!empty($data['update_priority']) && in_array($data['update_priority'], ['high', 'medium', 'low'], true)) {
+                    $fields[] = 'update_priority';
+                    $values[] = $data['update_priority'];
+                    $placeholders[] = '?';
+                }
             }
             
             $sql = "INSERT INTO updates (" . implode(', ', $fields) . ") VALUES (" . implode(', ', $placeholders) . ")";
@@ -462,6 +480,10 @@ class UpdateController extends BaseAPI
                     'description' => $data['description'],
                     'expected_date' => $expectedDate,
                     'expected_time' => $expectedTime,
+                    'calculated_hours' => ($canSetDevFields && isset($data['calculated_hours']) && $data['calculated_hours'] !== '' && is_numeric($data['calculated_hours']))
+                        ? round((float) $data['calculated_hours'], 2) : null,
+                    'update_priority' => ($canSetDevFields && !empty($data['update_priority']) && in_array($data['update_priority'], ['high', 'medium', 'low'], true))
+                        ? $data['update_priority'] : null,
                     'created_by_id' => $userId,
                     'created_by' => $username ?? $userId,
                     'created_at' => date('Y-m-d H:i:s'),
@@ -622,6 +644,18 @@ class UpdateController extends BaseAPI
                 'project_name' => $update['project_name'] ?? null,
                 'expected_date' => $update['expected_date'] ?? null,
                 'expected_time' => $update['expected_time'] ?? null,
+                'calculated_hours' => isset($update['calculated_hours']) ? $update['calculated_hours'] : null,
+                'update_priority' => $update['update_priority'] ?? null,
+                'approved_at' => $update['approved_at'] ?? null,
+                'declined_at' => $update['declined_at'] ?? null,
+                'completed_at' => $update['completed_at'] ?? null,
+                'completion_tested' => array_key_exists('completion_tested', $update) && $update['completion_tested'] !== null
+                    ? (int) $update['completion_tested'] : null,
+                'completion_dev_hours' => $update['completion_dev_hours'] ?? null,
+                'completion_dev_started_at' => $update['completion_dev_started_at'] ?? null,
+                'completion_dev_ended_at' => $update['completion_dev_ended_at'] ?? null,
+                'completion_tested_by' => $update['completion_tested_by'] ?? null,
+                'completion_notes' => $update['completion_notes'] ?? null,
                 'attachments' => $processedAttachments,
                 'screenshots' => $screenshots,
                 'files' => $files,
@@ -679,7 +713,11 @@ class UpdateController extends BaseAPI
                     'updated_at' => $update['updated_at'],
                     'status' => $update['status'],
                     'project_id' => $update['project_id'],
-                    'project_name' => $update['project_name']
+                    'project_name' => $update['project_name'],
+                    'expected_date' => $update['expected_date'] ?? null,
+                    'expected_time' => $update['expected_time'] ?? null,
+                    'calculated_hours' => $update['calculated_hours'] ?? null,
+                    'update_priority' => $update['update_priority'] ?? null,
                 ];
             }, $updates);
             $this->sendJsonResponse(200, "Updates retrieved successfully", $result);
@@ -734,7 +772,11 @@ class UpdateController extends BaseAPI
                     'updated_at' => $update['updated_at'],
                     'status' => $update['status'],
                     'project_id' => $update['project_id'],
-                    'project_name' => $update['project_name']
+                    'project_name' => $update['project_name'],
+                    'expected_date' => $update['expected_date'] ?? null,
+                    'expected_time' => $update['expected_time'] ?? null,
+                    'calculated_hours' => $update['calculated_hours'] ?? null,
+                    'update_priority' => $update['update_priority'] ?? null,
                 ];
             }, $updates);
 
@@ -827,6 +869,11 @@ class UpdateController extends BaseAPI
                 $this->sendJsonResponse(403, 'You do not have permission to update this update');
                 return;
             }
+
+            $roleStmt = $this->conn->prepare("SELECT role FROM users WHERE id = ?");
+            $roleStmt->execute([$userId]);
+            $dbUserRole = $roleStmt->fetchColumn();
+            $canSetDevFields = in_array($dbUserRole, ['admin', 'developer'], true);
             
             $fields = [];
             $values = [];
@@ -853,6 +900,25 @@ class UpdateController extends BaseAPI
             if (isset($data['expected_time'])) {
                 $fields[] = "expected_time = ?";
                 $values[] = !empty($data['expected_time']) ? $data['expected_time'] : null;
+            }
+
+            if ($canSetDevFields) {
+                if (array_key_exists('calculated_hours', $data)) {
+                    $fields[] = "calculated_hours = ?";
+                    $raw = $data['calculated_hours'];
+                    if ($raw === '' || $raw === null) {
+                        $values[] = null;
+                    } elseif (is_numeric($raw)) {
+                        $values[] = round((float) $raw, 2);
+                    } else {
+                        $values[] = null;
+                    }
+                }
+                if (array_key_exists('update_priority', $data)) {
+                    $fields[] = "update_priority = ?";
+                    $p = $data['update_priority'];
+                    $values[] = (is_string($p) && in_array($p, ['high', 'medium', 'low'], true)) ? $p : null;
+                }
             }
             
             // Handle attachment deletions
@@ -1136,39 +1202,85 @@ class UpdateController extends BaseAPI
     public function complete($id)
     {
         try {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                $this->sendJsonResponse(405, "Method not allowed");
+                return;
+            }
+
             $decoded = $this->validateToken();
             if (!$decoded || !isset($decoded->user_id)) {
                 $this->sendJsonResponse(401, "Unauthorized: Invalid or missing token");
                 return;
             }
             $userId = $decoded->user_id;
-            $userRole = $decoded->role;
-            
-            // Validate ID
+
             if (empty($id)) {
                 $this->sendJsonResponse(400, "Update ID is required");
                 return;
             }
-            
+
+            $data = $this->getRequestData();
+            if (!is_array($data)) {
+                $data = [];
+            }
+
+            $rawTested = $data['completion_tested'] ?? $data['tested'] ?? null;
+            $completionTested = null;
+            if ($rawTested === null || $rawTested === '') {
+                $this->sendJsonResponse(400, "Field completion_tested is required (true/false or yes/no)");
+                return;
+            }
+            if (is_bool($rawTested)) {
+                $completionTested = $rawTested ? 1 : 0;
+            } elseif (is_numeric($rawTested)) {
+                $completionTested = ((int) $rawTested) ? 1 : 0;
+            } elseif (is_string($rawTested)) {
+                $t = strtolower(trim($rawTested));
+                if (in_array($t, ['yes', 'true', '1'], true)) {
+                    $completionTested = 1;
+                } elseif (in_array($t, ['no', 'false', '0'], true)) {
+                    $completionTested = 0;
+                }
+            }
+            if ($completionTested === null) {
+                $this->sendJsonResponse(400, "Invalid completion_tested: use yes/no or true/false");
+                return;
+            }
+
+            $normDt = function ($v) {
+                if ($v === null || $v === '') {
+                    return null;
+                }
+                $s = trim(str_replace('T', ' ', (string) $v));
+                return $s === '' ? null : $s;
+            };
+
+            $devHours = null;
+            if (isset($data['completion_dev_hours']) && $data['completion_dev_hours'] !== '' && is_numeric($data['completion_dev_hours'])) {
+                $devHours = round((float) $data['completion_dev_hours'], 2);
+            }
+
+            $devStarted = $normDt($data['completion_dev_started_at'] ?? null);
+            $devEnded = $normDt($data['completion_dev_ended_at'] ?? null);
+            $testedBy = isset($data['completion_tested_by']) ? trim((string) $data['completion_tested_by']) : '';
+            $testedBy = $testedBy === '' ? null : substr($testedBy, 0, 255);
+            $notes = isset($data['completion_notes']) ? trim((string) $data['completion_notes']) : '';
+            $notes = $notes === '' ? null : $notes;
+
             // Auto-migrate: Add 'completed' to status ENUM if it doesn't exist
             try {
                 $enumCheck = $this->conn->query("SHOW COLUMNS FROM updates WHERE Field = 'status'");
                 $enumData = $enumCheck->fetch(PDO::FETCH_ASSOC);
                 if ($enumData && isset($enumData['Type'])) {
                     $enumType = $enumData['Type'];
-                    // Check if 'completed' is not in the ENUM
                     if (stripos($enumType, 'completed') === false) {
-                        error_log("UpdateController::complete - Adding 'completed' to status ENUM");
                         $this->conn->exec("ALTER TABLE updates MODIFY COLUMN status ENUM('pending', 'approved', 'declined', 'completed') DEFAULT 'pending'");
-                        error_log("UpdateController::complete - Successfully added 'completed' to status ENUM");
                     }
                 }
             } catch (Exception $e) {
-                error_log("UpdateController::complete - Warning: Could not check/update status ENUM: " . $e->getMessage());
-                // Continue anyway - might already be updated
+                error_log("UpdateController::complete - ENUM check: " . $e->getMessage());
             }
-            
-            // Fetch update to get project_id and status
+
             $stmt = $this->conn->prepare("SELECT * FROM updates WHERE id = ?");
             $stmt->execute([$id]);
             $update = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -1176,46 +1288,50 @@ class UpdateController extends BaseAPI
                 $this->sendJsonResponse(404, "Update not found");
                 return;
             }
-            
-            // Only allow completing approved updates
+
             if ($update['status'] !== 'approved') {
                 $this->sendJsonResponse(400, "Only approved updates can be marked as completed");
                 return;
             }
-            
+
             $projectId = $update['project_id'];
             $pmc = new ProjectMemberController();
             if (!$pmc->hasProjectAccess($userId, $projectId)) {
                 $this->sendJsonResponse(403, 'You are not a member of this project');
                 return;
             }
-            
-            // Check if updated_at column exists, if not just update status
+
             $columnsCheck = $this->conn->query("SHOW COLUMNS FROM updates LIKE 'updated_at'");
             $hasUpdatedAt = $columnsCheck->rowCount() > 0;
-            
-            // Allow project members (admin, developer, tester) to mark approved updates as completed
+
+            $sql = "UPDATE updates SET status = 'completed', completed_at = NOW(), completion_tested = ?, completion_dev_hours = ?, completion_dev_started_at = ?, completion_dev_ended_at = ?, completion_tested_by = ?, completion_notes = ?";
             if ($hasUpdatedAt) {
-                $stmt = $this->conn->prepare("UPDATE updates SET status = 'completed', updated_at = NOW() WHERE id = ?");
-            } else {
-                $stmt = $this->conn->prepare("UPDATE updates SET status = 'completed' WHERE id = ?");
+                $sql .= ", updated_at = NOW()";
             }
-            $stmt->execute([$id]);
-            
+            $sql .= " WHERE id = ?";
+
+            $stmt = $this->conn->prepare($sql);
+            $stmt->execute([
+                $completionTested,
+                $devHours,
+                $devStarted,
+                $devEnded,
+                $testedBy,
+                $notes,
+                $id,
+            ]);
+
             if ($stmt->rowCount() === 0) {
                 $this->sendJsonResponse(404, "Update not found or no changes made");
                 return;
             }
-            
+
             $this->sendJsonResponse(200, "Update marked as completed successfully");
         } catch (PDOException $e) {
             error_log("UpdateController::complete - PDO Error: " . $e->getMessage());
-            error_log("UpdateController::complete - SQL State: " . $e->getCode());
-            error_log("UpdateController::complete - Error Info: " . json_encode($e->errorInfo()));
             $this->sendJsonResponse(500, "Database error: " . $e->getMessage());
         } catch (Exception $e) {
             error_log("UpdateController::complete - Exception: " . $e->getMessage());
-            error_log("UpdateController::complete - Trace: " . $e->getTraceAsString());
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
         }
     }
@@ -1248,7 +1364,13 @@ class UpdateController extends BaseAPI
                 $this->sendJsonResponse(403, "Only admin can approve or decline updates");
                 return;
             }
-            $stmt = $this->conn->prepare("UPDATE updates SET status = ? WHERE id = ?");
+            if ($status === 'approved') {
+                $stmt = $this->conn->prepare("UPDATE updates SET status = ?, approved_at = NOW() WHERE id = ?");
+            } elseif ($status === 'declined') {
+                $stmt = $this->conn->prepare("UPDATE updates SET status = ?, declined_at = NOW() WHERE id = ?");
+            } else {
+                $stmt = $this->conn->prepare("UPDATE updates SET status = ? WHERE id = ?");
+            }
             $stmt->execute([$status, $id]);
             $this->sendJsonResponse(200, "Update $status successfully");
         } catch (Exception $e) {
