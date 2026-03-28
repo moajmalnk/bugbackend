@@ -174,8 +174,10 @@ class BaseAPI {
         $tempResult = $this->utils->validateJWT($token);
         $isImpersonationToken = $tempResult && isset($tempResult->purpose) && $tempResult->purpose === 'dashboard_access' && isset($tempResult->admin_id);
         
-        // Debug logging
-        error_log("🔍 BaseAPI::validateToken - Token purpose: " . ($tempResult->purpose ?? 'none') . ", Admin ID: " . ($tempResult->admin_id ?? 'none') . ", Is impersonation: " . ($isImpersonationToken ? 'YES' : 'NO'));
+        // Debug logging (avoid reading properties on false/null — fatal in PHP 8+)
+        $tp = is_object($tempResult) ? ($tempResult->purpose ?? 'none') : 'invalid';
+        $ta = is_object($tempResult) ? ($tempResult->admin_id ?? 'none') : 'none';
+        error_log("🔍 BaseAPI::validateToken - Token purpose: " . $tp . ", Admin ID: " . $ta . ", Is impersonation: " . ($isImpersonationToken ? 'YES' : 'NO'));
         
         // Don't cache impersonation tokens to avoid conflicts
         if (!$isImpersonationToken) {
@@ -248,7 +250,8 @@ class BaseAPI {
                     error_log("❌ Manual impersonation error: " . $e->getMessage());
                 }
             } else {
-                error_log("🔍 No impersonation - Result: " . ($result ? 'valid' : 'null') . ", ImpersonateId: " . ($impersonateId ?? 'null') . ", Purpose: " . ($result->purpose ?? 'none'));
+                $rp = is_object($result) ? ($result->purpose ?? 'none') : 'invalid';
+                error_log("🔍 No impersonation - Result: " . (is_object($result) ? 'valid' : 'invalid') . ", ImpersonateId: " . ($impersonateId ?? 'null') . ", Purpose: " . $rp);
             }
         
             if ($result && isset($result->user_id)) {

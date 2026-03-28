@@ -37,17 +37,31 @@ class VoiceUploadController extends BaseAPI {
                 return;
             }
             
-            // Check file type
-            $allowedTypes = ['audio/webm', 'audio/wav', 'audio/mp3', 'audio/mpeg', 'audio/ogg'];
-            if (!in_array($file['type'], $allowedTypes)) {
-                $this->sendJsonResponse(400, "Invalid file type. Only audio files are allowed");
+            // Resolve MIME: browsers may send audio/webm, video/webm (WebM container), octet-stream, or empty
+            $clientType = isset($file['type']) ? trim((string) $file['type']) : '';
+            $sniffed = '';
+            if (!empty($file['tmp_name']) && is_uploaded_file($file['tmp_name']) && function_exists('mime_content_type')) {
+                $sniffed = @mime_content_type($file['tmp_name']) ?: '';
+            }
+            $effectiveMime = $sniffed ?: $clientType;
+            if ($this->isAllowedVoiceMime($effectiveMime, $clientType)) {
+                // ok
+            } else {
+                $this->sendJsonResponse(400, "Invalid file type (" . ($effectiveMime ?: $clientType ?: 'unknown') . "). Only audio recordings (e.g. WebM, OGG, MP3, WAV) are allowed.");
                 return;
             }
             
             // Get the absolute path to the uploads directory
             $uploadDir = __DIR__ . '/../../uploads/voice_notes/';
             if (!is_dir($uploadDir)) {
-                mkdir($uploadDir, 0755, true);
+                if (!@mkdir($uploadDir, 0775, true) && !is_dir($uploadDir)) {
+                    $this->sendJsonResponse(500, "Could not create upload directory. Check server permissions on backend/uploads/voice_notes.");
+                    return;
+                }
+            }
+            if (!is_writable($uploadDir)) {
+                $this->sendJsonResponse(500, "Upload directory is not writable by the web server. On XAMPP/macOS run: chmod -R ugo+w backend/uploads (or chown uploads to the Apache user).");
+                return;
             }
             
             // Generate unique filename
@@ -57,12 +71,12 @@ class VoiceUploadController extends BaseAPI {
             
             // Move uploaded file
             if (!move_uploaded_file($file['tmp_name'], $filepath)) {
-                $this->sendJsonResponse(500, "Failed to save uploaded file");
+                $this->sendJsonResponse(500, "Failed to save uploaded file (move_uploaded_file). Check that backend/uploads/voice_notes is writable by the web server.");
                 return;
             }
             
             // Get audio duration using FFmpeg if available, otherwise estimate
-            $duration = $this->getAudioDuration($filepath);
+            $duration = $this->getAudioDurationSafe($filepath);
             
             // Generate the URL to access the file through the audio API
             $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' || $_SERVER['SERVER_PORT'] == 443) ? "https://" : "http://";
@@ -76,7 +90,7 @@ class VoiceUploadController extends BaseAPI {
                 'file_url' => $publicUrl,
                 'duration' => $duration,
                 'file_size' => $file['size'],
-                'file_type' => $file['type']
+                'file_type' => $clientType ?: $effectiveMime
             ]);
             
         } catch (Exception $e) {
@@ -87,6 +101,52 @@ class VoiceUploadController extends BaseAPI {
         }
     }
     
+    /**
+     * WebM voice notes are often reported as video/webm; allow common browser MIME quirks.
+     */
+    private function isAllowedVoiceMime($effectiveMime, $clientType) {
+        $allowedExact = [
+            'audio/webm', 'audio/wav', 'audio/x-wav', 'audio/mp3', 'audio/mpeg', 'audio/ogg', 'audio/opus',
+            'video/webm', // MediaRecorder / file sniffing often use this for .webm
+        ];
+        $m = strtolower(trim($effectiveMime));
+        $c = strtolower(trim($clientType));
+        if ($m !== '' && in_array($m, $allowedExact, true)) {
+            return true;
+        }
+        if ($c !== '' && in_array($c, $allowedExact, true)) {
+            return true;
+        }
+        if ($m !== '' && (strpos($m, 'audio/webm') === 0 || strpos($m, 'audio/ogg') === 0 || strpos($m, 'audio/opus') === 0)) {
+            return true;
+        }
+        if ($c !== '' && (strpos($c, 'audio/webm') === 0 || strpos($c, 'video/webm') === 0)) {
+            return true;
+        }
+        // Empty or generic binary — accept only if client claimed an audio type or webm
+        if (($m === '' || $m === 'application/octet-stream') && $c !== '' && (strpos($c, 'audio/') === 0 || strpos($c, 'video/webm') === 0)) {
+            return true;
+        }
+        // Some stacks send no MIME; original filename from client is often voice-message.webm
+        if (($m === '' || $m === 'application/octet-stream') && isset($_FILES['voice_file']['name'])) {
+            $ext = strtolower(pathinfo((string) $_FILES['voice_file']['name'], PATHINFO_EXTENSION));
+            if (in_array($ext, ['webm', 'ogg', 'opus', 'wav', 'mp3', 'mpeg'], true)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function getAudioDurationSafe($filepath) {
+        try {
+            return $this->getAudioDuration($filepath);
+        } catch (Throwable $e) {
+            error_log("Voice duration fallback: " . $e->getMessage());
+            $filesize = @filesize($filepath) ?: 0;
+            return max(1, (int) round($filesize / (16000 * 2)));
+        }
+    }
+
     private function getAudioDuration($filepath) {
         // Try to use FFmpeg if available
         $ffmpegPath = $this->findFFmpeg();

@@ -1086,34 +1086,49 @@ class BugDocsController extends BaseAPI {
      * 
      * @param int $documentId Document ID from user_documents table
      * @param string $userId User ID (for authorization)
+     * @param bool $isAdmin Admins may delete any document; Drive delete uses creator's Google account when needed
      * @return array Success status
      */
-    public function deleteDocument($documentId, $userId) {
+    public function deleteDocument($documentId, $userId, $isAdmin = false) {
         try {
-            // Get document details and verify ownership
-            $stmt = $this->conn->prepare(
-                "SELECT google_doc_id, creator_user_id, doc_title 
-                 FROM user_documents 
-                 WHERE id = ? AND creator_user_id = ?"
-            );
-            $stmt->execute([$documentId, $userId]);
+            if ($isAdmin) {
+                $stmt = $this->conn->prepare(
+                    "SELECT google_doc_id, creator_user_id, doc_title 
+                     FROM user_documents 
+                     WHERE id = ?"
+                );
+                $stmt->execute([$documentId]);
+            } else {
+                $stmt = $this->conn->prepare(
+                    "SELECT google_doc_id, creator_user_id, doc_title 
+                     FROM user_documents 
+                     WHERE id = ? AND creator_user_id = ?"
+                );
+                $stmt->execute([$documentId, $userId]);
+            }
             $document = $stmt->fetch(PDO::FETCH_ASSOC);
             
             if (!$document) {
                 throw new Exception('Document not found or access denied');
             }
             
-            // Get authenticated client
-            $client = $this->authService->getClientForUser($userId);
-            $driveService = new Google\Service\Drive($client);
+            // Use document owner's Google OAuth for Drive API when admin deletes someone else's doc
+            $googleAccountUserId = $isAdmin && (string)$document['creator_user_id'] !== (string)$userId
+                ? $document['creator_user_id']
+                : $userId;
             
-            // Delete from Google Drive
             try {
-                $driveService->files->delete($document['google_doc_id']);
-                error_log("Deleted Google Doc: {$document['google_doc_id']}");
+                $client = $this->authService->getClientForUser($googleAccountUserId);
+                $driveService = new Google\Service\Drive($client);
+                try {
+                    $driveService->files->delete($document['google_doc_id']);
+                    error_log("Deleted Google Doc: {$document['google_doc_id']}");
+                } catch (Exception $e) {
+                    error_log("Warning: Failed to delete from Google Drive: " . $e->getMessage());
+                }
             } catch (Exception $e) {
-                error_log("Warning: Failed to delete from Google Drive: " . $e->getMessage());
-                // Continue to delete from database even if Google Drive deletion fails
+                error_log("Warning: No Google client for Drive delete (user {$googleAccountUserId}): " . $e->getMessage());
+                // Still remove DB row so admin can clear records if Drive token missing
             }
             
             // Delete from database

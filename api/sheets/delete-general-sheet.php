@@ -66,10 +66,12 @@ try {
         exit();
     }
     
-    error_log("Deleting sheet ID: {$sheetId} for user: {$userId}");
+    $isAdmin = (isset($userData->role) && strtolower((string)$userData->role) === 'admin')
+        || (!empty($userData->impersonated) && isset($userData->admin_role) && strtolower((string)$userData->admin_role) === 'admin');
     
-    // Delete sheet
-    $result = $controller->deleteSheet($sheetId, $userId);
+    error_log("Deleting sheet ID: {$sheetId} for user: {$userId}, isAdmin: " . ($isAdmin ? '1' : '0'));
+    
+    $result = $controller->deleteSheet($sheetId, $userId, $isAdmin);
     
     http_response_code(200);
     echo json_encode($result);

@@ -66,10 +66,12 @@ try {
         exit();
     }
     
-    error_log("Deleting document ID: {$documentId} for user: {$userId}");
+    $isAdmin = (isset($userData->role) && strtolower((string)$userData->role) === 'admin')
+        || (!empty($userData->impersonated) && isset($userData->admin_role) && strtolower((string)$userData->admin_role) === 'admin');
     
-    // Delete document
-    $result = $controller->deleteDocument($documentId, $userId);
+    error_log("Deleting document ID: {$documentId} for user: {$userId}, isAdmin: " . ($isAdmin ? '1' : '0'));
+    
+    $result = $controller->deleteDocument($documentId, $userId, $isAdmin);
     
     http_response_code(200);
     echo json_encode($result);

@@ -135,19 +135,38 @@ class ChatGroupController extends BaseAPI {
             $query = "
                 SELECT 
                     cg.*,
-                    COUNT(cgm.user_id) as member_count,
+                    COUNT(DISTINCT cgm.user_id) as member_count,
                     MAX(cm.created_at) as last_message_at,
-                    CASE WHEN cgm.user_id IS NOT NULL THEN 1 ELSE 0 END as is_member
+                    MAX(CASE WHEN cgm.user_id = ? THEN 1 ELSE 0 END) as is_member,
+                    (SELECT m.sender_id FROM chat_messages m 
+                     WHERE m.group_id = cg.id AND m.is_deleted = 0 
+                     ORDER BY m.created_at DESC LIMIT 1) as last_message_sender_id,
+                    (SELECT COALESCE(u.username, u.email, 'Member') FROM chat_messages m 
+                     LEFT JOIN users u ON u.id = m.sender_id
+                     WHERE m.group_id = cg.id AND m.is_deleted = 0 
+                     ORDER BY m.created_at DESC LIMIT 1) as last_message_sender_name,
+                    (SELECT 
+                        CASE 
+                            WHEN m.message_type = 'voice' THEN 'Voice message'
+                            WHEN m.message_type = 'image' THEN 'Photo'
+                            WHEN m.message_type = 'video' THEN 'Video'
+                            WHEN m.message_type IN ('document','audio') THEN IFNULL(NULLIF(TRIM(m.media_file_name), ''), 'File')
+                            ELSE LEFT(COALESCE(NULLIF(TRIM(m.content), ''), 'Message'), 200)
+                        END
+                     FROM chat_messages m
+                     WHERE m.group_id = cg.id AND m.is_deleted = 0 
+                     ORDER BY m.created_at DESC LIMIT 1
+                    ) as last_message_preview
                 FROM chat_groups cg
                 LEFT JOIN chat_group_members cgm ON cg.id = cgm.group_id
                 LEFT JOIN chat_messages cm ON cg.id = cm.group_id AND cm.is_deleted = 0
                 WHERE cg.project_id = ? AND cg.is_active = 1
                 GROUP BY cg.id
-                ORDER BY cg.created_at DESC
+                ORDER BY (MAX(cm.created_at) IS NULL), MAX(cm.created_at) DESC, cg.name ASC
             ";
             
             $stmt = $this->conn->prepare($query);
-            $stmt->execute([$projectId]);
+            $stmt->execute([$userId, $projectId]);
             $groups = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
             $this->sendJsonResponse(200, "Chat groups retrieved successfully", $groups);
@@ -670,8 +689,27 @@ class ChatGroupController extends BaseAPI {
         $query = "
             SELECT 
                 cg.*,
-                COUNT(cgm.user_id) as member_count,
-                MAX(cm.created_at) as last_message_at
+                COUNT(DISTINCT cgm.user_id) as member_count,
+                MAX(cm.created_at) as last_message_at,
+                (SELECT m.sender_id FROM chat_messages m 
+                 WHERE m.group_id = cg.id AND m.is_deleted = 0 
+                 ORDER BY m.created_at DESC LIMIT 1) as last_message_sender_id,
+                (SELECT COALESCE(u.username, u.email, 'Member') FROM chat_messages m 
+                 LEFT JOIN users u ON u.id = m.sender_id
+                 WHERE m.group_id = cg.id AND m.is_deleted = 0 
+                 ORDER BY m.created_at DESC LIMIT 1) as last_message_sender_name,
+                (SELECT 
+                    CASE 
+                        WHEN m.message_type = 'voice' THEN 'Voice message'
+                        WHEN m.message_type = 'image' THEN 'Photo'
+                        WHEN m.message_type = 'video' THEN 'Video'
+                        WHEN m.message_type IN ('document','audio') THEN IFNULL(NULLIF(TRIM(m.media_file_name), ''), 'File')
+                        ELSE LEFT(COALESCE(NULLIF(TRIM(m.content), ''), 'Message'), 200)
+                    END
+                 FROM chat_messages m
+                 WHERE m.group_id = cg.id AND m.is_deleted = 0 
+                 ORDER BY m.created_at DESC LIMIT 1
+                ) as last_message_preview
             FROM chat_groups cg
             LEFT JOIN chat_group_members cgm ON cg.id = cgm.group_id
             LEFT JOIN chat_messages cm ON cg.id = cm.group_id AND cm.is_deleted = 0

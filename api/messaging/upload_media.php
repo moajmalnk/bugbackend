@@ -10,13 +10,19 @@ class UploadMediaAPI extends BaseAPI {
         'audio' => ['audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/webm'],
         'document' => [
             'application/pdf',
+            'application/x-pdf',
+            'application/acrobat',
             'application/msword',
             'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
             'application/vnd.ms-excel',
             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             'text/plain',
+            'text/csv',
+            'application/csv',
             'application/zip',
-            'application/x-rar-compressed'
+            'application/x-zip-compressed',
+            'application/x-rar-compressed',
+            'application/vnd.rar',
         ]
     ];
     
@@ -24,9 +30,8 @@ class UploadMediaAPI extends BaseAPI {
         parent::__construct();
         $this->uploadDir = __DIR__ . '/../../uploads/media/';
         
-        // Create directory if it doesn't exist
-        if (!file_exists($this->uploadDir)) {
-            mkdir($this->uploadDir, 0755, true);
+        if (!is_dir($this->uploadDir)) {
+            @mkdir($this->uploadDir, 0775, true);
         }
     }
     
@@ -38,6 +43,10 @@ class UploadMediaAPI extends BaseAPI {
         
         try {
             $decoded = $this->validateToken();
+            if (!is_object($decoded) || !isset($decoded->user_id)) {
+                $this->sendJsonResponse(401, "Invalid or expired session. Please sign in again.");
+                return;
+            }
             $userId = $decoded->user_id;
             
             if (!isset($_FILES['file'])) {
@@ -60,12 +69,33 @@ class UploadMediaAPI extends BaseAPI {
                 return;
             }
             
-            // Determine media type
-            $mimeType = mime_content_type($file['tmp_name']);
-            $mediaType = $this->getMediaType($mimeType);
+            if (!is_dir($this->uploadDir) || !is_writable($this->uploadDir)) {
+                $this->sendJsonResponse(500, "Upload folder is not writable by the web server. On XAMPP/macOS: chmod -R ugo+w backend/uploads/media");
+                return;
+            }
             
+            // Determine media type (sniff + client hint + extension fallback)
+            $sniffed = @mime_content_type($file['tmp_name']);
+            if ($sniffed === false || $sniffed === '') {
+                $sniffed = '';
+            }
+            $clientType = isset($file['type']) ? trim((string) $file['type']) : '';
+            $mimeType = $sniffed ?: $clientType;
+            $lowerMime = strtolower(trim($mimeType));
+            // Do not trust octet-stream alone — use filename (e.g. PDF) via extension fallback
+            if ($lowerMime === 'application/octet-stream' || $lowerMime === '') {
+                $mediaType = $this->getMediaTypeFromExtension($file['name'] ?? '');
+                if ($mediaType && $mimeType === '') {
+                    $mimeType = 'application/octet-stream';
+                }
+            } else {
+                $mediaType = $this->getMediaType($mimeType);
+                if (!$mediaType) {
+                    $mediaType = $this->getMediaTypeFromExtension($file['name'] ?? '');
+                }
+            }
             if (!$mediaType) {
-                $this->sendJsonResponse(400, "Unsupported file type: $mimeType");
+                $this->sendJsonResponse(400, "Unsupported file type: " . ($mimeType ?: 'unknown'));
                 return;
             }
             
@@ -76,7 +106,7 @@ class UploadMediaAPI extends BaseAPI {
             
             // Move uploaded file
             if (!move_uploaded_file($file['tmp_name'], $filepath)) {
-                $this->sendJsonResponse(500, "Failed to save file");
+                $this->sendJsonResponse(500, "Failed to save file. Check permissions on backend/uploads/media (web server must be able to write).");
                 return;
             }
             
@@ -101,17 +131,53 @@ class UploadMediaAPI extends BaseAPI {
             
             $this->sendJsonResponse(200, "File uploaded successfully", $response);
             
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             error_log("Error uploading media: " . $e->getMessage());
             $this->sendJsonResponse(500, "Failed to upload media: " . $e->getMessage());
         }
     }
     
     private function getMediaType($mimeType) {
+        $mimeType = strtolower(trim((string) $mimeType));
+        if ($mimeType === '') {
+            return null;
+        }
         foreach ($this->allowedTypes as $type => $mimes) {
-            if (in_array($mimeType, $mimes)) {
+            if (in_array($mimeType, $mimes, true)) {
                 return $type;
             }
+        }
+        // e.g. audio/webm; codecs=opus
+        foreach ($this->allowedTypes as $type => $mimes) {
+            foreach ($mimes as $allowed) {
+                if (strpos($mimeType, $allowed) === 0) {
+                    return $type;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * When mime_content_type returns octet-stream or empty (common for uploads).
+     */
+    private function getMediaTypeFromExtension($filename) {
+        $ext = strtolower(pathinfo((string) $filename, PATHINFO_EXTENSION));
+        $image = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+        $video = ['mp4', 'webm', 'mov', 'qt'];
+        $audio = ['mp3', 'mpeg', 'ogg', 'wav', 'm4a'];
+        $doc = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'txt', 'csv', 'zip', 'rar'];
+        if (in_array($ext, $image, true)) {
+            return 'image';
+        }
+        if (in_array($ext, $video, true)) {
+            return 'video';
+        }
+        if (in_array($ext, $audio, true)) {
+            return 'audio';
+        }
+        if (in_array($ext, $doc, true)) {
+            return 'document';
         }
         return null;
     }
@@ -119,8 +185,11 @@ class UploadMediaAPI extends BaseAPI {
     private function generateImageThumbnail($filepath, $filename) {
         try {
             $thumbnailDir = $this->uploadDir . 'thumbnails/';
-            if (!file_exists($thumbnailDir)) {
-                mkdir($thumbnailDir, 0755, true);
+            if (!is_dir($thumbnailDir)) {
+                @mkdir($thumbnailDir, 0775, true);
+            }
+            if (!is_writable($thumbnailDir)) {
+                return null;
             }
             
             $thumbnailFilename = 'thumb_' . $filename;
@@ -183,14 +252,18 @@ class UploadMediaAPI extends BaseAPI {
     }
     
     private function getFileUrl($filename) {
-        $baseUrl = $this->getBaseUrl();
-        return $baseUrl . '/api/messaging/get_media.php?file=' . urlencode($filename);
-    }
-    
-    private function getBaseUrl() {
-        $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
-        $host = $_SERVER['HTTP_HOST'];
-        return $protocol . '://' . $host;
+        // SCRIPT_NAME e.g. /BugRicer/backend/api/messaging/upload_media.php → public backend root /BugRicer/backend
+        $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+            || (isset($_SERVER['SERVER_PORT']) && (int) $_SERVER['SERVER_PORT'] === 443)
+            ? 'https' : 'http';
+        $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+        $script = $_SERVER['SCRIPT_NAME'] ?? '';
+        $backendPublicPath = dirname(dirname(dirname($script)));
+        if ($backendPublicPath === '/' || $backendPublicPath === '.' || $backendPublicPath === '\\') {
+            $backendPublicPath = '';
+        }
+        return $protocol . '://' . $host . $backendPublicPath
+            . '/api/messaging/get_media.php?file=' . urlencode($filename);
     }
 }
 

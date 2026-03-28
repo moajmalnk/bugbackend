@@ -1148,34 +1148,47 @@ class BugSheetsController extends BaseAPI {
      * 
      * @param int $sheetId Sheet ID from user_sheets table
      * @param string $userId User ID (for authorization)
+     * @param bool $isAdmin Admins may delete any sheet; Drive delete uses creator's Google account when needed
      * @return array Success status
      */
-    public function deleteSheet($sheetId, $userId) {
+    public function deleteSheet($sheetId, $userId, $isAdmin = false) {
         try {
-            // Get sheet details and verify ownership
-            $stmt = $this->conn->prepare(
-                "SELECT google_sheet_id, creator_user_id, sheet_title 
-                 FROM user_sheets 
-                 WHERE id = ? AND creator_user_id = ?"
-            );
-            $stmt->execute([$sheetId, $userId]);
+            if ($isAdmin) {
+                $stmt = $this->conn->prepare(
+                    "SELECT google_sheet_id, creator_user_id, sheet_title 
+                     FROM user_sheets 
+                     WHERE id = ?"
+                );
+                $stmt->execute([$sheetId]);
+            } else {
+                $stmt = $this->conn->prepare(
+                    "SELECT google_sheet_id, creator_user_id, sheet_title 
+                     FROM user_sheets 
+                     WHERE id = ? AND creator_user_id = ?"
+                );
+                $stmt->execute([$sheetId, $userId]);
+            }
             $sheet = $stmt->fetch(PDO::FETCH_ASSOC);
             
             if (!$sheet) {
                 throw new Exception('Sheet not found or access denied');
             }
             
-            // Get authenticated client
-            $client = $this->authService->getClientForUser($userId);
-            $driveService = new Google\Service\Drive($client);
+            $googleAccountUserId = $isAdmin && (string)$sheet['creator_user_id'] !== (string)$userId
+                ? $sheet['creator_user_id']
+                : $userId;
             
-            // Delete from Google Drive
             try {
-                $driveService->files->delete($sheet['google_sheet_id']);
-                error_log("Deleted Google Sheet: {$sheet['google_sheet_id']}");
+                $client = $this->authService->getClientForUser($googleAccountUserId);
+                $driveService = new Google\Service\Drive($client);
+                try {
+                    $driveService->files->delete($sheet['google_sheet_id']);
+                    error_log("Deleted Google Sheet: {$sheet['google_sheet_id']}");
+                } catch (Exception $e) {
+                    error_log("Warning: Failed to delete from Google Drive: " . $e->getMessage());
+                }
             } catch (Exception $e) {
-                error_log("Warning: Failed to delete from Google Drive: " . $e->getMessage());
-                // Continue to delete from database even if Google Drive deletion fails
+                error_log("Warning: No Google client for Drive delete (user {$googleAccountUserId}): " . $e->getMessage());
             }
             
             // Delete from database

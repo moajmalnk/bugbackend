@@ -16,8 +16,12 @@ class GetMessageInfoAPI extends BaseAPI {
         try {
             error_log("📨 get_message_info.php started");
             $decoded = $this->validateToken();
+            if (!is_object($decoded) || !isset($decoded->user_id)) {
+                $this->sendJsonResponse(401, "Invalid or expired session. Please sign in again.");
+                return;
+            }
             $userId = $decoded->user_id;
-            $role = $decoded->role;
+            $role = $decoded->role ?? 'user';
             error_log("✅ Token validated. User ID: $userId, Role: $role");
             
             $messageId = $_GET['message_id'] ?? null;
@@ -68,7 +72,6 @@ class GetMessageInfoAPI extends BaseAPI {
                 JOIN users u ON cgm.user_id = u.id
                 WHERE cgm.group_id = ? 
                     AND cgm.user_id != ?
-                    AND cgm.left_at IS NULL
                 ORDER BY u.username ASC
             ");
             $deliveryStmt->execute([$message['created_at'], $groupId, $message['sender_id']]);
@@ -138,7 +141,6 @@ class GetMessageInfoAPI extends BaseAPI {
                 JOIN users u ON cgm.user_id = u.id
                 WHERE cgm.group_id = ? 
                     AND cgm.user_id != ?
-                    AND cgm.left_at IS NULL
             ");
             $allMembersStmt->execute([$groupId, $message['sender_id']]);
             $allMembers = $allMembersStmt->fetchAll(PDO::FETCH_ASSOC);
@@ -162,7 +164,7 @@ class GetMessageInfoAPI extends BaseAPI {
             
             $this->sendJsonResponse(200, "Message info retrieved successfully", $result);
             
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             error_log("❌ Error getting message info: " . $e->getMessage());
             error_log("Stack trace: " . $e->getTraceAsString());
             $this->sendJsonResponse(500, "Failed to get message info: " . $e->getMessage());
