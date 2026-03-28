@@ -176,6 +176,74 @@ class ChatGroupController extends BaseAPI {
             $this->sendJsonResponse(500, "Failed to retrieve chat groups: " . $e->getMessage());
         }
     }
+
+    /**
+     * Chat groups the current user belongs to (for sidebar "my chats").
+     */
+    public function getMyGroups() {
+        if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+            $this->sendJsonResponse(405, "Method not allowed");
+            return;
+        }
+
+        try {
+            $decoded = $this->validateToken();
+            $userId = $decoded->user_id;
+            $userRole = $decoded->role;
+
+            $query = "
+                SELECT 
+                    cg.*,
+                    p.name as project_name,
+                    COUNT(DISTINCT cgm.user_id) as member_count,
+                    MAX(cm.created_at) as last_message_at,
+                    1 as is_member,
+                    (SELECT m.sender_id FROM chat_messages m 
+                     WHERE m.group_id = cg.id AND m.is_deleted = 0 
+                     ORDER BY m.created_at DESC LIMIT 1) as last_message_sender_id,
+                    (SELECT COALESCE(u.username, u.email, 'Member') FROM chat_messages m 
+                     LEFT JOIN users u ON u.id = m.sender_id
+                     WHERE m.group_id = cg.id AND m.is_deleted = 0 
+                     ORDER BY m.created_at DESC LIMIT 1) as last_message_sender_name,
+                    (SELECT 
+                        CASE 
+                            WHEN m.message_type = 'voice' THEN 'Voice message'
+                            WHEN m.message_type = 'image' THEN 'Photo'
+                            WHEN m.message_type = 'video' THEN 'Video'
+                            WHEN m.message_type IN ('document','audio') THEN IFNULL(NULLIF(TRIM(m.media_file_name), ''), 'File')
+                            ELSE LEFT(COALESCE(NULLIF(TRIM(m.content), ''), 'Message'), 200)
+                        END
+                     FROM chat_messages m
+                     WHERE m.group_id = cg.id AND m.is_deleted = 0 
+                     ORDER BY m.created_at DESC LIMIT 1
+                    ) as last_message_preview
+                FROM chat_groups cg
+                INNER JOIN chat_group_members cgm_self ON cgm_self.group_id = cg.id AND cgm_self.user_id = ?
+                JOIN projects p ON p.id = cg.project_id
+                LEFT JOIN chat_group_members cgm ON cgm.group_id = cg.id
+                LEFT JOIN chat_messages cm ON cm.group_id = cg.id AND cm.is_deleted = 0
+                WHERE cg.is_active = 1
+                GROUP BY cg.id, p.id, p.name
+                ORDER BY (MAX(cm.created_at) IS NULL), MAX(cm.created_at) DESC, cg.name ASC
+            ";
+
+            $stmt = $this->conn->prepare($query);
+            $stmt->execute([$userId]);
+            $groups = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $filtered = [];
+            foreach ($groups as $row) {
+                if ($this->validateProjectAccess($userId, $userRole, $row['project_id'])) {
+                    $filtered[] = $row;
+                }
+            }
+
+            $this->sendJsonResponse(200, "Your chat groups retrieved successfully", $filtered);
+        } catch (Exception $e) {
+            error_log("Error fetching my chat groups: " . $e->getMessage());
+            $this->sendJsonResponse(500, "Failed to retrieve chat groups: " . $e->getMessage());
+        }
+    }
     
     /**
      * Update a chat group
@@ -343,13 +411,6 @@ class ChatGroupController extends BaseAPI {
             $userId = $decoded->user_id;
             $userRole = $decoded->role;
             
-            // Check for SUPER_ADMIN or MESSAGING_MANAGE permission
-            $pm = PermissionManager::getInstance();
-            if (!$pm->hasPermission($userId, 'SUPER_ADMIN') && !$pm->hasPermission($userId, 'MESSAGING_MANAGE')) {
-                $this->sendJsonResponse(403, "You do not have permission to add members to groups");
-                return;
-            }
-            
             $input = json_decode(file_get_contents('php://input'), true);
             $memberId = $input['user_id'] ?? null;
             
@@ -362,6 +423,11 @@ class ChatGroupController extends BaseAPI {
             $group = $this->getGroupWithAccess($groupId, $userId, $userRole);
             if (!$group) {
                 $this->sendJsonResponse(404, "Chat group not found or access denied");
+                return;
+            }
+
+            if (!$this->canManageChatMembers($userId, $userRole, $group)) {
+                $this->sendJsonResponse(403, "You do not have permission to add members to this group");
                 return;
             }
             
@@ -404,13 +470,6 @@ class ChatGroupController extends BaseAPI {
             $userId = $decoded->user_id;
             $userRole = $decoded->role;
             
-            // Check for SUPER_ADMIN or MESSAGING_MANAGE permission
-            $pm = PermissionManager::getInstance();
-            if (!$pm->hasPermission($userId, 'SUPER_ADMIN') && !$pm->hasPermission($userId, 'MESSAGING_MANAGE')) {
-                $this->sendJsonResponse(403, "You do not have permission to add members to groups");
-                return;
-            }
-            
             if (!$userIds || !is_array($userIds) || empty($userIds)) {
                 $this->sendJsonResponse(400, "user_ids array is required");
                 return;
@@ -420,6 +479,11 @@ class ChatGroupController extends BaseAPI {
             $group = $this->getGroupWithAccess($groupId, $userId, $userRole);
             if (!$group) {
                 $this->sendJsonResponse(404, "Chat group not found or access denied");
+                return;
+            }
+
+            if (!$this->canManageChatMembers($userId, $userRole, $group)) {
+                $this->sendJsonResponse(403, "You do not have permission to add members to this group");
                 return;
             }
             
@@ -501,13 +565,6 @@ class ChatGroupController extends BaseAPI {
             $userId = $decoded->user_id;
             $userRole = $decoded->role;
             
-            // Check for SUPER_ADMIN or MESSAGING_MANAGE permission
-            $pm = PermissionManager::getInstance();
-            if (!$pm->hasPermission($userId, 'SUPER_ADMIN') && !$pm->hasPermission($userId, 'MESSAGING_MANAGE')) {
-                $this->sendJsonResponse(403, "You do not have permission to remove members from groups");
-                return;
-            }
-            
             $input = json_decode(file_get_contents('php://input'), true);
             $memberId = $input['user_id'] ?? null;
             
@@ -520,6 +577,11 @@ class ChatGroupController extends BaseAPI {
             $group = $this->getGroupWithAccess($groupId, $userId, $userRole);
             if (!$group) {
                 $this->sendJsonResponse(404, "Chat group not found or access denied");
+                return;
+            }
+
+            if (!$this->canManageChatMembers($userId, $userRole, $group)) {
+                $this->sendJsonResponse(403, "You do not have permission to remove members from this group");
                 return;
             }
             
@@ -554,13 +616,6 @@ class ChatGroupController extends BaseAPI {
             $userId = $decoded->user_id;
             $userRole = $decoded->role;
             
-            // Check for SUPER_ADMIN or MESSAGING_MANAGE permission
-            $pm = PermissionManager::getInstance();
-            if (!$pm->hasPermission($userId, 'SUPER_ADMIN') && !$pm->hasPermission($userId, 'MESSAGING_MANAGE')) {
-                $this->sendJsonResponse(403, "You do not have permission to remove members from groups");
-                return;
-            }
-            
             if (!$userIds || !is_array($userIds) || empty($userIds)) {
                 $this->sendJsonResponse(400, "user_ids array is required");
                 return;
@@ -570,6 +625,11 @@ class ChatGroupController extends BaseAPI {
             $group = $this->getGroupWithAccess($groupId, $userId, $userRole);
             if (!$group) {
                 $this->sendJsonResponse(404, "Chat group not found or access denied");
+                return;
+            }
+
+            if (!$this->canManageChatMembers($userId, $userRole, $group)) {
+                $this->sendJsonResponse(403, "You do not have permission to remove members from this group");
                 return;
             }
             
@@ -627,6 +687,26 @@ class ChatGroupController extends BaseAPI {
     /**
      * Helper methods
      */
+    private function canManageChatMembers($managerUserId, $managerRole, $group) {
+        if (!$group || !is_array($group)) {
+            return false;
+        }
+        $pm = PermissionManager::getInstance();
+        if ($pm->hasPermission($managerUserId, 'SUPER_ADMIN')) {
+            return true;
+        }
+        if ($pm->hasPermission($managerUserId, 'MESSAGING_MANAGE')) {
+            return true;
+        }
+        if ($managerRole === 'admin') {
+            return true;
+        }
+        if (isset($group['created_by']) && (string) $group['created_by'] === (string) $managerUserId) {
+            return true;
+        }
+        return false;
+    }
+
     private function validateProjectAccess($userId, $userRole, $projectId) {
         error_log("🔍 validateProjectAccess - User ID: $userId, Role: $userRole, Project ID: $projectId");
         
