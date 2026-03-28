@@ -72,23 +72,38 @@ try {
         throw new Exception("Failed to store magic link token");
     }
     
-    // Generate magic link URL based on environment
-    $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
-    $host = $_SERVER['HTTP_HOST'];
-    
-    // Determine if we're in local or production environment
-    // Check if backend is running on localhost or production domain
-    $isLocal = (strpos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false);
-    
-    if ($isLocal) {
-        // Local environment: use localhost:8080 for frontend
-        $magic_link = 'http://localhost:8080/login?magic_token=' . $token;
-    } else {
-        // Production environment: use bugs.bugricer.com for frontend
-        $magic_link = 'https://bugs.bugricer.com/login?magic_token=' . $token;
+    // Prefer the browser Origin when it is a known frontend (correct port / domain in the email link)
+    $magic_link = null;
+    $origin = isset($_SERVER['HTTP_ORIGIN']) ? trim((string) $_SERVER['HTTP_ORIGIN']) : '';
+    if ($origin !== '') {
+        $parts = parse_url($origin);
+        $scheme = isset($parts['scheme']) ? strtolower($parts['scheme']) : '';
+        $hostPart = isset($parts['host']) ? strtolower($parts['host']) : '';
+        $allowed = ($scheme === 'http' || $scheme === 'https')
+            && $hostPart !== ''
+            && (
+                preg_match('/^(localhost|127\.0\.0\.1)$/i', $hostPart)
+                || substr($hostPart, -strlen('.bugricer.com')) === '.bugricer.com'
+                || substr($hostPart, -strlen('.moajmalnk.in')) === '.moajmalnk.in'
+                || $hostPart === 'bugricer.com'
+                || $hostPart === 'bugs.bugricer.com'
+            );
+        if ($allowed) {
+            $magic_link = rtrim($origin, '/') . '/login?magic_token=' . $token;
+        }
     }
     
-    error_log("Magic Link Simple: Host detected: $host, isLocal: " . ($isLocal ? 'true' : 'false') . ", magic_link: $magic_link");
+    $backendHost = $_SERVER['HTTP_HOST'] ?? '';
+    $isLocalBackend = (strpos($backendHost, 'localhost') !== false || strpos($backendHost, '127.0.0.1') !== false);
+    if ($magic_link === null) {
+        if ($isLocalBackend) {
+            $magic_link = 'http://localhost:8080/login?magic_token=' . $token;
+        } else {
+            $magic_link = 'https://bugs.bugricer.com/login?magic_token=' . $token;
+        }
+    }
+    
+    error_log("Magic Link Simple: HTTP_HOST=$backendHost, used_origin=" . ($origin !== '' ? 'yes' : 'no') . ", magic_link: $magic_link");
     
     // Send magic link email
     $email_sent = sendMagicLinkEmail($user['email'], $user['username'], $magic_link);
