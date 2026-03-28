@@ -38,6 +38,10 @@ class HeartbeatController extends BaseAPI {
                 return;
             }
 
+            // Do not use rowCount() here: with MySQL/PDO it is often 0 even when the row exists
+            // (e.g. duplicate timestamp), which incorrectly triggered ACCOUNT_REVOKED and logged users out.
+            // validateToken() already enforced user exists and account_active.
+
             // Track activity session
             $this->trackActivitySession($userId, $now);
 

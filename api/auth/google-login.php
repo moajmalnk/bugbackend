@@ -94,6 +94,16 @@ try {
         echo json_encode(['success' => false, 'message' => 'Failed to create or retrieve user']);
         exit;
     }
+
+    if (!Utils::userRowIsAllowedLogin($user)) {
+        http_response_code(403);
+        echo json_encode([
+            'success' => false,
+            'message' => 'This account is no longer active',
+            'error_code' => 'ACCOUNT_REVOKED',
+        ]);
+        exit;
+    }
     
     // Update last login time
     updateLastLogin($conn, $user['id']);

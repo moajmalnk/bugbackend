@@ -10,6 +10,7 @@ header('Content-Type: application/json');
 require_once __DIR__ . '/../../config/cors.php';
 
 require_once __DIR__ . '/../../config/database.php';
+require_once __DIR__ . '/../../config/utils.php';
 require_once __DIR__ . '/../../utils/email.php';
 
 try {
@@ -40,12 +41,11 @@ try {
         throw new Exception("Database connection failed");
     }
     
-    // Check if user exists
-    $stmt = $db->prepare("SELECT id, username, email FROM users WHERE email = ?");
+    $stmt = $db->prepare("SELECT * FROM users WHERE email = ? LIMIT 1");
     $stmt->execute([$email]);
     $result = $stmt->fetch(PDO::FETCH_ASSOC);
     
-    if (!$result) {
+    if (!$result || !Utils::userRowIsAllowedLogin($result)) {
         http_response_code(404);
         echo json_encode(['success' => false, 'message' => 'No account found with this email address']);
         exit();

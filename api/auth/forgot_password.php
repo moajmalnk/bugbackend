@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../../config/cors.php';
 require_once __DIR__ . '/../../config/database.php';
+require_once __DIR__ . '/../../config/utils.php';
 require_once __DIR__ . '/../../utils/email.php';
 require_once __DIR__ . '/../../utils/validation.php';
 
@@ -35,13 +36,12 @@ try {
     
     $email = strtolower($email);
     
-    // Check if user exists
-    $stmt = $pdo->prepare("SELECT id, username, email FROM users WHERE email = ?");
+    $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ? LIMIT 1");
     $stmt->execute([$email]);
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
     
-    if (!$user) {
-        // For security, don't reveal if email exists or not
+    // No user, or deactivated: same generic response (no reset email)
+    if (!$user || !Utils::userRowIsAllowedLogin($user)) {
         echo json_encode([
             'success' => true,
             'message' => 'If an account with this email exists, you will receive a password reset link shortly.'

@@ -19,10 +19,10 @@ if (!$type || !$value) {
 }
 
 if ($type === 'email') {
-    $stmt = $pdo->prepare("SELECT id FROM users WHERE email = ?");
+    $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ? LIMIT 1");
 } else if ($type === 'phone') {
     $value = Utils::normalizePhone($value);
-    $stmt = $pdo->prepare("SELECT id FROM users WHERE phone = ?");
+    $stmt = $pdo->prepare("SELECT * FROM users WHERE phone = ? LIMIT 1");
 } else {
     http_response_code(400);
     echo json_encode(['success' => false, 'message' => 'Invalid type']);
@@ -32,8 +32,11 @@ if ($type === 'email') {
 $stmt->execute([$value]);
 $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-if ($user) {
-    echo json_encode(['success' => true, 'exists' => true]);
+// Deactivated accounts must not appear as "verified" / existing for OTP, magic link, or forgot-password checks
+if ($user && Utils::userRowIsAllowedLogin($user)) {
+    echo json_encode(['success' => true, 'exists' => true, 'inactive' => false]);
+} elseif ($user) {
+    echo json_encode(['success' => true, 'exists' => false, 'inactive' => true]);
 } else {
-    echo json_encode(['success' => true, 'exists' => false]);
+    echo json_encode(['success' => true, 'exists' => false, 'inactive' => false]);
 }

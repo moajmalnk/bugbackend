@@ -47,11 +47,10 @@ try {
         echo json_encode(['success' => false, 'message' => 'Phone required']);
         exit;
     }
-    // Check if user exists with this phone
-    $stmt = $pdo->prepare("SELECT id FROM users WHERE phone = ?");
+    $stmt = $pdo->prepare("SELECT * FROM users WHERE phone = ? LIMIT 1");
     $stmt->execute([$phone]);
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
-    if (!$user) {
+    if (!$user || !Utils::userRowIsAllowedLogin($user)) {
         http_response_code(404);
         echo json_encode(['success' => false, 'message' => 'User with this phone does not exist']);
         exit;
@@ -82,11 +81,10 @@ try {
             echo json_encode(['success' => false, 'message' => 'Email required']);
             exit;
         }
-        // Check if user exists with this email
-        $stmt = $pdo->prepare("SELECT id FROM users WHERE email = ?");
+        $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ? LIMIT 1");
         $stmt->execute([$email]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
-        if (!$user) {
+        if (!$user || !Utils::userRowIsAllowedLogin($user)) {
             http_response_code(404);
             echo json_encode(['success' => false, 'message' => 'User with this email does not exist']);
             exit;

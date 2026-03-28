@@ -47,6 +47,16 @@ if ($method === 'whatsapp') {
         exit;
     }
 
+    if (!Utils::userRowIsAllowedLogin($user)) {
+        http_response_code(403);
+        echo json_encode([
+            'success' => false,
+            'message' => 'This account is no longer active',
+            'error_code' => 'ACCOUNT_REVOKED',
+        ]);
+        exit;
+    }
+
     // Optionally: delete OTP after use
     $stmt = $pdo->prepare("DELETE FROM user_otps WHERE id = ?");
     $stmt->execute([$otpRow['id']]);
@@ -81,6 +91,16 @@ if ($method === 'whatsapp') {
     if (!$user) {
         http_response_code(404);
         echo json_encode(['success' => false, 'message' => 'User not found']);
+        exit;
+    }
+
+    if (!Utils::userRowIsAllowedLogin($user)) {
+        http_response_code(403);
+        echo json_encode([
+            'success' => false,
+            'message' => 'This account is no longer active',
+            'error_code' => 'ACCOUNT_REVOKED',
+        ]);
         exit;
     }
 

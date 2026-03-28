@@ -22,12 +22,12 @@ class TokenRefreshController extends BaseAPI {
             }
 
             // Get fresh user data from database
-            $stmt = $this->conn->prepare("SELECT id, username, role FROM users WHERE id = ?");
+            $stmt = $this->conn->prepare("SELECT * FROM users WHERE id = ? LIMIT 1");
             $stmt->execute([$decoded->user_id]);
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-            if (!$user) {
-                $this->sendJsonResponse(404, "User not found");
+            if (!$user || !Utils::userRowIsAllowedLogin($user)) {
+                $this->sendJsonResponse(403, "Account no longer available.", null, false, 'ACCOUNT_REVOKED');
                 return;
             }
 

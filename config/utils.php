@@ -61,13 +61,23 @@ class Utils {
     public static function verifyPassword($password, $hash) {
         return password_verify($password, $hash);
     }
+
+    /**
+     * Whether a user row may log in. If account_active column is absent from the row, treat as active.
+     */
+    public static function userRowIsAllowedLogin(array $user) {
+        if (!array_key_exists('account_active', $user)) {
+            return true;
+        }
+        return (int) $user['account_active'] === 1;
+    }
     
     public static function generateJWT($user_id, $username, $role) {
         $issued_at = time();
         if ($role === 'admin') {
-            $expiration = $issued_at + (7 * 24 * 60 * 60); // 7 days
+            $expiration = $issued_at + (14 * 24 * 60 * 60); // 14 days
         } else {
-            $expiration = $issued_at + (7 * 24 * 60 * 60); // 7 days
+            $expiration = $issued_at + (14 * 24 * 60 * 60); // 14 days
         }
         $payload = array(
             "iat" => $issued_at,

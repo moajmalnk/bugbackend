@@ -5,6 +5,7 @@
  */
 
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../../config/utils.php';
 
 header('Content-Type: application/json');
 
@@ -34,52 +35,85 @@ try {
         exit();
     }
     
-    // Check if user already has an active session (shouldn't happen on fresh login, but handle it)
-    $checkStmt = $conn->prepare("
-        SELECT id FROM user_activity_sessions 
-        WHERE user_id = ? AND is_active = TRUE 
-        ORDER BY session_start DESC 
-        LIMIT 1
-    ");
-    $checkStmt->execute([$userId]);
-    $existingSession = $checkStmt->fetch(PDO::FETCH_ASSOC);
-    
-    if ($existingSession) {
-        // Close any existing active session (shouldn't happen, but handle edge cases)
-        $closeStmt = $conn->prepare("
-            UPDATE user_activity_sessions 
-            SET session_end = NOW(), 
-                is_active = FALSE, 
-                updated_at = NOW() 
-            WHERE id = ?
+    // Check if user already has an active session (best-effort; schema differences should not 500)
+    try {
+        $checkStmt = $conn->prepare("
+            SELECT id FROM user_activity_sessions 
+            WHERE user_id = ? AND is_active = TRUE 
+            ORDER BY session_start DESC 
+            LIMIT 1
         ");
-        $closeStmt->execute([$existingSession['id']]);
+        $checkStmt->execute([$userId]);
+        $existingSession = $checkStmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($existingSession) {
+            $closeStmt = $conn->prepare("
+                UPDATE user_activity_sessions 
+                SET session_end = NOW(), 
+                    is_active = FALSE, 
+                    updated_at = NOW() 
+                WHERE id = ?
+            ");
+            $closeStmt->execute([$existingSession['id']]);
+        }
+    } catch (PDOException $e) {
+        error_log("start_session_on_login existing session cleanup: " . $e->getMessage());
     }
     
-    // Start new session
-    $sessionId = $api->utils->generateUUID();
+    // Start new session (optional — failures must not block login)
+    $sessionId = Utils::generateUUID();
     $now = date('Y-m-d H:i:s');
-    
-    $stmt = $conn->prepare("
-        INSERT INTO user_activity_sessions (id, user_id, session_start, session_end, is_active, created_at, updated_at) 
-        VALUES (?, ?, ?, ?, TRUE, NOW(), NOW())
-    ");
-    $stmt->execute([$sessionId, $userId, $now, $now]);
-    
-    // Update last_login_at in users table
-    $updateStmt = $conn->prepare("
-        UPDATE users 
-        SET last_login_at = NOW(), last_active_at = NOW(), updated_at = NOW() 
-        WHERE id = ?
-    ");
-    $updateStmt->execute([$userId]);
-    
+
+    try {
+        $stmt = $conn->prepare("
+            INSERT INTO user_activity_sessions (id, user_id, session_start, session_end, is_active, created_at, updated_at) 
+            VALUES (?, ?, ?, ?, TRUE, NOW(), NOW())
+        ");
+        $stmt->execute([$sessionId, $userId, $now, $now]);
+    } catch (PDOException $e) {
+        error_log("start_session_on_login INSERT user_activity_sessions: " . $e->getMessage());
+        echo json_encode([
+            'success' => true,
+            'message' => 'Login OK; activity session not recorded',
+        ]);
+        exit();
+    }
+
+    // Update users row (columns may be missing on older DBs)
+    try {
+        $cols = [];
+        $cr = $conn->query("SHOW COLUMNS FROM users");
+        if ($cr) {
+            while ($row = $cr->fetch(PDO::FETCH_ASSOC)) {
+                $cols[] = $row['Field'];
+            }
+        }
+        $sets = [];
+        if (in_array('last_active_at', $cols, true)) {
+            $sets[] = 'last_active_at = NOW()';
+        }
+        if (in_array('last_login_at', $cols, true)) {
+            $sets[] = 'last_login_at = NOW()';
+        }
+        if (in_array('updated_at', $cols, true)) {
+            $sets[] = 'updated_at = NOW()';
+        }
+        if (!empty($sets)) {
+            $sql = 'UPDATE users SET ' . implode(', ', $sets) . ' WHERE id = ?';
+            $updateStmt = $conn->prepare($sql);
+            $updateStmt->execute([$userId]);
+        }
+    } catch (PDOException $e) {
+        error_log("start_session_on_login UPDATE users: " . $e->getMessage());
+    }
+
     echo json_encode([
-        'success' => true, 
+        'success' => true,
         'message' => 'Session started',
-        'session_id' => $sessionId
+        'session_id' => $sessionId,
     ]);
-    
+    exit();
+
 } catch (Exception $e) {
     error_log("Error starting session on login: " . $e->getMessage());
     http_response_code(500);

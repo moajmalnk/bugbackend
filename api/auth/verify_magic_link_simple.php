@@ -52,6 +52,19 @@ try {
     }
     
     $magic_link = $result;
+
+    $userStmt = $db->prepare("SELECT * FROM users WHERE id = ? LIMIT 1");
+    $userStmt->execute([$magic_link['user_id']]);
+    $userRow = $userStmt->fetch(PDO::FETCH_ASSOC);
+    if (!$userRow || !Utils::userRowIsAllowedLogin($userRow)) {
+        http_response_code(403);
+        echo json_encode([
+            'success' => false,
+            'message' => 'This account is no longer active',
+            'error_code' => 'ACCOUNT_REVOKED',
+        ]);
+        exit();
+    }
     
     // Mark magic link as used
     $update_stmt = $db->prepare("UPDATE magic_links SET used_at = NOW() WHERE token = ?");

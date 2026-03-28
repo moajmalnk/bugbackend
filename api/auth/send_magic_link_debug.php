@@ -59,6 +59,7 @@ try {
     // Test database connection
     error_log("Magic Link Debug: Attempting database connection");
     require_once __DIR__ . '/../../config/database.php';
+    require_once __DIR__ . '/../../config/utils.php';
     
     $db = getDBConnection();
     if (!$db) {
@@ -70,7 +71,7 @@ try {
     
     // Check if user exists
     error_log("Magic Link Debug: Checking if user exists for email - " . $email);
-    $stmt = $db->prepare("SELECT id, username, email FROM users WHERE email = ?");
+    $stmt = $db->prepare("SELECT * FROM users WHERE email = ? LIMIT 1");
     if (!$stmt) {
         error_log("Magic Link Debug: Failed to prepare user query");
         throw new Exception("Failed to prepare user query");
@@ -79,8 +80,8 @@ try {
     $stmt->execute([$email]);
     $result = $stmt->fetch(PDO::FETCH_ASSOC);
     
-    if (!$result) {
-        error_log("Magic Link Debug: No user found for email - " . $email);
+    if (!$result || !Utils::userRowIsAllowedLogin($result)) {
+        error_log("Magic Link Debug: No active user for email - " . $email);
         http_response_code(404);
         echo json_encode(['success' => false, 'message' => 'No account found with this email address']);
         exit();

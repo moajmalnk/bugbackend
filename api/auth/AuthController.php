@@ -116,6 +116,11 @@ class AuthController extends BaseAPI {
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
             
             // Debug log for password verification
+
+            if (!Utils::userRowIsAllowedLogin($user)) {
+                $this->sendJsonResponse(403, "This account is no longer active", null, false, 'ACCOUNT_REVOKED');
+                return;
+            }
             
             // Verify password
             if (!password_verify($data['password'], $user['password'])) {
@@ -185,6 +190,9 @@ class AuthController extends BaseAPI {
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if ($user) {
+            if (!Utils::userRowIsAllowedLogin($user)) {
+                return ['success' => false, 'message' => 'This account is no longer active'];
+            }
             $username = $user['username'];
             if (is_array($username)) {
                 $username = $username[0]; // or handle as needed

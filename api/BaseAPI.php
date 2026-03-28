@@ -10,6 +10,8 @@ class BaseAPI {
     protected $conn;
     protected $utils;
     protected $database;
+    /** @var bool|null Lazy: whether users.account_active exists */
+    protected $usersHasAccountActiveColumn = null;
     
     public function __construct() {
         
@@ -102,7 +104,7 @@ class BaseAPI {
         }
     }
 
-    public function sendJsonResponse($status_code, $message, $data = null, $success = null) {
+    public function sendJsonResponse($status_code, $message, $data = null, $success = null, $error_code = null) {
         if (headers_sent()) {
             return;
         }
@@ -117,9 +119,44 @@ class BaseAPI {
         if ($data !== null) {
             $response["data"] = $data;
         }
+
+        if ($error_code !== null) {
+            $response["error_code"] = $error_code;
+        }
         
         echo json_encode($response);
         exit();
+    }
+
+    protected function usersTableHasAccountActiveColumn() {
+        if ($this->usersHasAccountActiveColumn !== null) {
+            return $this->usersHasAccountActiveColumn;
+        }
+        try {
+            $res = $this->conn->query("SHOW COLUMNS FROM users LIKE 'account_active'");
+            $this->usersHasAccountActiveColumn = $res && $res->rowCount() > 0;
+        } catch (Exception $e) {
+            $this->usersHasAccountActiveColumn = false;
+        }
+        return $this->usersHasAccountActiveColumn;
+    }
+
+    /**
+     * Exit with 403 if user is missing or deactivated (when account_active column exists).
+     */
+    protected function ensureUserAccountAllowed($userId) {
+        if (!$userId) {
+            $this->sendJsonResponse(403, "Account no longer available.", null, false, 'ACCOUNT_REVOKED');
+        }
+        if ($this->usersTableHasAccountActiveColumn()) {
+            $stmt = $this->conn->prepare("SELECT id FROM users WHERE id = ? AND account_active = 1 LIMIT 1");
+        } else {
+            $stmt = $this->conn->prepare("SELECT id FROM users WHERE id = ? LIMIT 1");
+        }
+        $stmt->execute([$userId]);
+        if (!$stmt->fetch(PDO::FETCH_ASSOC)) {
+            $this->sendJsonResponse(403, "Account no longer available.", null, false, 'ACCOUNT_REVOKED');
+        }
     }
 
     public function validateToken() {
@@ -146,6 +183,9 @@ class BaseAPI {
             $cachedResult = $this->getCache($cacheKey);
             
             if ($cachedResult !== null) {
+                if (isset($cachedResult->user_id)) {
+                    $this->ensureUserAccountAllowed($cachedResult->user_id);
+                }
                 return $cachedResult;
             }
         } else {
@@ -211,13 +251,17 @@ class BaseAPI {
                 error_log("🔍 No impersonation - Result: " . ($result ? 'valid' : 'null') . ", ImpersonateId: " . ($impersonateId ?? 'null') . ", Purpose: " . ($result->purpose ?? 'none'));
             }
         
+            if ($result && isset($result->user_id)) {
+                $this->ensureUserAccountAllowed($result->user_id);
+            }
+
             // Cache valid tokens for 5 minutes (keyed by token + impersonation)
-            // Don't cache impersonation tokens to avoid conflicts
+            // Don't cache impersonation tokens to avoid conflicts (only after account check)
             if ($result && !$isImpersonationToken) {
                 $cacheKey = 'token_validation_' . md5($token . '|' . ($impersonateId ?? 'none'));
                 $this->setCache($cacheKey, $result, 300);
             }
-        
+
             return $result;
         } catch (Exception $e) {
             $msg = $e->getMessage();

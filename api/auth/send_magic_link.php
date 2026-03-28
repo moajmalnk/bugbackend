@@ -5,6 +5,7 @@
  */
 
 require_once __DIR__ . '/../../config/database.php';
+require_once __DIR__ . '/../../config/utils.php';
 require_once __DIR__ . '/../../utils/email.php';
 require_once __DIR__ . '/../BaseAPI.php';
 
@@ -36,8 +37,7 @@ class MagicLinkAPI extends BaseAPI {
                 return;
             }
             
-            // Check if user exists
-            $stmt = $this->db->prepare("SELECT id, username, email FROM users WHERE email = ?");
+            $stmt = $this->db->prepare("SELECT * FROM users WHERE email = ? LIMIT 1");
             $stmt->bind_param("s", $email);
             $stmt->execute();
             $result = $stmt->get_result();
@@ -48,6 +48,10 @@ class MagicLinkAPI extends BaseAPI {
             }
             
             $user = $result->fetch_assoc();
+            if (!Utils::userRowIsAllowedLogin($user)) {
+                $this->sendResponse(['success' => false, 'message' => 'No account found with this email address'], 404);
+                return;
+            }
             
             // Generate magic link token
             $token = $this->generateSecureToken();

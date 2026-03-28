@@ -19,15 +19,32 @@ class MeController extends BaseAPI {
                 return;
             }
             
-            // Get user data from database (include phone and role_id so frontend can show it on profile)
-            $stmt = $this->conn->prepare("SELECT id, username, email, phone, role, role_id FROM users WHERE id = ?");
+            $cols = [];
+            $colRes = $this->conn->query("SHOW COLUMNS FROM users");
+            if ($colRes) {
+                while ($row = $colRes->fetch(PDO::FETCH_ASSOC)) {
+                    $cols[] = $row['Field'];
+                }
+            }
+            $select = ['id', 'username', 'email', 'phone', 'role', 'role_id'];
+            if (in_array('account_active', $cols, true)) {
+                $select[] = 'account_active';
+            }
+            $stmt = $this->conn->prepare(
+                'SELECT ' . implode(', ', $select) . ' FROM users WHERE id = ?'
+            );
             $stmt->execute([$decoded->user_id]);
             
             if ($stmt->rowCount() > 0) {
                 $user = $stmt->fetch(PDO::FETCH_ASSOC);
+                if (array_key_exists('account_active', $user) && (int) $user['account_active'] !== 1) {
+                    $this->sendJsonResponse(403, "Account no longer available.", null, false, 'ACCOUNT_REVOKED');
+                    return;
+                }
+                unset($user['account_active']);
                 $this->sendJsonResponse(200, "User data retrieved successfully", $user);
             } else {
-                $this->sendJsonResponse(404, "User not found");
+                $this->sendJsonResponse(403, "Account no longer available.", null, false, 'ACCOUNT_REVOKED');
             }
         } catch (Exception $e) {
             error_log("ME endpoint error: " . $e->getMessage());

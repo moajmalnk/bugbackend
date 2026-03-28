@@ -30,9 +30,11 @@ class UserController extends BaseAPI {
             }
             $hasPhone = in_array('phone', $cols);
             $hasLastActive = in_array('last_active_at', $cols);
+            $hasAccountActive = in_array('account_active', $cols);
 
             $select = ['id', 'username', 'email', 'role', 'role_id', 'created_at', 'updated_at'];
             if ($hasPhone) $select[] = 'phone';
+            if ($hasAccountActive) $select[] = 'account_active';
             if ($hasLastActive) {
                 $select[] = 'last_active_at';
                 $select[] = "(CASE WHEN last_active_at IS NULL THEN 'offline' WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 120 THEN 'active' WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 900 THEN 'idle' ELSE 'offline' END) as status";
@@ -586,6 +588,15 @@ class UserController extends BaseAPI {
     public function updateUser($id, $data) {
         try {
             $conn = $this->getConnection();
+            $userCols = [];
+            $ucRes = $conn->query("SHOW COLUMNS FROM users");
+            if ($ucRes) {
+                while ($row = $ucRes->fetch(PDO::FETCH_ASSOC)) {
+                    $userCols[] = $row['Field'];
+                }
+            }
+            $hasAccountActiveCol = in_array('account_active', $userCols, true);
+
             $fields = [];
             $params = [];
             if (isset($data['username'])) {
@@ -656,7 +667,33 @@ class UserController extends BaseAPI {
                 $fields[] = "phone = ?";
                 $params[] = $data['phone'];
             }
-            // Add more fields as needed
+
+            if (array_key_exists('account_active', $data) && $hasAccountActiveCol) {
+                $actor = $this->validateToken();
+                if (!isset($actor->role) || $actor->role !== 'admin') {
+                    $this->sendJsonResponse(403, "Only administrators can change account status");
+                    return;
+                }
+                if (isset($actor->user_id) && $actor->user_id === $id) {
+                    $this->sendJsonResponse(400, "You cannot change your own account status from here");
+                    return;
+                }
+                $targetStmt = $conn->prepare("SELECT role FROM users WHERE id = ? LIMIT 1");
+                $targetStmt->execute([$id]);
+                $targetRow = $targetStmt->fetch(PDO::FETCH_ASSOC);
+                if (!$targetRow) {
+                    $this->sendJsonResponse(404, "User not found");
+                    return;
+                }
+                $v = $data['account_active'];
+                $activeVal = ($v === true || $v === 1 || $v === '1' || $v === 'true') ? 1 : 0;
+                if ($activeVal === 0 && isset($targetRow['role']) && $targetRow['role'] === 'admin') {
+                    $this->sendJsonResponse(403, "Cannot deactivate administrator accounts");
+                    return;
+                }
+                $fields[] = "account_active = ?";
+                $params[] = $activeVal;
+            }
 
             if (empty($fields)) {
                 $this->sendJsonResponse(400, "No fields to update");
@@ -690,21 +727,28 @@ class UserController extends BaseAPI {
                 }
                 
                 // Fetch and return the updated user data
-                $fetchStmt = $conn->prepare("
-                    SELECT 
-                        id, 
-                        username, 
-                        email, 
-                        phone, 
-                        role, 
-                        role_id,
-                        created_at, 
-                        updated_at, 
-                        last_active_at,
+                $selectParts = [
+                    'id',
+                    'username',
+                    'email',
+                    'phone',
+                    'role',
+                    'role_id',
+                    'created_at',
+                    'updated_at',
+                    'last_active_at',
+                ];
+                if ($hasAccountActiveCol) {
+                    $selectParts[] = 'account_active';
+                }
+                $selectSql = implode(",\n                        ", $selectParts) . ",
                         COALESCE(
                             (SELECT username FROM users WHERE id = ?),
                             username
-                        ) as name
+                        ) as name";
+                $fetchStmt = $conn->prepare("
+                    SELECT 
+                        {$selectSql}
                     FROM users 
                     WHERE id = ?
                 ");
