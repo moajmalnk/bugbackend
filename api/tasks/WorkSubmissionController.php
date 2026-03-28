@@ -540,11 +540,23 @@ class WorkSubmissionController extends BaseAPI {
         try {
             $decoded = $this->validateToken();
             $userId = $decoded->user_id;
+            $role = strtolower((string)($decoded->role ?? ''));
             $id = $payload['id'] ?? null;
             $date = $payload['submission_date'] ?? null;
 
             if (!$id && !$date) {
                 return $this->sendJsonResponse(400, 'id or submission_date is required');
+            }
+
+            if ($role === 'admin' && $id) {
+                $stmt = $this->conn->prepare("DELETE FROM work_submissions WHERE id = ?");
+                $stmt->execute([(int)$id]);
+                if ($stmt->rowCount() === 0) {
+                    $this->sendJsonResponse(404, 'Submission not found');
+                    return;
+                }
+                $this->sendJsonResponse(200, 'Submission deleted');
+                return;
             }
 
             if ($id) {
