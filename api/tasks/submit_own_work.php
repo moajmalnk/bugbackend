@@ -161,6 +161,8 @@ class OwnWorkSubmissionController extends WorkSubmissionController {
                 $extraUpdateStmt->execute($extraUpdateValues);
             }
         }
+
+        $this->updateOvertimeApprovalOnSubmit($userId, $date, $requestedExtraHours, $approvalReason);
         
         error_log("🔍 OwnWorkSubmissionController::submitOwnWork - Saved submission for user: " . $userId . " on date: " . $date . $impersonationInfo);
         

@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../PermissionManager.php';
+require_once __DIR__ . '/../../utils/work_submission_ot.php';
 
 class UserWorkStatsController extends BaseAPI {
     private function splitTaskLines($text) {
@@ -61,6 +62,26 @@ class UserWorkStatsController extends BaseAPI {
         return $total;
     }
 
+    private function ensureWorkSubmissionOtApprovalColumns() {
+        $alters = [
+            ['extra_hours_approval_status', "ALTER TABLE work_submissions ADD COLUMN extra_hours_approval_status VARCHAR(24) NOT NULL DEFAULT 'none' AFTER approval_reason"],
+            ['extra_hours_approved_amount', 'ALTER TABLE work_submissions ADD COLUMN extra_hours_approved_amount DECIMAL(6,2) NULL DEFAULT NULL AFTER extra_hours_approval_status'],
+            ['extra_hours_reviewed_by', 'ALTER TABLE work_submissions ADD COLUMN extra_hours_reviewed_by INT UNSIGNED NULL DEFAULT NULL AFTER extra_hours_approved_amount'],
+            ['extra_hours_reviewed_at', 'ALTER TABLE work_submissions ADD COLUMN extra_hours_reviewed_at DATETIME NULL DEFAULT NULL AFTER extra_hours_reviewed_by'],
+            ['extra_hours_admin_note', 'ALTER TABLE work_submissions ADD COLUMN extra_hours_admin_note TEXT NULL DEFAULT NULL AFTER extra_hours_reviewed_at'],
+        ];
+        foreach ($alters as $pair) {
+            try {
+                $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE '" . $pair[0] . "'");
+                if ($check->rowCount() === 0) {
+                    $this->conn->exec($pair[1]);
+                }
+            } catch (Exception $e) {
+                // ignore
+            }
+        }
+    }
+
     public function getUserWorkStats($userId) {
         try {
             // Validate token
@@ -84,6 +105,8 @@ class UserWorkStatsController extends BaseAPI {
                     return;
                 }
             }
+
+            $this->ensureWorkSubmissionOtApprovalColumns();
 
             // Get current custom month period (6th to 5th of next month)
             $istTimezone = new DateTimeZone('Asia/Kolkata');
@@ -146,6 +169,8 @@ class UserWorkStatsController extends BaseAPI {
                     overtime_hours,
                     requested_extra_hours,
                     approval_reason,
+                    extra_hours_approval_status,
+                    extra_hours_approved_amount,
                     break_entries,
                     total_break_minutes
                 FROM work_submissions 
@@ -183,7 +208,7 @@ class UserWorkStatsController extends BaseAPI {
                 $upcomingLines = $this->splitTaskLines($submission['notes'] ?? '');
                 $upcoming += count($upcomingLines);
 
-                $overtimeHours += (float)($submission['overtime_hours'] ?? 0);
+                $overtimeHours += br_effective_overtime_hours_for_stats($submission);
                 $requested = (float)($submission['requested_extra_hours'] ?? 0);
                 $requestedExtraHours += $requested;
                 if ($requested > 0 || trim((string)($submission['approval_reason'] ?? '')) !== '') {
@@ -252,6 +277,8 @@ class UserWorkStatsController extends BaseAPI {
                         overtime_hours,
                         requested_extra_hours,
                         approval_reason,
+                        extra_hours_approval_status,
+                        extra_hours_approved_amount,
                         break_entries,
                         total_break_minutes
                     FROM work_submissions 
@@ -289,7 +316,7 @@ class UserWorkStatsController extends BaseAPI {
                     $upcomingLines = $this->splitTaskLines($submission['notes'] ?? '');
                     $periodUpcoming += count($upcomingLines);
 
-                    $periodOvertime += (float)($submission['overtime_hours'] ?? 0);
+                    $periodOvertime += br_effective_overtime_hours_for_stats($submission);
                     $periodRequested = (float)($submission['requested_extra_hours'] ?? 0);
                     $periodRequestedExtra += $periodRequested;
                     if ($periodRequested > 0 || trim((string)($submission['approval_reason'] ?? '')) !== '') {
@@ -392,6 +419,8 @@ class UserWorkStatsController extends BaseAPI {
                 }
             }
 
+            $this->ensureWorkSubmissionOtApprovalColumns();
+
             // Get all work submissions for the period with all details
             $stmt = $this->conn->prepare("
                 SELECT 
@@ -401,6 +430,8 @@ class UserWorkStatsController extends BaseAPI {
                     overtime_hours,
                     requested_extra_hours,
                     approval_reason,
+                    extra_hours_approval_status,
+                    extra_hours_approved_amount,
                     break_entries,
                     total_break_minutes,
                     completed_tasks,
@@ -472,7 +503,7 @@ class UserWorkStatsController extends BaseAPI {
                 if ($breakMinutes <= 0) {
                     $breakMinutes = $this->getBreakMinutesFromEntries($breakEntries);
                 }
-                $totalOvertimeHours += (float)($submission['overtime_hours'] ?? 0);
+                $totalOvertimeHours += br_effective_overtime_hours_for_stats($submission);
                 $requestedExtra = (float)($submission['requested_extra_hours'] ?? 0);
                 $totalRequestedExtraHours += $requestedExtra;
                 if ($requestedExtra > 0 || trim((string)($submission['approval_reason'] ?? '')) !== '') {
@@ -484,9 +515,11 @@ class UserWorkStatsController extends BaseAPI {
                 $dailyBreakdown[] = [
                     'date' => $date,
                     'hours' => (float)($submission['hours_today'] ?? 0),
-                    'overtime_hours' => (float)($submission['overtime_hours'] ?? 0),
+                    'overtime_hours' => br_effective_overtime_hours_for_stats($submission),
                     'requested_extra_hours' => (float)($submission['requested_extra_hours'] ?? 0),
                     'approval_reason' => $submission['approval_reason'] ?? null,
+                    'extra_hours_approval_status' => $submission['extra_hours_approval_status'] ?? null,
+                    'extra_hours_approved_amount' => isset($submission['extra_hours_approved_amount']) ? (float)$submission['extra_hours_approved_amount'] : null,
                     'break_minutes' => $breakMinutes,
                     'break_entries' => $breakEntries,
                     'start_time' => $submission['start_time'] ?? null,

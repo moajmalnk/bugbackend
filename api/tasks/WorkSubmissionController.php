@@ -162,6 +162,8 @@ class WorkSubmissionController extends BaseAPI {
                 // ignore; migration may fail if no permissions
             }
 
+            $this->ensureExtraHoursApprovalColumns();
+
             // Keep overtime aligned with explicit extra-hours requests.
             $overtime = max(($hours > 8 ? $hours - 8 : 0), $requestedExtraHours);
 
@@ -244,6 +246,8 @@ class WorkSubmissionController extends BaseAPI {
                     $extraUpdateStmt->execute($extraUpdateValues);
                 }
             }
+
+            $this->updateOvertimeApprovalOnSubmit($userId, $date, $requestedExtraHours, $approvalReason);
 
             error_log("🔍 WorkSubmissionController::submit - Saved submission for user: " . $userId . " on date: " . $date);
             
@@ -460,8 +464,15 @@ class WorkSubmissionController extends BaseAPI {
             return;
         }
 
+        $this->ensureExtraHoursApprovalColumns();
+
         $from = $q['from'] ?? date('Y-m-01');
         $to = $q['to'] ?? date('Y-m-t');
+
+        $pendingOnly = isset($q['pending_only']) && $q['pending_only'] === '1';
+        $statusSql = $pendingOnly
+            ? " AND COALESCE(ws.extra_hours_approval_status, 'none') = 'pending' "
+            : '';
 
         $sql = "SELECT ws.*, u.username, u.role
                 FROM work_submissions ws
@@ -471,6 +482,7 @@ class WorkSubmissionController extends BaseAPI {
                     COALESCE(ws.requested_extra_hours, 0) > 0
                     OR COALESCE(TRIM(ws.approval_reason), '') <> ''
                   )
+                  $statusSql
                 ORDER BY ws.submission_date DESC, ws.id DESC";
         $stmt = $this->conn->prepare($sql);
         $stmt->execute([$from, $to]);
@@ -601,6 +613,138 @@ class WorkSubmissionController extends BaseAPI {
                         "🧮 Total Hours Completed : 0 hours\n\n".
                         "✅ Completed Tasks:\n\nPending\n";
             $this->sendJsonResponse(200, 'OK', ['text' => $fallback]);
+        }
+    }
+
+    protected function ensureExtraHoursApprovalColumns() {
+        try {
+            $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'extra_hours_approval_status'");
+            if ($check->rowCount() === 0) {
+                $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN extra_hours_approval_status VARCHAR(24) NOT NULL DEFAULT 'none' AFTER approval_reason");
+            }
+        } catch (Exception $e) {
+            // ignore
+        }
+        try {
+            $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'extra_hours_approved_amount'");
+            if ($check->rowCount() === 0) {
+                $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN extra_hours_approved_amount DECIMAL(6,2) NULL DEFAULT NULL AFTER extra_hours_approval_status");
+            }
+        } catch (Exception $e) {
+            // ignore
+        }
+        try {
+            $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'extra_hours_reviewed_by'");
+            if ($check->rowCount() === 0) {
+                $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN extra_hours_reviewed_by INT UNSIGNED NULL DEFAULT NULL AFTER extra_hours_approved_amount");
+            }
+        } catch (Exception $e) {
+            // ignore
+        }
+        try {
+            $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'extra_hours_reviewed_at'");
+            if ($check->rowCount() === 0) {
+                $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN extra_hours_reviewed_at DATETIME NULL DEFAULT NULL AFTER extra_hours_reviewed_by");
+            }
+        } catch (Exception $e) {
+            // ignore
+        }
+        try {
+            $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'extra_hours_admin_note'");
+            if ($check->rowCount() === 0) {
+                $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN extra_hours_admin_note TEXT NULL DEFAULT NULL AFTER extra_hours_reviewed_at");
+            }
+        } catch (Exception $e) {
+            // ignore
+        }
+    }
+
+    protected function updateOvertimeApprovalOnSubmit($userId, $date, $requestedExtraHours, $approvalReason) {
+        try {
+            $this->ensureExtraHoursApprovalColumns();
+            $columnsCheck = $this->conn->query("SHOW COLUMNS FROM work_submissions");
+            $columns = $columnsCheck->fetchAll(PDO::FETCH_COLUMN);
+            if (!in_array('extra_hours_approval_status', $columns)) {
+                return;
+            }
+            $hasRequest = $requestedExtraHours > 0 || trim((string)$approvalReason) !== '';
+            if ($hasRequest) {
+                $sql = "UPDATE work_submissions SET extra_hours_approval_status = 'pending', extra_hours_approved_amount = NULL, extra_hours_reviewed_by = NULL, extra_hours_reviewed_at = NULL, extra_hours_admin_note = NULL WHERE user_id = ? AND submission_date = ?";
+            } else {
+                $sql = "UPDATE work_submissions SET extra_hours_approval_status = 'none', extra_hours_approved_amount = NULL, extra_hours_reviewed_by = NULL, extra_hours_reviewed_at = NULL, extra_hours_admin_note = NULL WHERE user_id = ? AND submission_date = ?";
+            }
+            $st = $this->conn->prepare($sql);
+            $st->execute([$userId, $date]);
+        } catch (Exception $e) {
+            error_log('updateOvertimeApprovalOnSubmit: ' . $e->getMessage());
+        }
+    }
+
+    public function reviewOvertimeRequest($payload) {
+        try {
+            $decoded = $this->validateToken();
+            if (strtolower((string)($decoded->role ?? '')) !== 'admin') {
+                $this->sendJsonResponse(403, 'Access denied');
+                return;
+            }
+            $this->ensureExtraHoursApprovalColumns();
+
+            $id = isset($payload['id']) ? (int)$payload['id'] : 0;
+            $action = strtolower(trim((string)($payload['action'] ?? '')));
+            if ($id <= 0 || !in_array($action, ['approve', 'reject', 'change'], true)) {
+                $this->sendJsonResponse(400, 'id and action (approve|reject|change) are required');
+                return;
+            }
+
+            $stmt = $this->conn->prepare("SELECT ws.*, u.username FROM work_submissions ws INNER JOIN users u ON u.id = ws.user_id WHERE ws.id = ? LIMIT 1");
+            $stmt->execute([$id]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$row) {
+                $this->sendJsonResponse(404, 'Submission not found');
+                return;
+            }
+
+            $req = (float)($row['requested_extra_hours'] ?? 0) > 0;
+            $reason = trim((string)($row['approval_reason'] ?? ''));
+            if (!$req && $reason === '') {
+                $this->sendJsonResponse(400, 'This submission has no extra-hour approval request');
+                return;
+            }
+
+            $status = strtolower((string)($row['extra_hours_approval_status'] ?? 'none'));
+            if ($status !== 'pending') {
+                $this->sendJsonResponse(400, 'Only pending requests can be reviewed (current: ' . $status . ')');
+                return;
+            }
+
+            $adminId = (int)$decoded->user_id;
+            $now = date('Y-m-d H:i:s');
+            $note = trim((string)($payload['admin_note'] ?? ''));
+            $currentOt = (float)($row['overtime_hours'] ?? 0);
+
+            if ($action === 'approve') {
+                $upd = $this->conn->prepare("UPDATE work_submissions SET extra_hours_approval_status = 'approved', extra_hours_approved_amount = ?, overtime_hours = ?, extra_hours_reviewed_by = ?, extra_hours_reviewed_at = ?, extra_hours_admin_note = ? WHERE id = ?");
+                $upd->execute([$currentOt, $currentOt, $adminId, $now, $note !== '' ? $note : null, $id]);
+            } elseif ($action === 'reject') {
+                $upd = $this->conn->prepare("UPDATE work_submissions SET extra_hours_approval_status = 'rejected', extra_hours_approved_amount = 0, overtime_hours = 0, extra_hours_reviewed_by = ?, extra_hours_reviewed_at = ?, extra_hours_admin_note = ? WHERE id = ?");
+                $upd->execute([$adminId, $now, $note !== '' ? $note : null, $id]);
+            } else {
+                $approvedHours = isset($payload['approved_hours']) ? (float)$payload['approved_hours'] : -1;
+                if ($approvedHours < 0.25 || $approvedHours > 16) {
+                    $this->sendJsonResponse(400, 'approved_hours must be between 0.25 and 16 for change action');
+                    return;
+                }
+                $upd = $this->conn->prepare("UPDATE work_submissions SET extra_hours_approval_status = 'changed', extra_hours_approved_amount = ?, overtime_hours = ?, extra_hours_reviewed_by = ?, extra_hours_reviewed_at = ?, extra_hours_admin_note = ? WHERE id = ?");
+                $upd->execute([$approvedHours, $approvedHours, $adminId, $now, $note !== '' ? $note : null, $id]);
+            }
+
+            $stmt2 = $this->conn->prepare("SELECT ws.*, u.username, u.role FROM work_submissions ws INNER JOIN users u ON u.id = ws.user_id WHERE ws.id = ? LIMIT 1");
+            $stmt2->execute([$id]);
+            $out = $stmt2->fetch(PDO::FETCH_ASSOC);
+            $this->sendJsonResponse(200, 'OK', $out);
+        } catch (Exception $e) {
+            error_log('reviewOvertimeRequest: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Failed to update request');
         }
     }
 }
