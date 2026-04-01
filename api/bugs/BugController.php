@@ -76,6 +76,175 @@ class BugController extends BaseAPI {
         );
     }
 
+    /**
+     * Same async notification trigger as HTTP create() (CLI script or HTTP fallback).
+     */
+    protected function spawnBugCreatedNotifications(string $id): void
+    {
+        $execDisabled = in_array('exec', array_map('trim', explode(',', (string)ini_get('disable_functions'))));
+        $spawned = false;
+
+        if (!$execDisabled) {
+            $triggerScript = realpath(__DIR__ . '/../../trigger-bug-notifications.php');
+            $phpBin = 'php';
+            if (defined('PHP_BINARY') && PHP_BINARY) {
+                $phpBin = PHP_BINARY;
+            } elseif (strtoupper(substr(PHP_OS, 0, 3)) !== 'WIN' && file_exists('/usr/bin/php')) {
+                $phpBin = '/usr/bin/php';
+            } elseif (file_exists('/Applications/XAMPP/bin/php')) {
+                $phpBin = '/Applications/XAMPP/bin/php';
+            }
+            if ($triggerScript && file_exists($triggerScript)) {
+                if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
+                    @pclose(@popen('start /B ' . escapeshellarg($phpBin) . ' ' . escapeshellarg($triggerScript) . ' ' . escapeshellarg((string)$id), 'r'));
+                    $spawned = true;
+                } else {
+                    @exec('nohup ' . escapeshellarg($phpBin) . ' ' . escapeshellarg($triggerScript) . ' ' . escapeshellarg((string)$id) . ' > /dev/null 2>&1 &');
+                    $spawned = true;
+                }
+            }
+            if (!$spawned) {
+                $base = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http') . '://' . ($_SERVER['HTTP_HOST'] ?? 'localhost');
+                $path = dirname(dirname($_SERVER['SCRIPT_NAME'] ?? ''));
+                $url = rtrim($base . $path, '/') . '/notifications/trigger-bug.php';
+                $payload = 'bug_id=' . urlencode((string)$id);
+                if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
+                    @pclose(@popen('start /B curl -s -X POST -d "' . addslashes($payload) . '" "' . addslashes($url) . '"', 'r'));
+                    $spawned = true;
+                } elseif (trim((string)@shell_exec('which curl 2>/dev/null'))) {
+                    @exec('curl -s -X POST -d ' . escapeshellarg($payload) . ' ' . escapeshellarg($url) . ' > /dev/null 2>&1 &');
+                    $spawned = true;
+                }
+            }
+        }
+
+        if (!$spawned) {
+            error_log("⚠️ Bug $id: async notification trigger not spawned; skipping inline notifications to keep create response fast.");
+        }
+    }
+
+    private function bugsTableHasAiMetadataColumn(): bool
+    {
+        static $cached = null;
+        if ($cached !== null) {
+            return $cached;
+        }
+        try {
+            $st = $this->conn->query("SHOW COLUMNS FROM bugs LIKE 'ai_metadata'");
+            $cached = $st && $st->rowCount() > 0;
+        } catch (Exception $e) {
+            $cached = false;
+        }
+        return $cached;
+    }
+
+    /**
+     * Create bug from BugBot JSON path; triggers same WhatsApp/in-app flow as create().
+     *
+     * @param object $decoded JWT payload (user_id, role, …)
+     * @param array{title: string, description: string, project_id: string, priority?: string, expected_result?: ?string, actual_result?: ?string, ai_metadata?: ?array} $data
+     * @return array{bug_id: string, title: string, project_id: string, priority: string, status: string}
+     * @throws Exception
+     */
+    public function bugBotCreateBug($decoded, array $data): array
+    {
+        require_once __DIR__ . '/../projects/ProjectMemberController.php';
+        $pmc = new ProjectMemberController();
+        if (!$pmc->hasProjectAccess($decoded->user_id, $data['project_id'])) {
+            throw new Exception('No access to this project');
+        }
+
+        $priority = isset($data['priority']) ? strtolower((string)$data['priority']) : 'medium';
+        if (!in_array($priority, ['low', 'medium', 'high'], true)) {
+            $priority = 'medium';
+        }
+
+        $this->conn->beginTransaction();
+        try {
+            $id = Utils::generateUUID();
+            $istTime = new DateTime('now', new DateTimeZone('Asia/Kolkata'));
+            $istTimeStr = $istTime->format('Y-m-d H:i:s');
+            $status = 'pending';
+
+            $hasMeta = $this->bugsTableHasAiMetadataColumn() && !empty($data['ai_metadata']) && is_array($data['ai_metadata']);
+            $metaJson = $hasMeta ? json_encode($data['ai_metadata'], JSON_UNESCAPED_UNICODE) : null;
+
+            if ($hasMeta && $metaJson !== false) {
+                $stmt = $this->conn->prepare(
+                    "INSERT INTO bugs (id, title, description, expected_result, actual_result, project_id, reported_by, priority, status, created_at, updated_at, ai_metadata)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                );
+                $stmt->execute([
+                    $id,
+                    $data['title'],
+                    $data['description'],
+                    $data['expected_result'] ?? null,
+                    $data['actual_result'] ?? null,
+                    $data['project_id'],
+                    $decoded->user_id,
+                    $priority,
+                    $status,
+                    $istTimeStr,
+                    $istTimeStr,
+                    $metaJson,
+                ]);
+            } else {
+                $stmt = $this->conn->prepare(
+                    "INSERT INTO bugs (id, title, description, expected_result, actual_result, project_id, reported_by, priority, status, created_at, updated_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                );
+                $stmt->execute([
+                    $id,
+                    $data['title'],
+                    $data['description'],
+                    $data['expected_result'] ?? null,
+                    $data['actual_result'] ?? null,
+                    $data['project_id'],
+                    $decoded->user_id,
+                    $priority,
+                    $status,
+                    $istTimeStr,
+                    $istTimeStr,
+                ]);
+            }
+
+            $this->conn->commit();
+        } catch (Exception $e) {
+            if ($this->conn->inTransaction()) {
+                $this->conn->rollBack();
+            }
+            throw $e;
+        }
+
+        try {
+            $logger = ActivityLogger::getInstance();
+            $logger->logBugCreated(
+                $decoded->user_id,
+                $data['project_id'],
+                $id,
+                $data['title'],
+                [
+                    'priority' => $priority,
+                    'status' => $status,
+                    'attachments_count' => 0,
+                    'source' => 'bugbot',
+                ]
+            );
+        } catch (Exception $e) {
+            error_log('BugBot activity log: ' . $e->getMessage());
+        }
+
+        $this->spawnBugCreatedNotifications($id);
+
+        return [
+            'bug_id' => $id,
+            'title' => $data['title'],
+            'project_id' => $data['project_id'],
+            'priority' => $priority,
+            'status' => $status,
+        ];
+    }
+
     public function createBug($data) {
         try {
             // Validate required fields
@@ -678,49 +847,7 @@ class BugController extends BaseAPI {
                 'attachments' => $processedAttachments
             ];
             
-            // Trigger notifications in background so response returns immediately (better UX)
-            $execDisabled = in_array('exec', array_map('trim', explode(',', (string)ini_get('disable_functions'))));
-            $spawned = false;
-
-            if (!$execDisabled) {
-                $triggerScript = realpath(__DIR__ . '/../../trigger-bug-notifications.php');
-                $phpBin = 'php';
-                if (defined('PHP_BINARY') && PHP_BINARY) {
-                    $phpBin = PHP_BINARY;
-                } elseif (strtoupper(substr(PHP_OS, 0, 3)) !== 'WIN' && file_exists('/usr/bin/php')) {
-                    $phpBin = '/usr/bin/php';
-                } elseif (file_exists('/Applications/XAMPP/bin/php')) {
-                    $phpBin = '/Applications/XAMPP/bin/php';
-                }
-                if ($triggerScript && file_exists($triggerScript)) {
-                    if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
-                        @pclose(@popen('start /B ' . escapeshellarg($phpBin) . ' ' . escapeshellarg($triggerScript) . ' ' . escapeshellarg((string)$id), 'r'));
-                        $spawned = true;
-                    } else {
-                        @exec('nohup ' . escapeshellarg($phpBin) . ' ' . escapeshellarg($triggerScript) . ' ' . escapeshellarg((string)$id) . ' > /dev/null 2>&1 &');
-                        $spawned = true;
-                    }
-                }
-                // Fallback: fire HTTP request in background (works when PHP CLI not in path)
-                if (!$spawned) {
-                    $base = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http') . '://' . ($_SERVER['HTTP_HOST'] ?? 'localhost');
-                    $path = dirname(dirname($_SERVER['SCRIPT_NAME'] ?? '')); // from api/bugs/create.php -> api
-                    $url = rtrim($base . $path, '/') . '/notifications/trigger-bug.php';
-                    $payload = 'bug_id=' . urlencode((string)$id);
-                    $curl = 'curl';
-                    if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
-                        @pclose(@popen('start /B curl -s -X POST -d "' . addslashes($payload) . '" "' . addslashes($url) . '"', 'r'));
-                        $spawned = true;
-                    } elseif (trim(@shell_exec('which curl 2>/dev/null'))) {
-                        @exec('curl -s -X POST -d ' . escapeshellarg($payload) . ' ' . escapeshellarg($url) . ' > /dev/null 2>&1 &');
-                        $spawned = true;
-                    }
-                }
-            }
-
-            if (!$spawned) {
-                error_log("⚠️ Bug $id: async notification trigger not spawned; skipping inline notifications to keep create response fast.");
-            }
+            $this->spawnBugCreatedNotifications((string)$id);
 
             // Return to client immediately
             $this->sendJsonResponse(200, "Bug created successfully", [

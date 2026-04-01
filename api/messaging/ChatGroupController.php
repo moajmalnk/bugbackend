@@ -231,14 +231,9 @@ class ChatGroupController extends BaseAPI {
             $stmt->execute([$userId]);
             $groups = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-            $filtered = [];
-            foreach ($groups as $row) {
-                if ($this->validateProjectAccess($userId, $userRole, $row['project_id'])) {
-                    $filtered[] = $row;
-                }
-            }
-
-            $this->sendJsonResponse(200, "Your chat groups retrieved successfully", $filtered);
+            // Membership in chat_group_members is enough to list/open the chat.
+            // Do not require project_members / PROJECTS_VIEW (invited users may chat without project access).
+            $this->sendJsonResponse(200, "Your chat groups retrieved successfully", $groups);
         } catch (Exception $e) {
             error_log("Error fetching my chat groups: " . $e->getMessage());
             $this->sendJsonResponse(500, "Failed to retrieve chat groups: " . $e->getMessage());
@@ -439,9 +434,8 @@ class ChatGroupController extends BaseAPI {
                 return;
             }
             
-            // Check if user has access to the project
-            if (!$this->validateProjectAccess($memberId, 'user', $group['project_id'])) {
-                $this->sendJsonResponse(403, "User does not have access to this project");
+            if (!$this->userEligibleToJoinChatGroup($memberId, $group['project_id'])) {
+                $this->sendJsonResponse(403, "User was not found, is inactive, or cannot be added to this chat");
                 return;
             }
             
@@ -515,9 +509,8 @@ class ChatGroupController extends BaseAPI {
                         continue;
                     }
                     
-                    // Check if user exists and has access to the project
-                    if (!$this->validateProjectAccess($memberId, 'user', $group['project_id'])) {
-                        $errors[] = "User $username does not have access to this project";
+                    if (!$this->userEligibleToJoinChatGroup($memberId, $group['project_id'])) {
+                        $errors[] = "User $username was not found, is inactive, or cannot be added";
                         continue;
                     }
                     
@@ -532,9 +525,18 @@ class ChatGroupController extends BaseAPI {
             
             $this->conn->commit();
             
+            if ($addedCount === 0) {
+                $detail = !empty($errors) ? implode(' ', $errors) : 'No members were added';
+                $this->sendJsonResponse(400, $detail, [
+                    'added_count' => 0,
+                    'errors' => $errors
+                ]);
+                return;
+            }
+            
             $message = "Successfully added $addedCount member(s) to the group";
             if (!empty($errors)) {
-                $message .= ". Errors: " . implode(", ", $errors);
+                $message .= ". Some could not be added: " . implode(", ", $errors);
             }
             
             $this->sendJsonResponse(200, $message, [
@@ -707,6 +709,23 @@ class ChatGroupController extends BaseAPI {
         return false;
     }
 
+    /**
+     * User may join a chat group if they have normal project access OR they are an active account
+     * (managers can invite teammates who are not yet on the project).
+     */
+    private function userEligibleToJoinChatGroup($memberId, $projectId) {
+        if ($this->validateProjectAccess($memberId, 'user', $projectId)) {
+            return true;
+        }
+        if ($this->usersTableHasAccountActiveColumn()) {
+            $stmt = $this->conn->prepare("SELECT id FROM users WHERE id = ? AND account_active = 1 LIMIT 1");
+        } else {
+            $stmt = $this->conn->prepare("SELECT id FROM users WHERE id = ? LIMIT 1");
+        }
+        $stmt->execute([$memberId]);
+        return (bool) $stmt->fetch(PDO::FETCH_ASSOC);
+    }
+    
     private function validateProjectAccess($userId, $userRole, $projectId) {
         error_log("🔍 validateProjectAccess - User ID: $userId, Role: $userRole, Project ID: $projectId");
         
@@ -766,11 +785,12 @@ class ChatGroupController extends BaseAPI {
     }
     
     private function getGroupWithDetails($groupId) {
+        // Scalar subqueries only — avoids ONLY_FULL_GROUP_BY errors when selecting cg.* on production MySQL.
         $query = "
             SELECT 
                 cg.*,
-                COUNT(DISTINCT cgm.user_id) as member_count,
-                MAX(cm.created_at) as last_message_at,
+                (SELECT COUNT(DISTINCT cgm2.user_id) FROM chat_group_members cgm2 WHERE cgm2.group_id = cg.id) as member_count,
+                (SELECT MAX(cm2.created_at) FROM chat_messages cm2 WHERE cm2.group_id = cg.id AND cm2.is_deleted = 0) as last_message_at,
                 (SELECT m.sender_id FROM chat_messages m 
                  WHERE m.group_id = cg.id AND m.is_deleted = 0 
                  ORDER BY m.created_at DESC LIMIT 1) as last_message_sender_id,
@@ -791,10 +811,7 @@ class ChatGroupController extends BaseAPI {
                  ORDER BY m.created_at DESC LIMIT 1
                 ) as last_message_preview
             FROM chat_groups cg
-            LEFT JOIN chat_group_members cgm ON cg.id = cgm.group_id
-            LEFT JOIN chat_messages cm ON cg.id = cm.group_id AND cm.is_deleted = 0
             WHERE cg.id = ?
-            GROUP BY cg.id
         ";
         
         $stmt = $this->conn->prepare($query);

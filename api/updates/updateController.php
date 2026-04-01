@@ -1335,6 +1335,91 @@ class UpdateController extends BaseAPI
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
         }
     }
+    /**
+     * Minimal JSON update creation for BugBot (no file uploads). Sends same notifications as create().
+     *
+     * @param array{title: string, description: string, type: string, project_id: string} $data
+     * @return array{id: string, title: string, type: string, description: string, project_id: string, created_by: string}
+     * @throws Exception
+     */
+    public function bugBotCreateUpdateJson(object $decoded, array $data): array
+    {
+        $userId = $decoded->user_id;
+        $projectId = $data['project_id'];
+        $pmc = new ProjectMemberController();
+        if (!$pmc->hasProjectAccess($userId, $projectId)) {
+            throw new Exception('You are not a member of this project');
+        }
+
+        $this->conn->beginTransaction();
+        $id = Utils::generateUUID();
+        $sql = 'INSERT INTO updates (id, project_id, title, type, description, created_by) VALUES (?, ?, ?, ?, ?, ?)';
+        $stmt = $this->conn->prepare($sql);
+        $ok = $stmt->execute([
+            $id,
+            $projectId,
+            $data['title'],
+            $data['type'],
+            $data['description'],
+            $userId,
+        ]);
+        if (!$ok) {
+            $this->conn->rollBack();
+            throw new Exception('Failed to insert update');
+        }
+
+        try {
+            $logger = ActivityLogger::getInstance();
+            $logger->logUpdateCreated(
+                $userId,
+                $projectId,
+                $id,
+                $data['title'],
+                [
+                    'type' => $data['type'],
+                    'description' => substr($data['description'], 0, 100) . (strlen($data['description']) > 100 ? '...' : ''),
+                    'attachments_count' => 0,
+                    'source' => 'bugbot',
+                ]
+            );
+        } catch (Exception $e) {
+            error_log('BugBot update activity log: ' . $e->getMessage());
+        }
+
+        $this->conn->commit();
+
+        try {
+            require_once __DIR__ . '/../NotificationManager.php';
+            $notificationManager = NotificationManager::getInstance();
+            $notificationManager->notifyUpdateCreated($id, $data['title'], $projectId, $userId);
+        } catch (Exception $e) {
+            error_log('BugBot notifyUpdateCreated: ' . $e->getMessage());
+        }
+
+        try {
+            require_once __DIR__ . '/../../utils/whatsapp.php';
+            sendUpdateCreationWhatsApp(
+                $this->conn,
+                $id,
+                $data['title'],
+                $data['type'],
+                $projectId,
+                $userId
+            );
+        } catch (Exception $e) {
+            error_log('BugBot update WhatsApp: ' . $e->getMessage());
+        }
+
+        return [
+            'id' => $id,
+            'title' => $data['title'],
+            'type' => $data['type'],
+            'description' => $data['description'],
+            'project_id' => $projectId,
+            'created_by' => $userId,
+        ];
+    }
+
     private function changeStatus($id, $status)
     {
         try {

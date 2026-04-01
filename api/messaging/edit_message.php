@@ -15,7 +15,7 @@ class EditMessageAPI extends BaseAPI {
         
         try {
             $decoded = $this->validateToken();
-            $userId = $decoded->user_id;
+            $userId = trim((string)($decoded->user_id ?? ''));
             
             $input = json_decode(file_get_contents('php://input'), true);
             
@@ -47,7 +47,8 @@ class EditMessageAPI extends BaseAPI {
             }
             
             // Verify user owns the message
-            if ($message['sender_id'] !== $userId) {
+            $senderId = trim((string)($message['sender_id'] ?? ''));
+            if ($senderId !== $userId) {
                 $this->sendJsonResponse(403, "You can only edit your own messages");
                 return;
             }
