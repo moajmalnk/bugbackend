@@ -1,0 +1,162 @@
+<?php
+
+use Kreait\Firebase\Factory;
+use Kreait\Firebase\Messaging\CloudMessage;
+use Kreait\Firebase\Messaging\Notification;
+
+class FirebaseMessagingService {
+    /** @var PDO */
+    private $conn;
+    /** @var \Kreait\Firebase\Contract\Messaging */
+    private $messaging;
+
+    public function __construct(PDO $conn) {
+        $this->conn = $conn;
+        $this->ensureFcmTokenTable();
+        $this->messaging = $this->buildMessagingClient();
+    }
+
+    private function buildMessagingClient() {
+        $autoloadPath = __DIR__ . '/../vendor/autoload.php';
+        if (!file_exists($autoloadPath)) {
+            throw new RuntimeException('Firebase SDK dependencies are not installed. Run composer install in backend/.');
+        }
+        require_once $autoloadPath;
+
+        $serviceAccount = $this->resolveServiceAccountCredentials();
+        $factory = new Factory();
+
+        if (is_string($serviceAccount)) {
+            $factory = $factory->withServiceAccount($serviceAccount);
+        } else {
+            $factory = $factory->withServiceAccount($serviceAccount);
+        }
+
+        return $factory->createMessaging();
+    }
+
+    private function resolveServiceAccountCredentials() {
+        $base64Json = $this->getEnvValue('FIREBASE_SERVICE_ACCOUNT_BASE64');
+        if ($base64Json) {
+            $decoded = base64_decode($base64Json, true);
+            if ($decoded === false) {
+                throw new RuntimeException('Invalid FIREBASE_SERVICE_ACCOUNT_BASE64 value.');
+            }
+
+            $serviceAccount = json_decode($decoded, true);
+            if (!is_array($serviceAccount) || empty($serviceAccount['project_id'])) {
+                throw new RuntimeException('Decoded FIREBASE_SERVICE_ACCOUNT_BASE64 is not valid service account JSON.');
+            }
+
+            return $serviceAccount;
+        }
+
+        $path = $this->getEnvValue('FIREBASE_SERVICE_ACCOUNT_PATH');
+        if ($path && file_exists($path)) {
+            return $path;
+        }
+
+        throw new RuntimeException('Missing Firebase credentials. Set FIREBASE_SERVICE_ACCOUNT_BASE64 or FIREBASE_SERVICE_ACCOUNT_PATH.');
+    }
+
+    private function getEnvValue($key) {
+        if (class_exists('Environment')) {
+            $value = Environment::get($key);
+            if ($value !== null && $value !== '') {
+                return $value;
+            }
+        }
+        $systemValue = getenv($key);
+        return $systemValue === false ? null : $systemValue;
+    }
+
+    private function ensureFcmTokenTable() {
+        $this->conn->exec("
+            CREATE TABLE IF NOT EXISTS user_fcm_tokens (
+                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                user_id VARCHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+                token TEXT NOT NULL,
+                token_hash CHAR(64) NOT NULL,
+                device_type ENUM('android', 'ios', 'desktop') NOT NULL DEFAULT 'desktop',
+                platform VARCHAR(120) DEFAULT NULL,
+                user_agent VARCHAR(255) DEFAULT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uniq_user_fcm_tokens_hash (token_hash),
+                KEY idx_user_fcm_tokens_user_id (user_id),
+                CONSTRAINT fk_user_fcm_tokens_user_id
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                    ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+        ");
+    }
+
+    public function sendToAllUsers($title, $body, array $data = []) {
+        $tokenRows = $this->conn
+            ->query("SELECT DISTINCT token FROM user_fcm_tokens WHERE token IS NOT NULL AND TRIM(token) <> ''")
+            ->fetchAll(PDO::FETCH_COLUMN);
+
+        if (!$tokenRows) {
+            $tokenRows = $this->conn
+                ->query("SELECT DISTINCT fcm_token FROM users WHERE fcm_token IS NOT NULL AND TRIM(fcm_token) <> ''")
+                ->fetchAll(PDO::FETCH_COLUMN);
+        }
+
+        $tokens = array_values(array_unique(array_filter($tokenRows)));
+        if (empty($tokens)) {
+            return [
+                'success' => false,
+                'message' => 'No FCM tokens found',
+                'sent_count' => 0,
+                'failure_count' => 0,
+                'invalid_tokens_removed' => 0,
+            ];
+        }
+
+        $messageData = [];
+        foreach ($data as $key => $value) {
+            $messageData[(string) $key] = (string) $value;
+        }
+
+        $message = CloudMessage::new()
+            ->withNotification(Notification::create($title, $body))
+            ->withData($messageData);
+
+        $report = $this->messaging->sendMulticast($message, $tokens);
+        $invalidTokens = array_unique(array_merge($report->invalidTokens(), $report->unknownTokens()));
+        $deletedCount = $this->deleteInvalidTokens($invalidTokens);
+
+        error_log(sprintf(
+            'FCM multicast report: sent=%d, failed=%d, invalid_removed=%d',
+            $report->successes()->count(),
+            $report->failures()->count(),
+            $deletedCount
+        ));
+
+        return [
+            'success' => true,
+            'sent_count' => $report->successes()->count(),
+            'failure_count' => $report->failures()->count(),
+            'invalid_tokens_removed' => $deletedCount,
+            'invalid_tokens' => $invalidTokens,
+        ];
+    }
+
+    private function deleteInvalidTokens(array $tokens) {
+        if (empty($tokens)) {
+            return 0;
+        }
+
+        $deleteStmt = $this->conn->prepare("DELETE FROM user_fcm_tokens WHERE token_hash = ?");
+        $updateLegacyStmt = $this->conn->prepare("UPDATE users SET fcm_token = NULL WHERE fcm_token = ?");
+        $deletedCount = 0;
+
+        foreach ($tokens as $token) {
+            $deleteStmt->execute([hash('sha256', $token)]);
+            $deletedCount += $deleteStmt->rowCount();
+            $updateLegacyStmt->execute([$token]);
+        }
+
+        return $deletedCount;
+    }
+}

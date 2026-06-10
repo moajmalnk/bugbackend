@@ -303,7 +303,9 @@ class AnnouncementController extends BaseAPI {
             'title' => $title,
             'body' => $content,
             'data' => [
-                'type' => 'announcement_broadcast'
+                'type' => 'announcement_broadcast',
+                'click_action' => '/notifications',
+                'unread_count' => '1',
             ]
         ]);
 
