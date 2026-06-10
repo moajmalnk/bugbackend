@@ -132,12 +132,16 @@ class ChatGroupController extends BaseAPI {
             
             error_log("✅ ChatGroupController::getByProject - Access GRANTED to project $projectId for user $userId");
             
+            $filePreviewSql = $this->chatMessagesHasColumn('media_file_name')
+                ? "IFNULL(NULLIF(TRIM(m.media_file_name), ''), 'File')"
+                : "'File'";
+
             $query = "
                 SELECT 
                     cg.*,
-                    COUNT(DISTINCT cgm.user_id) as member_count,
-                    MAX(cm.created_at) as last_message_at,
-                    MAX(CASE WHEN cgm.user_id = ? THEN 1 ELSE 0 END) as is_member,
+                    (SELECT COUNT(DISTINCT cgm2.user_id) FROM chat_group_members cgm2 WHERE cgm2.group_id = cg.id) as member_count,
+                    (SELECT MAX(cm2.created_at) FROM chat_messages cm2 WHERE cm2.group_id = cg.id AND cm2.is_deleted = 0) as last_message_at,
+                    (SELECT COUNT(*) FROM chat_group_members cgm_self WHERE cgm_self.group_id = cg.id AND cgm_self.user_id = ?) as is_member,
                     (SELECT m.sender_id FROM chat_messages m 
                      WHERE m.group_id = cg.id AND m.is_deleted = 0 
                      ORDER BY m.created_at DESC LIMIT 1) as last_message_sender_id,
@@ -150,7 +154,7 @@ class ChatGroupController extends BaseAPI {
                             WHEN m.message_type = 'voice' THEN 'Voice message'
                             WHEN m.message_type = 'image' THEN 'Photo'
                             WHEN m.message_type = 'video' THEN 'Video'
-                            WHEN m.message_type IN ('document','audio') THEN IFNULL(NULLIF(TRIM(m.media_file_name), ''), 'File')
+                            WHEN m.message_type IN ('document','audio') THEN {$filePreviewSql}
                             ELSE LEFT(COALESCE(NULLIF(TRIM(m.content), ''), 'Message'), 200)
                         END
                      FROM chat_messages m
@@ -158,11 +162,8 @@ class ChatGroupController extends BaseAPI {
                      ORDER BY m.created_at DESC LIMIT 1
                     ) as last_message_preview
                 FROM chat_groups cg
-                LEFT JOIN chat_group_members cgm ON cg.id = cgm.group_id
-                LEFT JOIN chat_messages cm ON cg.id = cm.group_id AND cm.is_deleted = 0
                 WHERE cg.project_id = ? AND cg.is_active = 1
-                GROUP BY cg.id
-                ORDER BY (MAX(cm.created_at) IS NULL), MAX(cm.created_at) DESC, cg.name ASC
+                ORDER BY (last_message_at IS NULL), last_message_at DESC, cg.name ASC
             ";
             
             $stmt = $this->conn->prepare($query);
@@ -191,12 +192,16 @@ class ChatGroupController extends BaseAPI {
             $userId = $decoded->user_id;
             $userRole = $decoded->role;
 
+            $filePreviewSql = $this->chatMessagesHasColumn('media_file_name')
+                ? "IFNULL(NULLIF(TRIM(m.media_file_name), ''), 'File')"
+                : "'File'";
+
             $query = "
                 SELECT 
                     cg.*,
                     p.name as project_name,
-                    COUNT(DISTINCT cgm.user_id) as member_count,
-                    MAX(cm.created_at) as last_message_at,
+                    (SELECT COUNT(DISTINCT cgm2.user_id) FROM chat_group_members cgm2 WHERE cgm2.group_id = cg.id) as member_count,
+                    (SELECT MAX(cm2.created_at) FROM chat_messages cm2 WHERE cm2.group_id = cg.id AND cm2.is_deleted = 0) as last_message_at,
                     1 as is_member,
                     (SELECT m.sender_id FROM chat_messages m 
                      WHERE m.group_id = cg.id AND m.is_deleted = 0 
@@ -210,7 +215,7 @@ class ChatGroupController extends BaseAPI {
                             WHEN m.message_type = 'voice' THEN 'Voice message'
                             WHEN m.message_type = 'image' THEN 'Photo'
                             WHEN m.message_type = 'video' THEN 'Video'
-                            WHEN m.message_type IN ('document','audio') THEN IFNULL(NULLIF(TRIM(m.media_file_name), ''), 'File')
+                            WHEN m.message_type IN ('document','audio') THEN {$filePreviewSql}
                             ELSE LEFT(COALESCE(NULLIF(TRIM(m.content), ''), 'Message'), 200)
                         END
                      FROM chat_messages m
@@ -220,11 +225,8 @@ class ChatGroupController extends BaseAPI {
                 FROM chat_groups cg
                 INNER JOIN chat_group_members cgm_self ON cgm_self.group_id = cg.id AND cgm_self.user_id = ?
                 JOIN projects p ON p.id = cg.project_id
-                LEFT JOIN chat_group_members cgm ON cgm.group_id = cg.id
-                LEFT JOIN chat_messages cm ON cm.group_id = cg.id AND cm.is_deleted = 0
                 WHERE cg.is_active = 1
-                GROUP BY cg.id, p.id, p.name
-                ORDER BY (MAX(cm.created_at) IS NULL), MAX(cm.created_at) DESC, cg.name ASC
+                ORDER BY (last_message_at IS NULL), last_message_at DESC, cg.name ASC
             ";
 
             $stmt = $this->conn->prepare($query);
@@ -786,6 +788,10 @@ class ChatGroupController extends BaseAPI {
     
     private function getGroupWithDetails($groupId) {
         // Scalar subqueries only — avoids ONLY_FULL_GROUP_BY errors when selecting cg.* on production MySQL.
+        $filePreviewSql = $this->chatMessagesHasColumn('media_file_name')
+            ? "IFNULL(NULLIF(TRIM(m.media_file_name), ''), 'File')"
+            : "'File'";
+
         $query = "
             SELECT 
                 cg.*,
@@ -803,7 +809,7 @@ class ChatGroupController extends BaseAPI {
                         WHEN m.message_type = 'voice' THEN 'Voice message'
                         WHEN m.message_type = 'image' THEN 'Photo'
                         WHEN m.message_type = 'video' THEN 'Video'
-                        WHEN m.message_type IN ('document','audio') THEN IFNULL(NULLIF(TRIM(m.media_file_name), ''), 'File')
+                        WHEN m.message_type IN ('document','audio') THEN {$filePreviewSql}
                         ELSE LEFT(COALESCE(NULLIF(TRIM(m.content), ''), 'Message'), 200)
                     END
                  FROM chat_messages m
@@ -817,5 +823,17 @@ class ChatGroupController extends BaseAPI {
         $stmt = $this->conn->prepare($query);
         $stmt->execute([$groupId]);
         return $stmt->fetch(PDO::FETCH_ASSOC);
+    }
+
+    private function chatMessagesHasColumn($columnName) {
+        $stmt = $this->conn->prepare("
+            SELECT COUNT(*)
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'chat_messages'
+              AND COLUMN_NAME = ?
+        ");
+        $stmt->execute([$columnName]);
+        return (int)$stmt->fetchColumn() > 0;
     }
 } 
