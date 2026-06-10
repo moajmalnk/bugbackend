@@ -22,7 +22,7 @@ try {
         'chat_messages' => ['media_type', 'media_file_path', 'is_starred', 'is_forwarded', 'is_edited', 'delivery_status'],
         'users' => ['is_online', 'last_seen', 'profile_picture', 'status_message'],
         'chat_groups' => ['group_picture', 'is_archived'],
-        'starred_messages' => ['id', 'message_id', 'user_id'],
+        'starred_messages' => ['id', 'message_id', 'user_id', 'group_id', 'starred_at'],
         'message_delivery_status' => ['id', 'message_id', 'status'],
         'user_status' => ['id', 'user_id', 'media_type', 'expires_at'],
         'status_views' => ['id', 'status_id', 'viewer_id'],
