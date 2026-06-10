@@ -48,26 +48,35 @@ class MarkReadAPI extends BaseAPI {
             
             // Check group access
             $role = $decoded->role;
-            if (!$this->validateGroupAccess($message['group_id'], $userId, $role)) {
+            if (!$this->userCanAccessChatGroup($message['group_id'], $userId, $role)) {
                 $this->sendJsonResponse(403, "Access denied");
                 return;
             }
             
             // Check if already marked as read
-            $checkStmt = $this->conn->prepare("
-                SELECT id FROM message_read_status 
-                WHERE message_id = ? AND user_id = ?
-            ");
-            $checkStmt->execute([$messageId, $userId]);
-            
-            if (!$checkStmt->fetch()) {
-                // Insert read status
-                $readId = $this->utils->generateUUID();
-                $stmt = $this->conn->prepare("
-                    INSERT INTO message_read_status (id, message_id, user_id)
-                    VALUES (?, ?, ?)
+            if ($this->dbTableExists('message_read_status')) {
+                $checkStmt = $this->conn->prepare("
+                    SELECT id FROM message_read_status 
+                    WHERE message_id = ? AND user_id = ?
                 ");
-                $stmt->execute([$readId, $messageId, $userId]);
+                $checkStmt->execute([$messageId, $userId]);
+                
+                if (!$checkStmt->fetch()) {
+                    if ($this->dbColumnExists('message_read_status', 'id')) {
+                        $readId = $this->utils->generateUUID();
+                        $stmt = $this->conn->prepare("
+                            INSERT INTO message_read_status (id, message_id, user_id)
+                            VALUES (?, ?, ?)
+                        ");
+                        $stmt->execute([$readId, $messageId, $userId]);
+                    } else {
+                        $stmt = $this->conn->prepare("
+                            INSERT INTO message_read_status (message_id, user_id)
+                            VALUES (?, ?)
+                        ");
+                        $stmt->execute([$messageId, $userId]);
+                    }
+                }
             }
             
             // Update last_read_at for the user in the group

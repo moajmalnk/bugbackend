@@ -50,8 +50,13 @@ class ReactionController extends BaseAPI {
             ");
             $checkStmt->execute([$messageId, $userId, $emoji]);
             
-            if ($checkStmt->fetch()) {
-                $this->sendJsonResponse(409, "Reaction already exists");
+            $existingReaction = $checkStmt->fetch(PDO::FETCH_ASSOC);
+            if ($existingReaction) {
+                $this->sendJsonResponse(
+                    200,
+                    "Reaction already exists",
+                    $this->getReactionWithDetails($existingReaction['id'])
+                );
                 return;
             }
             

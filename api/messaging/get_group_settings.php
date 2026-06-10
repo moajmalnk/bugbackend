@@ -26,7 +26,7 @@ class GetGroupSettingsAPI extends BaseAPI {
             
             // Check if user is member of the group
             $role = $decoded->role;
-            if (!$this->validateGroupAccess($groupId, $userId, $role)) {
+            if (!$this->userCanAccessChatGroup($groupId, $userId, $role)) {
                 $this->sendJsonResponse(403, "Access denied to this chat group");
                 return;
             }

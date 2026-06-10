@@ -48,7 +48,7 @@ class MarkDeliveredAPI extends BaseAPI {
             
             // Check group access
             $role = $decoded->role;
-            if (!$this->validateGroupAccess($message['group_id'], $userId, $role)) {
+            if (!$this->userCanAccessChatGroup($message['group_id'], $userId, $role)) {
                 $this->sendJsonResponse(403, "Access denied");
                 return;
             }

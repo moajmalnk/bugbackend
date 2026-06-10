@@ -159,6 +159,67 @@ class BaseAPI {
         }
     }
 
+    protected function dbTableExists($tableName) {
+        $stmt = $this->conn->prepare("
+            SELECT COUNT(*)
+            FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = ?
+        ");
+        $stmt->execute([$tableName]);
+        return (int)$stmt->fetchColumn() > 0;
+    }
+
+    protected function dbColumnExists($tableName, $columnName) {
+        $stmt = $this->conn->prepare("
+            SELECT COUNT(*)
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = ?
+              AND COLUMN_NAME = ?
+        ");
+        $stmt->execute([$tableName, $columnName]);
+        return (int)$stmt->fetchColumn() > 0;
+    }
+
+    protected function userCanAccessChatGroup($groupId, $userId, $userRole = null) {
+        if ($userRole === 'admin') {
+            return true;
+        }
+
+        $stmt = $this->conn->prepare("
+            SELECT 1
+            FROM chat_groups cg
+            JOIN chat_group_members cgm ON cgm.group_id = cg.id
+            WHERE cg.id = ?
+              AND cg.is_active = 1
+              AND cgm.user_id = ?
+            LIMIT 1
+        ");
+        $stmt->execute([$groupId, $userId]);
+        return (bool)$stmt->fetch(PDO::FETCH_ASSOC);
+    }
+
+    protected function userCanAccessChatMessage($messageId, $userId, $userRole = null) {
+        if ($userRole === 'admin') {
+            return true;
+        }
+
+        $stmt = $this->conn->prepare("
+            SELECT 1
+            FROM chat_messages cm
+            JOIN chat_groups cg ON cg.id = cm.group_id
+            JOIN chat_group_members cgm ON cgm.group_id = cm.group_id
+            WHERE cm.id = ?
+              AND cm.is_deleted = 0
+              AND cg.is_active = 1
+              AND cgm.user_id = ?
+            LIMIT 1
+        ");
+        $stmt->execute([$messageId, $userId]);
+        return (bool)$stmt->fetch(PDO::FETCH_ASSOC);
+    }
+
     public function validateToken() {
         // Cache token validation for 5 minutes
         $token = $this->getBearerToken();

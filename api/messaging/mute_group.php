@@ -29,37 +29,26 @@ class MuteGroupAPI extends BaseAPI {
             
             // Check if user is member of the group
             $role = $decoded->role;
-            if (!$this->validateGroupAccess($groupId, $userId, $role)) {
+            if (!$this->userCanAccessChatGroup($groupId, $userId, $role)) {
                 $this->sendJsonResponse(403, "Access denied to this chat group");
                 return;
             }
             
             // Calculate mute until timestamp
-            $muteUntil = date('Y-m-d H:i:s', time() + $duration);
-            
-            // Check if already muted
-            $checkStmt = $this->conn->prepare("
-                SELECT id FROM muted_groups 
-                WHERE group_id = ? AND user_id = ?
-            ");
-            $checkStmt->execute([$groupId, $userId]);
-            
-            if ($existingMute = $checkStmt->fetch()) {
-                // Update existing mute
-                $updateStmt = $this->conn->prepare("
-                    UPDATE muted_groups 
-                    SET muted_until = ? 
-                    WHERE id = ?
-                ");
-                $updateStmt->execute([$muteUntil, $existingMute['id']]);
-            } else {
-                // Create new mute
-                $muteId = $this->utils->generateUUID();
+            $muteUntil = $duration ? date('Y-m-d H:i:s', time() + (int)$duration) : null;
+
+            if ($this->dbColumnExists('chat_group_members', 'is_muted')) {
                 $stmt = $this->conn->prepare("
-                    INSERT INTO muted_groups (id, group_id, user_id, muted_until)
-                    VALUES (?, ?, ?, ?)
+                    UPDATE chat_group_members
+                    SET is_muted = 1, muted_until = ?
+                    WHERE group_id = ? AND user_id = ?
                 ");
-                $stmt->execute([$muteId, $groupId, $userId, $muteUntil]);
+                $stmt->execute([$muteUntil, $groupId, $userId]);
+            } else {
+                $this->sendJsonResponse(200, "Mute settings are not installed", [
+                    'muted_until' => null
+                ]);
+                return;
             }
             
             $this->sendJsonResponse(200, "Group muted successfully", [

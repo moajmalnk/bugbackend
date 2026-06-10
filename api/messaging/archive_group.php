@@ -28,30 +28,22 @@ class ArchiveGroupAPI extends BaseAPI {
             
             // Check if user is member of the group
             $role = $decoded->role;
-            if (!$this->validateGroupAccess($groupId, $userId, $role)) {
+            if (!$this->userCanAccessChatGroup($groupId, $userId, $role)) {
                 $this->sendJsonResponse(403, "Access denied to this chat group");
                 return;
             }
-            
-            // Check if already archived
-            $checkStmt = $this->conn->prepare("
-                SELECT id FROM archived_groups 
-                WHERE group_id = ? AND user_id = ?
-            ");
-            $checkStmt->execute([$groupId, $userId]);
-            
-            if ($checkStmt->fetch()) {
-                $this->sendJsonResponse(409, "Group already archived");
-                return;
+
+            if ($this->dbColumnExists('chat_groups', 'is_archived')) {
+                $setClause = $this->dbColumnExists('chat_groups', 'archived_at')
+                    ? "is_archived = 1, archived_at = CURRENT_TIMESTAMP"
+                    : "is_archived = 1";
+                $stmt = $this->conn->prepare("
+                    UPDATE chat_groups
+                    SET {$setClause}
+                    WHERE id = ?
+                ");
+                $stmt->execute([$groupId]);
             }
-            
-            // Archive the group
-            $archiveId = $this->utils->generateUUID();
-            $stmt = $this->conn->prepare("
-                INSERT INTO archived_groups (id, group_id, user_id)
-                VALUES (?, ?, ?)
-            ");
-            $stmt->execute([$archiveId, $groupId, $userId]);
             
             $this->sendJsonResponse(200, "Group archived successfully");
             
