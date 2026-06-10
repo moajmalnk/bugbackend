@@ -23,6 +23,17 @@ class GetStarredMessagesAPI extends BaseAPI {
                 $this->sendJsonResponse(400, "group_id is required");
                 return;
             }
+
+            if (!$this->tableExists('starred_messages')) {
+                $this->sendJsonResponse(200, "Starred messages retrieved successfully", []);
+                return;
+            }
+
+            $hasGroupId = $this->tableColumnExists('starred_messages', 'group_id');
+            $hasStarredAt = $this->tableColumnExists('starred_messages', 'starred_at');
+            $groupFilter = $hasGroupId ? 'sm.group_id = ?' : 'cm.group_id = ?';
+            $starredAtSelect = $hasStarredAt ? 'sm.starred_at' : 'cm.created_at as starred_at';
+            $starredAtOrder = $hasStarredAt ? 'sm.starred_at' : 'cm.created_at';
             
             // Get starred messages for this user in this group
             $stmt = $this->conn->prepare("
@@ -31,14 +42,14 @@ class GetStarredMessagesAPI extends BaseAPI {
                     COALESCE(u.username, 'BugRicer') as sender_name,
                     u.email as sender_email,
                     u.role as sender_role,
-                    sm.starred_at
+                    {$starredAtSelect}
                 FROM starred_messages sm
                 JOIN chat_messages cm ON sm.message_id = cm.id
                 LEFT JOIN users u ON cm.sender_id = u.id
                 WHERE sm.user_id = ? 
-                    AND sm.group_id = ?
+                    AND {$groupFilter}
                     AND cm.is_deleted = 0
-                ORDER BY sm.starred_at DESC
+                ORDER BY {$starredAtOrder} DESC
             ");
             $stmt->execute([$userId, $groupId]);
             $messages = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -54,6 +65,29 @@ class GetStarredMessagesAPI extends BaseAPI {
             error_log("Error getting starred messages: " . $e->getMessage());
             $this->sendJsonResponse(500, "Failed to get starred messages: " . $e->getMessage());
         }
+    }
+
+    private function tableExists($tableName) {
+        $stmt = $this->conn->prepare("
+            SELECT COUNT(*)
+            FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = ?
+        ");
+        $stmt->execute([$tableName]);
+        return (int)$stmt->fetchColumn() > 0;
+    }
+
+    private function tableColumnExists($tableName, $columnName) {
+        $stmt = $this->conn->prepare("
+            SELECT COUNT(*)
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = ?
+              AND COLUMN_NAME = ?
+        ");
+        $stmt->execute([$tableName, $columnName]);
+        return (int)$stmt->fetchColumn() > 0;
     }
 }
 
