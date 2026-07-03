@@ -62,6 +62,35 @@ class UserWorkStatsController extends BaseAPI {
         return $total;
     }
 
+    private function getCalendarMonthPeriodAtOffset(int $monthsAgo, DateTimeZone $istTimezone): array {
+        $anchor = new DateTime('now', $istTimezone);
+        $periodStartDate = new DateTime($anchor->format('Y-m-01'), $istTimezone);
+        if ($monthsAgo > 0) {
+            $periodStartDate->modify("-{$monthsAgo} months");
+        }
+        $periodEndDate = clone $periodStartDate;
+        $periodEndDate->modify('last day of this month');
+
+        return [
+            'start' => $periodStartDate->format('Y-m-d'),
+            'end' => $periodEndDate->format('Y-m-d'),
+            'name' => $this->formatCalendarMonthName($periodStartDate, $periodEndDate),
+            'range' => $this->formatCalendarMonthRange($periodStartDate, $periodEndDate),
+        ];
+    }
+
+    private function formatCalendarMonthName(DateTime $start, DateTime $end): string {
+        if ($start->format('Y-m') === $end->format('Y-m')) {
+            return $start->format('F Y');
+        }
+
+        return $start->format('M d') . ' – ' . $end->format('M d, Y');
+    }
+
+    private function formatCalendarMonthRange(DateTime $start, DateTime $end): string {
+        return $start->format('M d') . ' – ' . $end->format('M d');
+    }
+
     private function ensureWorkSubmissionOtApprovalColumns() {
         $alters = [
             ['extra_hours_approval_status', "ALTER TABLE work_submissions ADD COLUMN extra_hours_approval_status VARCHAR(24) NOT NULL DEFAULT 'none' AFTER approval_reason"],
@@ -108,31 +137,13 @@ class UserWorkStatsController extends BaseAPI {
 
             $this->ensureWorkSubmissionOtApprovalColumns();
 
-            // Get current custom month period (6th to 5th of next month)
+            // Current calendar month (1st through last day)
             $istTimezone = new DateTimeZone('Asia/Kolkata');
-            $today = new DateTime('now', $istTimezone);
-            $day = (int)$today->format('d');
-            
-            // Determine current period
-            if ($day >= 6) {
-                // Current period: 6th of this month to 5th of next month
-                $periodStartDate = new DateTime($today->format('Y-m-06'), $istTimezone);
-                $periodEndDate = new DateTime($today->format('Y-m-06'), $istTimezone);
-                $periodEndDate->modify('+1 month')->modify('-1 day'); // Go to 5th of next month
-                
-                $periodStart = $periodStartDate->format('Y-m-d');
-                $periodEnd = $periodEndDate->format('Y-m-d');
-                $periodName = $periodStartDate->format('M') . ' 06 - ' . $periodEndDate->format('M 05');
-            } else {
-                // Current period: 6th of last month to 5th of this month
-                $periodStartDate = new DateTime($today->format('Y-m-06'), $istTimezone);
-                $periodStartDate->modify('-1 month');
-                $periodEndDate = new DateTime($today->format('Y-m-05'), $istTimezone);
-                
-                $periodStart = $periodStartDate->format('Y-m-d');
-                $periodEnd = $periodEndDate->format('Y-m-d');
-                $periodName = $periodStartDate->format('M') . ' 06 - ' . $periodEndDate->format('M 05');
-            }
+            $currentPeriod = $this->getCalendarMonthPeriodAtOffset(0, $istTimezone);
+            $periodStart = $currentPeriod['start'];
+            $periodEnd = $currentPeriod['end'];
+            $periodName = $currentPeriod['name'];
+            $periodRange = $currentPeriod['range'];
             
             // Get work submissions for the current custom period
             $stmt = $this->conn->prepare("
@@ -230,28 +241,20 @@ class UserWorkStatsController extends BaseAPI {
                 'upcoming' => $upcoming
             ];
             
-            // Get last 6 custom periods for trend analysis
+            // Last 6 calendar months for trend analysis
             $trendData = [];
-            $istTimezone = new DateTimeZone('Asia/Kolkata');
-            $currentDate = new DateTime('now', $istTimezone);
-            
-            // Generate 6 custom periods (6th to 5th of next month)
             for ($i = 0; $i < 6; $i++) {
                 if ($i === 0) {
-                    // Use the current period we already calculated
                     $periodStartStr = $periodStart;
                     $periodEndStr = $periodEnd;
                     $periodName = $periodName;
+                    $periodRangeLabel = $periodRange;
                 } else {
-                    // Go back i months
-                    $periodStartDate = new DateTime($currentDate->format('Y-m-06'), $istTimezone);
-                    $periodStartDate->modify("-{$i} months");
-                    $periodEndDate = new DateTime($currentDate->format('Y-m-06'), $istTimezone);
-                    $periodEndDate->modify("-{$i} months")->modify('+1 month')->modify('-1 day');
-                    
-                    $periodStartStr = $periodStartDate->format('Y-m-d');
-                    $periodEndStr = $periodEndDate->format('Y-m-d');
-                    $periodName = $periodStartDate->format('M 06') . ' - ' . $periodEndDate->format('M 05');
+                    $monthPeriod = $this->getCalendarMonthPeriodAtOffset($i, $istTimezone);
+                    $periodStartStr = $monthPeriod['start'];
+                    $periodEndStr = $monthPeriod['end'];
+                    $periodName = $monthPeriod['name'];
+                    $periodRangeLabel = $monthPeriod['range'];
                 }
                 
                 // Get work submission data for this period
@@ -340,6 +343,7 @@ class UserWorkStatsController extends BaseAPI {
                 $trendData[] = [
                     'period' => $periodStartStr,
                     'period_name' => $periodName,
+                    'period_range' => $periodRangeLabel,
                     'days' => (int)($periodData['days'] ?? 0),
                     'hours' => (float)($periodData['hours'] ?? 0),
                     'overtime_hours' => round($periodOvertime, 2),
@@ -368,6 +372,7 @@ class UserWorkStatsController extends BaseAPI {
                     'period_start' => $periodStart,
                     'period_end' => $periodEnd,
                     'period_name' => $monthName,
+                    'period_range' => $periodRange,
                     'days' => $totalDays,
                     'hours' => round($totalHours, 1),
                     'overtime_hours' => round($overtimeHours, 2),
