@@ -62,6 +62,66 @@ class UserWorkStatsController extends BaseAPI {
         return $total;
     }
 
+    private function parsePlannedProjectIds($raw) {
+        if ($raw === null || $raw === '') return [];
+        if (is_array($raw)) {
+            return array_values(array_filter($raw, function ($value) {
+                return $value !== null && $value !== '';
+            }));
+        }
+        if (is_string($raw)) {
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) {
+                return array_values(array_filter($decoded, function ($value) {
+                    return $value !== null && $value !== '';
+                }));
+            }
+            $trimmed = trim($raw);
+            return $trimmed !== '' ? [$trimmed] : [];
+        }
+        return [];
+    }
+
+    private function fetchProjectNameMap(array $ids) {
+        $ids = array_values(array_unique(array_filter($ids, function ($id) {
+            return $id !== null && $id !== '';
+        })));
+        if (empty($ids)) return [];
+
+        try {
+            $placeholders = implode(',', array_fill(0, count($ids), '?'));
+            $stmt = $this->conn->prepare("SELECT id, name FROM projects WHERE id IN ($placeholders)");
+            $stmt->execute($ids);
+            $map = [];
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $map[(string)$row['id']] = $row['name'];
+            }
+            return $map;
+        } catch (Exception $e) {
+            error_log('UserWorkStatsController::fetchProjectNameMap error: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    private function buildProjectNameMapFromSubmissions(array $submissions) {
+        $ids = [];
+        foreach ($submissions as $submission) {
+            foreach ($this->parsePlannedProjectIds($submission['planned_projects'] ?? null) as $id) {
+                $ids[(string)$id] = true;
+            }
+        }
+        return $this->fetchProjectNameMap(array_keys($ids));
+    }
+
+    private function resolveProjectNames($raw, array $projectNameMap) {
+        $names = [];
+        foreach ($this->parsePlannedProjectIds($raw) as $id) {
+            $key = (string)$id;
+            $names[] = $projectNameMap[$key] ?? $key;
+        }
+        return $names;
+    }
+
     private function getCalendarMonthPeriodAtOffset(int $monthsAgo, DateTimeZone $istTimezone): array {
         $anchor = new DateTime('now', $istTimezone);
         $periodStartDate = new DateTime($anchor->format('Y-m-01'), $istTimezone);
@@ -91,7 +151,7 @@ class UserWorkStatsController extends BaseAPI {
         return $start->format('M d') . ' – ' . $end->format('M d');
     }
 
-    private function buildDailySubmissionEntry(array $submission): array {
+    private function buildDailySubmissionEntry(array $submission, array $projectNameMap = []) {
         $date = $submission['submission_date'] ?? null;
         $completedLines = $this->splitTaskLines($submission['completed_tasks'] ?? '');
         $pendingLines = $this->splitTaskLines($submission['pending_tasks'] ?? '');
@@ -104,6 +164,9 @@ class UserWorkStatsController extends BaseAPI {
             $breakMinutes = $this->getBreakMinutesFromEntries($breakEntries);
         }
 
+        $projectIds = $this->parsePlannedProjectIds($submission['planned_projects'] ?? null);
+        $projectNames = $this->resolveProjectNames($submission['planned_projects'] ?? null, $projectNameMap);
+
         return [
             'date' => $date,
             'submission_date' => $date,
@@ -111,6 +174,8 @@ class UserWorkStatsController extends BaseAPI {
             'username' => $submission['username'] ?? null,
             'role' => $submission['role'] ?? null,
             'created_at' => $submission['created_at'] ?? null,
+            'updated_at' => $submission['updated_at'] ?? null,
+            'submitted_at' => $submission['updated_at'] ?? $submission['created_at'] ?? null,
             'check_in_time' => $submission['check_in_time'] ?? null,
             'hours' => (float)($submission['hours_today'] ?? 0),
             'hours_today' => (float)($submission['hours_today'] ?? 0),
@@ -135,7 +200,8 @@ class UserWorkStatsController extends BaseAPI {
             'planned_work' => $submission['planned_work'] ?? null,
             'planned_work_status' => $submission['planned_work_status'] ?? null,
             'planned_work_notes' => $submission['planned_work_notes'] ?? null,
-            'planned_projects' => $submission['planned_projects'] ?? null,
+            'planned_projects' => $projectIds,
+            'project_names' => $projectNames,
             'tasks' => [
                 'completed' => $completedLines,
                 'pending' => $pendingLines,
@@ -497,6 +563,7 @@ class UserWorkStatsController extends BaseAPI {
                 SELECT 
                     submission_date,
                     created_at,
+                    updated_at,
                     check_in_time,
                     hours_today,
                     start_time,
@@ -511,6 +578,7 @@ class UserWorkStatsController extends BaseAPI {
                     pending_tasks,
                     ongoing_tasks,
                     notes,
+                    planned_projects,
                     planned_work,
                     planned_work_status,
                     planned_work_notes
@@ -535,6 +603,8 @@ class UserWorkStatsController extends BaseAPI {
             $totalRequestedExtraHours = 0.0;
             $totalBreakMinutes = 0;
             $totalApprovalRequests = 0;
+
+            $projectNameMap = $this->buildProjectNameMapFromSubmissions($submissions);
 
             foreach ($submissions as $submission) {
                 $date = $submission['submission_date'];
@@ -584,7 +654,7 @@ class UserWorkStatsController extends BaseAPI {
                 }
                 $totalBreakMinutes += $breakMinutes;
 
-                $dailyBreakdown[] = $this->buildDailySubmissionEntry($submission);
+                $dailyBreakdown[] = $this->buildDailySubmissionEntry($submission, $projectNameMap);
             }
 
             $details = [
@@ -651,6 +721,8 @@ class UserWorkStatsController extends BaseAPI {
             $totalApprovalRequests = 0;
             $userIds = [];
 
+            $projectNameMap = $this->buildProjectNameMapFromSubmissions($submissions);
+
             foreach ($submissions as $submission) {
                 $date = $submission['submission_date'];
                 $userIds[$submission['user_id']] = true;
@@ -694,7 +766,7 @@ class UserWorkStatsController extends BaseAPI {
                 }
                 $totalBreakMinutes += $breakMinutes;
 
-                $dailyBreakdown[] = $this->buildDailySubmissionEntry($submission);
+                $dailyBreakdown[] = $this->buildDailySubmissionEntry($submission, $projectNameMap);
             }
 
             $uniqueDays = [];
