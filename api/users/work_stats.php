@@ -94,7 +94,9 @@ class UserWorkStatsController extends BaseAPI {
             $stmt->execute($ids);
             $map = [];
             foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-                $map[(string)$row['id']] = $row['name'];
+                $id = (string)$row['id'];
+                $name = (string)$row['name'];
+                $map[$id] = $name;
             }
             return $map;
         } catch (Exception $e) {
@@ -113,13 +115,35 @@ class UserWorkStatsController extends BaseAPI {
         return $this->fetchProjectNameMap(array_keys($ids));
     }
 
+    private function lookupProjectName($id, array $projectNameMap) {
+        $key = (string)$id;
+        if (isset($projectNameMap[$key])) {
+            return $projectNameMap[$key];
+        }
+        foreach ($projectNameMap as $projectId => $name) {
+            if (strcasecmp((string)$projectId, $key) === 0) {
+                return (string)$name;
+            }
+        }
+        return $key;
+    }
+
     private function resolveProjectNames($raw, array $projectNameMap) {
         $names = [];
         foreach ($this->parsePlannedProjectIds($raw) as $id) {
-            $key = (string)$id;
-            $names[] = $projectNameMap[$key] ?? $key;
+            $resolved = $this->lookupProjectName($id, $projectNameMap);
+            if ($resolved === '' || $resolved === null) {
+                continue;
+            }
+            if (
+                preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $resolved) &&
+                strcasecmp($resolved, (string)$id) === 0
+            ) {
+                continue;
+            }
+            $names[] = $resolved;
         }
-        return $names;
+        return array_values(array_unique($names));
     }
 
     private function getCalendarMonthPeriodAtOffset(int $monthsAgo, DateTimeZone $istTimezone): array {
@@ -673,7 +697,8 @@ class UserWorkStatsController extends BaseAPI {
                     'ongoing' => $allOngoing,
                     'upcoming' => $allUpcoming
                 ],
-                'notes' => $allNotes
+                'notes' => $allNotes,
+                'project_name_map' => $projectNameMap,
             ];
 
             $this->sendJsonResponse(200, 'Period details retrieved successfully', $details);
@@ -796,6 +821,7 @@ class UserWorkStatsController extends BaseAPI {
                     'upcoming' => $allUpcoming,
                 ],
                 'notes' => $allNotes,
+                'project_name_map' => $projectNameMap,
             ];
 
             $this->sendJsonResponse(200, 'Team period details retrieved successfully', $details);

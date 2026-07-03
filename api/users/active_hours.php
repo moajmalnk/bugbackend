@@ -9,8 +9,26 @@ try {
         throw new Exception('Method not allowed', 405);
     }
 
-    // Validate token
-    $controller->validateToken();
+    $decoded = null;
+    try {
+        $decoded = $controller->validateToken();
+    } catch (Exception $authError) {
+        http_response_code(401);
+        echo json_encode([
+            'success' => false,
+            'message' => 'Authentication failed',
+        ]);
+        exit();
+    }
+
+    if (!$decoded || !isset($decoded->user_id)) {
+        http_response_code(401);
+        echo json_encode([
+            'success' => false,
+            'message' => 'Authentication failed',
+        ]);
+        exit();
+    }
 
     $userId = isset($_GET['id']) ? $_GET['id'] : null;
     $period = isset($_GET['period']) ? $_GET['period'] : 'daily';

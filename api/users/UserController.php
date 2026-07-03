@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../ActivityLogger.php';
+require_once __DIR__ . '/../../utils/activity_sessions_schema.php';
 
 class UserController extends BaseAPI {
     public function getUsers() {
@@ -776,10 +777,10 @@ class UserController extends BaseAPI {
                 return;
             }
 
+            ActivitySessionsSchema::ensureSchema($this->conn);
+
             // Check if user_activity_sessions table exists
-            $tableExists = $this->conn->query("SHOW TABLES LIKE 'user_activity_sessions'")->rowCount() > 0;
-            
-            if (!$tableExists) {
+            if (!ActivitySessionsSchema::tableExists($this->conn)) {
                 // Return empty data if table doesn't exist
                 $response = [
                     'period' => $period,
@@ -802,21 +803,13 @@ class UserController extends BaseAPI {
             $startDate = $dateRange['start'];
             $endDate = $dateRange['end'];
 
+            $minutesExpr = ActivitySessionsSchema::minutesCaseExpression($this->conn);
+
             // Calculate active hours for the period
-            // Use session_duration_minutes if available, otherwise calculate from session_start to session_end
             $query = "
                 SELECT 
                     DATE(session_start) as date,
-                    SUM(
-                        CASE 
-                            WHEN session_duration_minutes IS NOT NULL AND session_duration_minutes > 0 THEN 
-                                session_duration_minutes
-                            WHEN session_end IS NOT NULL THEN 
-                                TIMESTAMPDIFF(MINUTE, session_start, session_end)
-                            ELSE 
-                                TIMESTAMPDIFF(MINUTE, session_start, NOW())
-                        END
-                    ) as total_minutes,
+                    SUM({$minutesExpr}) as total_minutes,
                     COUNT(*) as session_count
                 FROM user_activity_sessions 
                 WHERE user_id = ? 

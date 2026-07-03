@@ -5,6 +5,7 @@
  */
 
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../../utils/activity_sessions_schema.php';
 
 header('Content-Type: application/json');
 
@@ -50,11 +51,14 @@ try {
         exit();
     }
     
+    ActivitySessionsSchema::ensureSchema($conn);
+    $activePredicate = ActivitySessionsSchema::activeSessionPredicate($conn);
+
     // Find and close all active sessions for this user
     $checkStmt = $conn->prepare("
         SELECT id, session_start 
         FROM user_activity_sessions 
-        WHERE user_id = ? AND is_active = TRUE
+        WHERE user_id = ? AND {$activePredicate}
     ");
     $checkStmt->execute([$userId]);
     $activeSessions = $checkStmt->fetchAll(PDO::FETCH_ASSOC);
@@ -63,6 +67,8 @@ try {
     $closedCount = 0;
     
     $istTimezone = new DateTimeZone('Asia/Kolkata');
+    $setClause = ActivitySessionsSchema::closeSessionSetClause($conn);
+
     foreach ($activeSessions as $session) {
         $sessionStart = new DateTime($session['session_start'], $istTimezone);
         $sessionEnd = new DateTime($now, $istTimezone);
@@ -70,10 +76,7 @@ try {
         
         $closeStmt = $conn->prepare("
             UPDATE user_activity_sessions 
-            SET session_end = ?, 
-                session_duration_minutes = ?,
-                is_active = FALSE, 
-                updated_at = NOW() 
+            SET {$setClause}
             WHERE id = ?
         ");
         $closeStmt->execute([$now, $durationMinutes, $session['id']]);

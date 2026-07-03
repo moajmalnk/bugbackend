@@ -1,5 +1,6 @@
 <?php
 require_once '../BaseAPI.php';
+require_once __DIR__ . '/../../utils/activity_sessions_schema.php';
 
 class HeartbeatController extends BaseAPI {
     public function __construct() {
@@ -57,17 +58,18 @@ class HeartbeatController extends BaseAPI {
 
     private function trackActivitySession($userId, $timestamp) {
         try {
-            // Check if user_activity_sessions table exists
-            $tableExists = $this->conn->query("SHOW TABLES LIKE 'user_activity_sessions'")->rowCount() > 0;
-            if (!$tableExists) {
+            if (!ActivitySessionsSchema::tableExists($this->conn)) {
                 return;
             }
+
+            ActivitySessionsSchema::ensureSchema($this->conn);
+            $activePredicate = ActivitySessionsSchema::activeSessionPredicate($this->conn);
 
             // Check if there's an active session for this user
             $checkStmt = $this->conn->prepare("
                 SELECT id, session_start, session_end, updated_at
                 FROM user_activity_sessions 
-                WHERE user_id = ? AND is_active = TRUE 
+                WHERE user_id = ? AND {$activePredicate}
                 ORDER BY session_start DESC 
                 LIMIT 1
             ");
@@ -105,18 +107,19 @@ class HeartbeatController extends BaseAPI {
 
     private function startNewActivitySession($userId, $timestamp) {
         try {
-            // Check if user_activity_sessions table exists
-            $tableExists = $this->conn->query("SHOW TABLES LIKE 'user_activity_sessions'")->rowCount() > 0;
-            if (!$tableExists) {
+            if (!ActivitySessionsSchema::tableExists($this->conn)) {
                 return;
             }
-            
+
+            ActivitySessionsSchema::ensureSchema($this->conn);
             $sessionId = $this->utils->generateUUID();
-            
-            // Start new session with session_start and initial session_end (will be updated on each heartbeat)
+            $insert = ActivitySessionsSchema::insertColumns($this->conn);
+            $columnList = implode(', ', $insert['columns']);
+            $placeholderList = implode(', ', $insert['placeholders']);
+
             $stmt = $this->conn->prepare("
-                INSERT INTO user_activity_sessions (id, user_id, session_start, session_end, is_active, created_at, updated_at) 
-                VALUES (?, ?, ?, ?, TRUE, NOW(), NOW())
+                INSERT INTO user_activity_sessions ({$columnList}) 
+                VALUES ({$placeholderList})
             ");
             $stmt->execute([$sessionId, $userId, $timestamp, $timestamp]);
         } catch (Exception $e) {
@@ -154,14 +157,11 @@ class HeartbeatController extends BaseAPI {
                 $sessionStart = new DateTime($session['session_start'], $istTimezone);
                 $sessionEnd = $endTime instanceof DateTime ? $endTime : new DateTime($endTime, $istTimezone);
                 $durationMinutes = (int)(($sessionEnd->getTimestamp() - $sessionStart->getTimestamp()) / 60);
-                
-                // Close session with calculated duration
+                $setClause = ActivitySessionsSchema::closeSessionSetClause($this->conn);
+
                 $stmt = $this->conn->prepare("
                     UPDATE user_activity_sessions 
-                    SET session_end = ?, 
-                        session_duration_minutes = ?,
-                        is_active = FALSE, 
-                        updated_at = NOW() 
+                    SET {$setClause}
                     WHERE id = ?
                 ");
                 $endTimeStr = $endTime instanceof DateTime ? $endTime->format('Y-m-d H:i:s') : $endTime;

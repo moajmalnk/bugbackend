@@ -6,6 +6,7 @@
 
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../config/utils.php';
+require_once __DIR__ . '/../../utils/activity_sessions_schema.php';
 
 header('Content-Type: application/json');
 
@@ -37,9 +38,12 @@ try {
     
     // Check if user already has an active session (best-effort; schema differences should not 500)
     try {
+        ActivitySessionsSchema::ensureSchema($conn);
+        $activePredicate = ActivitySessionsSchema::activeSessionPredicate($conn);
+
         $checkStmt = $conn->prepare("
             SELECT id FROM user_activity_sessions 
-            WHERE user_id = ? AND is_active = TRUE 
+            WHERE user_id = ? AND {$activePredicate}
             ORDER BY session_start DESC 
             LIMIT 1
         ");
@@ -47,14 +51,14 @@ try {
         $existingSession = $checkStmt->fetch(PDO::FETCH_ASSOC);
 
         if ($existingSession) {
+            $setClause = ActivitySessionsSchema::closeSessionSetClause($conn);
             $closeStmt = $conn->prepare("
                 UPDATE user_activity_sessions 
-                SET session_end = NOW(), 
-                    is_active = FALSE, 
-                    updated_at = NOW() 
+                SET {$setClause}
                 WHERE id = ?
             ");
-            $closeStmt->execute([$existingSession['id']]);
+            $now = date('Y-m-d H:i:s');
+            $closeStmt->execute([$now, 0, $existingSession['id']]);
         }
     } catch (PDOException $e) {
         error_log("start_session_on_login existing session cleanup: " . $e->getMessage());
@@ -65,9 +69,13 @@ try {
     $now = date('Y-m-d H:i:s');
 
     try {
+        $insert = ActivitySessionsSchema::insertColumns($conn);
+        $columnList = implode(', ', $insert['columns']);
+        $placeholderList = implode(', ', $insert['placeholders']);
+
         $stmt = $conn->prepare("
-            INSERT INTO user_activity_sessions (id, user_id, session_start, session_end, is_active, created_at, updated_at) 
-            VALUES (?, ?, ?, ?, TRUE, NOW(), NOW())
+            INSERT INTO user_activity_sessions ({$columnList}) 
+            VALUES ({$placeholderList})
         ");
         $stmt->execute([$sessionId, $userId, $now, $now]);
     } catch (PDOException $e) {
