@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../../utils/work_period.php';
 
 class WorkSubmissionController extends BaseAPI {
     public function submit($payload) {
@@ -51,6 +52,15 @@ class WorkSubmissionController extends BaseAPI {
             $plannedWork = $payload['planned_work'] ?? null;
             $plannedWorkStatus = $payload['planned_work_status'] ?? 'not_started';
             $plannedWorkNotes = $payload['planned_work_notes'] ?? null;
+
+            // Calendar month totals (1st through submission date)
+            $monthTotals = br_compute_calendar_month_totals($this->conn, $userId, $date);
+            if ($days === null) {
+                $days = $monthTotals['days'];
+            }
+            if ($cumulative === null) {
+                $cumulative = $monthTotals['hours'];
+            }
 
             // Auto-migrate: add ongoing_tasks column if missing
             try {
@@ -580,7 +590,7 @@ class WorkSubmissionController extends BaseAPI {
             $userId = $decoded->user_id;
 
             $date = $q['date'] ?? date('Y-m-d');
-            $since = $q['since'] ?? null;
+            $since = $q['since'] ?? br_calendar_month_start($date);
 
             $stmt = $this->conn->prepare("SELECT username, name FROM users WHERE id = ? LIMIT 1");
             $stmt->execute([$userId]);
@@ -641,12 +651,13 @@ class WorkSubmissionController extends BaseAPI {
             $ongoingLines = ($ongoingCount > 0 ? " (".$ongoingCount.")" : "");
             $upcomingLines = ($upcomingCount > 0 ? " (".$upcomingCount.")" : "");
 
+            $periodLabel = br_calendar_month_period_label($date);
             $text =
 "🧾 CODO Daily Work Update – $name
 📅 Date: ".date('j/n/Y l', strtotime($date))."
 🕘 Start Time: $start
 ⏱ Today’s Working Hours: $hours Hours
-📊 Total Working Days".($since ? " (Since ".date('j F', strtotime($since)).")" : "").": $days ".($days===1?'Day':'Days')."
+📊 Total Working Days ($periodLabel): $days ".($days===1?'Day':'Days')."
 🧮 Total Hours Completed : $totalHours hours
 
 ✅ Completed$completedLines\n".($completed ? "\n$completed" : '')."

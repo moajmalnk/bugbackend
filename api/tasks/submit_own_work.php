@@ -50,6 +50,15 @@ class OwnWorkSubmissionController extends WorkSubmissionController {
         if ($requestedExtraHours < 0) {
             $requestedExtraHours = 0.0;
         }
+
+        require_once __DIR__ . '/../../utils/work_period.php';
+        $monthTotals = br_compute_calendar_month_totals($this->conn, $userId, $date);
+        if ($days === null) {
+            $days = $monthTotals['days'];
+        }
+        if ($cumulative === null) {
+            $cumulative = $monthTotals['hours'];
+        }
         
         // Auto-migrate: add ongoing_tasks column if missing
         try {

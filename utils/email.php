@@ -3,6 +3,8 @@
  * Email utility functions for BugRicer
  */
 
+require_once __DIR__ . '/work_period.php';
+
 // Set timezone to IST
 date_default_timezone_set('Asia/Kolkata');
 
@@ -304,6 +306,7 @@ function sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $
     // Total working days and cumulative hours
     $totalWorkingDays = $submissionData['total_working_days'] ?? 0;
     $totalHoursCompleted = number_format((float)($submissionData['total_hours_cumulative'] ?? 0), 2);
+    $periodLabel = br_calendar_month_period_label($date);
     
     // Planned projects and work
     $plannedProjects = $submissionData['planned_projects'] ?? null;
@@ -366,7 +369,7 @@ function sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $
           </div>
           
           <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0f9ff; border-left: 4px solid #0ea5e9; border-radius: 4px;\">
-            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;\"><strong>📊 Total Working Days (Since 6 December):</strong></p>
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;\"><strong>📊 Total Working Days ($periodLabel):</strong></p>
             <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\">$totalWorkingDays Days</p>
           </div>
           
@@ -570,7 +573,7 @@ function sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $
 ⏱ Today's Working Hours: $hours Hours" . ($overtimeHours > 0 ? "
 📊 Regular Hours: $regularHours Hours
 ⏰ Overtime Hours: $overtimeHours Hours" : "") . "
-📊 Total Working Days (Since 6 December): $totalWorkingDays Days
+📊 Total Working Days ($periodLabel): $totalWorkingDays Days
 🧮 Total Hours Completed: $totalHoursCompleted hours
 
 " . $planningSection . ($completedCount > 0 ? "✅ Completed ($completedCount):\n" . $completedTasks . "\n\n" : "") . 
