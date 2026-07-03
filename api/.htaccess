@@ -1,0 +1,21 @@
+# Ensure API preflight (OPTIONS) reaches PHP so cors.php can respond
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteCond %{REQUEST_METHOD} =OPTIONS
+  RewriteRule ^ - [L]
+</IfModule>
+
+# Pass Authorization header to PHP (some Apache setups strip it)
+<IfModule mod_rewrite.c>
+  RewriteCond %{HTTP:Authorization} .
+  RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+</IfModule>
+
+<IfModule mod_headers.c>
+  RewriteCond %{HTTP:Origin} ^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$ [NC]
+  RewriteRule ^ - [E=ALLOWED_ORIGIN:%{HTTP:Origin}]
+  Header always set Access-Control-Allow-Origin "%{ALLOWED_ORIGIN}e" env=ALLOWED_ORIGIN
+  Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" env=ALLOWED_ORIGIN
+  Header always set Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Impersonate-User, X-User-Id" env=ALLOWED_ORIGIN
+  Header always set Access-Control-Max-Age "3600" env=ALLOWED_ORIGIN
+</IfModule>

@@ -10,6 +10,8 @@ function handleCORS() {
         'http://localhost:5173',
         'http://localhost',
         'http://127.0.0.1:8080',
+        'http://127.0.0.1:3000',
+        'http://127.0.0.1:5173',
         'http://127.0.0.1',
         'https://bugs.moajmalnk.in',
         'https://bugricer.com',
@@ -18,30 +20,34 @@ function handleCORS() {
         'https://bugbackend.bugricer.com',
         'https://bugbackend.moajmalnk.in',
         'https://bugracers.vercel.app',
-        'https://bugs.bugricer.com' // Ensure this is included
     ];
     
+    $allowOrigin = null;
+
     // Check if origin is allowed
-    if (in_array($origin, $allowedOrigins)) {
-        header("Access-Control-Allow-Origin: $origin");
-    } else {
+    if ($origin !== '' && in_array($origin, $allowedOrigins, true)) {
+        $allowOrigin = $origin;
+    } elseif ($origin !== '' && preg_match('/^https?:\/\/(localhost|127\.0\.0\.1)(:[0-9]+)?$/', $origin)) {
         // For development, allow any localhost with any port
-        if (preg_match('/^https?:\/\/(localhost|127\.0\.0\.1)(:[0-9]+)?$/', $origin)) {
-            header("Access-Control-Allow-Origin: $origin");
-        } else {
-            // Fallback for development
-            header("Access-Control-Allow-Origin: *");
-        }
+        $allowOrigin = $origin;
+    }
+
+    if ($allowOrigin !== null) {
+        header("Access-Control-Allow-Origin: $allowOrigin");
+        header("Vary: Origin");
+        header("Access-Control-Allow-Credentials: true");
+    } else {
+        // No credentials with wildcard — safe fallback for non-browser clients
+        header("Access-Control-Allow-Origin: *");
     }
     
     header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
     header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Impersonate-User, X-User-Id");
-    header("Access-Control-Allow-Credentials: true");
     header("Access-Control-Max-Age: 3600");
     
     // Handle preflight OPTIONS request
     if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-        http_response_code(200);
+        http_response_code(204);
         exit();
     }
 }
