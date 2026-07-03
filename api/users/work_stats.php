@@ -91,6 +91,72 @@ class UserWorkStatsController extends BaseAPI {
         return $start->format('M d') . ' – ' . $end->format('M d');
     }
 
+    private function buildDailySubmissionEntry(array $submission): array {
+        $date = $submission['submission_date'] ?? null;
+        $completedLines = $this->splitTaskLines($submission['completed_tasks'] ?? '');
+        $pendingLines = $this->splitTaskLines($submission['pending_tasks'] ?? '');
+        $ongoingLines = $this->splitTaskLines($submission['ongoing_tasks'] ?? '');
+        $upcomingLines = $this->splitTaskLines($submission['notes'] ?? '');
+
+        $breakEntries = $this->parseBreakEntries($submission['break_entries'] ?? null, $submission['notes'] ?? '');
+        $breakMinutes = (int)($submission['total_break_minutes'] ?? 0);
+        if ($breakMinutes <= 0) {
+            $breakMinutes = $this->getBreakMinutesFromEntries($breakEntries);
+        }
+
+        return [
+            'date' => $date,
+            'submission_date' => $date,
+            'user_id' => $submission['user_id'] ?? null,
+            'username' => $submission['username'] ?? null,
+            'role' => $submission['role'] ?? null,
+            'created_at' => $submission['created_at'] ?? null,
+            'check_in_time' => $submission['check_in_time'] ?? null,
+            'hours' => (float)($submission['hours_today'] ?? 0),
+            'hours_today' => (float)($submission['hours_today'] ?? 0),
+            'overtime_hours' => br_effective_overtime_hours_for_stats($submission),
+            'requested_extra_hours' => (float)($submission['requested_extra_hours'] ?? 0),
+            'approval_reason' => $submission['approval_reason'] ?? null,
+            'extra_hours_approval_status' => $submission['extra_hours_approval_status'] ?? null,
+            'extra_hours_approved_amount' => isset($submission['extra_hours_approved_amount'])
+                ? (float)$submission['extra_hours_approved_amount']
+                : null,
+            'break_minutes' => $breakMinutes,
+            'break_entries' => $breakEntries,
+            'start_time' => $submission['start_time'] ?? null,
+            'completed_count' => count($completedLines),
+            'pending_count' => count($pendingLines),
+            'ongoing_count' => count($ongoingLines),
+            'upcoming_count' => count($upcomingLines),
+            'completed_tasks' => $submission['completed_tasks'] ?? '',
+            'pending_tasks' => $submission['pending_tasks'] ?? '',
+            'ongoing_tasks' => $submission['ongoing_tasks'] ?? '',
+            'upcoming_tasks' => $submission['notes'] ?? '',
+            'planned_work' => $submission['planned_work'] ?? null,
+            'planned_work_status' => $submission['planned_work_status'] ?? null,
+            'planned_work_notes' => $submission['planned_work_notes'] ?? null,
+            'planned_projects' => $submission['planned_projects'] ?? null,
+            'tasks' => [
+                'completed' => $completedLines,
+                'pending' => $pendingLines,
+                'ongoing' => $ongoingLines,
+                'upcoming' => $upcomingLines,
+            ],
+        ];
+    }
+
+    private function assertCanViewTeamPeriodDetails($decoded): void {
+        $currentUserId = $decoded->user_id;
+        $pm = PermissionManager::getInstance();
+        if (
+            !$pm->hasPermission($currentUserId, 'SUPER_ADMIN') &&
+            !$pm->hasPermission($currentUserId, 'USERS_VIEW')
+        ) {
+            $this->sendJsonResponse(403, 'Access denied');
+            exit;
+        }
+    }
+
     private function ensureWorkSubmissionOtApprovalColumns() {
         $alters = [
             ['extra_hours_approval_status', "ALTER TABLE work_submissions ADD COLUMN extra_hours_approval_status VARCHAR(24) NOT NULL DEFAULT 'none' AFTER approval_reason"],
@@ -518,28 +584,7 @@ class UserWorkStatsController extends BaseAPI {
                 }
                 $totalBreakMinutes += $breakMinutes;
 
-                // Daily breakdown
-                $dailyBreakdown[] = [
-                    'date' => $date,
-                    'created_at' => $submission['created_at'] ?? null,
-                    'check_in_time' => $submission['check_in_time'] ?? null,
-                    'hours' => (float)($submission['hours_today'] ?? 0),
-                    'overtime_hours' => br_effective_overtime_hours_for_stats($submission),
-                    'requested_extra_hours' => (float)($submission['requested_extra_hours'] ?? 0),
-                    'approval_reason' => $submission['approval_reason'] ?? null,
-                    'extra_hours_approval_status' => $submission['extra_hours_approval_status'] ?? null,
-                    'extra_hours_approved_amount' => isset($submission['extra_hours_approved_amount']) ? (float)$submission['extra_hours_approved_amount'] : null,
-                    'break_minutes' => $breakMinutes,
-                    'break_entries' => $breakEntries,
-                    'start_time' => $submission['start_time'] ?? null,
-                    'completed_count' => count($completedLines),
-                    'pending_count' => count($pendingLines),
-                    'ongoing_count' => count($ongoingLines),
-                    'upcoming_count' => count($upcomingLines),
-                    'planned_work' => $submission['planned_work'] ?? null,
-                    'planned_work_status' => $submission['planned_work_status'] ?? null,
-                    'planned_work_notes' => $submission['planned_work_notes'] ?? null
-                ];
+                $dailyBreakdown[] = $this->buildDailySubmissionEntry($submission);
             }
 
             $details = [
@@ -568,6 +613,125 @@ class UserWorkStatsController extends BaseAPI {
             $this->sendJsonResponse(500, 'Failed to retrieve period details');
         }
     }
+
+    public function getTeamPeriodDetails($periodStart, $periodEnd) {
+        try {
+            $decoded = $this->validateToken();
+            if (!$decoded || !isset($decoded->user_id)) {
+                $this->sendJsonResponse(401, 'Invalid token or user_id missing');
+                return;
+            }
+
+            $this->assertCanViewTeamPeriodDetails($decoded);
+            $this->ensureWorkSubmissionOtApprovalColumns();
+
+            $stmt = $this->conn->prepare("
+                SELECT
+                    ws.*,
+                    u.username,
+                    u.role
+                FROM work_submissions ws
+                INNER JOIN users u ON u.id = ws.user_id
+                WHERE ws.submission_date >= ?
+                AND ws.submission_date <= ?
+                ORDER BY ws.submission_date DESC, u.username ASC
+            ");
+            $stmt->execute([$periodStart, $periodEnd]);
+            $submissions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $dailyBreakdown = [];
+            $allCompleted = [];
+            $allPending = [];
+            $allOngoing = [];
+            $allUpcoming = [];
+            $allNotes = [];
+            $totalOvertimeHours = 0.0;
+            $totalRequestedExtraHours = 0.0;
+            $totalBreakMinutes = 0;
+            $totalApprovalRequests = 0;
+            $userIds = [];
+
+            foreach ($submissions as $submission) {
+                $date = $submission['submission_date'];
+                $userIds[$submission['user_id']] = true;
+
+                $completedLines = $this->splitTaskLines($submission['completed_tasks'] ?? '');
+                $pendingLines = $this->splitTaskLines($submission['pending_tasks'] ?? '');
+                $ongoingLines = $this->splitTaskLines($submission['ongoing_tasks'] ?? '');
+                $upcomingLines = $this->splitTaskLines($submission['notes'] ?? '');
+
+                foreach ($completedLines as $task) {
+                    $allCompleted[] = ['date' => $date, 'task' => $task, 'username' => $submission['username'] ?? ''];
+                }
+                foreach ($pendingLines as $task) {
+                    $allPending[] = ['date' => $date, 'task' => $task, 'username' => $submission['username'] ?? ''];
+                }
+                foreach ($ongoingLines as $task) {
+                    $allOngoing[] = ['date' => $date, 'task' => $task, 'username' => $submission['username'] ?? ''];
+                }
+                foreach ($upcomingLines as $task) {
+                    $allUpcoming[] = ['date' => $date, 'task' => $task, 'username' => $submission['username'] ?? ''];
+                }
+
+                if (!empty($submission['notes'])) {
+                    $notesLines = $this->splitTaskLines($submission['notes']);
+                    foreach ($notesLines as $note) {
+                        $allNotes[] = ['date' => $date, 'note' => $note, 'username' => $submission['username'] ?? ''];
+                    }
+                }
+
+                $breakEntries = $this->parseBreakEntries($submission['break_entries'] ?? null, $submission['notes'] ?? '');
+                $breakMinutes = (int)($submission['total_break_minutes'] ?? 0);
+                if ($breakMinutes <= 0) {
+                    $breakMinutes = $this->getBreakMinutesFromEntries($breakEntries);
+                }
+
+                $totalOvertimeHours += br_effective_overtime_hours_for_stats($submission);
+                $requestedExtra = (float)($submission['requested_extra_hours'] ?? 0);
+                $totalRequestedExtraHours += $requestedExtra;
+                if ($requestedExtra > 0 || trim((string)($submission['approval_reason'] ?? '')) !== '') {
+                    $totalApprovalRequests++;
+                }
+                $totalBreakMinutes += $breakMinutes;
+
+                $dailyBreakdown[] = $this->buildDailySubmissionEntry($submission);
+            }
+
+            $uniqueDays = [];
+            foreach ($dailyBreakdown as $row) {
+                $d = $row['date'] ?? null;
+                if ($d) $uniqueDays[$d] = true;
+            }
+
+            $details = [
+                'scope' => 'team',
+                'period_start' => $periodStart,
+                'period_end' => $periodEnd,
+                'summary' => [
+                    'users' => count($userIds),
+                    'submission_days' => count($uniqueDays),
+                    'submissions' => count($dailyBreakdown),
+                    'overtime_hours' => round($totalOvertimeHours, 2),
+                    'requested_extra_hours' => round($totalRequestedExtraHours, 2),
+                    'approval_requests' => (int)$totalApprovalRequests,
+                    'break_minutes' => (int)$totalBreakMinutes,
+                ],
+                'submissions' => $dailyBreakdown,
+                'tasks' => [
+                    'completed' => $allCompleted,
+                    'pending' => $allPending,
+                    'ongoing' => $allOngoing,
+                    'upcoming' => $allUpcoming,
+                ],
+                'notes' => $allNotes,
+            ];
+
+            $this->sendJsonResponse(200, 'Team period details retrieved successfully', $details);
+        } catch (Exception $e) {
+            error_log('UserWorkStatsController::getTeamPeriodDetails error: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Failed to retrieve team period details');
+        }
+    }
 }
 
 // Handle CORS preflight
@@ -586,11 +750,16 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
 $userId = $_GET['id'] ?? null;
 $periodStart = $_GET['period_start'] ?? null;
 $periodEnd = $_GET['period_end'] ?? null;
+$team = isset($_GET['team']) && in_array(strtolower((string)$_GET['team']), ['1', 'true', 'yes'], true);
 
 $controller = new UserWorkStatsController();
 
 // If period_start and period_end are provided, get period details
 if ($periodStart && $periodEnd) {
+    if ($team) {
+        $controller->getTeamPeriodDetails($periodStart, $periodEnd);
+        exit;
+    }
     if (!$userId) {
         http_response_code(400);
         echo json_encode(['success' => false, 'message' => 'User ID is required']);
