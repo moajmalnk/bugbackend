@@ -161,7 +161,7 @@ class NotificationManager extends BaseAPI {
         switch ($entityType) {
             case 'bug':
             case 'fix':
-                return $entityId ? '/bugs/' . $entityId : '/admin/notifications';
+                return $entityId ? '/bugs/' . $entityId : '/notifications';
             case 'update':
                 return $entityId ? '/updates/' . $entityId : '/updates';
             case 'project':
@@ -175,17 +175,17 @@ class NotificationManager extends BaseAPI {
             case 'sheet':
                 return $projectId ? '/bugsheets/project/' . $projectId : '/bugsheets';
             case 'work_update':
-                return '/admin/daily-work-update';
+                return '/daily-work-update';
             case 'overtime':
-                return '/admin/overtime-requests';
+                return '/overtime-requests';
             case 'feedback':
-                return '/admin/feedback-stats';
+                return '/feedback-stats';
             case 'message':
                 return '/messages';
             case 'user':
-                return $entityId ? '/admin/users/' . $entityId : '/admin/users';
+                return $entityId ? '/users/' . $entityId : '/users';
             default:
-                return '/admin/notifications';
+                return '/notifications';
         }
     }
 
