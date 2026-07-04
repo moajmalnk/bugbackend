@@ -200,6 +200,7 @@ class NotificationManager extends BaseAPI {
 
             $insertedCount = 0;
             $failedUserIds = [];
+            $successfulUserIds = [];
             
             foreach ($userIds as $userId) {
                 try {
@@ -217,6 +218,7 @@ class NotificationManager extends BaseAPI {
                     
                     $userStmt->execute([$notificationId, $userIdStr]);
                     $insertedCount++;
+                    $successfulUserIds[] = $userIdStr;
                     error_log("NotificationManager::createNotification - Successfully inserted notification $notificationId for userId $userIdStr");
                 } catch (PDOException $e) {
                     // Skip duplicate entries
@@ -225,6 +227,8 @@ class NotificationManager extends BaseAPI {
                         error_log("NotificationManager::createNotification - SQL State: " . $e->errorInfo[0] . ", Error Code: " . $e->errorInfo[1]);
                         $failedUserIds[] = (string)$userId;
                     } else {
+                        // Already has this notification row — still eligible for push
+                        $successfulUserIds[] = (string)$userId;
                         error_log("NotificationManager::createNotification - Duplicate entry skipped for userId $userId");
                     }
                 }
@@ -239,6 +243,12 @@ class NotificationManager extends BaseAPI {
             $this->conn->commit();
             
             error_log("NotificationManager::createNotification - SUCCESS: ID=$notificationId, Type=$type, Total Users=" . count($userIds) . ", Inserted=$insertedCount");
+
+            // Push to devices (never fail the in-app notification if FCM errors)
+            if (!empty($successfulUserIds)) {
+                $this->sendPushToUsers($successfulUserIds, $title, $message, $type, $data, $notificationId);
+            }
+
             return $notificationId;
 
         } catch (Exception $e) {

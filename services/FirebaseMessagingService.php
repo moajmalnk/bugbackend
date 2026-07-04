@@ -38,7 +38,7 @@ class FirebaseMessagingService {
             if ($decoded === false) {
                 throw new RuntimeException('Invalid FIREBASE_SERVICE_ACCOUNT_BASE64 value.');
             }
-            
+
 
             $serviceAccount = json_decode($decoded, true);
             if (!is_array($serviceAccount) || empty($serviceAccount['project_id'])) {
@@ -99,13 +99,59 @@ class FirebaseMessagingService {
             ->query("SELECT DISTINCT token FROM user_fcm_tokens WHERE token IS NOT NULL AND TRIM(token) <> ''")
             ->fetchAll(PDO::FETCH_COLUMN);
 
-        if (!$tokenRows) {
-            $tokenRows = $this->conn
-                ->query("SELECT DISTINCT fcm_token FROM users WHERE fcm_token IS NOT NULL AND TRIM(fcm_token) <> ''")
-                ->fetchAll(PDO::FETCH_COLUMN);
+        $legacyRows = $this->conn
+            ->query("SELECT DISTINCT fcm_token FROM users WHERE fcm_token IS NOT NULL AND TRIM(fcm_token) <> ''")
+            ->fetchAll(PDO::FETCH_COLUMN);
+
+        $tokens = array_values(array_unique(array_filter(array_merge($tokenRows ?: [], $legacyRows ?: []))));
+        return $this->sendToTokens($tokens, $title, $body, $data);
+    }
+
+    /**
+     * Send push to specific users (same recipients as in-app notifications).
+     *
+     * @param array $userIds
+     * @param string $title
+     * @param string $body
+     * @param array $data
+     * @return array
+     */
+    public function sendToUsers(array $userIds, $title, $body, array $data = []) {
+        $userIds = array_values(array_unique(array_filter(array_map('strval', $userIds))));
+        if (empty($userIds)) {
+            return [
+                'success' => false,
+                'message' => 'No user IDs provided',
+                'sent_count' => 0,
+                'failure_count' => 0,
+                'invalid_tokens_removed' => 0,
+            ];
         }
 
-        $tokens = array_values(array_unique(array_filter($tokenRows)));
+        $placeholders = implode(',', array_fill(0, count($userIds), '?'));
+
+        $stmt = $this->conn->prepare(
+            "SELECT DISTINCT token FROM user_fcm_tokens
+             WHERE user_id IN ($placeholders)
+               AND token IS NOT NULL AND TRIM(token) <> ''"
+        );
+        $stmt->execute($userIds);
+        $tokenRows = $stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+
+        $legacyStmt = $this->conn->prepare(
+            "SELECT DISTINCT fcm_token FROM users
+             WHERE id IN ($placeholders)
+               AND fcm_token IS NOT NULL AND TRIM(fcm_token) <> ''"
+        );
+        $legacyStmt->execute($userIds);
+        $legacyRows = $legacyStmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+
+        $tokens = array_values(array_unique(array_filter(array_merge($tokenRows, $legacyRows))));
+        return $this->sendToTokens($tokens, $title, $body, $data);
+    }
+
+    private function sendToTokens(array $tokens, $title, $body, array $data = []) {
+        $tokens = array_values(array_unique(array_filter($tokens)));
         if (empty($tokens)) {
             return [
                 'success' => false,
@@ -125,21 +171,36 @@ class FirebaseMessagingService {
             ->withNotification(Notification::create($title, $body))
             ->withData($messageData);
 
-        $report = $this->messaging->sendMulticast($message, $tokens);
-        $invalidTokens = array_unique(array_merge($report->invalidTokens(), $report->unknownTokens()));
+        // FCM multicast limit is 500 tokens per request
+        $sentCount = 0;
+        $failureCount = 0;
+        $invalidTokens = [];
+
+        foreach (array_chunk($tokens, 500) as $chunk) {
+            $report = $this->messaging->sendMulticast($message, $chunk);
+            $sentCount += $report->successes()->count();
+            $failureCount += $report->failures()->count();
+            $invalidTokens = array_merge(
+                $invalidTokens,
+                $report->invalidTokens(),
+                $report->unknownTokens()
+            );
+        }
+
+        $invalidTokens = array_values(array_unique($invalidTokens));
         $deletedCount = $this->deleteInvalidTokens($invalidTokens);
 
         error_log(sprintf(
             'FCM multicast report: sent=%d, failed=%d, invalid_removed=%d',
-            $report->successes()->count(),
-            $report->failures()->count(),
+            $sentCount,
+            $failureCount,
             $deletedCount
         ));
 
         return [
-            'success' => true,
-            'sent_count' => $report->successes()->count(),
-            'failure_count' => $report->failures()->count(),
+            'success' => $sentCount > 0,
+            'sent_count' => $sentCount,
+            'failure_count' => $failureCount,
             'invalid_tokens_removed' => $deletedCount,
             'invalid_tokens' => $invalidTokens,
         ];
