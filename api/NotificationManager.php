@@ -270,6 +270,48 @@ class NotificationManager extends BaseAPI {
     }
 
     /**
+     * Send FCM push to the same users who received the in-app notification.
+     */
+    private function sendPushToUsers(array $userIds, $title, $message, $type, array $data, $notificationId) {
+        try {
+            require_once __DIR__ . '/../config/environment.php';
+            require_once __DIR__ . '/../services/FirebaseMessagingService.php';
+
+            $bugId = $data['bug_id'] ?? (($data['entity_type'] ?? '') === 'bug' ? ($data['entity_id'] ?? '') : '');
+            $url = '/admin/notifications';
+            if (!empty($bugId)) {
+                $url = '/bugs/' . $bugId;
+            }
+
+            $payload = [
+                'type' => (string) $type,
+                'notification_id' => (string) $notificationId,
+                'url' => $url,
+                'click_action' => $url,
+                'title' => (string) $title,
+                'body' => (string) $message,
+                'bug_id' => (string) ($bugId ?: ''),
+                'project_id' => (string) ($data['project_id'] ?? ''),
+                'tag' => (string) $type . '-' . ($bugId ?: $notificationId),
+            ];
+
+            $messaging = new FirebaseMessagingService($this->conn);
+            $result = $messaging->sendToUsers($userIds, $title, $message, $payload);
+
+            error_log(sprintf(
+                'NotificationManager::sendPushToUsers - type=%s notification_id=%s users=%d sent=%d failed=%d',
+                $type,
+                $notificationId,
+                count($userIds),
+                $result['sent_count'] ?? 0,
+                $result['failure_count'] ?? 0
+            ));
+        } catch (Throwable $e) {
+            error_log('NotificationManager::sendPushToUsers - FCM error: ' . $e->getMessage());
+        }
+    }
+
+    /**
      * Notify when a bug is created
      * Send to: project developers + admins
      * 
