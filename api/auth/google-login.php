@@ -197,6 +197,13 @@ function findOrCreateUser($conn, $googleSub, $email, $name, $picture) {
             $googleSub,
             $picture
         ]);
+
+        try {
+            require_once __DIR__ . '/../NotificationManager.php';
+            NotificationManager::getInstance()->notifyUserRegistered($userId, $username, $userId);
+        } catch (Throwable $e) {
+            error_log("Failed to send Google signup notification: " . $e->getMessage());
+        }
         
         // Return the newly created user
         return [

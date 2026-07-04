@@ -473,6 +473,14 @@ class UserController extends BaseAPI {
                 error_log("Failed to log user creation activity: " . $e->getMessage());
             }
 
+            try {
+                require_once __DIR__ . '/../NotificationManager.php';
+                // Exclude the new user; all admins (including creator) receive the alert
+                NotificationManager::getInstance()->notifyUserRegistered($id, $username, $id);
+            } catch (Throwable $e) {
+                error_log("Failed to send new user notification: " . $e->getMessage());
+            }
+
             // If user created successfully, send welcome email and WhatsApp to ALL users
             $emailSent = false;
             

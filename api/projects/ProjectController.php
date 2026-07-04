@@ -132,6 +132,17 @@ class ProjectController extends BaseAPI
                 error_log("Failed to log project creation activity: " . $e->getMessage());
             }
 
+            try {
+                require_once __DIR__ . '/../NotificationManager.php';
+                NotificationManager::getInstance()->notifyProjectCreated(
+                    $id,
+                    $data['name'],
+                    $decoded->user_id
+                );
+            } catch (Throwable $e) {
+                error_log("Failed to send project creation notification: " . $e->getMessage());
+            }
+
             $this->sendJsonResponse(201, "Project created successfully", $project);
 
         } catch (Exception $e) {

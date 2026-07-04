@@ -92,6 +92,14 @@ class FeedbackController extends BaseAPI {
             } catch (Exception $e) {
                 error_log("Failed to log feedback creation activity: " . $e->getMessage());
             }
+
+            try {
+                require_once __DIR__ . '/../NotificationManager.php';
+                $summary = "Rating {$rating}" . ($feedbackText ? ' — ' . mb_substr($feedbackText, 0, 80) : '');
+                NotificationManager::getInstance()->notifyFeedbackSubmitted($feedbackId, $userId, $summary);
+            } catch (Throwable $e) {
+                error_log("Failed to send feedback notification: " . $e->getMessage());
+            }
             
             $this->sendJsonResponse(200, "Feedback submitted successfully", [
                 'feedback_id' => $feedbackId,

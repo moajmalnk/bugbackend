@@ -110,6 +110,86 @@ class NotificationManager extends BaseAPI {
     }
 
     /**
+     * All admins, optionally excluding an actor.
+     * Falls back to the actor if they are the only admin.
+     */
+    private function resolveAdminRecipients($excludeUserId = null) {
+        $excludeUserId = $excludeUserId !== null ? (string) $excludeUserId : null;
+        $admins = $this->getAllAdmins();
+        $userIds = array_values(array_filter($admins, function ($id) use ($excludeUserId) {
+            return $excludeUserId === null || (string) $id !== $excludeUserId;
+        }));
+
+        if (empty($userIds) && $excludeUserId !== null) {
+            return [$excludeUserId];
+        }
+
+        return $userIds;
+    }
+
+    /**
+     * Project developers + testers + all admins, excluding actor.
+     * Falls back to admins (then actor) when project has no members.
+     */
+    private function resolveProjectRecipients($projectId, $excludeUserId = null) {
+        $excludeUserId = $excludeUserId !== null ? (string) $excludeUserId : null;
+        $developers = $projectId ? $this->getProjectDevelopers($projectId) : [];
+        $testers = $projectId ? $this->getProjectTesters($projectId) : [];
+        $admins = $this->getAllAdmins();
+
+        $userIds = array_unique(array_merge($developers, $testers, $admins));
+        $userIds = array_values(array_filter($userIds, function ($id) use ($excludeUserId) {
+            return $excludeUserId === null || (string) $id !== $excludeUserId;
+        }));
+
+        if (empty($userIds)) {
+            return $this->resolveAdminRecipients($excludeUserId);
+        }
+
+        return $userIds;
+    }
+
+    /**
+     * Role-neutral deep link path for push notification clicks.
+     */
+    private function resolveDeepLink($entityType, $entityId = null, array $extra = []) {
+        $entityType = strtolower((string) $entityType);
+        $entityId = $entityId !== null && $entityId !== '' ? (string) $entityId : null;
+        $code = isset($extra['code']) ? (string) $extra['code'] : null;
+        $projectId = isset($extra['project_id']) ? (string) $extra['project_id'] : null;
+
+        switch ($entityType) {
+            case 'bug':
+            case 'fix':
+                return $entityId ? '/bugs/' . $entityId : '/admin/notifications';
+            case 'update':
+                return $entityId ? '/updates/' . $entityId : '/updates';
+            case 'project':
+                return $entityId ? '/projects/' . $entityId : '/projects';
+            case 'task':
+                return $entityId ? '/tasks/' . $entityId : '/my-tasks';
+            case 'meet':
+                return $code ? '/meet/' . rawurlencode($code) : ($entityId ? '/meet/' . $entityId : '/meet');
+            case 'doc':
+                return $projectId ? '/bugdocs/project/' . $projectId : '/bugdocs';
+            case 'sheet':
+                return $projectId ? '/bugsheets/project/' . $projectId : '/bugsheets';
+            case 'work_update':
+                return '/admin/daily-work-update';
+            case 'overtime':
+                return '/admin/overtime-requests';
+            case 'feedback':
+                return '/admin/feedback-stats';
+            case 'message':
+                return '/messages';
+            case 'user':
+                return $entityId ? '/admin/users/' . $entityId : '/admin/users';
+            default:
+                return '/admin/notifications';
+        }
+    }
+
+    /**
      * Create notification and distribute to users
      * 
      * @param string $type Notification type
@@ -277,17 +357,21 @@ class NotificationManager extends BaseAPI {
             require_once __DIR__ . '/../config/environment.php';
             require_once __DIR__ . '/../services/FirebaseMessagingService.php';
 
-            $bugId = $data['bug_id'] ?? (($data['entity_type'] ?? '') === 'bug' ? ($data['entity_id'] ?? '') : '');
-            $path = '/admin/notifications';
-            if (!empty($bugId)) {
-                $path = '/bugs/' . $bugId;
-            }
+            $entityType = (string) ($data['entity_type'] ?? $type ?? '');
+            $entityId = $data['entity_id'] ?? $data['bug_id'] ?? null;
+            $bugId = $data['bug_id'] ?? (($entityType === 'bug' || $entityType === 'fix') ? $entityId : '');
+
+            $path = $this->resolveDeepLink($entityType, $entityId, [
+                'code' => $data['meet_code'] ?? $data['code'] ?? null,
+                'project_id' => $data['project_id'] ?? null,
+            ]);
 
             $url = $this->getFrontendAbsoluteUrl($path);
             $imageUrl = $this->resolveNotificationImageUrl($bugId);
 
             $payload = [
                 'type' => (string) $type,
+                'entity_type' => (string) $entityType,
                 'notification_id' => (string) $notificationId,
                 'url' => $url,
                 'click_action' => $url,
@@ -297,8 +381,9 @@ class NotificationManager extends BaseAPI {
                 'icon' => 'https://bugs.bugricer.com/icon-192.png',
                 'badge' => 'https://bugs.bugricer.com/icon-192.png',
                 'bug_id' => (string) ($bugId ?: ''),
+                'entity_id' => (string) ($entityId ?: ''),
                 'project_id' => (string) ($data['project_id'] ?? ''),
-                'tag' => (string) $type . '-' . ($bugId ?: $notificationId),
+                'tag' => (string) $type . '-' . ($entityId ?: $notificationId),
                 'actions' => 'view,dismiss',
             ];
 
@@ -396,69 +481,27 @@ class NotificationManager extends BaseAPI {
      * @return int|false Notification ID or false
      */
     public function notifyBugCreated($bugId, $bugTitle, $projectId, $createdBy) {
-        // Ensure all IDs are strings
-        $bugId = (string)$bugId;
-        $projectId = $projectId ? (string)$projectId : null;
-        $createdBy = (string)$createdBy;
-        
-        if (empty($projectId)) {
-            error_log("NotificationManager::notifyBugCreated - WARNING: Empty projectId, cannot find project members");
-        }
-        
-        $developers = $this->getProjectDevelopers($projectId);
-        $admins = $this->getAllAdmins();
-        
-        error_log("NotificationManager::notifyBugCreated - BugId: $bugId, ProjectId: $projectId, CreatedBy: $createdBy");
-        error_log("NotificationManager::notifyBugCreated - Developers found: " . count($developers) . " - " . json_encode($developers));
-        error_log("NotificationManager::notifyBugCreated - Admins found: " . count($admins) . " - " . json_encode($admins));
-        
-        // Combine and remove duplicates, exclude creator
-        $userIds = array_unique(array_merge($developers, $admins));
-        $userIds = array_filter($userIds, function($id) use ($createdBy) {
-            return (string)$id !== (string)$createdBy;
-        });
-
-        error_log("NotificationManager::notifyBugCreated - Final userIds to notify: " . count($userIds) . " - " . json_encode(array_values($userIds)));
-
-        // IMPORTANT: If no users to notify (no developers and no admins), still notify admins only
-        // This ensures notifications are never completely skipped
-        if (empty($userIds)) {
-            error_log("NotificationManager::notifyBugCreated - WARNING: No users found, notifying all admins as fallback");
-            $allAdmins = $this->getAllAdmins();
-            $userIds = array_filter($allAdmins, function($id) use ($createdBy) {
-                return (string)$id !== (string)$createdBy;
-            });
-            
-            // If still empty (only creator is admin), notify the creator anyway
-            if (empty($userIds)) {
-                error_log("NotificationManager::notifyBugCreated - Only creator is admin, creating notification for creator anyway");
-                $userIds = [$createdBy];
-            }
-        }
-
-        // Get creator name
+        $bugId = (string) $bugId;
+        $projectId = $projectId ? (string) $projectId : null;
+        $createdBy = (string) $createdBy;
+        $userIds = $this->resolveProjectRecipients($projectId, $createdBy);
         $creatorName = $this->getUserName($createdBy);
-
-        // Use 'new_bug' if 'bug_created' is not in the ENUM (fallback for older schemas)
         $notificationType = $this->getValidNotificationType('bug_created', 'new_bug');
 
-        $result = $this->createNotification(
+        return $this->createNotification(
             $notificationType,
             'New Bug Reported',
             "A new bug has been reported: {$bugTitle}",
-            array_values($userIds),
+            $userIds,
             [
                 'entity_type' => 'bug',
                 'entity_id' => $bugId,
                 'project_id' => $projectId,
                 'bug_id' => $bugId,
                 'bug_title' => $bugTitle,
-                'created_by' => $creatorName
+                'created_by' => $creatorName,
             ]
         );
-        
-        error_log("NotificationManager::notifyBugCreated - Result: " . ($result ? "Success (ID: $result)" : "Failed"));
-        return $result;
     }
 
     /**
@@ -472,57 +515,18 @@ class NotificationManager extends BaseAPI {
      * @return int|false Notification ID or false
      */
     public function notifyBugFixed($bugId, $bugTitle, $projectId, $fixedBy) {
-        // Ensure all IDs are strings
-        $bugId = (string)$bugId;
-        $projectId = $projectId ? (string)$projectId : null;
-        $fixedBy = (string)$fixedBy;
-        
-        if (empty($projectId)) {
-            error_log("NotificationManager::notifyBugFixed - WARNING: Empty projectId, cannot find project members");
-        }
-        
-        $testers = $this->getProjectTesters($projectId);
-        $admins = $this->getAllAdmins();
-        
-        error_log("NotificationManager::notifyBugFixed - BugId: $bugId, ProjectId: $projectId, FixedBy: $fixedBy");
-        error_log("NotificationManager::notifyBugFixed - Testers found: " . count($testers) . " - " . json_encode($testers));
-        error_log("NotificationManager::notifyBugFixed - Admins found: " . count($admins) . " - " . json_encode($admins));
-        
-        // Combine and remove duplicates, exclude fixer
-        $userIds = array_unique(array_merge($testers, $admins));
-        $userIds = array_filter($userIds, function($id) use ($fixedBy) {
-            return (string)$id !== (string)$fixedBy;
-        });
-
-        error_log("NotificationManager::notifyBugFixed - Final userIds to notify: " . count($userIds) . " - " . json_encode(array_values($userIds)));
-
-        // IMPORTANT: If no users to notify, still notify all admins (except fixer if fixer is admin)
-        // This ensures notifications are never completely skipped
-        if (empty($userIds)) {
-            error_log("NotificationManager::notifyBugFixed - WARNING: No users found, notifying all admins as fallback");
-            $allAdmins = $this->getAllAdmins();
-            $userIds = array_filter($allAdmins, function($id) use ($fixedBy) {
-                return (string)$id !== (string)$fixedBy;
-            });
-            
-            // If fixer is the only admin, notify them anyway
-            if (empty($userIds)) {
-                error_log("NotificationManager::notifyBugFixed - Only fixer is admin, creating notification for fixer anyway");
-                $userIds = [$fixedBy];
-            }
-        }
-
-        // Get fixer name
+        $bugId = (string) $bugId;
+        $projectId = $projectId ? (string) $projectId : null;
+        $fixedBy = (string) $fixedBy;
+        $userIds = $this->resolveProjectRecipients($projectId, $fixedBy);
         $fixerName = $this->getUserName($fixedBy);
-
-        // Use 'status_change' if 'bug_fixed' is not in the ENUM (fallback for older schemas)
         $notificationType = $this->getValidNotificationType('bug_fixed', 'status_change');
 
-        $result = $this->createNotification(
+        return $this->createNotification(
             $notificationType,
             'Bug Fixed',
             "Bug '{$bugTitle}' has been marked as fixed",
-            array_values($userIds),
+            $userIds,
             [
                 'entity_type' => 'bug',
                 'entity_id' => $bugId,
@@ -530,12 +534,9 @@ class NotificationManager extends BaseAPI {
                 'bug_id' => $bugId,
                 'bug_title' => $bugTitle,
                 'status' => 'fixed',
-                'created_by' => $fixerName
+                'created_by' => $fixerName,
             ]
         );
-        
-        error_log("NotificationManager::notifyBugFixed - Result: " . ($result ? "Success (ID: $result)" : "Failed"));
-        return $result;
     }
 
     /**
@@ -581,32 +582,23 @@ class NotificationManager extends BaseAPI {
      * @return int|false Notification ID or false
      */
     public function notifyUpdateCreated($updateId, $updateTitle, $projectId, $createdBy) {
-        $developers = $this->getProjectDevelopers($projectId);
-        $testers = $this->getProjectTesters($projectId);
-        $admins = $this->getAllAdmins();
-        
-        // Combine all, remove duplicates, exclude creator
-        $userIds = array_unique(array_merge($developers, $testers, $admins));
-        $userIds = array_filter($userIds, function($id) use ($createdBy) {
-            return $id !== $createdBy;
-        });
-
-        // Get creator name
+        $updateId = (string) $updateId;
+        $projectId = $projectId ? (string) $projectId : null;
+        $createdBy = (string) $createdBy;
+        $userIds = $this->resolveProjectRecipients($projectId, $createdBy);
         $creatorName = $this->getUserName($createdBy);
-
-        // Use 'new_update' if 'update_created' is not in the ENUM
         $notificationType = $this->getValidNotificationType('update_created', 'new_update');
 
         return $this->createNotification(
             $notificationType,
             'New Update Posted',
             "A new update has been posted: {$updateTitle}",
-            array_values($userIds),
+            $userIds,
             [
                 'entity_type' => 'update',
                 'entity_id' => $updateId,
                 'project_id' => $projectId,
-                'created_by' => $creatorName
+                'created_by' => $creatorName,
             ]
         );
     }
@@ -623,41 +615,30 @@ class NotificationManager extends BaseAPI {
      * @return int|false Notification ID or false
      */
     public function notifyTaskCreated($taskId, $taskTitle, $projectId, $assignedToIds, $createdBy) {
-        $userIds = [];
-        
-        // Add assignees
-        if (!empty($assignedToIds)) {
-            $userIds = array_merge($userIds, $assignedToIds);
+        $taskId = (string) $taskId;
+        $projectId = $projectId ? (string) $projectId : null;
+        $createdBy = (string) $createdBy;
+        $assignees = array_map('strval', $assignedToIds ?: []);
+        $projectRecipients = $this->resolveProjectRecipients($projectId, $createdBy);
+        $userIds = array_values(array_unique(array_filter(array_merge($assignees, $projectRecipients), function ($id) use ($createdBy) {
+            return (string) $id !== $createdBy;
+        })));
+        if (empty($userIds)) {
+            $userIds = $this->resolveAdminRecipients($createdBy);
         }
-        
-        // Add project members if project exists
-        if ($projectId) {
-            $projectMembers = $this->getProjectMembersByRole($projectId, null);
-            $userIds = array_merge($userIds, $projectMembers);
-        }
-        
-        // Remove duplicates and creator
-        $userIds = array_unique($userIds);
-        $userIds = array_filter($userIds, function($id) use ($createdBy) {
-            return $id !== $createdBy;
-        });
-
-        // Get creator name
         $creatorName = $this->getUserName($createdBy);
-
-        // Use fallback if 'task_created' is not in ENUM
         $notificationType = $this->getValidNotificationType('task_created', 'new_bug');
 
         return $this->createNotification(
             $notificationType,
             'New Task Assigned',
             "A new task has been created: {$taskTitle}",
-            array_values($userIds),
+            $userIds,
             [
                 'entity_type' => 'task',
                 'entity_id' => $taskId,
                 'project_id' => $projectId,
-                'created_by' => $creatorName
+                'created_by' => $creatorName,
             ]
         );
     }
@@ -672,38 +653,28 @@ class NotificationManager extends BaseAPI {
      * @param string $createdBy User ID who created the meeting
      * @return int|false Notification ID or false
      */
-    public function notifyMeetCreated($meetingId, $meetingTitle, $projectId, $createdBy) {
-        $userIds = [];
-        
-        // If project exists, notify project members
-        if ($projectId) {
-            $userIds = $this->getProjectMembersByRole($projectId, null);
-        } else {
-            // If no project, notify all admins
-            $userIds = $this->getAllAdmins();
-        }
-        
-        // Remove creator
-        $userIds = array_filter($userIds, function($id) use ($createdBy) {
-            return $id !== $createdBy;
-        });
-
-        // Get creator name
+    public function notifyMeetCreated($meetingId, $meetingTitle, $projectId, $createdBy, $meetCode = null) {
+        $meetingId = (string) $meetingId;
+        $projectId = $projectId ? (string) $projectId : null;
+        $createdBy = (string) $createdBy;
+        $userIds = $projectId
+            ? $this->resolveProjectRecipients($projectId, $createdBy)
+            : $this->resolveAdminRecipients($createdBy);
         $creatorName = $this->getUserName($createdBy);
-
-        // Use fallback if 'meet_created' is not in ENUM
         $notificationType = $this->getValidNotificationType('meet_created', 'new_bug');
 
         return $this->createNotification(
             $notificationType,
             'New Meeting Created',
             "A new meeting has been created: {$meetingTitle}",
-            array_values($userIds),
+            $userIds,
             [
                 'entity_type' => 'meet',
                 'entity_id' => $meetingId,
                 'project_id' => $projectId,
-                'created_by' => $creatorName
+                'meet_code' => $meetCode,
+                'code' => $meetCode,
+                'created_by' => $creatorName,
             ]
         );
     }
@@ -719,37 +690,25 @@ class NotificationManager extends BaseAPI {
      * @return int|false Notification ID or false
      */
     public function notifyDocCreated($docId, $docTitle, $projectId, $createdBy) {
-        $userIds = [];
-        
-        // If project exists, notify project members
-        if ($projectId) {
-            $userIds = $this->getProjectMembersByRole($projectId, null);
-        } else {
-            // If no project, notify all admins
-            $userIds = $this->getAllAdmins();
-        }
-        
-        // Remove creator
-        $userIds = array_filter($userIds, function($id) use ($createdBy) {
-            return $id !== $createdBy;
-        });
-
-        // Get creator name
+        $docId = (string) $docId;
+        $projectId = $projectId ? (string) $projectId : null;
+        $createdBy = (string) $createdBy;
+        $userIds = $projectId
+            ? $this->resolveProjectRecipients($projectId, $createdBy)
+            : $this->resolveAdminRecipients($createdBy);
         $creatorName = $this->getUserName($createdBy);
-
-        // Use fallback if 'doc_created' is not in ENUM
         $notificationType = $this->getValidNotificationType('doc_created', 'new_bug');
 
         return $this->createNotification(
             $notificationType,
             'New Document Created',
             "A new document has been created: {$docTitle}",
-            array_values($userIds),
+            $userIds,
             [
                 'entity_type' => 'doc',
                 'entity_id' => $docId,
                 'project_id' => $projectId,
-                'created_by' => $creatorName
+                'created_by' => $creatorName,
             ]
         );
     }
@@ -765,37 +724,25 @@ class NotificationManager extends BaseAPI {
      * @return int|false Notification ID or false
      */
     public function notifySheetCreated($sheetId, $sheetTitle, $projectId, $createdBy) {
-        $userIds = [];
-        
-        // If project exists, notify project members
-        if ($projectId) {
-            $userIds = $this->getProjectMembersByRole($projectId, null);
-        } else {
-            // If no project, notify all admins
-            $userIds = $this->getAllAdmins();
-        }
-        
-        // Remove creator
-        $userIds = array_filter($userIds, function($id) use ($createdBy) {
-            return $id !== $createdBy;
-        });
-
-        // Get creator name
+        $sheetId = (string) $sheetId;
+        $projectId = $projectId ? (string) $projectId : null;
+        $createdBy = (string) $createdBy;
+        $userIds = $projectId
+            ? $this->resolveProjectRecipients($projectId, $createdBy)
+            : $this->resolveAdminRecipients($createdBy);
         $creatorName = $this->getUserName($createdBy);
-
-        // Use fallback if 'sheet_created' is not in ENUM
         $notificationType = $this->getValidNotificationType('sheet_created', 'doc_created');
 
         return $this->createNotification(
             $notificationType,
             'New Sheet Created',
             "A new sheet has been created: {$sheetTitle}",
-            array_values($userIds),
+            $userIds,
             [
                 'entity_type' => 'sheet',
                 'entity_id' => $sheetId,
                 'project_id' => $projectId,
-                'created_by' => $creatorName
+                'created_by' => $creatorName,
             ]
         );
     }
@@ -810,29 +757,137 @@ class NotificationManager extends BaseAPI {
      * @return int|false Notification ID or false
      */
     public function notifyProjectCreated($projectId, $projectName, $createdBy) {
-        $admins = $this->getAllAdmins();
-        
-        // Remove creator
-        $userIds = array_filter($admins, function($id) use ($createdBy) {
-            return $id !== $createdBy;
-        });
-
-        // Get creator name
+        $projectId = (string) $projectId;
+        $createdBy = (string) $createdBy;
+        $userIds = $this->resolveAdminRecipients($createdBy);
         $creatorName = $this->getUserName($createdBy);
-
-        // Use fallback if 'project_created' is not in ENUM
         $notificationType = $this->getValidNotificationType('project_created', 'new_bug');
 
         return $this->createNotification(
             $notificationType,
             'New Project Created',
             "A new project has been created: {$projectName}",
-            array_values($userIds),
+            $userIds,
             [
                 'entity_type' => 'project',
                 'entity_id' => $projectId,
                 'project_id' => $projectId,
-                'created_by' => $creatorName
+                'created_by' => $creatorName,
+            ]
+        );
+    }
+
+    public function notifyWorkUpdateSubmitted($submissionId, $userId, $userName = null, $date = null) {
+        $submissionId = (string) $submissionId;
+        $userId = (string) $userId;
+        $userName = $userName ?: $this->getUserName($userId);
+        $userIds = $this->resolveAdminRecipients($userId);
+        $notificationType = $this->getValidNotificationType('work_update', 'new_update');
+        $dateLabel = $date ? " for {$date}" : '';
+
+        return $this->createNotification(
+            $notificationType,
+            'Work Update Submitted',
+            "{$userName} submitted a work update{$dateLabel}",
+            $userIds,
+            [
+                'entity_type' => 'work_update',
+                'entity_id' => $submissionId,
+                'created_by' => $userName,
+            ]
+        );
+    }
+
+    public function notifyFeedbackSubmitted($feedbackId, $userId, $summary = null) {
+        $feedbackId = (string) $feedbackId;
+        $userId = (string) $userId;
+        $userName = $this->getUserName($userId);
+        $userIds = $this->resolveAdminRecipients($userId);
+        $notificationType = $this->getValidNotificationType('feedback', 'new_update');
+        $body = $summary
+            ? "{$userName}: {$summary}"
+            : "{$userName} submitted new feedback";
+
+        return $this->createNotification(
+            $notificationType,
+            'New Feedback',
+            $body,
+            $userIds,
+            [
+                'entity_type' => 'feedback',
+                'entity_id' => $feedbackId,
+                'created_by' => $userName,
+            ]
+        );
+    }
+
+    public function notifyOvertimeRequested($requestId, $userId, $hours = null) {
+        $requestId = (string) $requestId;
+        $userId = (string) $userId;
+        $userName = $this->getUserName($userId);
+        $userIds = $this->resolveAdminRecipients($userId);
+        $notificationType = $this->getValidNotificationType('overtime', 'status_change');
+        $hoursLabel = $hours !== null && $hours !== '' ? " ({$hours}h)" : '';
+
+        return $this->createNotification(
+            $notificationType,
+            'OT Request',
+            "{$userName} requested overtime{$hoursLabel}",
+            $userIds,
+            [
+                'entity_type' => 'overtime',
+                'entity_id' => $requestId,
+                'created_by' => $userName,
+            ]
+        );
+    }
+
+    public function notifyUserRegistered($newUserId, $username, $createdBy = null) {
+        $newUserId = (string) $newUserId;
+        $createdBy = $createdBy !== null ? (string) $createdBy : null;
+        $userIds = $this->resolveAdminRecipients($createdBy ?: $newUserId);
+        $notificationType = $this->getValidNotificationType('user_registered', 'new_bug');
+
+        return $this->createNotification(
+            $notificationType,
+            'New User Registered',
+            "A new user has been registered: {$username}",
+            $userIds,
+            [
+                'entity_type' => 'user',
+                'entity_id' => $newUserId,
+                'created_by' => $createdBy ? $this->getUserName($createdBy) : 'system',
+            ]
+        );
+    }
+
+    /**
+     * @param array $participantIds Chat participant user IDs
+     */
+    public function notifyChatMessage($messageId, $senderId, array $participantIds, $preview = null) {
+        $messageId = (string) $messageId;
+        $senderId = (string) $senderId;
+        $senderName = $this->getUserName($senderId);
+        $userIds = array_values(array_unique(array_filter(array_map('strval', $participantIds), function ($id) use ($senderId) {
+            return (string) $id !== $senderId;
+        })));
+        if (empty($userIds)) {
+            return false;
+        }
+        $notificationType = $this->getValidNotificationType('message', 'new_update');
+        $body = $preview
+            ? "{$senderName}: {$preview}"
+            : "{$senderName} sent a message";
+
+        return $this->createNotification(
+            $notificationType,
+            'New Message',
+            mb_substr($body, 0, 180),
+            $userIds,
+            [
+                'entity_type' => 'message',
+                'entity_id' => $messageId,
+                'created_by' => $senderName,
             ]
         );
     }

@@ -53,7 +53,8 @@ class MeetingController extends BaseAPI {
                 (string)$meetingId,
                 $title,
                 null, // project_id not available in current implementation
-                $requestUserId
+                $requestUserId,
+                $code
             );
         } catch (Exception $e) {
             error_log("Failed to send meeting creation notification: " . $e->getMessage());

@@ -154,6 +154,24 @@ class ChatMessageController extends BaseAPI {
             } catch (Exception $e) {
                 error_log("Failed to log message sent activity: " . $e->getMessage());
             }
+
+            try {
+                require_once __DIR__ . '/../NotificationManager.php';
+                $memberStmt = $this->conn->prepare("SELECT user_id FROM chat_group_members WHERE group_id = ?");
+                $memberStmt->execute([$groupId]);
+                $participantIds = $memberStmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+                $preview = $messageType === 'text'
+                    ? $content
+                    : '[' . ucfirst($messageType) . ' message]';
+                NotificationManager::getInstance()->notifyChatMessage(
+                    $messageId,
+                    $userId,
+                    $participantIds,
+                    $preview
+                );
+            } catch (Throwable $e) {
+                error_log("Failed to send chat message notification: " . $e->getMessage());
+            }
             
             // Get the created message with sender details
             $message = $this->getMessageWithDetails($messageId);

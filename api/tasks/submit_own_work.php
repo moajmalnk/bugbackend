@@ -212,6 +212,18 @@ class OwnWorkSubmissionController extends WorkSubmissionController {
         // This ensures admins are notified whenever developers or admins submit/update their work
         $updateStatus = $isUpdate ? 'UPDATE' : 'NEW SUBMISSION';
         error_log("📢 NOTIFICATION: Sending admin notifications for work $updateStatus by $userName ($userEmail)");
+
+        try {
+            require_once __DIR__ . '/../NotificationManager.php';
+            $nm = NotificationManager::getInstance();
+            $submissionKey = $userId . ':' . $date;
+            $nm->notifyWorkUpdateSubmitted($submissionKey, $userId, $userName, $date);
+            if ($requestedExtraHours > 0) {
+                $nm->notifyOvertimeRequested($submissionKey, $userId, $requestedExtraHours);
+            }
+        } catch (Throwable $e) {
+            error_log("⚠️ Failed in-app/push work update notification: " . $e->getMessage());
+        }
         
         // Send email notification to admins
         error_log("EMAIL_NOTIFICATION: Starting async email notification process");
