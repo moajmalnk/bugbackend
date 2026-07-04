@@ -17,6 +17,8 @@ uploads/*
 # Composer
 vendor/
 composer.lock
+vendor-firebase-complete.zip
+vendor.zip
 
 # IDE specific files
 .idea/
