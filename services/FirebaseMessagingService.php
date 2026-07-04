@@ -2,7 +2,6 @@
 
 use Kreait\Firebase\Factory;
 use Kreait\Firebase\Messaging\CloudMessage;
-use Kreait\Firebase\Messaging\Notification;
 
 class FirebaseMessagingService {
     /** @var PDO */
@@ -167,14 +166,24 @@ class FirebaseMessagingService {
             ];
         }
 
-        $messageData = [];
+        // Data-only payload so the service worker can render rich notifications
+        // (image + action buttons). A `notification` block would let the browser
+        // show a plain system notification and skip our SW UI.
+        $messageData = [
+            'title' => (string) $title,
+            'body' => (string) $body,
+        ];
         foreach ($data as $key => $value) {
             $messageData[(string) $key] = (string) $value;
         }
+        if (empty($messageData['title'])) {
+            $messageData['title'] = (string) $title;
+        }
+        if (empty($messageData['body'])) {
+            $messageData['body'] = (string) $body;
+        }
 
-        $message = CloudMessage::new()
-            ->withNotification(Notification::create($title, $body))
-            ->withData($messageData);
+        $message = CloudMessage::new()->withData($messageData);
 
         // FCM multicast limit is 500 tokens per request
         $sentCount = 0;

@@ -278,10 +278,13 @@ class NotificationManager extends BaseAPI {
             require_once __DIR__ . '/../services/FirebaseMessagingService.php';
 
             $bugId = $data['bug_id'] ?? (($data['entity_type'] ?? '') === 'bug' ? ($data['entity_id'] ?? '') : '');
-            $url = '/admin/notifications';
+            $path = '/admin/notifications';
             if (!empty($bugId)) {
-                $url = '/bugs/' . $bugId;
+                $path = '/bugs/' . $bugId;
             }
+
+            $url = $this->getFrontendAbsoluteUrl($path);
+            $imageUrl = $this->resolveNotificationImageUrl($bugId);
 
             $payload = [
                 'type' => (string) $type,
@@ -290,25 +293,96 @@ class NotificationManager extends BaseAPI {
                 'click_action' => $url,
                 'title' => (string) $title,
                 'body' => (string) $message,
+                'image' => (string) $imageUrl,
+                'icon' => 'https://bugs.bugricer.com/icon-192.png',
+                'badge' => 'https://bugs.bugricer.com/icon-192.png',
                 'bug_id' => (string) ($bugId ?: ''),
                 'project_id' => (string) ($data['project_id'] ?? ''),
                 'tag' => (string) $type . '-' . ($bugId ?: $notificationId),
+                'actions' => 'view,dismiss',
             ];
 
             $messaging = new FirebaseMessagingService($this->conn);
             $result = $messaging->sendToUsers($userIds, $title, $message, $payload);
 
             error_log(sprintf(
-                'NotificationManager::sendPushToUsers - type=%s notification_id=%s users=%d sent=%d failed=%d',
+                'NotificationManager::sendPushToUsers - type=%s notification_id=%s users=%d sent=%d failed=%d image=%s',
                 $type,
                 $notificationId,
                 count($userIds),
                 $result['sent_count'] ?? 0,
-                $result['failure_count'] ?? 0
+                $result['failure_count'] ?? 0,
+                $imageUrl
             ));
         } catch (Throwable $e) {
             error_log('NotificationManager::sendPushToUsers - FCM error: ' . $e->getMessage());
         }
+    }
+
+    private function getFrontendAbsoluteUrl($path) {
+        $base = 'https://bugs.bugricer.com';
+        if (class_exists('Environment') && method_exists('Environment', 'isProduction')) {
+            // keep production default
+        }
+        if (isset($_SERVER['HTTP_HOST'])) {
+            $host = $_SERVER['HTTP_HOST'];
+            if (strpos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false) {
+                $base = 'http://localhost:8080';
+            }
+        }
+        if ($path === '' || $path[0] !== '/') {
+            $path = '/' . $path;
+        }
+        return $base . $path;
+    }
+
+    private function resolveNotificationImageUrl($bugId) {
+        $fallback = 'https://bugs.bugricer.com/icon-512.png';
+        if (empty($bugId) || !$this->conn) {
+            return $fallback;
+        }
+
+        try {
+            $stmt = $this->conn->prepare("
+                SELECT file_path, file_type, file_name
+                FROM bug_attachments
+                WHERE bug_id = ?
+                ORDER BY created_at ASC
+                LIMIT 8
+            ");
+            $stmt->execute([(string) $bugId]);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+            foreach ($rows as $row) {
+                $path = (string) ($row['file_path'] ?? '');
+                $type = (string) ($row['file_type'] ?? '');
+                $name = (string) ($row['file_name'] ?? '');
+                $isImage = strpos($type, 'image/') === 0
+                    || preg_match('/\.(jpe?g|png|gif|webp|bmp)$/i', $name)
+                    || preg_match('/\.(jpe?g|png|gif|webp|bmp)$/i', $path);
+                if (!$isImage || $path === '') {
+                    continue;
+                }
+                return $this->toPublicUploadUrl($path);
+            }
+        } catch (Throwable $e) {
+            error_log('NotificationManager::resolveNotificationImageUrl - ' . $e->getMessage());
+        }
+
+        return $fallback;
+    }
+
+    private function toPublicUploadUrl($path) {
+        if (preg_match('#^https?://#i', $path)) {
+            return $path;
+        }
+
+        $path = str_replace('\\', '/', $path);
+        $path = ltrim($path, '/');
+        // Normalize common stored prefixes
+        $path = preg_replace('#^(backend/|public_html/bugbackend/)#', '', $path);
+
+        return 'https://bugbackend.bugricer.com/' . $path;
     }
 
     /**
