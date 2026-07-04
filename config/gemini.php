@@ -15,3 +15,5 @@ if (!defined('GEMINI_MODEL')) {
     $model = getenv('GEMINI_MODEL');
     define('GEMINI_MODEL', ($model !== false && $model !== '') ? $model : 'gemini-2.0-flash');
 }
+
+
