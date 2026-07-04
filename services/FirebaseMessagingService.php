@@ -12,7 +12,12 @@ class FirebaseMessagingService {
 
     public function __construct(PDO $conn) {
         $this->conn = $conn;
-        $this->ensureFcmTokenTable();
+        try {
+            $this->ensureFcmTokenTable();
+        } catch (Throwable $e) {
+            // Table may already exist with a slightly different definition — continue sending
+            error_log('FirebaseMessagingService: ensureFcmTokenTable skipped: ' . $e->getMessage());
+        }
         $this->messaging = $this->buildMessagingClient();
     }
 
