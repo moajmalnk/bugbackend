@@ -84,7 +84,7 @@ try {
     $updateStmt = $conn->prepare($updateQuery);
 
     if ($updateStmt->execute([$hashedPassword, $userId])) {
-        echo json_encode(['message' => 'Password changed successfully']);
+        echo json_encode(['success' => true, 'message' => 'Password changed successfully']);
     } else {
         http_response_code(500);
         echo json_encode(['message' => 'Failed to update password.']);

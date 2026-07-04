@@ -75,7 +75,7 @@ class NotificationManager extends BaseAPI {
      */
     private function getAllAdmins() {
         try {
-            $query = "SELECT id FROM users WHERE role = 'admin'";
+            $query = "SELECT id FROM users WHERE role = 'admin' OR role_id = 1";
             $stmt = $this->conn->prepare($query);
             $stmt->execute();
             $admins = $stmt->fetchAll(PDO::FETCH_COLUMN);
@@ -514,11 +514,21 @@ class NotificationManager extends BaseAPI {
      * @param string $fixedBy User ID who fixed the bug
      * @return int|false Notification ID or false
      */
-    public function notifyBugFixed($bugId, $bugTitle, $projectId, $fixedBy) {
+    public function notifyBugFixed($bugId, $bugTitle, $projectId, $fixedBy, $reportedBy = null) {
         $bugId = (string) $bugId;
         $projectId = $projectId ? (string) $projectId : null;
         $fixedBy = (string) $fixedBy;
         $userIds = $this->resolveProjectRecipients($projectId, $fixedBy);
+
+        // Always notify the bug reporter when someone else fixes it
+        if ($reportedBy !== null && $reportedBy !== '') {
+            $reporterId = (string) $reportedBy;
+            if ($reporterId !== $fixedBy) {
+                $userIds[] = $reporterId;
+                $userIds = array_values(array_unique($userIds));
+            }
+        }
+
         $fixerName = $this->getUserName($fixedBy);
         $notificationType = $this->getValidNotificationType('bug_fixed', 'status_change');
 

@@ -597,6 +597,13 @@ class BugController extends BaseAPI {
                 $this->sendJsonResponse(400, "Title, description and project_id are required");
                 return;
             }
+
+            require_once __DIR__ . '/../projects/ProjectMemberController.php';
+            $projectMemberController = new ProjectMemberController();
+            if (!$projectMemberController->hasProjectAccess($decoded->user_id, $data['project_id'])) {
+                $this->sendJsonResponse(403, "You do not have access to report bugs for this project");
+                return;
+            }
             
             $this->conn->beginTransaction();
             
@@ -1138,14 +1145,15 @@ class BugController extends BaseAPI {
 
             $this->conn->beginTransaction();
 
-            // Check if bug exists
-            $checkStmt = $this->conn->prepare("SELECT id FROM bugs WHERE id = ?");
+            // Check if bug exists and capture previous status for notification gating
+            $checkStmt = $this->conn->prepare("SELECT id, status, reported_by FROM bugs WHERE id = ?");
             $checkStmt->execute([$data['id']]);
-            $bugExists = $checkStmt->fetch();
+            $existingBug = $checkStmt->fetch(PDO::FETCH_ASSOC);
             
-            if (!$bugExists) {
+            if (!$existingBug) {
                 throw new Exception("Bug not found");
             }
+            $previousStatus = (string) ($existingBug['status'] ?? '');
 
             // Build update query
             $updateFields = [];
@@ -1278,14 +1286,18 @@ class BugController extends BaseAPI {
                 error_log("Failed to log bug update activity: " . $e->getMessage());
             }
 
-            // Store notification data for async sending (will be sent after response)
-            $updatedBug['_notification_data'] = [
-                'status' => $data['status'] ?? null,
-                'bug_id' => $data['id'],
-                'bug_title' => $updatedBug['title'],
-                'project_id' => $updatedBug['project_id'],
-                'updated_by' => $data['updated_by'] ?? null
-            ];
+            // Store notification data when status transitions to fixed
+            $newStatus = (string) ($data['status'] ?? $updatedBug['status'] ?? '');
+            if ($newStatus === 'fixed' && $previousStatus !== 'fixed') {
+                $updatedBug['_notification_data'] = [
+                    'status' => 'fixed',
+                    'bug_id' => $data['id'],
+                    'bug_title' => $updatedBug['title'],
+                    'project_id' => $updatedBug['project_id'],
+                    'updated_by' => $data['updated_by'] ?? null,
+                    'reported_by' => $updatedBug['reported_by'] ?? $existingBug['reported_by'] ?? null,
+                ];
+            }
 
             return $updatedBug;
 
@@ -1310,6 +1322,14 @@ class BugController extends BaseAPI {
             if (empty($data['id'])) {
                 throw new Exception("Bug ID is required");
             }
+
+            $existingStmt = $this->conn->prepare("SELECT status, reported_by FROM bugs WHERE id = ?");
+            $existingStmt->execute([$data['id']]);
+            $existingBug = $existingStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$existingBug) {
+                throw new Exception("Bug not found");
+            }
+            $previousStatus = (string) ($existingBug['status'] ?? '');
 
             // Build update query for bug fields only
             $updateFields = [];
@@ -1634,14 +1654,18 @@ class BugController extends BaseAPI {
                 error_log("Failed to log bug update activity: " . $e->getMessage());
             }
 
-            // Store notification data for async sending (will be sent after response)
-            $updatedBug['_notification_data'] = [
-                'status' => $data['status'] ?? null,
-                'bug_id' => $data['id'],
-                'bug_title' => $updatedBug['title'],
-                'project_id' => $updatedBug['project_id'],
-                'updated_by' => $data['updated_by'] ?? $userId
-            ];
+            // Store notification data when status transitions to fixed
+            $newStatus = (string) ($data['status'] ?? $updatedBug['status'] ?? '');
+            if ($newStatus === 'fixed' && $previousStatus !== 'fixed') {
+                $updatedBug['_notification_data'] = [
+                    'status' => 'fixed',
+                    'bug_id' => $data['id'],
+                    'bug_title' => $updatedBug['title'],
+                    'project_id' => $updatedBug['project_id'],
+                    'updated_by' => $data['updated_by'] ?? $userId,
+                    'reported_by' => $updatedBug['reported_by'] ?? $existingBug['reported_by'] ?? null,
+                ];
+            }
 
             return $updatedBug;
 

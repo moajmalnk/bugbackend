@@ -334,8 +334,27 @@ try {
     // Prepare response data (remove notification data from response)
     $notificationData = $result['_notification_data'] ?? null;
     unset($result['_notification_data']);
+
+    // Send notifications before the response — Hostinger often aborts PHP after fastcgi_finish_request()
+    if ($notificationData && ($notificationData['status'] ?? '') === 'fixed') {
+        try {
+            error_log("BUG UPDATE: Sending notifications for bug ID: " . $notificationData['bug_id']);
+            require_once __DIR__ . '/../NotificationManager.php';
+            $notificationManager = NotificationManager::getInstance();
+            $notificationManager->notifyBugFixed(
+                $notificationData['bug_id'],
+                $notificationData['bug_title'],
+                $notificationData['project_id'],
+                $notificationData['updated_by'],
+                $notificationData['reported_by'] ?? null
+            );
+            error_log("BUG UPDATE: Notifications sent for bug ID: " . $notificationData['bug_id']);
+        } catch (Exception $e) {
+            error_log("BUG UPDATE: Failed to send notifications: " . $e->getMessage());
+        }
+    }
     
-    // Send success response immediately
+    // Send success response
     http_response_code(200);
     $response = [
         'success' => true,
@@ -350,33 +369,14 @@ try {
     
     echo json_encode($response);
     
-    // Flush response to client immediately
+    // Flush response to client (no post-response work — notifications already sent above)
     if (function_exists('fastcgi_finish_request')) {
         fastcgi_finish_request();
     } else {
-        // Fallback for non-FastCGI environments
         if (ob_get_level()) {
             ob_end_flush();
         }
         flush();
-    }
-    
-    // Send notifications asynchronously after response is sent
-    if ($notificationData && isset($notificationData['status']) && $notificationData['status'] === 'fixed') {
-        try {
-            error_log("BUG UPDATE: Sending async notifications for bug ID: " . $notificationData['bug_id']);
-            require_once __DIR__ . '/../NotificationManager.php';
-            $notificationManager = NotificationManager::getInstance();
-            $notificationManager->notifyBugFixed(
-                $notificationData['bug_id'],
-                $notificationData['bug_title'],
-                $notificationData['project_id'],
-                $notificationData['updated_by']
-            );
-            error_log("BUG UPDATE: Notifications sent successfully for bug ID: " . $notificationData['bug_id']);
-        } catch (Exception $e) {
-            error_log("BUG UPDATE: Failed to send async notifications: " . $e->getMessage());
-        }
     }
 
 } catch (Exception $e) {

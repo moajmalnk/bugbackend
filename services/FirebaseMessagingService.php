@@ -151,6 +151,17 @@ class FirebaseMessagingService {
         $legacyRows = $legacyStmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
 
         $tokens = array_values(array_unique(array_filter(array_merge($tokenRows, $legacyRows))));
+        if (empty($tokens)) {
+            error_log('FirebaseMessagingService::sendToUsers - No FCM tokens for user IDs: ' . json_encode($userIds));
+            return [
+                'success' => false,
+                'message' => 'No FCM tokens found',
+                'sent_count' => 0,
+                'failure_count' => 0,
+                'invalid_tokens_removed' => 0,
+            ];
+        }
+
         return $this->sendToTokens($tokens, $title, $body, $data);
     }
 
