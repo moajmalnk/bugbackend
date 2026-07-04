@@ -16,6 +16,7 @@ if (!$identifier || !$password) {
     exit;
 }
 
+
 $pdo = Database::getInstance()->getConnection();
 $auth = new AuthController($pdo);
 $result = $auth->loginWithIdentifier($identifier, $password);

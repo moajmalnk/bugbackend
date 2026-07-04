@@ -4,5 +4,14 @@
         "phpmailer/phpmailer": "^6.10",
         "google/apiclient": "^2.18",
         "kreait/firebase-php": "^7.19"
+    },
+    "config": {
+        "platform": {
+            "php": "8.1.0"
+        },
+        "platform-check": true,
+        "audit": {
+            "block-insecure": false
+        }
     }
 }
