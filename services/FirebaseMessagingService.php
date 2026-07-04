@@ -42,6 +42,7 @@ class FirebaseMessagingService {
             if ($decoded === false) {
                 throw new RuntimeException('Invalid FIREBASE_SERVICE_ACCOUNT_BASE64 value.');
             }
+            
 
             $serviceAccount = json_decode($decoded, true);
             if (!is_array($serviceAccount) || empty($serviceAccount['project_id'])) {
