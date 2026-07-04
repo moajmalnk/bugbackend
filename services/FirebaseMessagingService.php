@@ -17,11 +17,7 @@ class FirebaseMessagingService {
     }
 
     private function buildMessagingClient() {
-        $autoloadPath = __DIR__ . '/../vendor/autoload.php';
-        if (!file_exists($autoloadPath)) {
-            throw new RuntimeException('Firebase SDK dependencies are not installed. Run composer install in backend/.');
-        }
-        require_once $autoloadPath;
+        require_once __DIR__ . '/../config/composer_autoload.php';
 
         $serviceAccount = $this->resolveServiceAccountCredentials();
         $factory = new Factory();

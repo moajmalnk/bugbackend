@@ -86,7 +86,7 @@ class MagicLinkVerificationAPI extends BaseAPI {
     
     private function generateJWTToken($user) {
         // Include JWT library
-        require_once __DIR__ . '/../../vendor/autoload.php';
+        require_once __DIR__ . '/../../config/composer_autoload.php';
         
         $key = $_ENV['JWT_SECRET'] ?? 'your-secret-key';
         $payload = [

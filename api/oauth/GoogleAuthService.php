@@ -5,7 +5,7 @@
  * Provides a reusable, authenticated Google Client for all API operations
  */
 
-require_once __DIR__ . '/../../vendor/autoload.php';
+require_once __DIR__ . '/../../config/composer_autoload.php';
 require_once __DIR__ . '/../../config/database.php';
 require_once __DIR__ . '/../../config/environment.php';
 

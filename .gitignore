@@ -14,7 +14,9 @@ config/firebase-service-account.json
 uploads/*
 !uploads/.gitkeep
 
-# Composer
+# Composer packages — upload separately on Hostinger to:
+#   public_html/bugbackend_vendor/
+# (outside this git repo so deploys never delete them)
 vendor/
 composer.lock
 vendor-firebase-complete.zip

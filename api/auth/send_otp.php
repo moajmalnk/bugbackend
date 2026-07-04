@@ -9,7 +9,7 @@ require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../config/database.php';
 require_once __DIR__ . '/../../utils/send_email.php';
 require_once __DIR__ . '/../../config/utils.php';
-require_once __DIR__ . '/../../vendor/autoload.php';
+require_once __DIR__ . '/../../config/composer_autoload.php';
 
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;

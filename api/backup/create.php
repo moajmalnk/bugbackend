@@ -10,7 +10,7 @@ require_once __DIR__ . '/../../config/cors.php';
 date_default_timezone_set('Asia/Kolkata');
 
 // Load dependencies (will be loaded in constructor if needed)
-require_once __DIR__ . '/../../vendor/autoload.php';
+require_once __DIR__ . '/../../config/composer_autoload.php';
 
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;

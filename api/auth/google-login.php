@@ -4,7 +4,7 @@
  * Handles secure verification of Google ID tokens and user provisioning
  */
 
-require_once __DIR__ . '/../../vendor/autoload.php';
+require_once __DIR__ . '/../../config/composer_autoload.php';
 require_once __DIR__ . '/../../config/database.php';
 require_once __DIR__ . '/../../config/environment.php';
 require_once __DIR__ . '/../../config/utils.php';

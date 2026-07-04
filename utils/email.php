@@ -12,7 +12,7 @@ use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
 // Make sure PHPMailer is properly included
-require_once __DIR__ . '/../vendor/autoload.php';
+require_once __DIR__ . '/../config/composer_autoload.php';
 require_once __DIR__ . '/../config/environment.php';
 
 function sendPasswordResetEmail($email, $username, $reset_link) {

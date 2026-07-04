@@ -6,7 +6,7 @@ use PHPMailer\PHPMailer\Exception;
 
 // Make sure PHPMailer is properly included (loaded on first use)
 if (!class_exists('PHPMailer\PHPMailer\PHPMailer')) {
-    require_once __DIR__ . '/../vendor/autoload.php';
+    require_once __DIR__ . '/../config/composer_autoload.php';
 }
 
 function sendBugNotification($to, $subject, $body, $attachments = []) {
