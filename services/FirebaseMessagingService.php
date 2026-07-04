@@ -56,7 +56,13 @@ class FirebaseMessagingService {
             return $path;
         }
 
-        throw new RuntimeException('Missing Firebase credentials. Set FIREBASE_SERVICE_ACCOUNT_BASE64 or FIREBASE_SERVICE_ACCOUNT_PATH.');
+        // Default location works on local and Hostinger without hardcoding absolute paths
+        $defaultPath = __DIR__ . '/../config/firebase-service-account.json';
+        if (file_exists($defaultPath)) {
+            return $defaultPath;
+        }
+
+        throw new RuntimeException('Missing Firebase credentials. Set FIREBASE_SERVICE_ACCOUNT_BASE64 or FIREBASE_SERVICE_ACCOUNT_PATH, or place firebase-service-account.json in backend/config/.');
     }
 
     private function getEnvValue($key) {

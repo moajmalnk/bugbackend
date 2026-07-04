@@ -1,0 +1,7 @@
+# Block direct web access to config files (service account keys, etc.)
+<IfModule mod_authz_core.c>
+    Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+    Deny from all
+</IfModule>

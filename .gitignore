@@ -6,6 +6,10 @@ logs/
 .env
 .env.local
 
+# Firebase Admin SDK private key (never commit)
+config/firebase-service-account.json
+*-firebase-adminsdk-*.json
+
 # Uploads directory content but keep the directory
 uploads/*
 !uploads/.gitkeep
