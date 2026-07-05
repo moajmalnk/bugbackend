@@ -176,6 +176,12 @@ class NotificationManager extends BaseAPI {
                 return $projectId ? '/bugsheets/project/' . $projectId : '/bugsheets';
             case 'work_update':
                 return '/daily-work-update';
+            case 'work_check_in':
+            case 'work_break':
+                if ($entityId && strpos($entityId, ':') !== false) {
+                    return '/users/' . explode(':', $entityId, 2)[0];
+                }
+                return $entityId ? '/users/' . $entityId : '/users';
             case 'overtime':
                 return '/overtime-requests';
             case 'feedback':
@@ -788,17 +794,103 @@ class NotificationManager extends BaseAPI {
     }
 
     public function notifyWorkUpdateSubmitted($submissionId, $userId, $userName = null, $date = null) {
+        return $this->notifyWorkCheckOut($submissionId, $userId, $userName, $date, null, false);
+    }
+
+    /**
+     * Notify admins when a user checks in for daily work.
+     */
+    public function notifyWorkCheckIn($userId, $checkInTime, $submissionDate, $plannedWorkSummary = null) {
+        $userId = (string) $userId;
+        $userName = $this->getUserName($userId);
+        $userIds = $this->resolveAdminRecipients($userId);
+        $notificationType = $this->getValidNotificationType('work_check_in', 'new_update');
+        $entityId = $userId . ':' . $submissionDate;
+
+        $timeLabel = $checkInTime;
+        if ($checkInTime) {
+            $ts = strtotime($checkInTime);
+            if ($ts !== false) {
+                $timeLabel = date('g:i A', $ts);
+            }
+        }
+
+        $message = "{$userName} checked in at {$timeLabel} on {$submissionDate}";
+        if ($plannedWorkSummary) {
+            $snippet = mb_substr(trim((string) $plannedWorkSummary), 0, 120);
+            if ($snippet !== '') {
+                $message .= " — {$snippet}";
+            }
+        }
+
+        return $this->createNotification(
+            $notificationType,
+            "Check-in: {$userName}",
+            $message,
+            $userIds,
+            [
+                'entity_type' => 'work_check_in',
+                'entity_id' => $entityId,
+                'created_by' => $userName,
+            ]
+        );
+    }
+
+    /**
+     * Notify admins when a user starts or ends a break.
+     *
+     * @param string $action start|end
+     */
+    public function notifyWorkBreak($userId, $action, $submissionDate, $startedAt = null, $durationMinutes = null) {
+        $userId = (string) $userId;
+        $userName = $this->getUserName($userId);
+        $userIds = $this->resolveAdminRecipients($userId);
+        $notificationType = $this->getValidNotificationType('work_break', 'new_update');
+        $entityId = $userId . ':' . $submissionDate;
+        $action = strtolower((string) $action);
+
+        if ($action === 'end' || $action === 'break_end') {
+            $durationLabel = $durationMinutes !== null ? " ({$durationMinutes} min)" : '';
+            $title = "Break ended: {$userName}";
+            $message = "{$userName} ended a break on {$submissionDate}{$durationLabel}";
+        } else {
+            $timeLabel = $startedAt ? (string) $startedAt : '';
+            $title = "Break started: {$userName}";
+            $message = $timeLabel !== ''
+                ? "{$userName} started a break at {$timeLabel} on {$submissionDate}"
+                : "{$userName} started a break on {$submissionDate}";
+        }
+
+        return $this->createNotification(
+            $notificationType,
+            $title,
+            $message,
+            $userIds,
+            [
+                'entity_type' => 'work_break',
+                'entity_id' => $entityId,
+                'created_by' => $userName,
+            ]
+        );
+    }
+
+    /**
+     * Notify admins when a user saves daily work (check-out / end of day).
+     */
+    public function notifyWorkCheckOut($submissionId, $userId, $userName = null, $date = null, $hoursToday = null, $isUpdate = false) {
         $submissionId = (string) $submissionId;
         $userId = (string) $userId;
         $userName = $userName ?: $this->getUserName($userId);
         $userIds = $this->resolveAdminRecipients($userId);
         $notificationType = $this->getValidNotificationType('work_update', 'new_update');
         $dateLabel = $date ? " for {$date}" : '';
+        $hoursLabel = $hoursToday !== null && $hoursToday !== '' ? " ({$hoursToday}h)" : '';
+        $actionLabel = $isUpdate ? 'updated daily work' : 'checked out';
 
         return $this->createNotification(
             $notificationType,
-            'Work Update Submitted',
-            "{$userName} submitted a work update{$dateLabel}",
+            "Check-out: {$userName}",
+            "{$userName} {$actionLabel}{$dateLabel}{$hoursLabel}",
             $userIds,
             [
                 'entity_type' => 'work_update',

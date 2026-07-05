@@ -217,7 +217,7 @@ class OwnWorkSubmissionController extends WorkSubmissionController {
             require_once __DIR__ . '/../NotificationManager.php';
             $nm = NotificationManager::getInstance();
             $submissionKey = $userId . ':' . $date;
-            $nm->notifyWorkUpdateSubmitted($submissionKey, $userId, $userName, $date);
+            $nm->notifyWorkCheckOut($submissionKey, $userId, $userName, $date, $hours, $isUpdate);
             if ($requestedExtraHours > 0) {
                 $nm->notifyOvertimeRequested($submissionKey, $userId, $requestedExtraHours);
             }

@@ -297,57 +297,84 @@ class CheckInController extends BaseAPI {
             
             // Now send notifications in background (won't block user)
             try {
-                // Admin email and phone
-                $adminEmail = 'moajmalnk@gmail.com';
-                $adminPhone = '8848676627, 9497792540';
-                
-                // Send email notification (async)
+                if (!isset($username)) {
+                    $userStmt = $this->conn->prepare("SELECT username FROM users WHERE id = ? LIMIT 1");
+                    $userStmt->execute([$userId]);
+                    $user = $userStmt->fetch(PDO::FETCH_ASSOC);
+                    $username = $user['username'] ?? 'User';
+                }
+                if (!isset($projectNames)) {
+                    $projectNames = [];
+                }
+
+                $plannedSummary = $plannedWork;
+                if (!empty($projectNames)) {
+                    $plannedSummary = implode(', ', $projectNames);
+                    if ($plannedWork) {
+                        $plannedSummary .= ' — ' . $plannedWork;
+                    }
+                }
+
+                try {
+                    require_once __DIR__ . '/../NotificationManager.php';
+                    $nm = NotificationManager::getInstance();
+                    $nm->notifyWorkCheckIn($userId, $checkInTime, $submissionDate, $plannedSummary);
+                } catch (Exception $e) {
+                    error_log("⚠️ Failed in-app/push check-in notification: " . $e->getMessage());
+                }
+
+                $adminStmt = $this->conn->prepare(
+                    "SELECT email, phone FROM users WHERE role = 'admin' AND (email IS NOT NULL OR phone IS NOT NULL)"
+                );
+                $adminStmt->execute();
+                $adminRows = $adminStmt->fetchAll(PDO::FETCH_ASSOC);
+                $adminEmails = array_values(array_filter(array_column($adminRows, 'email')));
+                $adminPhones = array_values(array_filter(array_column($adminRows, 'phone')));
+
                 try {
                     require_once __DIR__ . '/../../utils/email.php';
-                    error_log("📧 Sending check-in email notification to admin: $adminEmail");
-                    
-                    $emailSent = sendCheckInNotificationEmail(
-                        $adminEmail,
-                        $username,
-                        $checkInTime,
-                        $submissionDate,
-                        !empty($projectNames) ? $projectNames : null,
-                        $plannedWork
-                    );
-                    
-                    if ($emailSent) {
-                        error_log("✅ Successfully sent check-in email notification to admin");
-                    } else {
-                        error_log("❌ Failed to send check-in email notification to admin");
+                    foreach ($adminEmails as $adminEmail) {
+                        error_log("📧 Sending check-in email notification to admin: $adminEmail");
+                        $emailSent = sendCheckInNotificationEmail(
+                            $adminEmail,
+                            $username,
+                            $checkInTime,
+                            $submissionDate,
+                            !empty($projectNames) ? $projectNames : null,
+                            $plannedWork
+                        );
+                        if ($emailSent) {
+                            error_log("✅ Successfully sent check-in email notification to admin: $adminEmail");
+                        } else {
+                            error_log("❌ Failed to send check-in email notification to admin: $adminEmail");
+                        }
                     }
                 } catch (Exception $e) {
                     error_log("⚠️ Failed to send check-in email notification: " . $e->getMessage());
                 }
-                
-                // Send WhatsApp notification (async)
+
                 try {
                     require_once __DIR__ . '/../../utils/whatsapp.php';
-                    error_log("📱 Sending check-in WhatsApp notification to admin: $adminPhone");
-                    
-                    $whatsappSent = sendCheckInNotificationWhatsApp(
-                        $adminPhone,
-                        $username,
-                        $checkInTime,
-                        $submissionDate,
-                        !empty($projectNames) ? $projectNames : null,
-                        $plannedWork
-                    );
-                    
-                    if ($whatsappSent) {
-                        error_log("✅ Successfully sent check-in WhatsApp notification to admin");
-                    } else {
-                        error_log("❌ Failed to send check-in WhatsApp notification to admin");
+                    foreach ($adminPhones as $adminPhone) {
+                        error_log("📱 Sending check-in WhatsApp notification to admin: $adminPhone");
+                        $whatsappSent = sendCheckInNotificationWhatsApp(
+                            $adminPhone,
+                            $username,
+                            $checkInTime,
+                            $submissionDate,
+                            !empty($projectNames) ? $projectNames : null,
+                            $plannedWork
+                        );
+                        if ($whatsappSent) {
+                            error_log("✅ Successfully sent check-in WhatsApp notification to admin: $adminPhone");
+                        } else {
+                            error_log("❌ Failed to send check-in WhatsApp notification to admin: $adminPhone");
+                        }
                     }
                 } catch (Exception $e) {
                     error_log("⚠️ Failed to send check-in WhatsApp notification: " . $e->getMessage());
                 }
             } catch (Exception $e) {
-                // Don't fail check-in if notifications fail
                 error_log("⚠️ Error sending check-in notifications: " . $e->getMessage());
             }
             
