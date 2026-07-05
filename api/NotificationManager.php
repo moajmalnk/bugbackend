@@ -1112,6 +1112,40 @@ class NotificationManager extends BaseAPI {
     }
 
     /**
+     * Get total, unread, and read notification counts for a user.
+     *
+     * @param string $userId User ID
+     * @return array{total: int, unread: int, read: int}
+     */
+    public function getNotificationCounts($userId) {
+        try {
+            $userId = (string)$userId;
+
+            $query = "
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN un.`read` = 0 THEN 1 ELSE 0 END) AS unread,
+                    SUM(CASE WHEN un.`read` = 1 THEN 1 ELSE 0 END) AS `read`
+                FROM user_notifications un
+                WHERE CAST(un.user_id AS CHAR) = CAST(? AS CHAR)
+            ";
+
+            $stmt = $this->conn->prepare($query);
+            $stmt->execute([$userId]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+            return [
+                'total' => (int)($row['total'] ?? 0),
+                'unread' => (int)($row['unread'] ?? 0),
+                'read' => (int)($row['read'] ?? 0),
+            ];
+        } catch (Exception $e) {
+            error_log("Error getting notification counts: " . $e->getMessage());
+            return ['total' => 0, 'unread' => 0, 'read' => 0];
+        }
+    }
+
+    /**
      * Mark notification as read
      * 
      * @param string $userId User ID

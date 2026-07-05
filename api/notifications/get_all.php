@@ -98,8 +98,8 @@ try {
     $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 50;
     $offset = isset($_GET['offset']) ? (int)$_GET['offset'] : 0;
     
-    // Limit max results
-    $limit = min(max(1, $limit), 100);
+    // Limit max results per page (allow larger pages for notification history)
+    $limit = min(max(1, $limit), 500);
     $offset = max(0, $offset);
     
     // Get notifications - handle potential errors
@@ -108,6 +108,7 @@ try {
         if (!$notificationManager) {
             throw new Exception("Failed to get NotificationManager instance");
         }
+        $counts = $notificationManager->getNotificationCounts($userId);
         $notifications = $notificationManager->getUserNotifications($userId, $limit, $offset);
         if (!is_array($notifications)) {
             error_log("get_all.php - WARNING: getUserNotifications did not return an array");
@@ -120,6 +121,12 @@ try {
         error_log("get_all.php - Fatal error getting notifications: " . $e->getMessage());
         $notifications = [];
     }
+    
+    if (!isset($counts)) {
+        $counts = ['total' => count($notifications), 'unread' => 0, 'read' => count($notifications)];
+    }
+
+    $hasMore = ($offset + count($notifications)) < (int)$counts['total'];
     
     // Debug logging
     error_log("get_all.php - UserId: $userId, Notifications returned: " . count($notifications));
@@ -291,6 +298,10 @@ try {
         'data' => [
             'notifications' => $formattedNotifications,
             'count' => count($formattedNotifications),
+            'total' => (int)$counts['total'],
+            'unread_count' => (int)$counts['unread'],
+            'read_count' => (int)$counts['read'],
+            'has_more' => $hasMore,
             'limit' => $limit,
             'offset' => $offset
         ]
