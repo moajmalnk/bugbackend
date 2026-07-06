@@ -640,11 +640,6 @@ class BugController extends BaseAPI {
             $istTime = new DateTime('now', new DateTimeZone('Asia/Kolkata'));
             $istTimeStr = $istTime->format('Y-m-d H:i:s');
             
-            $stmt = $this->conn->prepare(
-                "INSERT INTO bugs (id, title, description, expected_result, actual_result, project_id, reported_by, priority, status, created_at, updated_at) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-            );
-            
             $priority = isset($data['priority']) ? $data['priority'] : 'medium';
             $status = 'pending';
             $expectedResult = isset($data['expected_result']) ? $data['expected_result'] : null;
