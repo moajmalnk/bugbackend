@@ -1222,6 +1222,158 @@ class BugController extends BaseAPI {
         }
     }
 
+    /**
+     * Admin-only: bugs marked already raised and/or duplicate titles within a project.
+     */
+    public function getCommonBugs($page = 1, $limit = 20, $projectId = null, $reason = 'all') {
+        try {
+            if (!$this->conn) {
+                throw new Exception("Database connection failed");
+            }
+
+            $page = max(1, (int) $page);
+            $limit = max(1, min(100, (int) $limit));
+            $offset = ($page - 1) * $limit;
+            $reason = in_array($reason, ['all', 'already_raised', 'duplicate'], true) ? $reason : 'all';
+            $hasAlreadyRaised = $this->bugsTableHasAlreadyRaisedColumn();
+
+            $dupSubquery = "
+                SELECT project_id, LOWER(TRIM(title)) AS norm_title, COUNT(*) AS duplicate_count
+                FROM bugs
+                GROUP BY project_id, LOWER(TRIM(title))
+                HAVING COUNT(*) > 1
+            ";
+
+            $alreadyRaisedCondition = $hasAlreadyRaised ? 'b.already_raised = 1' : '0 = 1';
+            $commonCondition = "({$alreadyRaisedCondition} OR COALESCE(dup.duplicate_count, 0) > 1)";
+
+            $from = "
+                FROM bugs b
+                LEFT JOIN users u ON b.reported_by = u.id
+                LEFT JOIN projects p ON b.project_id = p.id
+                LEFT JOIN ({$dupSubquery}) dup
+                    ON dup.project_id = b.project_id
+                    AND LOWER(TRIM(b.title)) = dup.norm_title
+            ";
+
+            $where = "WHERE {$commonCondition}";
+            $params = [];
+
+            if ($projectId) {
+                $where .= ' AND b.project_id = ?';
+                $params[] = $projectId;
+            }
+
+            if ($reason === 'already_raised' && $hasAlreadyRaised) {
+                $where .= ' AND b.already_raised = 1';
+            } elseif ($reason === 'duplicate') {
+                $where .= ' AND COALESCE(dup.duplicate_count, 0) > 1';
+            }
+
+            $countStmt = $this->conn->prepare("SELECT COUNT(*) AS total {$from} {$where}");
+            $countStmt->execute($params);
+            $totalBugs = (int) ($countStmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
+
+            $alreadyRaisedSelect = $hasAlreadyRaised ? 'b.already_raised' : '0 AS already_raised';
+            $select = "
+                SELECT b.*,
+                       u.username AS reporter_name,
+                       p.name AS project_name,
+                       COALESCE(dup.duplicate_count, 0) AS duplicate_count,
+                       {$alreadyRaisedSelect}
+                {$from}
+                {$where}
+                ORDER BY b.created_at DESC
+                LIMIT ? OFFSET ?
+            ";
+
+            $listParams = array_merge($params, [$limit, $offset]);
+            $stmt = $this->conn->prepare($select);
+            $stmt->execute($listParams);
+            $bugs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $developersByProject = [];
+            if (!empty($bugs)) {
+                $projectIds = array_values(array_unique(array_filter(array_column($bugs, 'project_id'))));
+                if (!empty($projectIds)) {
+                    $placeholders = implode(',', array_fill(0, count($projectIds), '?'));
+                    $devStmt = $this->conn->prepare("
+                        SELECT pm.project_id, u.id, u.username
+                        FROM project_members pm
+                        INNER JOIN users u ON pm.user_id = u.id
+                        WHERE u.role = 'developer' AND pm.project_id IN ({$placeholders})
+                        ORDER BY u.username ASC
+                    ");
+                    $devStmt->execute($projectIds);
+                    foreach ($devStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                        $pid = $row['project_id'];
+                        if (!isset($developersByProject[$pid])) {
+                            $developersByProject[$pid] = [];
+                        }
+                        $developersByProject[$pid][] = [
+                            'id' => (string) $row['id'],
+                            'username' => $row['username'],
+                        ];
+                    }
+                }
+            }
+
+            $summaryWhere = 'WHERE ' . $commonCondition;
+            $summaryParams = [];
+            if ($projectId) {
+                $summaryWhere .= ' AND b.project_id = ?';
+                $summaryParams[] = $projectId;
+            }
+
+            $summarySql = "
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN " . ($hasAlreadyRaised ? 'b.already_raised = 1' : '0') . " THEN 1 ELSE 0 END) AS already_raised_count,
+                    SUM(CASE WHEN COALESCE(dup.duplicate_count, 0) > 1 THEN 1 ELSE 0 END) AS duplicate_count
+                {$from}
+                {$summaryWhere}
+            ";
+            $summaryStmt = $this->conn->prepare($summarySql);
+            $summaryStmt->execute($summaryParams);
+            $summaryRow = $summaryStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+            foreach ($bugs as &$bug) {
+                $reasons = [];
+                if ($hasAlreadyRaised && $this->parseAlreadyRaisedFlag($bug['already_raised'] ?? 0)) {
+                    $reasons[] = 'already_raised';
+                }
+                if ((int) ($bug['duplicate_count'] ?? 0) > 1) {
+                    $reasons[] = 'duplicate';
+                }
+                $bug['common_reasons'] = $reasons;
+                $bug['project_developers'] = $developersByProject[$bug['project_id']] ?? [];
+                $bug['already_raised'] = $hasAlreadyRaised
+                    ? (bool) $this->parseAlreadyRaisedFlag($bug['already_raised'] ?? 0)
+                    : false;
+            }
+            unset($bug);
+
+            return [
+                'bugs' => $bugs,
+                'pagination' => [
+                    'currentPage' => $page,
+                    'totalPages' => $limit > 0 ? (int) ceil($totalBugs / $limit) : 1,
+                    'totalBugs' => $totalBugs,
+                    'limit' => $limit,
+                ],
+                'summary' => [
+                    'total' => (int) ($summaryRow['total'] ?? 0),
+                    'already_raised_count' => (int) ($summaryRow['already_raised_count'] ?? 0),
+                    'duplicate_count' => (int) ($summaryRow['duplicate_count'] ?? 0),
+                ],
+            ];
+        } catch (PDOException $e) {
+            throw new Exception('Failed to retrieve common bugs');
+        } catch (Exception $e) {
+            throw new Exception($e->getMessage());
+        }
+    }
+
     public function updateBug($data) {
         try {
             if (empty($data['id'])) {
