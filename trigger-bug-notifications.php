@@ -35,7 +35,7 @@ try {
         exit(1);
     }
 
-    $stmt = $conn->prepare("SELECT id, title, description, expected_result, actual_result, project_id, reported_by, priority FROM bugs WHERE id = ? LIMIT 1");
+    $stmt = $conn->prepare("SELECT * FROM bugs WHERE id = ? LIMIT 1");
     $stmt->execute([$bugId]);
     $bug = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$bug) {
@@ -51,6 +51,8 @@ try {
         'actual_result' => $bug['actual_result'],
         'project_id' => $bug['project_id'],
         'priority' => $bug['priority'] ?? 'medium',
+        'already_raised' => $bug['already_raised'] ?? 0,
+        'bug_level' => $bug['bug_level'] ?? 'normal',
     ];
     $decoded = (object)['user_id' => $bug['reported_by']];
     $expectedResult = $bug['expected_result'];

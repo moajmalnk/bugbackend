@@ -486,7 +486,8 @@ class NotificationManager extends BaseAPI {
      * @param string $createdBy User ID who created the bug
      * @return int|false Notification ID or false
      */
-    public function notifyBugCreated($bugId, $bugTitle, $projectId, $createdBy) {
+    public function notifyBugCreated($bugId, $bugTitle, $projectId, $createdBy, $bugLevel = null, $alreadyRaised = null) {
+        require_once __DIR__ . '/../utils/bug_meta.php';
         $bugId = (string) $bugId;
         $projectId = $projectId ? (string) $projectId : null;
         $createdBy = (string) $createdBy;
@@ -497,7 +498,7 @@ class NotificationManager extends BaseAPI {
         return $this->createNotification(
             $notificationType,
             'New Bug Reported',
-            "A new bug has been reported: {$bugTitle}",
+            buildBugCreatedNotificationMessage($bugTitle, $bugLevel, $alreadyRaised),
             $userIds,
             [
                 'entity_type' => 'bug',

@@ -4,6 +4,9 @@
  * Used by both BugController (inline fallback) and trigger-bug-notifications.php.
  */
 function runBugCreatedNotifications($conn, $id, $data, $decoded, $priority, $expectedResult, $actualResult) {
+    require_once __DIR__ . '/bug_meta.php';
+    $bugLevel = $data['bug_level'] ?? null;
+    $alreadyRaised = $data['already_raised'] ?? null;
     $projectName = null;
     $creatorName = null;
     $bugUrl = null;
@@ -25,7 +28,7 @@ function runBugCreatedNotifications($conn, $id, $data, $decoded, $priority, $exp
     // In-app
     try {
         require_once __DIR__ . '/../api/NotificationManager.php';
-        NotificationManager::getInstance()->notifyBugCreated($id, $data['title'], $data['project_id'], $decoded->user_id);
+        NotificationManager::getInstance()->notifyBugCreated($id, $data['title'], $data['project_id'], $decoded->user_id, $bugLevel, $alreadyRaised);
     } catch (Exception $e) {
         error_log("⚠️ Bug $id: In-app failed: " . $e->getMessage());
     }
@@ -48,7 +51,7 @@ function runBugCreatedNotifications($conn, $id, $data, $decoded, $priority, $exp
             $stmt->execute(array_values($userIds));
             $emails = $stmt->fetchAll(PDO::FETCH_COLUMN);
             if (!empty($emails)) {
-                sendBugCreatedEmail($emails, $id, $data['title'], $projectName, $creatorName ?: 'BugRicer', $priority, $data['description'] ?? null, $expectedResult, $actualResult, $bugUrl);
+                sendBugCreatedEmail($emails, $id, $data['title'], $projectName, $creatorName ?: 'BugRicer', $priority, $data['description'] ?? null, $expectedResult, $actualResult, $bugUrl, $bugLevel, $alreadyRaised);
             }
         }
     } catch (Exception $e) {
@@ -66,9 +69,9 @@ function runBugCreatedNotifications($conn, $id, $data, $decoded, $priority, $exp
             if (empty($userIds)) $userIds = [$decoded->user_id];
         }
         if (!empty($userIds)) {
-            sendBugAssignmentWhatsApp($conn, array_values($userIds), $id, $data['title'], $priority, $projectName, $decoded->user_id, $data['description'] ?? null, $expectedResult, $actualResult);
+            sendBugAssignmentWhatsApp($conn, array_values($userIds), $id, $data['title'], $priority, $projectName, $decoded->user_id, $data['description'] ?? null, $expectedResult, $actualResult, $bugLevel, $alreadyRaised);
         }
-        sendNewBugToAdminNumbers($id, $data['title'], $priority, $projectName, $creatorName, $data['description'] ?? null, $expectedResult, $actualResult);
+        sendNewBugToAdminNumbers($id, $data['title'], $priority, $projectName, $creatorName, $data['description'] ?? null, $expectedResult, $actualResult, $bugLevel, $alreadyRaised);
     } catch (Exception $e) {
         error_log("⚠️ Bug $id: WhatsApp failed: " . $e->getMessage());
     }

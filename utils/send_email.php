@@ -74,7 +74,8 @@ function sendBugNotification($to, $subject, $body, $attachments = []) {
 $to = 'moajmalnk@gmail.com';
 // sendBugNotification($to, 'New Bug Assigned', '<b>A new bug has been assigned to you.</b>');
 
-function formatBugCreatedEmailBody($bugId, $bugTitle, $projectName, $reportedByName, $priority, $description, $expectedResult, $actualResult, $bugUrl) {
+function formatBugCreatedEmailBody($bugId, $bugTitle, $projectName, $reportedByName, $priority, $description, $expectedResult, $actualResult, $bugUrl, $bugLevel = null, $alreadyRaised = null) {
+    require_once __DIR__ . '/bug_meta.php';
     $priorityBadge = strtoupper(($priority !== null && trim($priority) !== '') ? $priority : 'medium');
     $desc = htmlspecialchars(($description !== null && $description !== '') ? (strlen($description) > 500 ? substr($description, 0, 500) . '...' : $description) : '');
     $exp = htmlspecialchars(($expectedResult !== null && $expectedResult !== '') ? (strlen($expectedResult) > 300 ? substr($expectedResult, 0, 300) . '...' : $expectedResult) : '');
@@ -91,7 +92,8 @@ function formatBugCreatedEmailBody($bugId, $bugTitle, $projectName, $reportedByN
       . '<table style="width: 100%; border-collapse: collapse; margin-bottom: 16px;">'
       . '<tr><td style="padding: 8px 0; color: #64748b; width: 140px;">Project</td><td style="padding: 8px 0;">' . $project . '</td></tr>'
       . '<tr><td style="padding: 8px 0; color: #64748b;">Priority</td><td><span style="background: #fef3c7; color: #92400e; padding: 4px 10px; border-radius: 4px; font-weight: 600;">' . $priorityBadge . '</span></td></tr>'
-      . '<tr><td style="padding: 8px 0; color: #64748b;">Reported by</td><td>' . $reporter . '</td></tr></table>'
+      . '<tr><td style="padding: 8px 0; color: #64748b;">Reported by</td><td>' . $reporter . '</td></tr>'
+      . bugMetaEmailTableRows($bugLevel, $alreadyRaised) . '</table>'
       . ($desc ? '<p style="margin: 0 0 12px 0;"><strong>Description:</strong></p><p style="margin: 0 0 16px 0; background: #f8fafc; padding: 12px; border-radius: 4px; font-size: 14px;">' . $desc . '</p>' : '')
       . ($exp ? '<p style="margin: 0 0 8px 0;"><strong>Expected Result:</strong></p><p style="margin: 0 0 16px 0; background: #ecfdf5; padding: 12px; border-radius: 4px; font-size: 14px;">' . $exp . '</p>' : '')
       . ($act ? '<p style="margin: 0 0 8px 0;"><strong>Actual Result:</strong></p><p style="margin: 0 0 16px 0; background: #fef2f2; padding: 12px; border-radius: 4px; font-size: 14px;">' . $act . '</p>' : '')
@@ -108,7 +110,7 @@ function formatBugCreatedEmailBody($bugId, $bugTitle, $projectName, $reportedByN
  * @param array $emails Array of email addresses
  * @return bool Success if at least one email sent
  */
-function sendBugCreatedEmail($emails, $bugId, $bugTitle, $projectName, $reportedByName, $priority, $description, $expectedResult, $actualResult, $bugUrl) {
+function sendBugCreatedEmail($emails, $bugId, $bugTitle, $projectName, $reportedByName, $priority, $description, $expectedResult, $actualResult, $bugUrl, $bugLevel = null, $alreadyRaised = null) {
     if (empty($emails)) {
         error_log("📧 sendBugCreatedEmail: No email addresses provided");
         return false;
@@ -116,7 +118,7 @@ function sendBugCreatedEmail($emails, $bugId, $bugTitle, $projectName, $reported
     $emails = array_unique(array_filter(array_map('trim', $emails)));
     if (empty($emails)) return false;
     $subject = "🐛 New Bug: " . substr($bugTitle, 0, 60) . (strlen($bugTitle) > 60 ? '...' : '');
-    $body = formatBugCreatedEmailBody($bugId, $bugTitle, $projectName, $reportedByName, $priority, $description, $expectedResult, $actualResult, $bugUrl);
+    $body = formatBugCreatedEmailBody($bugId, $bugTitle, $projectName, $reportedByName, $priority, $description, $expectedResult, $actualResult, $bugUrl, $bugLevel, $alreadyRaised);
     error_log("📧 Sending bug created email to " . count($emails) . " recipients");
     return sendBugNotification($emails, $subject, $body, []);
 }

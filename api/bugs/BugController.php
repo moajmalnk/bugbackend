@@ -932,6 +932,12 @@ class BugController extends BaseAPI {
                 'updated_at' => $istTimeStr,
                 'attachments' => $processedAttachments
             ];
+            if ($this->bugsTableHasAlreadyRaisedColumn()) {
+                $bug['already_raised'] = $alreadyRaised;
+            }
+            if ($this->bugsTableHasBugLevelColumn()) {
+                $bug['bug_level'] = $bugLevel;
+            }
             
             $this->spawnBugCreatedNotifications((string)$id);
 

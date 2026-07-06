@@ -653,13 +653,15 @@ function generateRoleBasedBugUrl($role, $bugId) {
 /**
  * Format new bug reported message for WhatsApp (for admins / broadcast)
  */
-function formatNewBugReportedForWhatsApp($bugTitle, $priority, $projectName = null, $reportedByName = null, $bugLink = null, $description = null, $expectedResult = null, $actualResult = null) {
+function formatNewBugReportedForWhatsApp($bugTitle, $priority, $projectName = null, $reportedByName = null, $bugLink = null, $description = null, $expectedResult = null, $actualResult = null, $bugLevel = null, $alreadyRaised = null) {
     $message = "🐛 *New Bug Reported*\n";
     $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
     $message .= "📌 *Title:* " . $bugTitle . "\n";
     $message .= "🎯 *Priority:* " . ucfirst(strtolower($priority ?: 'Medium')) . "\n";
     if ($projectName) $message .= "📁 *Project:* " . $projectName . "\n";
     if ($reportedByName) $message .= "👤 *Reported by:* " . $reportedByName . "\n";
+    require_once __DIR__ . '/bug_meta.php';
+    $message = appendBugMetaToWhatsAppMessage($message, $bugLevel, $alreadyRaised);
     if ($description && trim($description)) {
         $descText = strlen($description) > 300 ? substr(trim($description), 0, 297) . '...' : trim($description);
         $message .= "\n📝 *Description:*\n" . $descText . "\n";
@@ -691,7 +693,7 @@ function formatNewBugReportedForWhatsApp($bugTitle, $priority, $projectName = nu
  * @param string|null $actualResult Actual result (optional)
  * @return string Formatted WhatsApp message
  */
-function formatBugAssignmentForWhatsApp($bugTitle, $priority, $projectName = null, $assignedByName = null, $bugLink = null, $description = null, $expectedResult = null, $actualResult = null) {
+function formatBugAssignmentForWhatsApp($bugTitle, $priority, $projectName = null, $assignedByName = null, $bugLink = null, $description = null, $expectedResult = null, $actualResult = null, $bugLevel = null, $alreadyRaised = null) {
     $message = "🐛 *New Bug Assigned to You*\n";
     $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
     $message .= "📌 *Title:* " . $bugTitle . "\n";
@@ -704,6 +706,9 @@ function formatBugAssignmentForWhatsApp($bugTitle, $priority, $projectName = nul
     if ($assignedByName) {
         $message .= "👤 *Assigned by:* " . $assignedByName . "\n";
     }
+
+    require_once __DIR__ . '/bug_meta.php';
+    $message = appendBugMetaToWhatsAppMessage($message, $bugLevel, $alreadyRaised);
     
     // Add description if provided
     if ($description && !empty(trim($description))) {
@@ -800,7 +805,7 @@ function formatTaskAssignmentForWhatsApp($taskTitle, $priority, $dueDate = null,
  * @param string|null $actualResult Actual result (optional)
  * @return bool Success status (true if at least one message sent)
  */
-function sendBugAssignmentWhatsApp($conn, $assignedUserIds, $bugId, $bugTitle, $priority = 'medium', $projectName = null, $assignedById = null, $description = null, $expectedResult = null, $actualResult = null) {
+function sendBugAssignmentWhatsApp($conn, $assignedUserIds, $bugId, $bugTitle, $priority = 'medium', $projectName = null, $assignedById = null, $description = null, $expectedResult = null, $actualResult = null, $bugLevel = null, $alreadyRaised = null) {
     try {
         error_log("📱 sendBugAssignmentWhatsApp called for bug: $bugId");
         
@@ -848,7 +853,7 @@ function sendBugAssignmentWhatsApp($conn, $assignedUserIds, $bugId, $bugTitle, $
             $bugLink = generateRoleBasedBugUrl($userRole, $bugId);
             
             // Format personalized message with role-based URL and bug details
-            $message = formatBugAssignmentForWhatsApp($bugTitle, $priority, $projectName, $assignedByName, $bugLink, $description, $expectedResult, $actualResult);
+            $message = formatBugAssignmentForWhatsApp($bugTitle, $priority, $projectName, $assignedByName, $bugLink, $description, $expectedResult, $actualResult, $bugLevel, $alreadyRaised);
             
             error_log("📱 Sending bug assignment WhatsApp to user $userId (role: $userRole): $phoneNumber");
             error_log("📱 Role-based URL: $bugLink");
@@ -893,7 +898,7 @@ function sendBugAssignmentWhatsApp($conn, $assignedUserIds, $bugId, $bugTitle, $
  * @param string|null $actualResult Actual result
  * @return bool True if at least one message sent
  */
-function sendNewBugToAdminNumbers($bugId, $bugTitle, $priority = 'medium', $projectName = null, $reportedByName = null, $description = null, $expectedResult = null, $actualResult = null) {
+function sendNewBugToAdminNumbers($bugId, $bugTitle, $priority = 'medium', $projectName = null, $reportedByName = null, $description = null, $expectedResult = null, $actualResult = null, $bugLevel = null, $alreadyRaised = null) {
     $adminNumbers = explode(',', WHATSAPP_ADMIN_NUMBERS);
     $adminNumbers = array_map('trim', array_filter($adminNumbers));
     if (empty($adminNumbers)) {
@@ -909,7 +914,9 @@ function sendNewBugToAdminNumbers($bugId, $bugTitle, $priority = 'medium', $proj
         $bugLink,
         $description,
         $expectedResult,
-        $actualResult
+        $actualResult,
+        $bugLevel,
+        $alreadyRaised
     );
     $sent = 0;
     foreach ($adminNumbers as $phone) {
