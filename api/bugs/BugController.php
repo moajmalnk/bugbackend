@@ -165,6 +165,34 @@ class BugController extends BaseAPI {
         return in_array($normalized, ['1', 'true', 'yes', 'on'], true) ? 1 : 0;
     }
 
+    private function bugsTableHasBugLevelColumn(): bool
+    {
+        static $cached = null;
+        if ($cached !== null) {
+            return $cached;
+        }
+        try {
+            $st = $this->conn->query("SHOW COLUMNS FROM bugs LIKE 'bug_level'");
+            $cached = $st && $st->rowCount() > 0;
+        } catch (Exception $e) {
+            $cached = false;
+        }
+        return $cached;
+    }
+
+    private function parseBugLevel($value): string
+    {
+        $allowed = ['normal', 'floap', 'utter_floap'];
+        if ($value === null || $value === '') {
+            return 'normal';
+        }
+        $normalized = strtolower(str_replace([' ', '-'], '_', trim((string) $value)));
+        if ($normalized === 'utterfloap') {
+            return 'utter_floap';
+        }
+        return in_array($normalized, $allowed, true) ? $normalized : 'normal';
+    }
+
     /**
      * Create bug from BugBot JSON path; triggers same WhatsApp/in-app flow as create().
      *
@@ -645,46 +673,48 @@ class BugController extends BaseAPI {
             $expectedResult = isset($data['expected_result']) ? $data['expected_result'] : null;
             $actualResult = isset($data['actual_result']) ? $data['actual_result'] : null;
             $alreadyRaised = $this->parseAlreadyRaisedFlag($data['already_raised'] ?? 0);
+            $bugLevel = $this->parseBugLevel($data['bug_level'] ?? 'normal');
             $hasAlreadyRaised = $this->bugsTableHasAlreadyRaisedColumn();
+            $hasBugLevel = $this->bugsTableHasBugLevelColumn();
+
+            $columns = [
+                'id', 'title', 'description', 'expected_result', 'actual_result',
+            ];
+            $values = [
+                $id,
+                $data['title'],
+                $data['description'],
+                $expectedResult,
+                $actualResult,
+            ];
 
             if ($hasAlreadyRaised) {
-                $stmt = $this->conn->prepare(
-                    "INSERT INTO bugs (id, title, description, expected_result, actual_result, already_raised, project_id, reported_by, priority, status, created_at, updated_at) 
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                );
-                $stmt->execute([
-                    $id,
-                    $data['title'],
-                    $data['description'],
-                    $expectedResult,
-                    $actualResult,
-                    $alreadyRaised,
-                    $data['project_id'],
-                    $decoded->user_id,
-                    $priority,
-                    $status,
-                    $istTimeStr,
-                    $istTimeStr
-                ]);
-            } else {
-                $stmt = $this->conn->prepare(
-                    "INSERT INTO bugs (id, title, description, expected_result, actual_result, project_id, reported_by, priority, status, created_at, updated_at) 
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                );
-                $stmt->execute([
-                    $id,
-                    $data['title'],
-                    $data['description'],
-                    $expectedResult,
-                    $actualResult,
-                    $data['project_id'],
-                    $decoded->user_id,
-                    $priority,
-                    $status,
-                    $istTimeStr,
-                    $istTimeStr
-                ]);
+                $columns[] = 'already_raised';
+                $values[] = $alreadyRaised;
             }
+            if ($hasBugLevel) {
+                $columns[] = 'bug_level';
+                $values[] = $bugLevel;
+            }
+
+            $columns = array_merge($columns, [
+                'project_id', 'reported_by', 'priority', 'status', 'created_at', 'updated_at',
+            ]);
+            $values = array_merge($values, [
+                $data['project_id'],
+                $decoded->user_id,
+                $priority,
+                $status,
+                $istTimeStr,
+                $istTimeStr,
+            ]);
+
+            $placeholders = implode(', ', array_fill(0, count($columns), '?'));
+            $columnList = implode(', ', $columns);
+            $stmt = $this->conn->prepare(
+                "INSERT INTO bugs ($columnList) VALUES ($placeholders)"
+            );
+            $stmt->execute($values);
 
             // Initialize array to collect all uploaded file paths
             $uploadedAttachments = [];
