@@ -138,6 +138,33 @@ class BugController extends BaseAPI {
         return $cached;
     }
 
+    private function bugsTableHasAlreadyRaisedColumn(): bool
+    {
+        static $cached = null;
+        if ($cached !== null) {
+            return $cached;
+        }
+        try {
+            $st = $this->conn->query("SHOW COLUMNS FROM bugs LIKE 'already_raised'");
+            $cached = $st && $st->rowCount() > 0;
+        } catch (Exception $e) {
+            $cached = false;
+        }
+        return $cached;
+    }
+
+    private function parseAlreadyRaisedFlag($value): int
+    {
+        if ($value === null || $value === '') {
+            return 0;
+        }
+        if (is_bool($value)) {
+            return $value ? 1 : 0;
+        }
+        $normalized = strtolower(trim((string) $value));
+        return in_array($normalized, ['1', 'true', 'yes', 'on'], true) ? 1 : 0;
+    }
+
     /**
      * Create bug from BugBot JSON path; triggers same WhatsApp/in-app flow as create().
      *
@@ -622,20 +649,47 @@ class BugController extends BaseAPI {
             $status = 'pending';
             $expectedResult = isset($data['expected_result']) ? $data['expected_result'] : null;
             $actualResult = isset($data['actual_result']) ? $data['actual_result'] : null;
-            
-            $stmt->execute([
-                $id,
-                $data['title'],
-                $data['description'],
-                $expectedResult,
-                $actualResult,
-                $data['project_id'],
-                $decoded->user_id,
-                $priority,
-                $status,
-                $istTimeStr,
-                $istTimeStr
-            ]);
+            $alreadyRaised = $this->parseAlreadyRaisedFlag($data['already_raised'] ?? 0);
+            $hasAlreadyRaised = $this->bugsTableHasAlreadyRaisedColumn();
+
+            if ($hasAlreadyRaised) {
+                $stmt = $this->conn->prepare(
+                    "INSERT INTO bugs (id, title, description, expected_result, actual_result, already_raised, project_id, reported_by, priority, status, created_at, updated_at) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                );
+                $stmt->execute([
+                    $id,
+                    $data['title'],
+                    $data['description'],
+                    $expectedResult,
+                    $actualResult,
+                    $alreadyRaised,
+                    $data['project_id'],
+                    $decoded->user_id,
+                    $priority,
+                    $status,
+                    $istTimeStr,
+                    $istTimeStr
+                ]);
+            } else {
+                $stmt = $this->conn->prepare(
+                    "INSERT INTO bugs (id, title, description, expected_result, actual_result, project_id, reported_by, priority, status, created_at, updated_at) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                );
+                $stmt->execute([
+                    $id,
+                    $data['title'],
+                    $data['description'],
+                    $expectedResult,
+                    $actualResult,
+                    $data['project_id'],
+                    $decoded->user_id,
+                    $priority,
+                    $status,
+                    $istTimeStr,
+                    $istTimeStr
+                ]);
+            }
 
             // Initialize array to collect all uploaded file paths
             $uploadedAttachments = [];
