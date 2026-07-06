@@ -1266,9 +1266,21 @@ class BugController extends BaseAPI {
                 $updateFields[] = "priority = ?";
                 $params[] = $data['priority'];
             }
+            if (isset($data['project_id']) && $data['project_id'] !== '') {
+                $updateFields[] = "project_id = ?";
+                $params[] = $data['project_id'];
+            }
             if (isset($data['status'])) {
                 $updateFields[] = "status = ?";
                 $params[] = $data['status'];
+            }
+            if ($this->bugsTableHasAlreadyRaisedColumn() && array_key_exists('already_raised', $data)) {
+                $updateFields[] = "already_raised = ?";
+                $params[] = $this->parseAlreadyRaisedFlag($data['already_raised']);
+            }
+            if ($this->bugsTableHasBugLevelColumn() && array_key_exists('bug_level', $data)) {
+                $updateFields[] = "bug_level = ?";
+                $params[] = $this->parseBugLevel($data['bug_level']);
             }
             if (isset($data['fix_description'])) {
                 $updateFields[] = "fix_description = ?";
@@ -1440,9 +1452,21 @@ class BugController extends BaseAPI {
                 $updateFields[] = "priority = ?";
                 $params[] = $data['priority'];
             }
+            if (isset($data['project_id']) && $data['project_id'] !== '') {
+                $updateFields[] = "project_id = ?";
+                $params[] = $data['project_id'];
+            }
             if (isset($data['status'])) {
                 $updateFields[] = "status = ?";
                 $params[] = $data['status'];
+            }
+            if ($this->bugsTableHasAlreadyRaisedColumn() && array_key_exists('already_raised', $data)) {
+                $updateFields[] = "already_raised = ?";
+                $params[] = $this->parseAlreadyRaisedFlag($data['already_raised']);
+            }
+            if ($this->bugsTableHasBugLevelColumn() && array_key_exists('bug_level', $data)) {
+                $updateFields[] = "bug_level = ?";
+                $params[] = $this->parseBugLevel($data['bug_level']);
             }
             if (isset($data['updated_by'])) {
                 $updateFields[] = "updated_by = ?";

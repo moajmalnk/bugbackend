@@ -198,7 +198,7 @@ try {
     }
     
     // Determine which fields are actually being changed (not just present)
-    $updatableFields = ['title', 'description', 'priority', 'status', 'expected_result', 'actual_result', 'fix_description', 'fixed_by'];
+    $updatableFields = ['title', 'description', 'priority', 'status', 'expected_result', 'actual_result', 'fix_description', 'fixed_by', 'project_id', 'already_raised', 'bug_level'];
     $fieldsBeingChanged = [];
     foreach ($updatableFields as $field) {
         if (isset($data[$field])) {
@@ -295,6 +295,31 @@ try {
             'message' => $errorMessage
         ]);
         exit();
+    }
+
+    // When moving bug to another project, user must have access to the target project
+    if (
+        isset($data['project_id']) &&
+        $data['project_id'] !== '' &&
+        (string) $data['project_id'] !== (string) ($bug['project_id'] ?? '')
+    ) {
+        if (!$isAdmin && !$isCreator) {
+            http_response_code(403);
+            echo json_encode([
+                'success' => false,
+                'message' => 'Only admins and the bug reporter can change the project.',
+            ]);
+            exit();
+        }
+        $projectMemberController = new ProjectMemberController();
+        if (!$projectMemberController->hasProjectAccess($userId, $data['project_id'])) {
+            http_response_code(403);
+            echo json_encode([
+                'success' => false,
+                'message' => 'You do not have access to the selected project.',
+            ]);
+            exit();
+        }
     }
 
     // Add user ID from token as updated_by
