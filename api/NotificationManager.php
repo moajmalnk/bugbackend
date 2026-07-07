@@ -198,6 +198,9 @@ class NotificationManager extends BaseAPI {
             case 'sheet':
                 return $projectId ? '/bugsheets/project/' . $projectId : '/bugsheets';
             case 'work_update':
+                if ($entityId && strpos($entityId, ':') !== false) {
+                    return '/users/' . explode(':', $entityId, 2)[0];
+                }
                 return '/daily-work-update';
             case 'work_check_in':
             case 'work_break':
@@ -916,11 +919,12 @@ class NotificationManager extends BaseAPI {
         $notificationType = $this->getValidNotificationType('work_update', 'new_update');
         $dateLabel = $date ? " for {$date}" : '';
         $hoursLabel = $hoursToday !== null && $hoursToday !== '' ? " ({$hoursToday}h)" : '';
-        $actionLabel = $isUpdate ? 'updated daily work' : 'checked out';
+        $title = $isUpdate ? 'Work Update Revised' : 'New Work Update';
+        $actionLabel = $isUpdate ? 'revised daily work' : 'submitted daily work';
 
         return $this->createNotification(
             $notificationType,
-            "Check-out: {$userName}",
+            $title,
             "{$userName} {$actionLabel}{$dateLabel}{$hoursLabel}",
             $userIds,
             [

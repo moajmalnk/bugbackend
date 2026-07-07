@@ -256,8 +256,12 @@ class ProjectComplianceController extends BaseAPI
         $meta = $this->getComplianceMeta($projectId);
 
         $stmt = $this->conn->prepare(
-            "SELECT phase, rule_key, verified, verified_by, verified_at
-             FROM project_compliance_checks WHERE project_id = ? ORDER BY id ASC"
+            "SELECT c.phase, c.rule_key, c.verified, c.verified_by, c.verified_at,
+                    u.username AS verified_by_username
+             FROM project_compliance_checks c
+             LEFT JOIN users u ON u.id = c.verified_by
+             WHERE c.project_id = ?
+             ORDER BY c.id ASC"
         );
         $stmt->execute([$projectId]);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -270,6 +274,7 @@ class ProjectComplianceController extends BaseAPI
                 'verified' => (bool) $row['verified'],
                 'verified_by' => $row['verified_by'],
                 'verified_at' => $row['verified_at'],
+                'verified_by_username' => $row['verified_by_username'] ?? null,
             ];
             if ($row['phase'] === 'developer') {
                 $developerChecks[] = $item;

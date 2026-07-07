@@ -277,7 +277,6 @@ class CheckInController extends BaseAPI {
                 error_log("⚠️ Error fetching project names: " . $e->getMessage());
             }
 
-            // Send response immediately (non-blocking) for faster user experience
             $responseData = [
                 'check_in_time' => $checkInTime,
                 'submission_date' => $submissionDate,
@@ -285,17 +284,8 @@ class CheckInController extends BaseAPI {
                 'planned_work' => $plannedWork,
                 'planned_work_status' => $plannedWorkStatus
             ];
-            
-            error_log("🔍 CheckInController - Sending success response: " . json_encode($responseData));
-            $this->sendJsonResponse(200, "Checked in successfully", $responseData);
-            
-            // Send notifications asynchronously (non-blocking) after response is sent
-            // This makes the check-in feel instant while notifications happen in background
-            if (function_exists('fastcgi_finish_request')) {
-                fastcgi_finish_request(); // Flush response to client immediately
-            }
-            
-            // Now send notifications in background (won't block user)
+
+            // Notifications before response — sendJsonResponse() exits and skips code below it
             try {
                 if (!isset($username)) {
                     $userStmt = $this->conn->prepare("SELECT username FROM users WHERE id = ? LIMIT 1");
@@ -324,7 +314,7 @@ class CheckInController extends BaseAPI {
                 }
 
                 $adminStmt = $this->conn->prepare(
-                    "SELECT email, phone FROM users WHERE role = 'admin' AND account_active = 1 AND (email IS NOT NULL OR phone IS NOT NULL)"
+                    "SELECT email, phone FROM users WHERE account_active = 1 AND (role = 'admin' OR role_id = 1) AND (email IS NOT NULL OR phone IS NOT NULL)"
                 );
                 $adminStmt->execute();
                 $adminRows = $adminStmt->fetchAll(PDO::FETCH_ASSOC);
@@ -334,8 +324,7 @@ class CheckInController extends BaseAPI {
                 try {
                     require_once __DIR__ . '/../../utils/email.php';
                     foreach ($adminEmails as $adminEmail) {
-                        error_log("📧 Sending check-in email notification to admin: $adminEmail");
-                        $emailSent = sendCheckInNotificationEmail(
+                        sendCheckInNotificationEmail(
                             $adminEmail,
                             $username,
                             $checkInTime,
@@ -343,11 +332,6 @@ class CheckInController extends BaseAPI {
                             !empty($projectNames) ? $projectNames : null,
                             $plannedWork
                         );
-                        if ($emailSent) {
-                            error_log("✅ Successfully sent check-in email notification to admin: $adminEmail");
-                        } else {
-                            error_log("❌ Failed to send check-in email notification to admin: $adminEmail");
-                        }
                     }
                 } catch (Exception $e) {
                     error_log("⚠️ Failed to send check-in email notification: " . $e->getMessage());
@@ -356,8 +340,7 @@ class CheckInController extends BaseAPI {
                 try {
                     require_once __DIR__ . '/../../utils/whatsapp.php';
                     foreach ($adminPhones as $adminPhone) {
-                        error_log("📱 Sending check-in WhatsApp notification to admin: $adminPhone");
-                        $whatsappSent = sendCheckInNotificationWhatsApp(
+                        sendCheckInNotificationWhatsApp(
                             $adminPhone,
                             $username,
                             $checkInTime,
@@ -365,11 +348,6 @@ class CheckInController extends BaseAPI {
                             !empty($projectNames) ? $projectNames : null,
                             $plannedWork
                         );
-                        if ($whatsappSent) {
-                            error_log("✅ Successfully sent check-in WhatsApp notification to admin: $adminPhone");
-                        } else {
-                            error_log("❌ Failed to send check-in WhatsApp notification to admin: $adminPhone");
-                        }
                     }
                 } catch (Exception $e) {
                     error_log("⚠️ Failed to send check-in WhatsApp notification: " . $e->getMessage());
@@ -377,8 +355,11 @@ class CheckInController extends BaseAPI {
             } catch (Exception $e) {
                 error_log("⚠️ Error sending check-in notifications: " . $e->getMessage());
             }
+
+            error_log("🔍 CheckInController - Sending success response: " . json_encode($responseData));
+            $this->sendJsonResponse(200, "Checked in successfully", $responseData);
             
-            return; // Explicit return to prevent any further execution
+            return;
 
         } catch (PDOException $e) {
             $errorMsg = "PDO Error in check-in: " . $e->getMessage();

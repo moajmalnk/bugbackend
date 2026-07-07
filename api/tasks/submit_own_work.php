@@ -197,19 +197,9 @@ class OwnWorkSubmissionController extends WorkSubmissionController {
             'notes' => $notes,
             'is_update' => $isUpdate
         ];
-        
-        // Send response immediately (non-blocking) for faster user experience
-        $this->sendJsonResponse(200, 'Submission saved');
-        
-        // Send notifications asynchronously (non-blocking) after response is sent
-        // This makes the save feel instant while notifications happen in background
-        if (function_exists('fastcgi_finish_request')) {
-            fastcgi_finish_request(); // Flush response to client immediately
-        }
-        
-        // Now send notifications in background (won't block user)
-        // Send notifications to admins for BOTH new submissions AND updates
-        // This ensures admins are notified whenever developers or admins submit/update their work
+
+        // Send notifications BEFORE the HTTP response — sendJsonResponse() calls exit()
+        // and would skip all code below it (push, email, WhatsApp never ran).
         $updateStatus = $isUpdate ? 'UPDATE' : 'NEW SUBMISSION';
         error_log("📢 NOTIFICATION: Sending admin notifications for work $updateStatus by $userName ($userEmail)");
 
@@ -224,56 +214,45 @@ class OwnWorkSubmissionController extends WorkSubmissionController {
         } catch (Throwable $e) {
             error_log("⚠️ Failed in-app/push work update notification: " . $e->getMessage());
         }
-        
-        // Send email notification to admins
-        error_log("EMAIL_NOTIFICATION: Starting async email notification process");
+
+        error_log("EMAIL_NOTIFICATION: Starting email notification process");
         try {
             $emailPath = __DIR__ . '/../../utils/email.php';
             require_once $emailPath;
-            
+
             error_log("📧 Starting daily work $updateStatus email notification process...");
             error_log("📧 User info - Name: $userName, Email: " . ($userEmail ?: 'EMPTY'));
-            
-            // Get admin emails
-            $adminStmt = $this->conn->prepare("SELECT email FROM users WHERE role = 'admin' AND account_active = 1");
+
+            $adminStmt = $this->conn->prepare(
+                "SELECT email FROM users WHERE account_active = 1 AND (role = 'admin' OR role_id = 1)"
+            );
             $adminStmt->execute();
             $adminRows = $adminStmt->fetchAll(PDO::FETCH_ASSOC);
             $adminEmails = array_column($adminRows, 'email');
-            
+
             error_log("📧 Found " . count($adminEmails) . " admin emails: " . json_encode($adminEmails));
-            
+
             if (empty($adminEmails)) {
                 error_log("⚠️ No admin emails found - skipping email notification");
             } elseif (empty($userEmail)) {
                 error_log("⚠️ User email is empty - skipping email notification");
             } else {
-                error_log("📧 Calling sendDailyWorkUpdateEmailToAdmins for $updateStatus with data: " . json_encode([
-                    'admin_emails_count' => count($adminEmails),
-                    'user_name' => $userName,
-                    'user_email' => $userEmail,
-                    'submission_date' => $date,
-                    'is_update' => $isUpdate
-                ]));
-                
                 $emailResults = sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $submissionData);
                 error_log("📧 Daily work $updateStatus emails sent to admins. Results: " . json_encode($emailResults));
             }
         } catch (Exception $e) {
-            // Don't fail the submission if email fails
             error_log("⚠️ Failed to send daily work $updateStatus email notification: " . $e->getMessage());
             error_log("⚠️ Exception trace: " . $e->getTraceAsString());
         }
-        
-        // Send WhatsApp notification to admins
+
         error_log("📱 Starting daily work $updateStatus WhatsApp notification process...");
         try {
             $whatsappPath = __DIR__ . '/../../utils/whatsapp.php';
             require_once $whatsappPath;
-            
+
             if (empty($userEmail)) {
                 error_log("⚠️ User email is empty - skipping WhatsApp notification");
             } else {
-                error_log("📱 Calling sendDailyWorkUpdateWhatsAppToAdmins for $updateStatus");
                 $whatsappResult = sendDailyWorkUpdateWhatsAppToAdmins($userName, $userEmail, $submissionData);
                 if ($whatsappResult) {
                     error_log("✅ Daily work $updateStatus WhatsApp sent to admins successfully");
@@ -282,10 +261,11 @@ class OwnWorkSubmissionController extends WorkSubmissionController {
                 }
             }
         } catch (Exception $e) {
-            // Don't fail the submission if WhatsApp fails
             error_log("⚠️ Failed to send daily work $updateStatus WhatsApp notification: " . $e->getMessage());
             error_log("⚠️ Exception trace: " . $e->getTraceAsString());
         }
+
+        $this->sendJsonResponse(200, 'Submission saved');
     }
 }
 
