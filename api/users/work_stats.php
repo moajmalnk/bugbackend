@@ -111,6 +111,12 @@ class UserWorkStatsController extends BaseAPI {
             foreach ($this->parsePlannedProjectIds($submission['planned_projects'] ?? null) as $id) {
                 $ids[(string)$id] = true;
             }
+            $updates = $this->parseProjectUpdates($submission['project_updates'] ?? null);
+            foreach ($updates as $update) {
+                if (!empty($update['project_id'])) {
+                    $ids[(string)$update['project_id']] = true;
+                }
+            }
         }
         return $this->fetchProjectNameMap(array_keys($ids));
     }
@@ -144,6 +150,31 @@ class UserWorkStatsController extends BaseAPI {
             $names[] = $resolved;
         }
         return array_values(array_unique($names));
+    }
+
+    private function parseProjectUpdates($raw, array $projectNameMap = []) {
+        if ($raw === null || $raw === '') {
+            return [];
+        }
+        $items = is_string($raw) ? json_decode($raw, true) : $raw;
+        if (!is_array($items)) {
+            return [];
+        }
+        $out = [];
+        foreach ($items as $item) {
+            if (!is_array($item) || empty($item['project_id'])) {
+                continue;
+            }
+            $projectId = (string)$item['project_id'];
+            $out[] = [
+                'project_id' => $projectId,
+                'project_name' => $this->lookupProjectName($projectId, $projectNameMap),
+                'status' => (string)($item['status'] ?? 'not_started'),
+                'progress_percentage' => max(0, min(100, (int)($item['progress_percentage'] ?? 0))),
+                'notes' => trim((string)($item['notes'] ?? '')),
+            ];
+        }
+        return $out;
     }
 
     private function getCalendarMonthPeriodAtOffset(int $monthsAgo, DateTimeZone $istTimezone): array {
@@ -226,6 +257,7 @@ class UserWorkStatsController extends BaseAPI {
             'planned_work_notes' => $submission['planned_work_notes'] ?? null,
             'planned_projects' => $projectIds,
             'project_names' => $projectNames,
+            'project_updates' => $this->parseProjectUpdates($submission['project_updates'] ?? null, $projectNameMap),
             'tasks' => [
                 'completed' => $completedLines,
                 'pending' => $pendingLines,

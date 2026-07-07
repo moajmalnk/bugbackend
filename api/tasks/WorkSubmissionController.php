@@ -257,6 +257,8 @@ class WorkSubmissionController extends BaseAPI {
                 }
             }
 
+            $this->persistCheckoutPlannedFields($userId, $date, $payload);
+
             $this->updateOvertimeApprovalOnSubmit($userId, $date, $requestedExtraHours, $approvalReason);
 
             error_log("🔍 WorkSubmissionController::submit - Saved submission for user: " . $userId . " on date: " . $date);
@@ -658,6 +660,85 @@ class WorkSubmissionController extends BaseAPI {
                         "✅ Completed Tasks:\n\nPending\n";
             $this->sendJsonResponse(200, 'OK', ['text' => $fallback]);
         }
+    }
+
+    protected function ensureProjectUpdatesColumn(): void {
+        try {
+            $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'project_updates'");
+            if ($check->rowCount() === 0) {
+                $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN project_updates JSON NULL DEFAULT NULL AFTER planned_work_notes");
+            }
+        } catch (Exception $e) {
+            // ignore
+        }
+    }
+
+    protected function normalizeProjectUpdatesPayload($raw): ?array {
+        if (!is_array($raw)) {
+            return null;
+        }
+        $allowed = ['not_started', 'in_progress', 'completed', 'blocked', 'cancelled'];
+        $out = [];
+        foreach ($raw as $item) {
+            if (!is_array($item) || empty($item['project_id'])) {
+                continue;
+            }
+            $status = (string)($item['status'] ?? 'in_progress');
+            if (!in_array($status, $allowed, true)) {
+                $status = 'in_progress';
+            }
+            $progress = max(0, min(100, (int)($item['progress_percentage'] ?? 0)));
+            if ($status === 'completed') {
+                $progress = max($progress, 100);
+            }
+            $notes = trim((string)($item['notes'] ?? ''));
+            $out[] = [
+                'project_id' => (string)$item['project_id'],
+                'status' => $status,
+                'progress_percentage' => $progress,
+                'notes' => $notes,
+            ];
+        }
+        return $out;
+    }
+
+    protected function persistCheckoutPlannedFields(string $userId, string $date, array $payload): void {
+        $this->ensureProjectUpdatesColumn();
+
+        $plannedWorkStatus = $payload['planned_work_status'] ?? null;
+        $plannedWorkNotes = isset($payload['planned_work_notes']) ? (string)$payload['planned_work_notes'] : null;
+        $normalizedUpdates = $this->normalizeProjectUpdatesPayload($payload['project_updates'] ?? null);
+        $projectUpdatesJson = ($normalizedUpdates !== null && !empty($normalizedUpdates))
+            ? json_encode($normalizedUpdates)
+            : null;
+
+        $columnsCheck = $this->conn->query("SHOW COLUMNS FROM work_submissions");
+        $columns = $columnsCheck->fetchAll(PDO::FETCH_COLUMN);
+
+        $parts = [];
+        $values = [];
+        if (in_array('planned_work_status', $columns, true) && $plannedWorkStatus !== null && $plannedWorkStatus !== '') {
+            $parts[] = 'planned_work_status = ?';
+            $values[] = $plannedWorkStatus;
+        }
+        if (in_array('planned_work_notes', $columns, true)) {
+            $parts[] = 'planned_work_notes = ?';
+            $values[] = $plannedWorkNotes;
+        }
+        if (in_array('project_updates', $columns, true)) {
+            $parts[] = 'project_updates = ?';
+            $values[] = $projectUpdatesJson;
+        }
+
+        if (empty($parts)) {
+            return;
+        }
+
+        $values[] = $userId;
+        $values[] = $date;
+        $sql = 'UPDATE work_submissions SET ' . implode(', ', $parts) . ' WHERE user_id = ? AND submission_date = ?';
+        $stmt = $this->conn->prepare($sql);
+        $stmt->execute($values);
     }
 
     protected function ensureExtraHoursApprovalColumns() {
