@@ -496,48 +496,172 @@ class ProjectController extends BaseAPI
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
         }
     }
-}
 
-// Handle the request
-$controller = new ProjectController();
-$action = basename($_SERVER['PHP_SELF'], '.php');
-$id = isset($_GET['id']) ? $_GET['id'] : null;
-
-// Detect force_delete parameter
-$forceDelete = false;
-if (strpos($_SERVER['QUERY_STRING'] ?? '', 'force_delete=true') !== false) {
-    $forceDelete = true;
-}
-if (isset($_GET['force_delete']) && $_GET['force_delete'] === 'true') {
-    $forceDelete = true;
-}
-
-error_log("PROJECTCONTROLLER ROUTING - Force Delete: " . ($forceDelete ? 'YES' : 'NO'));
-error_log("PROJECTCONTROLLER ROUTING - Query String: " . ($_SERVER['QUERY_STRING'] ?? ''));
-
-if ($id) {
-    switch ($action) {
-        case 'get':
-            $controller->getById($id);
-            break;
-        case 'update':
-            $controller->update($id);
-            break;
-        case 'delete':
-            $controller->delete($id, $forceDelete);
-            break;
-        default:
-            $controller->handleError(404, "Endpoint not found");
+    private function ensureProjectUpdatesColumn(): void
+    {
+        try {
+            $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'project_updates'");
+            if ($check && $check->rowCount() === 0) {
+                $migration = realpath(__DIR__ . '/../../migrations/014_work_submission_project_updates.sql');
+                if ($migration && is_readable($migration)) {
+                    $this->conn->exec(file_get_contents($migration));
+                } else {
+                    $this->conn->exec(
+                        "ALTER TABLE work_submissions ADD COLUMN project_updates JSON NULL DEFAULT NULL"
+                    );
+                }
+            }
+        } catch (Exception $e) {
+            error_log('ensureProjectUpdatesColumn: ' . $e->getMessage());
+        }
     }
-} else {
-    switch ($action) {
-        case 'getAll':
-            $controller->getAll();
-            break;
-        case 'create':
-            $controller->create();
-            break;
-        default:
-            $controller->handleError(404, "Endpoint not found");
+
+    private function userCanViewProject($decoded, string $projectId): bool
+    {
+        $userId = $decoded->user_id ?? null;
+        if (!$userId) {
+            return false;
+        }
+
+        $userRole = strtolower(trim($decoded->role ?? ''));
+        if ($userRole === 'admin') {
+            return true;
+        }
+
+        $stmt = $this->conn->prepare(
+            "SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ? LIMIT 1"
+        );
+        $stmt->execute([$projectId, $userId]);
+        return (bool) $stmt->fetch();
+    }
+
+    /**
+     * Recent per-project checkout progress from work_submissions.project_updates JSON.
+     */
+    public function getWorkActivity(string $projectId, array $query = []): void
+    {
+        if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+            $this->sendJsonResponse(405, 'Method not allowed');
+            return;
+        }
+
+        try {
+            $decoded = $this->validateToken();
+            $projectId = trim($projectId);
+            if ($projectId === '') {
+                $this->sendJsonResponse(400, 'project_id is required');
+                return;
+            }
+
+            if (!$this->userCanViewProject($decoded, $projectId)) {
+                $this->sendJsonResponse(403, 'Access denied to this project');
+                return;
+            }
+
+            $exists = $this->conn->prepare('SELECT id FROM projects WHERE id = ? LIMIT 1');
+            $exists->execute([$projectId]);
+            if (!$exists->fetch()) {
+                $this->sendJsonResponse(404, 'Project not found');
+                return;
+            }
+
+            $from = $query['from'] ?? date('Y-m-01');
+            $to = $query['to'] ?? date('Y-m-t');
+
+            $this->ensureProjectUpdatesColumn();
+
+            $sql = "SELECT ws.id, ws.user_id, ws.submission_date, ws.hours_today, ws.project_updates,
+                           u.username, u.role
+                    FROM work_submissions ws
+                    INNER JOIN users u ON u.id = ws.user_id
+                    WHERE ws.submission_date BETWEEN ? AND ?
+                      AND ws.project_updates IS NOT NULL
+                      AND JSON_LENGTH(ws.project_updates) > 0
+                    ORDER BY ws.submission_date DESC, ws.updated_at DESC
+                    LIMIT 200";
+            $stmt = $this->conn->prepare($sql);
+            $stmt->execute([$from, $to]);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $entries = [];
+            foreach ($rows as $row) {
+                $updates = json_decode($row['project_updates'] ?? '[]', true);
+                if (!is_array($updates)) {
+                    continue;
+                }
+                foreach ($updates as $update) {
+                    if (!is_array($update) || (string) ($update['project_id'] ?? '') !== $projectId) {
+                        continue;
+                    }
+                    $entries[] = [
+                        'submission_id' => (int) $row['id'],
+                        'submission_date' => $row['submission_date'],
+                        'user_id' => $row['user_id'],
+                        'username' => $row['username'],
+                        'role' => $row['role'],
+                        'hours_today' => (float) ($row['hours_today'] ?? 0),
+                        'status' => (string) ($update['status'] ?? 'not_started'),
+                        'progress_percentage' => max(0, min(100, (int) ($update['progress_percentage'] ?? 0))),
+                        'notes' => trim((string) ($update['notes'] ?? '')),
+                    ];
+                }
+            }
+
+            $this->sendJsonResponse(200, 'OK', [
+                'project_id' => $projectId,
+                'from' => $from,
+                'to' => $to,
+                'entries' => $entries,
+            ]);
+        } catch (Exception $e) {
+            $status = str_contains($e->getMessage(), 'token') ? 401 : 500;
+            $this->sendJsonResponse($status, $e->getMessage());
+        }
+    }
+}
+
+// Route only when this file is the HTTP entry point (not when included by other endpoints).
+if (realpath($_SERVER['SCRIPT_FILENAME'] ?? '') === realpath(__FILE__)) {
+    $controller = new ProjectController();
+    $action = basename($_SERVER['PHP_SELF'], '.php');
+    $id = isset($_GET['id']) ? $_GET['id'] : null;
+
+    // Detect force_delete parameter
+    $forceDelete = false;
+    if (strpos($_SERVER['QUERY_STRING'] ?? '', 'force_delete=true') !== false) {
+        $forceDelete = true;
+    }
+    if (isset($_GET['force_delete']) && $_GET['force_delete'] === 'true') {
+        $forceDelete = true;
+    }
+
+    error_log("PROJECTCONTROLLER ROUTING - Force Delete: " . ($forceDelete ? 'YES' : 'NO'));
+    error_log("PROJECTCONTROLLER ROUTING - Query String: " . ($_SERVER['QUERY_STRING'] ?? ''));
+
+    if ($id) {
+        switch ($action) {
+            case 'get':
+                $controller->getById($id);
+                break;
+            case 'update':
+                $controller->update($id);
+                break;
+            case 'delete':
+                $controller->delete($id, $forceDelete);
+                break;
+            default:
+                $controller->handleError(404, "Endpoint not found");
+        }
+    } else {
+        switch ($action) {
+            case 'getAll':
+                $controller->getAll();
+                break;
+            case 'create':
+                $controller->create();
+                break;
+            default:
+                $controller->handleError(404, "Endpoint not found");
+        }
     }
 }
