@@ -20,6 +20,9 @@ $candidates = [
 
 foreach ($candidates as $autoload) {
     if (is_file($autoload)) {
+        // Avoid hard 500 on hosts where CLI has sodium but Apache mod_php does not.
+        putenv('COMPOSER_DISABLE_PLATFORM_CHECK=1');
+        $_ENV['COMPOSER_DISABLE_PLATFORM_CHECK'] = '1';
         require_once $autoload;
         return;
     }
