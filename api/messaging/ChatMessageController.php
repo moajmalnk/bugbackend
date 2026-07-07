@@ -1,8 +1,10 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../ActivityLogger.php';
+require_once __DIR__ . '/MessageReceiptHelper.php';
 
 class ChatMessageController extends BaseAPI {
+    use MessageReceiptHelper;
     
     public function __construct() {
         parent::__construct();
@@ -280,8 +282,9 @@ class ChatMessageController extends BaseAPI {
             $countStmt->execute([$groupId]);
             $total = $countStmt->fetch(PDO::FETCH_ASSOC)['total'];
             
-            // Mark messages as read for this user
-            $this->markMessagesAsRead($groupId, $userId, $messages);
+            // Mark non-voice messages as read; voice only as delivered until played
+            $this->markIncomingMessagesReceipts($groupId, $userId, $messages);
+            $messages = $this->enrichMessagesWithReceipts($messages, $groupId, $userId);
             
             $this->sendJsonResponse(200, "Messages retrieved successfully", [
                 'messages' => array_reverse($messages), // Return in chronological order
@@ -715,34 +718,6 @@ class ChatMessageController extends BaseAPI {
             ");
             $mentionStmt->execute([$mentionId, $messageId, $user['id']]);
         }
-    }
-    
-    private function markMessagesAsRead($groupId, $userId, $messages) {
-        if (empty($messages)) {
-            return;
-        }
-        
-        $messageIds = array_column($messages, 'id');
-        $placeholders = str_repeat('?,', count($messageIds) - 1) . '?';
-        
-        // Insert read status for messages that haven't been read yet
-        $query = "
-            INSERT IGNORE INTO message_read_status (message_id, user_id)
-            SELECT id, ? FROM chat_messages 
-            WHERE id IN ($placeholders) AND sender_id != ?
-        ";
-        
-        $params = array_merge([$userId], $messageIds, [$userId]);
-        $stmt = $this->conn->prepare($query);
-        $stmt->execute($params);
-        
-        // Update last read timestamp for the group
-        $updateStmt = $this->conn->prepare("
-            UPDATE chat_group_members 
-            SET last_read_at = CURRENT_TIMESTAMP
-            WHERE group_id = ? AND user_id = ?
-        ");
-        $updateStmt->execute([$groupId, $userId]);
     }
     
     /**
