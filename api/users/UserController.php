@@ -64,14 +64,58 @@ class UserController extends BaseAPI {
             try {
                 $wsCheck = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'check_in_time'");
                 if ($wsCheck && $wsCheck->fetch(PDO::FETCH_ASSOC)) {
+                    $wsColumns = [];
+                    $colRes = $this->conn->query("SHOW COLUMNS FROM work_submissions");
+                    if ($colRes) {
+                        while ($colRow = $colRes->fetch(PDO::FETCH_ASSOC)) {
+                            $wsColumns[] = $colRow['Field'];
+                        }
+                    }
+                    $hasTotalBreakMinutes = in_array('total_break_minutes', $wsColumns, true);
+
+                    $selectFields = [
+                        'user_id',
+                        'check_in_time',
+                        'hours_today',
+                        'updated_at',
+                        'completed_tasks',
+                        'pending_tasks',
+                        'ongoing_tasks',
+                        'notes',
+                    ];
+                    if ($hasTotalBreakMinutes) {
+                        $selectFields[] = 'total_break_minutes';
+                    }
+
                     $checkInStmt = $this->conn->query(
-                        "SELECT user_id, check_in_time
+                        'SELECT ' . implode(', ', $selectFields) . '
                          FROM work_submissions
-                         WHERE submission_date = CURDATE() AND check_in_time IS NOT NULL"
+                         WHERE submission_date = CURDATE() AND check_in_time IS NOT NULL'
                     );
                     if ($checkInStmt) {
                         while ($row = $checkInStmt->fetch(PDO::FETCH_ASSOC)) {
-                            $checkedInToday[$row['user_id']] = $row['check_in_time'];
+                            $hasWorkUpdate = ((float)($row['hours_today'] ?? 0)) > 0
+                                || ($hasTotalBreakMinutes && ((int)($row['total_break_minutes'] ?? 0)) > 0)
+                                || trim((string)($row['completed_tasks'] ?? '')) !== ''
+                                || trim((string)($row['pending_tasks'] ?? '')) !== ''
+                                || trim((string)($row['ongoing_tasks'] ?? '')) !== ''
+                                || trim((string)($row['notes'] ?? '')) !== '';
+
+                            $checkoutTime = null;
+                            if ($hasWorkUpdate && !empty($row['updated_at'])) {
+                                $updatedAt = strtotime($row['updated_at']);
+                                $checkInAt = !empty($row['check_in_time']) ? strtotime($row['check_in_time']) : null;
+                                if ($updatedAt && (!$checkInAt || $updatedAt > ($checkInAt + 60))) {
+                                    $checkoutTime = $row['updated_at'];
+                                }
+                            }
+
+                            $checkedInToday[$row['user_id']] = [
+                                'check_in_time' => $row['check_in_time'],
+                                'hours_today' => (float)($row['hours_today'] ?? 0),
+                                'break_minutes' => $hasTotalBreakMinutes ? (int)($row['total_break_minutes'] ?? 0) : 0,
+                                'checkout_time' => $checkoutTime,
+                            ];
                         }
                     }
                 }
@@ -85,8 +129,12 @@ class UserController extends BaseAPI {
                 if (!isset($user['phone'])) {
                     $user['phone'] = null; // Set phone to null if column doesn't exist
                 }
-                $user['check_in_time'] = $checkedInToday[$user['id']] ?? null;
+                $todayWork = $checkedInToday[$user['id']] ?? null;
+                $user['check_in_time'] = $todayWork['check_in_time'] ?? null;
                 $user['checked_in_today'] = !empty($user['check_in_time']);
+                $user['today_hours_worked'] = $todayWork['hours_today'] ?? 0;
+                $user['today_break_minutes'] = $todayWork['break_minutes'] ?? 0;
+                $user['checkout_time'] = $todayWork['checkout_time'] ?? null;
             }
             unset($user);
 
