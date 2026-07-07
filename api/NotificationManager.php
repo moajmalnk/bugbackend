@@ -75,7 +75,7 @@ class NotificationManager extends BaseAPI {
      */
     private function getAllAdmins() {
         try {
-            $query = "SELECT id FROM users WHERE role = 'admin' OR role_id = 1";
+            $query = "SELECT id FROM users WHERE account_active = 1 AND (role = 'admin' OR role_id = 1)";
             $stmt = $this->conn->prepare($query);
             $stmt->execute();
             $admins = $stmt->fetchAll(PDO::FETCH_COLUMN);
@@ -85,6 +85,29 @@ class NotificationManager extends BaseAPI {
             return $admins;
         } catch (Exception $e) {
             error_log("Error getting all admins: " . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Keep only active users for notification delivery.
+     */
+    private function filterActiveUserIds(array $userIds) {
+        $userIds = array_values(array_unique(array_filter(array_map('strval', $userIds))));
+        if (empty($userIds)) {
+            return [];
+        }
+
+        try {
+            $placeholders = implode(',', array_fill(0, count($userIds), '?'));
+            $stmt = $this->conn->prepare(
+                "SELECT id FROM users WHERE account_active = 1 AND id IN ($placeholders)"
+            );
+            $stmt->execute($userIds);
+            $active = $stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+            return array_values(array_unique(array_map('strval', $active)));
+        } catch (Exception $e) {
+            error_log("NotificationManager::filterActiveUserIds - " . $e->getMessage());
             return [];
         }
     }
@@ -207,6 +230,7 @@ class NotificationManager extends BaseAPI {
      */
     public function createNotification($type, $title, $message, $userIds, $data = []) {
         try {
+            $userIds = $this->filterActiveUserIds((array)$userIds);
             error_log("NotificationManager::createNotification - Type: $type, Title: $title, UserIds count: " . count($userIds));
             error_log("NotificationManager::createNotification - UserIds: " . json_encode($userIds));
             
@@ -294,10 +318,10 @@ class NotificationManager extends BaseAPI {
                     $userIdStr = (string)$userId;
                     
                     // First verify user exists
-                    $userCheck = $this->conn->prepare("SELECT id FROM users WHERE id = ?");
+                    $userCheck = $this->conn->prepare("SELECT id FROM users WHERE id = ? AND account_active = 1");
                     $userCheck->execute([$userIdStr]);
                     if (!$userCheck->fetch()) {
-                        error_log("NotificationManager::createNotification - WARNING: User $userIdStr does not exist, skipping");
+                        error_log("NotificationManager::createNotification - WARNING: User $userIdStr inactive or missing, skipping");
                         $failedUserIds[] = $userIdStr;
                         continue;
                     }

@@ -47,7 +47,7 @@ function runBugCreatedNotifications($conn, $id, $data, $decoded, $priority, $exp
             if (empty($userIds)) $userIds = array_values(array_filter(getAllAdmins($conn), fn($uid) => (string)$uid !== (string)$decoded->user_id));
             if (empty($userIds)) $userIds = [$decoded->user_id];
             $placeholders = str_repeat('?,', count($userIds) - 1) . '?';
-            $stmt = $conn->prepare("SELECT email FROM users WHERE id IN ($placeholders) AND email IS NOT NULL AND email != ''");
+            $stmt = $conn->prepare("SELECT email FROM users WHERE account_active = 1 AND id IN ($placeholders) AND email IS NOT NULL AND email != ''");
             $stmt->execute(array_values($userIds));
             $emails = $stmt->fetchAll(PDO::FETCH_COLUMN);
             if (!empty($emails)) {

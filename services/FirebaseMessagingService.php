@@ -100,11 +100,24 @@ class FirebaseMessagingService {
 
     public function sendToAllUsers($title, $body, array $data = []) {
         $tokenRows = $this->conn
-            ->query("SELECT DISTINCT token FROM user_fcm_tokens WHERE token IS NOT NULL AND TRIM(token) <> ''")
+            ->query("
+                SELECT DISTINCT t.token
+                FROM user_fcm_tokens t
+                INNER JOIN users u ON u.id = t.user_id
+                WHERE u.account_active = 1
+                  AND t.token IS NOT NULL
+                  AND TRIM(t.token) <> ''
+            ")
             ->fetchAll(PDO::FETCH_COLUMN);
 
         $legacyRows = $this->conn
-            ->query("SELECT DISTINCT fcm_token FROM users WHERE fcm_token IS NOT NULL AND TRIM(fcm_token) <> ''")
+            ->query("
+                SELECT DISTINCT fcm_token
+                FROM users
+                WHERE account_active = 1
+                  AND fcm_token IS NOT NULL
+                  AND TRIM(fcm_token) <> ''
+            ")
             ->fetchAll(PDO::FETCH_COLUMN);
 
         $tokens = array_values(array_unique(array_filter(array_merge($tokenRows ?: [], $legacyRows ?: []))));
@@ -135,9 +148,12 @@ class FirebaseMessagingService {
         $placeholders = implode(',', array_fill(0, count($userIds), '?'));
 
         $stmt = $this->conn->prepare(
-            "SELECT DISTINCT token FROM user_fcm_tokens
-             WHERE user_id IN ($placeholders)
-               AND token IS NOT NULL AND TRIM(token) <> ''"
+            "SELECT DISTINCT t.token
+             FROM user_fcm_tokens t
+             INNER JOIN users u ON u.id = t.user_id
+             WHERE u.account_active = 1
+               AND t.user_id IN ($placeholders)
+               AND t.token IS NOT NULL AND TRIM(t.token) <> ''"
         );
         $stmt->execute($userIds);
         $tokenRows = $stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
@@ -145,6 +161,7 @@ class FirebaseMessagingService {
         $legacyStmt = $this->conn->prepare(
             "SELECT DISTINCT fcm_token FROM users
              WHERE id IN ($placeholders)
+               AND account_active = 1
                AND fcm_token IS NOT NULL AND TRIM(fcm_token) <> ''"
         );
         $legacyStmt->execute($userIds);

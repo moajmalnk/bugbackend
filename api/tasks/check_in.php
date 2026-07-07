@@ -324,7 +324,7 @@ class CheckInController extends BaseAPI {
                 }
 
                 $adminStmt = $this->conn->prepare(
-                    "SELECT email, phone FROM users WHERE role = 'admin' AND (email IS NOT NULL OR phone IS NOT NULL)"
+                    "SELECT email, phone FROM users WHERE role = 'admin' AND account_active = 1 AND (email IS NOT NULL OR phone IS NOT NULL)"
                 );
                 $adminStmt->execute();
                 $adminRows = $adminStmt->fetchAll(PDO::FETCH_ASSOC);

@@ -378,7 +378,7 @@ class WorkSubmissionController extends BaseAPI {
                 error_log("📧 User info - Name: $userName, Email: " . ($userEmail ?: 'EMPTY'));
                 
                 // Get admin emails
-                $adminStmt = $this->conn->prepare("SELECT email FROM users WHERE role = 'admin'");
+                $adminStmt = $this->conn->prepare("SELECT email FROM users WHERE role = 'admin' AND account_active = 1");
                 $adminStmt->execute();
                 $adminRows = $adminStmt->fetchAll(PDO::FETCH_ASSOC);
                 $adminEmails = array_column($adminRows, 'email');
