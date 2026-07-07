@@ -371,7 +371,8 @@ try {
                 $notificationData['bug_title'],
                 $notificationData['project_id'],
                 $notificationData['updated_by'],
-                $notificationData['reported_by'] ?? null
+                $notificationData['reported_by'] ?? null,
+                $notificationData['fixed_at'] ?? null
             );
             error_log("BUG UPDATE: Notifications sent for bug ID: " . $notificationData['bug_id']);
         } catch (Exception $e) {

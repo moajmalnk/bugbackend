@@ -498,7 +498,7 @@ class NotificationManager extends BaseAPI {
         return $this->createNotification(
             $notificationType,
             'New Bug Reported',
-            buildBugCreatedNotificationMessage($bugTitle, $bugLevel, $alreadyRaised),
+            buildBugCreatedNotificationMessage($bugTitle, $bugLevel, $alreadyRaised, $creatorName),
             $userIds,
             [
                 'entity_type' => 'bug',
@@ -521,7 +521,8 @@ class NotificationManager extends BaseAPI {
      * @param string $fixedBy User ID who fixed the bug
      * @return int|false Notification ID or false
      */
-    public function notifyBugFixed($bugId, $bugTitle, $projectId, $fixedBy, $reportedBy = null) {
+    public function notifyBugFixed($bugId, $bugTitle, $projectId, $fixedBy, $reportedBy = null, $fixedAt = null) {
+        require_once __DIR__ . '/../utils/bug_meta.php';
         $bugId = (string) $bugId;
         $projectId = $projectId ? (string) $projectId : null;
         $fixedBy = (string) $fixedBy;
@@ -537,12 +538,17 @@ class NotificationManager extends BaseAPI {
         }
 
         $fixerName = $this->getUserName($fixedBy);
+        $reporterName = ($reportedBy !== null && $reportedBy !== '')
+            ? $this->getUserName($reportedBy)
+            : 'Unknown';
+        $fixedAtLabel = $fixedAt ?: date('Y-m-d H:i:s');
+        $message = buildBugFixedNotificationMessage($bugTitle, $reporterName, $fixerName, $fixedAtLabel);
         $notificationType = $this->getValidNotificationType('bug_fixed', 'status_change');
 
         return $this->createNotification(
             $notificationType,
             'Bug Fixed',
-            "Bug '{$bugTitle}' has been marked as fixed",
+            $message,
             $userIds,
             [
                 'entity_type' => 'bug',

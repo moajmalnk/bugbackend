@@ -1545,6 +1545,7 @@ class BugController extends BaseAPI {
                     'project_id' => $updatedBug['project_id'],
                     'updated_by' => $data['updated_by'] ?? null,
                     'reported_by' => $updatedBug['reported_by'] ?? $existingBug['reported_by'] ?? null,
+                    'fixed_at' => $updatedBug['updated_at'] ?? date('Y-m-d H:i:s'),
                 ];
             }
 

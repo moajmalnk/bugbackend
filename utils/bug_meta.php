@@ -36,12 +36,32 @@ function bugMetaEmailTableRows($bugLevel = null, $alreadyRaised = null) {
         . '<tr><td style="padding: 8px 0; color: #64748b;">Already Raised</td><td>' . $raised . '</td></tr>';
 }
 
-function buildBugCreatedNotificationMessage($bugTitle, $bugLevel = null, $alreadyRaised = null) {
-    $message = "A new bug has been reported: {$bugTitle}";
+function buildBugCreatedNotificationMessage($bugTitle, $bugLevel = null, $alreadyRaised = null, $reporterName = null) {
+    $who = $reporterName ? trim((string) $reporterName) : '';
+    $message = $who !== ''
+        ? "{$who} reported a new bug: {$bugTitle}"
+        : "A new bug has been reported: {$bugTitle}";
     $level = formatBugLevelLabel($bugLevel);
     $message .= " (Level: {$level})";
     if (isAlreadyRaisedValue($alreadyRaised)) {
         $message .= " — Previously raised";
     }
     return $message;
+}
+
+function formatNotificationDateTime($timestamp = null) {
+    $ts = $timestamp ? strtotime((string) $timestamp) : time();
+    if ($ts === false) {
+        $ts = time();
+    }
+    return date('d M Y, g:i A', $ts) . ' IST';
+}
+
+function buildBugFixedNotificationMessage($bugTitle, $reporterName, $fixerName, $fixedAt = null) {
+    $title = trim((string) $bugTitle);
+    $reporter = trim((string) $reporterName) !== '' ? trim((string) $reporterName) : 'Unknown';
+    $fixer = trim((string) $fixerName) !== '' ? trim((string) $fixerName) : 'Unknown';
+    $when = formatNotificationDateTime($fixedAt);
+
+    return "Bug '{$title}' was fixed by {$fixer} (reported by {$reporter}) on {$when}";
 }
