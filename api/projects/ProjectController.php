@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../ActivityLogger.php';
+require_once __DIR__ . '/ProjectComplianceController.php';
 
 class ProjectController extends BaseAPI
 {
@@ -91,6 +92,12 @@ class ProjectController extends BaseAPI
         $stmt->execute([$project['id']]);
         $project['members_detail'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
         $project['attachments'] = $this->getProjectAttachments($project['id']);
+
+        $complianceController = new ProjectComplianceController();
+        $summary = $complianceController->getSummaryForProject($project['id']);
+        if ($summary) {
+            $project['compliance'] = $summary;
+        }
     }
 
     public function handleError($status, $message)
@@ -144,11 +151,17 @@ class ProjectController extends BaseAPI
                 $projects = $stmt->fetchAll(PDO::FETCH_ASSOC);
             }
 
-            // Add members array to each project
+            // Add members array and compliance summary to each project
+            $complianceController = new ProjectComplianceController();
             foreach ($projects as &$project) {
                 $stmt2 = $this->conn->prepare("SELECT user_id FROM project_members WHERE project_id = ?");
                 $stmt2->execute([$project['id']]);
                 $project['members'] = array_column($stmt2->fetchAll(PDO::FETCH_ASSOC), 'user_id');
+
+                $summary = $complianceController->getSummaryForProject($project['id']);
+                if ($summary) {
+                    $project['compliance'] = $summary;
+                }
             }
 
             $this->sendJsonResponse(200, "Projects retrieved successfully", $projects);
@@ -292,8 +305,27 @@ class ProjectController extends BaseAPI
             }
 
             if (isset($data['status'])) {
+                $newStatus = $data['status'];
+                $closedStatuses = ['completed', 'release_ready', 'archived'];
+                if (in_array($newStatus, $closedStatuses, true)) {
+                    $currentStmt = $this->conn->prepare("SELECT status FROM projects WHERE id = ?");
+                    $currentStmt->execute([$id]);
+                    $current = $currentStmt->fetch(PDO::FETCH_ASSOC);
+                    if ($current && $current['status'] !== $newStatus) {
+                        $complianceController = new ProjectComplianceController();
+                        $gate = $complianceController->canCloseProject($id);
+                        if (!$gate['allowed']) {
+                            $this->sendJsonResponse(
+                                403,
+                                'Cannot change project to a closed status until CODO compliance is complete (Developer + QA checklists) or emergency bypass is authorized.'
+                            );
+                            return;
+                        }
+                    }
+                }
+
                 $updateFields[] = "status = ?";
-                $values[] = $data['status'];
+                $values[] = $newStatus;
             }
 
             foreach (self::$EXTENDED_FIELDS as $field) {

@@ -701,7 +701,7 @@ CREATE TABLE `projects` (
   `id` varchar(36) NOT NULL,
   `name` varchar(100) NOT NULL,
   `description` text DEFAULT NULL,
-  `status` enum('active','completed','archived') NOT NULL DEFAULT 'active',
+  `status` enum('active','completed','archived','release_ready') NOT NULL DEFAULT 'active',
   `created_by` varchar(36) DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
