@@ -47,6 +47,42 @@ class ProjectComplianceController extends BaseAPI
         return in_array($status, self::$CLOSED_STATUSES, true);
     }
 
+    /**
+     * Resolve effective role from role_id (preferred) or legacy role string — mirrors frontend getEffectiveRole().
+     */
+    private function getEffectiveUserRole($decoded): string
+    {
+        $userId = $decoded->user_id ?? null;
+        if ($userId) {
+            try {
+                $stmt = $this->conn->prepare("SELECT role, role_id FROM users WHERE id = ? LIMIT 1");
+                $stmt->execute([$userId]);
+                $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                if ($row) {
+                    if (isset($row['role_id']) && $row['role_id'] !== null && $row['role_id'] !== '') {
+                        $roleId = (int) $row['role_id'];
+                        if ($roleId === 1) {
+                            return 'admin';
+                        }
+                        if ($roleId === 2) {
+                            return 'developer';
+                        }
+                        if ($roleId === 3) {
+                            return 'tester';
+                        }
+                    }
+                    if (!empty($row['role'])) {
+                        return strtolower(trim($row['role']));
+                    }
+                }
+            } catch (Exception $e) {
+                error_log('getEffectiveUserRole error: ' . $e->getMessage());
+            }
+        }
+
+        return strtolower(trim($decoded->role ?? 'user'));
+    }
+
     public function userHasProjectAccess(string $userId, string $userRole, $decoded, string $projectId): bool
     {
         $userRole = strtolower(trim($userRole));
@@ -386,7 +422,7 @@ class ProjectComplianceController extends BaseAPI
             $phase = $data['phase'] ?? null;
             $ruleKey = $data['rule_key'] ?? null;
             $verified = isset($data['verified']) ? (bool) $data['verified'] : true;
-            $userRole = strtolower(trim($decoded->role));
+            $userRole = $this->getEffectiveUserRole($decoded);
 
             if (!$projectId || !$phase || !$ruleKey) {
                 $this->sendJsonResponse(400, 'project_id, phase, and rule_key are required');
@@ -408,7 +444,7 @@ class ProjectComplianceController extends BaseAPI
                 return;
             }
 
-            if (!$this->userHasProjectAccess($decoded->user_id, $decoded->role, $decoded, $projectId)) {
+            if (!$this->userHasProjectAccess($decoded->user_id, $userRole, $decoded, $projectId)) {
                 $this->sendJsonResponse(403, 'Access denied to this project');
                 return;
             }
@@ -599,7 +635,7 @@ class ProjectComplianceController extends BaseAPI
             $title = trim($data['title'] ?? '');
             $description = trim($data['description'] ?? '');
             $subtitle = trim($data['subtitle'] ?? '');
-            $userRole = strtolower(trim($decoded->role));
+            $userRole = $this->getEffectiveUserRole($decoded);
 
             if (!$projectId || !$phase || $title === '' || $description === '') {
                 $this->sendJsonResponse(400, 'project_id, phase, title, and description are required');
