@@ -107,6 +107,60 @@ class ProjectComplianceController extends BaseAPI
         return (int) ($row['cnt'] ?? 0);
     }
 
+    private function countRules(string $projectId, string $phase): int
+    {
+        $stmt = $this->conn->prepare(
+            "SELECT COUNT(*) AS cnt FROM project_compliance_checks
+             WHERE project_id = ? AND phase = ?"
+        );
+        $stmt->execute([$projectId, $phase]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return (int) ($row['cnt'] ?? 0);
+    }
+
+    private function ruleCheckExists(string $projectId, string $phase, string $ruleKey): bool
+    {
+        $stmt = $this->conn->prepare(
+            "SELECT 1 FROM project_compliance_checks
+             WHERE project_id = ? AND phase = ? AND rule_key = ? LIMIT 1"
+        );
+        $stmt->execute([$projectId, $phase, $ruleKey]);
+        return (bool) $stmt->fetch();
+    }
+
+    private function getCustomRulesForProject(string $projectId, ?string $phase = null): array
+    {
+        if ($phase) {
+            $stmt = $this->conn->prepare(
+                "SELECT rule_key, phase, title, subtitle, description, created_by, created_at
+                 FROM project_compliance_custom_rules
+                 WHERE project_id = ? AND phase = ?
+                 ORDER BY id ASC"
+            );
+            $stmt->execute([$projectId, $phase]);
+        } else {
+            $stmt = $this->conn->prepare(
+                "SELECT rule_key, phase, title, subtitle, description, created_by, created_at
+                 FROM project_compliance_custom_rules
+                 WHERE project_id = ?
+                 ORDER BY id ASC"
+            );
+            $stmt->execute([$projectId]);
+        }
+
+        return array_map(function ($row) {
+            return [
+                'rule_key' => $row['rule_key'],
+                'phase' => $row['phase'],
+                'title' => $row['title'],
+                'subtitle' => $row['subtitle'],
+                'description' => $row['description'],
+                'created_by' => $row['created_by'],
+                'created_at' => $row['created_at'],
+            ];
+        }, $stmt->fetchAll(PDO::FETCH_ASSOC));
+    }
+
     private function getComplianceMeta(string $projectId): ?array
     {
         $stmt = $this->conn->prepare("SELECT * FROM project_compliance WHERE project_id = ?");
@@ -119,6 +173,8 @@ class ProjectComplianceController extends BaseAPI
     {
         $devCount = $this->countVerified($projectId, 'developer');
         $qaCount = $this->countVerified($projectId, 'tester');
+        $devTotal = $this->countRules($projectId, 'developer');
+        $qaTotal = $this->countRules($projectId, 'tester');
 
         $meta = $this->getComplianceMeta($projectId);
         if (!$meta) {
@@ -131,7 +187,7 @@ class ProjectComplianceController extends BaseAPI
         $testerCompleteAt = $meta['tester_completed_at'];
         $testerCompleteBy = $meta['tester_completed_by'];
 
-        if ($devCount >= self::DEV_RULE_COUNT) {
+        if ($devTotal > 0 && $devCount >= $devTotal) {
             $stage = 'qa_inspection';
             if (!$devCompleteAt) {
                 $devCompleteAt = date('Y-m-d H:i:s');
@@ -139,13 +195,13 @@ class ProjectComplianceController extends BaseAPI
             }
         }
 
-        if ($devCount >= self::DEV_RULE_COUNT && $qaCount >= self::QA_RULE_COUNT) {
+        if ($devTotal > 0 && $devCount >= $devTotal && $qaTotal > 0 && $qaCount >= $qaTotal) {
             $stage = 'admin_ready';
             if (!$testerCompleteAt) {
                 $testerCompleteAt = date('Y-m-d H:i:s');
                 $testerCompleteBy = $actorUserId;
             }
-        } elseif ($devCount >= self::DEV_RULE_COUNT && $qaCount > 0 && $qaCount < self::QA_RULE_COUNT) {
+        } elseif ($devTotal > 0 && $devCount >= $devTotal && $qaCount > 0 && $qaCount < $qaTotal) {
             $stage = 'qa_inspection';
         }
 
@@ -224,6 +280,9 @@ class ProjectComplianceController extends BaseAPI
 
         $devVerified = $this->countVerified($projectId, 'developer');
         $qaVerified = $this->countVerified($projectId, 'tester');
+        $devTotal = $this->countRules($projectId, 'developer');
+        $qaTotal = $this->countRules($projectId, 'tester');
+        $customRules = $this->getCustomRulesForProject($projectId);
 
         return [
             'project_id' => $projectId,
@@ -238,14 +297,15 @@ class ProjectComplianceController extends BaseAPI
             'emergency_bypass_reason' => $meta['emergency_bypass_reason'] ?? null,
             'developer_progress' => [
                 'verified' => $devVerified,
-                'total' => self::DEV_RULE_COUNT,
+                'total' => $devTotal,
             ],
             'tester_progress' => [
                 'verified' => $qaVerified,
-                'total' => self::QA_RULE_COUNT,
+                'total' => $qaTotal,
             ],
             'developer_checks' => $developerChecks,
             'tester_checks' => $testerChecks,
+            'custom_rules' => $customRules,
         ];
     }
 
@@ -265,9 +325,9 @@ class ProjectComplianceController extends BaseAPI
         return [
             'pipeline_stage' => $meta['pipeline_stage'],
             'developer_verified' => $this->countVerified($projectId, 'developer'),
-            'developer_total' => self::DEV_RULE_COUNT,
+            'developer_total' => $this->countRules($projectId, 'developer'),
             'tester_verified' => $this->countVerified($projectId, 'tester'),
-            'tester_total' => self::QA_RULE_COUNT,
+            'tester_total' => $this->countRules($projectId, 'tester'),
             'emergency_bypass' => (bool) $meta['emergency_bypass'],
         ];
     }
@@ -352,14 +412,14 @@ class ProjectComplianceController extends BaseAPI
 
             if ($phase === 'tester') {
                 $devCount = $this->countVerified($projectId, 'developer');
-                if ($devCount < self::DEV_RULE_COUNT) {
+                $devTotal = $this->countRules($projectId, 'developer');
+                if ($devTotal > 0 && $devCount < $devTotal) {
                     $this->sendJsonResponse(403, 'Developer checklist must be 100% complete before QA verification');
                     return;
                 }
             }
 
-            $allowedKeys = $phase === 'developer' ? self::$DEV_RULE_KEYS : self::$QA_RULE_KEYS;
-            if (!in_array($ruleKey, $allowedKeys, true)) {
+            if (!$this->ruleCheckExists($projectId, $phase, $ruleKey)) {
                 $this->sendJsonResponse(400, 'Invalid rule_key');
                 return;
             }
@@ -515,6 +575,105 @@ class ProjectComplianceController extends BaseAPI
             $this->sendJsonResponse(200, 'Project status finalized', $payload);
         } catch (Exception $e) {
             error_log('Compliance finalize error: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Server error: ' . $e->getMessage());
+        }
+    }
+
+    public function addCustomRule()
+    {
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            $this->sendJsonResponse(405, 'Method not allowed');
+            return;
+        }
+
+        try {
+            $decoded = $this->validateToken();
+            $data = $this->getRequestData();
+            $projectId = $data['project_id'] ?? null;
+            $phase = $data['phase'] ?? null;
+            $title = trim($data['title'] ?? '');
+            $description = trim($data['description'] ?? '');
+            $subtitle = trim($data['subtitle'] ?? '');
+            $userRole = strtolower(trim($decoded->role));
+
+            if (!$projectId || !$phase || $title === '' || $description === '') {
+                $this->sendJsonResponse(400, 'project_id, phase, title, and description are required');
+                return;
+            }
+
+            if (!in_array($phase, ['developer', 'tester'], true)) {
+                $this->sendJsonResponse(400, 'Invalid phase');
+                return;
+            }
+
+            if ($phase === 'developer' && !in_array($userRole, ['developer', 'admin'], true)) {
+                $this->sendJsonResponse(403, 'Only developers or admins can add developer rules');
+                return;
+            }
+
+            if ($phase === 'tester' && !in_array($userRole, ['tester', 'admin'], true)) {
+                $this->sendJsonResponse(403, 'Only testers or admins can add QA rules');
+                return;
+            }
+
+            if (!$this->userHasProjectAccess($decoded->user_id, $decoded->role, $decoded, $projectId)) {
+                $this->sendJsonResponse(403, 'Access denied to this project');
+                return;
+            }
+
+            $exists = $this->conn->prepare("SELECT id FROM projects WHERE id = ?");
+            $exists->execute([$projectId]);
+            if (!$exists->fetch()) {
+                $this->sendJsonResponse(404, 'Project not found');
+                return;
+            }
+
+            $this->ensureComplianceInitialized($projectId);
+
+            $ruleKey = 'custom_' . $phase . '_' . bin2hex(random_bytes(8));
+
+            $insertRule = $this->conn->prepare(
+                "INSERT INTO project_compliance_custom_rules
+                    (project_id, phase, rule_key, title, subtitle, description, created_by)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)"
+            );
+            $insertRule->execute([
+                $projectId,
+                $phase,
+                $ruleKey,
+                $title,
+                $subtitle !== '' ? $subtitle : null,
+                $description,
+                $decoded->user_id,
+            ]);
+
+            $insertCheck = $this->conn->prepare(
+                "INSERT INTO project_compliance_checks (project_id, phase, rule_key, verified)
+                 VALUES (?, ?, ?, 0)"
+            );
+            $insertCheck->execute([$projectId, $phase, $ruleKey]);
+
+            try {
+                $logger = ActivityLogger::getInstance();
+                $logger->logActivity(
+                    $decoded->user_id,
+                    $projectId,
+                    'compliance_custom_rule_added',
+                    'Custom compliance rule added',
+                    $projectId,
+                    ['phase' => $phase, 'rule_key' => $ruleKey, 'title' => $title]
+                );
+            } catch (Exception $e) {
+                error_log('Failed to log custom rule: ' . $e->getMessage());
+            }
+
+            $stage = $this->recomputePipelineStage($projectId, $decoded->user_id);
+            $payload = $this->buildCompliancePayload($projectId);
+            $payload['pipeline_stage'] = $stage;
+
+            $this->sendJsonResponse(201, 'Custom rule added', $payload);
+        } catch (Exception $e) {
+            error_log('Compliance add rule error: ' . $e->getMessage());
             $this->sendJsonResponse(500, 'Server error: ' . $e->getMessage());
         }
     }
