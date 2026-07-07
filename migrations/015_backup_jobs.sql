@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS backup_jobs (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NOT NULL,
+  email VARCHAR(255) NOT NULL,
+  status ENUM('queued', 'processing', 'completed', 'failed') NOT NULL DEFAULT 'queued',
+  delivery_method VARCHAR(32) NOT NULL DEFAULT 'email',
+  include_database TINYINT(1) NOT NULL DEFAULT 1,
+  include_uploads TINYINT(1) NOT NULL DEFAULT 1,
+  include_config TINYINT(1) NOT NULL DEFAULT 1,
+  backup_name VARCHAR(255) NULL,
+  file_size_bytes BIGINT NULL,
+  table_count INT NULL,
+  duration_seconds INT NULL,
+  error_message TEXT NULL,
+  started_at DATETIME NULL,
+  completed_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_backup_jobs_user_id (user_id),
+  INDEX idx_backup_jobs_status (status),
+  INDEX idx_backup_jobs_created_at (created_at)
+);

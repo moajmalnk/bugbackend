@@ -11,6 +11,7 @@ date_default_timezone_set('Asia/Kolkata');
 
 // Load dependencies (will be loaded in constructor if needed)
 require_once __DIR__ . '/../../config/composer_autoload.php';
+require_once __DIR__ . '/backup_helpers.php';
 
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
@@ -21,6 +22,8 @@ class BackupController {
     protected $conn;
     protected $utils;
     protected $database;
+    private $jobId = null;
+    private $jobStartedAt = null;
     
     public function __construct() {
         // Initialize database and utilities
@@ -124,10 +127,28 @@ class BackupController {
             // Get request data
             $data = $this->getRequestData();
             $email = $data['email'] ?? null;
+            $includeDatabase = array_key_exists('include_database', $data) ? (bool) $data['include_database'] : true;
+            $includeUploads = array_key_exists('include_uploads', $data) ? (bool) $data['include_uploads'] : true;
+            $includeConfig = array_key_exists('include_config', $data) ? (bool) $data['include_config'] : true;
+            $deliveryMethod = $data['delivery_method'] ?? 'email';
             
             if (!$email || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
                 $this->sendErrorResponse(400, "Valid email address is required");
             }
+
+            if (!$includeDatabase && !$includeUploads && !$includeConfig) {
+                $this->sendErrorResponse(400, "Select at least one backup component");
+            }
+            
+            backup_ensure_jobs_table($this->conn);
+            $this->jobId = $this->createJobRecord(
+                $userId,
+                $email,
+                $deliveryMethod,
+                $includeDatabase,
+                $includeUploads,
+                $includeConfig
+            );
             
             // Send response IMMEDIATELY - don't wait for backup to start
             http_response_code(200);
@@ -136,7 +157,12 @@ class BackupController {
                 'message' => 'Backup process started. You will receive an email when it\'s ready.',
                 'data' => [
                     'email' => $email,
-                    'status' => 'processing'
+                    'status' => 'processing',
+                    'job_id' => $this->jobId,
+                    'include_database' => $includeDatabase,
+                    'include_uploads' => $includeUploads,
+                    'include_config' => $includeConfig,
+                    'delivery_method' => $deliveryMethod,
                 ]
             ]);
             
@@ -157,7 +183,12 @@ class BackupController {
             set_time_limit(0); // No time limit for background process
             
             try {
-                $this->createBackup($email);
+                $this->createBackup($email, [
+                    'include_database' => $includeDatabase,
+                    'include_uploads' => $includeUploads,
+                    'include_config' => $includeConfig,
+                    'delivery_method' => $deliveryMethod,
+                ]);
             } catch (Throwable $backupError) {
                 error_log("Backup process error: " . $backupError->getMessage());
                 error_log("Backup stack trace: " . $backupError->getTraceAsString());
@@ -240,7 +271,68 @@ class BackupController {
         exit();
     }
     
-    private function createBackup($email) {
+    private function createJobRecord(
+        $userId,
+        $email,
+        $deliveryMethod,
+        $includeDatabase,
+        $includeUploads,
+        $includeConfig
+    ) {
+        if (!backup_table_exists($this->conn, 'backup_jobs')) {
+            return null;
+        }
+
+        $stmt = $this->conn->prepare(
+            'INSERT INTO backup_jobs
+            (user_id, email, status, delivery_method, include_database, include_uploads, include_config, started_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NOW())'
+        );
+        $stmt->execute([
+            $userId,
+            $email,
+            'processing',
+            $deliveryMethod,
+            $includeDatabase ? 1 : 0,
+            $includeUploads ? 1 : 0,
+            $includeConfig ? 1 : 0,
+        ]);
+
+        return (int) $this->conn->lastInsertId();
+    }
+
+    private function updateJobStatus($status, array $extra = [])
+    {
+        if (!$this->jobId || !backup_table_exists($this->conn, 'backup_jobs')) {
+            return;
+        }
+
+        $fields = ['status = ?'];
+        $values = [$status];
+
+        foreach (['backup_name', 'file_size_bytes', 'table_count', 'duration_seconds', 'error_message'] as $key) {
+            if (array_key_exists($key, $extra)) {
+                $fields[] = "$key = ?";
+                $values[] = $extra[$key];
+            }
+        }
+
+        if ($status === 'completed' || $status === 'failed') {
+            $fields[] = 'completed_at = NOW()';
+        }
+
+        $values[] = $this->jobId;
+        $sql = 'UPDATE backup_jobs SET ' . implode(', ', $fields) . ' WHERE id = ?';
+        $stmt = $this->conn->prepare($sql);
+        $stmt->execute($values);
+    }
+    
+    private function createBackup($email, array $options = []) {
+        $includeDatabase = $options['include_database'] ?? true;
+        $includeUploads = $options['include_uploads'] ?? true;
+        $includeConfig = $options['include_config'] ?? true;
+        $this->jobStartedAt = microtime(true);
+
         try {
             error_log("🔄 Starting backup process for: $email");
             
@@ -330,49 +422,81 @@ class BackupController {
             
             $dbDir = $backupPath . DIRECTORY_SEPARATOR . 'database';
             $uploadsDir = $backupPath . DIRECTORY_SEPARATOR . 'uploads';
-            
-            if (!is_dir($dbDir)) {
-                if (!@mkdir($dbDir, 0755, true)) {
-                    $error = error_get_last();
-                    throw new Exception("Failed to create database backup directory: $dbDir. Error: " . ($error['message'] ?? 'Unknown error'));
-                }
-            }
-            
-            if (!is_dir($uploadsDir)) {
-                if (!@mkdir($uploadsDir, 0755, true)) {
-                    $error = error_get_last();
-                    throw new Exception("Failed to create uploads backup directory: $uploadsDir. Error: " . ($error['message'] ?? 'Unknown error'));
-                }
-            }
+            $configDir = $backupPath . DIRECTORY_SEPARATOR . 'config';
             
             // 1. Create database backup
-            error_log("📊 Creating database backup...");
-            $dbBackupFile = $this->createDatabaseBackup($backupPath . '/database');
+            $tableCount = 0;
+            if ($includeDatabase) {
+                if (!is_dir($dbDir)) {
+                    if (!@mkdir($dbDir, 0755, true)) {
+                        $error = error_get_last();
+                        throw new Exception("Failed to create database backup directory: $dbDir. Error: " . ($error['message'] ?? 'Unknown error'));
+                    }
+                }
+                error_log("📊 Creating database backup...");
+                $this->createDatabaseBackup($backupPath . '/database');
+                $tableCount = backup_count_tables($this->conn);
+            }
             
             // 2. Create files backup
-            error_log("📁 Creating files backup...");
-            $filesBackupFile = $this->createFilesBackup($backupPath . '/uploads');
+            if ($includeUploads) {
+                if (!is_dir($uploadsDir)) {
+                    if (!@mkdir($uploadsDir, 0755, true)) {
+                        $error = error_get_last();
+                        throw new Exception("Failed to create uploads backup directory: $uploadsDir. Error: " . ($error['message'] ?? 'Unknown error'));
+                    }
+                }
+                error_log("📁 Creating files backup...");
+                $this->createFilesBackup($backupPath . '/uploads');
+            }
+
+            // 3. Create config backup
+            if ($includeConfig) {
+                if (!is_dir($configDir)) {
+                    @mkdir($configDir, 0755, true);
+                }
+                error_log("⚙️ Creating config backup...");
+                $this->createConfigBackup($configDir);
+            }
             
-            // 3. Create README with restoration instructions
+            // 4. Create README with restoration instructions
             error_log("📝 Creating restoration instructions...");
-            $this->createReadme($backupPath);
+            $this->createReadme($backupPath, $options);
+            $this->createManifest($backupPath, $options, $tableCount);
             
-            // 4. Create ZIP archive
+            // 5. Create ZIP archive
             error_log("📦 Creating ZIP archive...");
             $zipFile = $this->createZipArchive($backupPath, $backupName);
+            $fileSize = file_exists($zipFile) ? filesize($zipFile) : 0;
+            $duration = (int) max(1, round(microtime(true) - $this->jobStartedAt));
             
-            // 5. Send email with attachment
+            // 6. Send email with attachment
             error_log("📧 Sending backup email to: $email");
-            $this->sendBackupEmail($email, $zipFile, $backupName);
+            $this->sendBackupEmail($email, $zipFile, $backupName, $options);
             
-            // 6. Cleanup
+            // 7. Cleanup
             $this->cleanup($backupPath, $zipFile);
+
+            $this->updateJobStatus('completed', [
+                'backup_name' => $backupName,
+                'file_size_bytes' => $fileSize,
+                'table_count' => $tableCount,
+                'duration_seconds' => $duration,
+            ]);
             
             error_log("✅ Backup completed successfully for: $email");
             
         } catch (Exception $e) {
             error_log("❌ Backup failed: " . $e->getMessage());
             error_log("Stack trace: " . $e->getTraceAsString());
+
+            $duration = $this->jobStartedAt
+                ? (int) max(1, round(microtime(true) - $this->jobStartedAt))
+                : null;
+            $this->updateJobStatus('failed', [
+                'error_message' => $e->getMessage(),
+                'duration_seconds' => $duration,
+            ]);
             
             // Try to send error notification
             try {
@@ -522,13 +646,36 @@ class BackupController {
         }
     }
     
-    private function createReadme($backupPath) {
+    private function createConfigBackup($outputDir) {
+        $configSource = realpath(__DIR__ . '/../../config');
+        if (!$configSource || !is_dir($configSource)) {
+            file_put_contents($outputDir . '/.gitkeep', '');
+            return null;
+        }
+
+        $this->copyDirectory($configSource, $outputDir);
+        return $outputDir;
+    }
+    
+    private function createReadme($backupPath, array $options = []) {
+        $includeDatabase = $options['include_database'] ?? true;
+        $includeUploads = $options['include_uploads'] ?? true;
+        $includeConfig = $options['include_config'] ?? true;
+
         $readme = "# BugRicer Platform Backup - Restoration Guide\n\n";
         $readme .= "**Backup Created:** " . date('Y-m-d H:i:s') . "\n\n";
         $readme .= "## Contents\n\n";
         $readme .= "This backup contains:\n";
-        $readme .= "- `database/` - Complete SQL dump of all database tables\n";
-        $readme .= "- `uploads/` - All uploaded files, images, and attachments\n\n";
+        if ($includeDatabase) {
+            $readme .= "- `database/` - Complete SQL dump of all database tables\n";
+        }
+        if ($includeUploads) {
+            $readme .= "- `uploads/` - All uploaded files, images, and attachments\n";
+        }
+        if ($includeConfig) {
+            $readme .= "- `config/` - Application configuration files\n";
+        }
+        $readme .= "- `manifest.json` - Backup metadata and component manifest\n\n";
         $readme .= "## Restoration Instructions\n\n";
         $readme .= "### For Backend Developers\n\n";
         $readme .= "#### Step 1: Database Restoration\n\n";
@@ -570,6 +717,26 @@ class BackupController {
         $readme .= "*Generated by BugRicer Backup System*\n";
         
         file_put_contents($backupPath . '/README.md', $readme);
+    }
+
+    private function createManifest($backupPath, array $options, $tableCount) {
+        $manifest = [
+            'product' => 'BugRicer',
+            'backup_version' => '2.0',
+            'created_at' => date('c'),
+            'components' => [
+                'database' => (bool) ($options['include_database'] ?? true),
+                'uploads' => (bool) ($options['include_uploads'] ?? true),
+                'config' => (bool) ($options['include_config'] ?? true),
+            ],
+            'table_count' => $tableCount,
+            'delivery_method' => $options['delivery_method'] ?? 'email',
+        ];
+
+        file_put_contents(
+            $backupPath . '/manifest.json',
+            json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
+        );
     }
     
     private function createZipArchive($backupPath, $backupName) {
@@ -617,7 +784,21 @@ class BackupController {
         }
     }
     
-    private function sendBackupEmail($email, $zipFile, $backupName) {
+    private function sendBackupEmail($email, $zipFile, $backupName, array $options = []) {
+        $includeDatabase = $options['include_database'] ?? true;
+        $includeUploads = $options['include_uploads'] ?? true;
+        $includeConfig = $options['include_config'] ?? true;
+        $components = [];
+        if ($includeDatabase) $components[] = 'Complete database SQL dump';
+        if ($includeUploads) $components[] = 'All uploaded files and attachments';
+        if ($includeConfig) $components[] = 'Configuration files';
+        $components[] = 'Restoration instructions (README.md)';
+        $componentsHtml = '';
+        foreach ($components as $component) {
+            $componentsHtml .= '<li>' . htmlspecialchars($component) . '</li>';
+        }
+        $componentsText = implode("\n- ", $components);
+
         $subject = "BugRicer Platform Backup - " . date('Y-m-d H:i:s');
         
         $html_body = "
@@ -642,9 +823,7 @@ class BackupController {
               <div style=\"margin: 20px 0; padding: 15px; background-color: #f0f9ff; border-left: 4px solid #2563eb; border-radius: 4px;\">
                 <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #1e40af;\"><strong>📦 Backup Details:</strong></p>
                 <ul style=\"margin: 0; padding-left: 20px; font-size: 14px; color: #1e40af;\">
-                  <li>Complete database SQL dump</li>
-                  <li>All uploaded files and attachments</li>
-                  <li>Restoration instructions (README.md)</li>
+                  {$componentsHtml}
                 </ul>
               </div>
               
@@ -677,9 +856,7 @@ BugRicer Platform Backup Ready
 Your complete BugRicer platform backup has been successfully created and is attached to this email.
 
 Backup Details:
-- Complete database SQL dump
-- All uploaded files and attachments
-- Restoration instructions (README.md)
+- {$componentsText}
 
 Backup Name: {$backupName}.zip
 Created: " . date('Y-m-d H:i:s') . "

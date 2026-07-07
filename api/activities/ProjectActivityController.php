@@ -10,7 +10,7 @@ class ProjectActivityController extends BaseAPI {
     /**
      * Get recent activities for a specific project
      */
-    public function getProjectActivities($projectId = null, $limit = 10, $offset = 0) {
+    public function getProjectActivities($projectId = null, $limit = 10, $offset = 0, $filters = []) {
         try {
             $decoded = $this->validateToken();
             if (!$decoded || !isset($decoded->user_id)) {
@@ -20,9 +20,7 @@ class ProjectActivityController extends BaseAPI {
             $userId = $decoded->user_id;
             $userRole = $decoded->role;
             
-            // If project ID is provided, validate it exists first
             if ($projectId) {
-                // Check if project exists
                 $projectExists = $this->fetchSingleCached(
                     "SELECT id, name FROM projects WHERE id = ?",
                     [$projectId],
@@ -35,70 +33,62 @@ class ProjectActivityController extends BaseAPI {
                     return;
                 }
                 
-                // Validate project access
                 if (!$this->validateProjectAccess($userId, $userRole, $projectId)) {
                     $this->sendJsonResponse(403, "Access denied to this project");
                     return;
                 }
             }
-            
-            // Create cache key
-            $cacheKey = $projectId 
-                ? "project_activities_{$projectId}_{$limit}_{$offset}"
-                : "user_activities_{$userId}_{$limit}_{$offset}";
-            
-            // Try to get cached results first
-            $cachedResult = $this->getCache($cacheKey);
-            if ($cachedResult !== null) {
-                $this->sendJsonResponse(200, "Activities retrieved successfully (cached)", $cachedResult);
-                return;
-            }
-            
-            // Build query based on whether we want project-specific or user activities
-            if ($projectId) {
-                $query = $this->buildProjectActivityQuery($userRole, $projectId);
-                $params = [$projectId, $limit, $offset];
-                $countParams = [$projectId];
-            } else {
-                $query = $this->buildUserActivityQuery($userRole, $userId);
-                if ($userRole === 'admin') {
-                    // Admin query only needs limit and offset
-                    $params = [$limit, $offset];
-                    $countParams = [];
-                } else {
-                    // Regular user query needs userId twice for UNION query
-                    $params = [$userId, $userId, $limit, $offset];
-                    $countParams = [$userId, $userId];
+
+            $filters = is_array($filters) ? $filters : [];
+            $hasFilters = !empty($filters['search'])
+                || (!empty($filters['type']) && $filters['type'] !== 'all')
+                || (!empty($filters['username']) && $filters['username'] !== 'all')
+                || !empty($filters['mine_only']);
+
+            $cacheKey = md5(json_encode([
+                'project' => $projectId,
+                'user' => $userId,
+                'role' => $userRole,
+                'limit' => $limit,
+                'offset' => $offset,
+                'filters' => $filters,
+            ]));
+
+            if (!$hasFilters) {
+                $cachedResult = $this->getCache($cacheKey);
+                if ($cachedResult !== null) {
+                    $this->sendJsonResponse(200, "Activities retrieved successfully (cached)", $cachedResult);
+                    return;
                 }
             }
-            
-            // Execute main query with caching
-            $activities = $this->fetchCached($query, $params, $cacheKey . '_data', 300);
-            
-            // Get total count
-            $countQuery = $projectId 
-                ? $this->buildProjectActivityCountQuery($userRole, $projectId)
-                : $this->buildUserActivityCountQuery($userRole, $userId);
-            
-            $totalResult = $this->fetchSingleCached($countQuery, $countParams, $cacheKey . '_count', 300);
-            $total = $totalResult['total'] ?? 0;
-            
-            // Format activities
+
+            $queryBundle = $this->buildActivitiesQueryBundle($projectId, $userRole, $userId, $filters, $limit, $offset);
+            $activities = $hasFilters
+                ? $this->executeSelectAll($queryBundle['query'], $queryBundle['params'])
+                : $this->fetchCached($queryBundle['query'], $queryBundle['params'], $cacheKey . '_data', 300);
+
+            $totalResult = $hasFilters
+                ? $this->executeSelectOne($queryBundle['count_query'], $queryBundle['count_params'])
+                : $this->fetchSingleCached($queryBundle['count_query'], $queryBundle['count_params'], $cacheKey . '_count', 300);
+            $total = (int)($totalResult['total'] ?? 0);
+
             $formattedActivities = $this->formatActivities($activities);
-            
+
             $result = [
                 'activities' => $formattedActivities,
                 'pagination' => [
-                    'total' => (int)$total,
+                    'total' => $total,
                     'limit' => (int)$limit,
                     'offset' => (int)$offset,
                     'hasMore' => ($offset + $limit) < $total
-                ]
+                ],
+                'facets' => $this->getActivityFacets($projectId, $userRole, $userId),
             ];
-            
-            // Cache the result
-            $this->setCache($cacheKey, $result, 300);
-            
+
+            if (!$hasFilters) {
+                $this->setCache($cacheKey, $result, 300);
+            }
+
             $this->sendJsonResponse(200, "Activities retrieved successfully", $result);
             
         } catch (Exception $e) {
@@ -252,7 +242,183 @@ class ProjectActivityController extends BaseAPI {
     }
     
     /**
+     * Build enriched activity queries with filters.
+     */
+    private function buildActivitiesQueryBundle($projectId, $userRole, $userId, $filters, $limit, $offset) {
+        $selectSql = $this->getActivitySelectSql();
+        $joinSql = $this->getActivityJoinSql();
+        $where = [];
+        $params = [];
+
+        if ($projectId) {
+            $where[] = 'pa.project_id = ?';
+            $params[] = $projectId;
+        } elseif ($userRole !== 'admin') {
+            $where[] = '(
+                pa.project_id IS NULL
+                OR pa.project_id IN (
+                    SELECT DISTINCT project_id FROM project_members WHERE user_id = ?
+                    UNION
+                    SELECT DISTINCT id FROM projects WHERE created_by = ?
+                )
+            )';
+            $params[] = $userId;
+            $params[] = $userId;
+        }
+
+        if (!empty($filters['mine_only'])) {
+            $where[] = 'pa.user_id = ?';
+            $params[] = $userId;
+        }
+
+        if (!empty($filters['search'])) {
+            $term = '%' . trim($filters['search']) . '%';
+            $where[] = '(
+                pa.description LIKE ?
+                OR pa.activity_type LIKE ?
+                OR u.username LIKE ?
+                OR p.name LIKE ?
+                OR b.title LIKE ?
+                OR up.title LIKE ?
+                OR ru.username LIKE ?
+                OR ann.title LIKE ?
+                OR COALESCE(st.title, ut.title) LIKE ?
+            )';
+            $params = array_merge($params, array_fill(0, 9, $term));
+        }
+
+        if (!empty($filters['type']) && $filters['type'] !== 'all') {
+            $where[] = 'pa.activity_type = ?';
+            $params[] = $filters['type'];
+        }
+
+        if (!empty($filters['username']) && $filters['username'] !== 'all') {
+            $where[] = 'u.username = ?';
+            $params[] = $filters['username'];
+        }
+
+        $whereSql = $where ? 'WHERE ' . implode(' AND ', $where) : '';
+        $query = "{$selectSql} {$joinSql} {$whereSql} ORDER BY pa.created_at DESC LIMIT ? OFFSET ?";
+        $countQuery = "SELECT COUNT(*) as total {$joinSql} {$whereSql}";
+
+        return [
+            'query' => $query,
+            'params' => array_merge($params, [(int)$limit, (int)$offset]),
+            'count_query' => $countQuery,
+            'count_params' => $params,
+        ];
+    }
+
+    private function getActivitySelectSql() {
+        return "
+            SELECT
+                pa.*,
+                u.username,
+                u.email,
+                p.name as project_name,
+                CASE
+                    WHEN pa.activity_type LIKE 'bug_%' THEN b.title
+                    WHEN pa.activity_type LIKE 'task_%' THEN COALESCE(st.title, ut.title)
+                    WHEN pa.activity_type LIKE 'update_%' THEN up.title
+                    WHEN pa.activity_type LIKE 'project_%' THEN p.name
+                    WHEN pa.activity_type LIKE 'user_%' THEN ru.username
+                    WHEN pa.activity_type LIKE 'announcement_%' THEN ann.title
+                    ELSE NULL
+                END as related_title,
+                CASE
+                    WHEN pa.activity_type LIKE 'bug_%' THEN 'bug'
+                    WHEN pa.activity_type LIKE 'task_%' THEN 'task'
+                    WHEN pa.activity_type LIKE 'update_%' THEN 'update'
+                    WHEN pa.activity_type LIKE 'fix_%' THEN 'fix'
+                    WHEN pa.activity_type LIKE 'project_%' THEN 'project'
+                    WHEN pa.activity_type LIKE 'user_%' THEN 'user'
+                    WHEN pa.activity_type LIKE 'announcement_%' THEN 'announcement'
+                    WHEN pa.activity_type LIKE 'message_%' THEN 'message'
+                    WHEN pa.activity_type LIKE 'meeting_%' THEN 'meeting'
+                    WHEN pa.activity_type LIKE 'feedback_%' THEN 'feedback'
+                    WHEN pa.activity_type LIKE 'comment_%' THEN 'comment'
+                    WHEN pa.activity_type LIKE 'file_%' THEN 'file'
+                    WHEN pa.activity_type LIKE 'settings_%' THEN 'settings'
+                    WHEN pa.activity_type LIKE 'member_%' THEN 'member'
+                    ELSE 'general'
+                END as related_entity,
+                ru.username as target_username
+        ";
+    }
+
+    private function getActivityJoinSql() {
+        return "
+            FROM project_activities pa
+            LEFT JOIN users u ON pa.user_id = u.id
+            LEFT JOIN projects p ON pa.project_id = p.id
+            LEFT JOIN bugs b ON pa.related_id = b.id AND pa.activity_type LIKE 'bug_%'
+            LEFT JOIN updates up ON pa.related_id = up.id AND pa.activity_type LIKE 'update_%'
+            LEFT JOIN users ru ON pa.related_id = ru.id AND pa.activity_type LIKE 'user_%'
+            LEFT JOIN announcements ann ON pa.related_id = ann.id AND pa.activity_type LIKE 'announcement_%'
+            LEFT JOIN shared_tasks st ON pa.related_id = st.id AND pa.activity_type LIKE 'task_%'
+            LEFT JOIN user_tasks ut ON pa.related_id = ut.id AND pa.activity_type LIKE 'task_%'
+        ";
+    }
+
+    private function getActivityFacets($projectId, $userRole, $userId) {
+        $joinSql = $this->getActivityJoinSql();
+        $where = [];
+        $params = [];
+
+        if ($projectId) {
+            $where[] = 'pa.project_id = ?';
+            $params[] = $projectId;
+        } elseif ($userRole !== 'admin') {
+            $where[] = '(
+                pa.project_id IS NULL
+                OR pa.project_id IN (
+                    SELECT DISTINCT project_id FROM project_members WHERE user_id = ?
+                    UNION
+                    SELECT DISTINCT id FROM projects WHERE created_by = ?
+                )
+            )';
+            $params[] = $userId;
+            $params[] = $userId;
+        }
+
+        $whereSql = $where ? 'WHERE ' . implode(' AND ', $where) : '';
+
+        $types = $this->fetchCached(
+            "SELECT pa.activity_type, COUNT(*) as count {$joinSql} {$whereSql} GROUP BY pa.activity_type ORDER BY count DESC LIMIT 30",
+            $params,
+            'activity_facets_types_' . md5(json_encode([$projectId, $userRole, $userId])),
+            300
+        ) ?: [];
+
+        $users = $this->fetchCached(
+            "SELECT u.username, COUNT(*) as count {$joinSql} {$whereSql} AND u.username IS NOT NULL GROUP BY u.username ORDER BY count DESC LIMIT 30",
+            $params,
+            'activity_facets_users_' . md5(json_encode([$projectId, $userRole, $userId])),
+            300
+        ) ?: [];
+
+        return [
+            'types' => $types,
+            'users' => $users,
+        ];
+    }
+
+    private function executeSelectAll($query, $params) {
+        $stmt = $this->conn->prepare($query);
+        $stmt->execute($params);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    }
+
+    private function executeSelectOne($query, $params) {
+        $stmt = $this->conn->prepare($query);
+        $stmt->execute($params);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: ['total' => 0];
+    }
+
+    /**
      * Build project activity query based on user role
+     * @deprecated Use buildActivitiesQueryBundle()
      */
     private function buildProjectActivityQuery($userRole, $projectId) {
         return "
@@ -358,10 +524,141 @@ class ProjectActivityController extends BaseAPI {
         }
     }
     
+    private function formatActivities($activities) {
+        return array_map(function($activity) {
+            $metadata = null;
+            if (!empty($activity['metadata'])) {
+                $metadata = is_string($activity['metadata'])
+                    ? json_decode($activity['metadata'], true)
+                    : $activity['metadata'];
+            }
+
+            $summary = $this->buildActivitySummary($activity);
+
+            return [
+                'id' => $activity['id'],
+                'type' => $activity['activity_type'],
+                'description' => $activity['description'],
+                'summary' => $summary,
+                'user_id' => $activity['user_id'],
+                'project_id' => $activity['project_id'],
+                'related_id' => $activity['related_id'],
+                'username' => $activity['username'],
+                'email' => $activity['email'],
+                'project_name' => $activity['project_name'],
+                'user' => [
+                    'id' => $activity['user_id'],
+                    'username' => $activity['username'],
+                    'email' => $activity['email']
+                ],
+                'project' => $activity['project_id'] ? [
+                    'id' => $activity['project_id'],
+                    'name' => $activity['project_name']
+                ] : null,
+                'related_title' => $activity['related_title'],
+                'related_entity' => $activity['related_entity'] ?? 'general',
+                'target_username' => $activity['target_username'] ?? null,
+                'metadata' => $metadata,
+                'created_at' => $activity['created_at'],
+                'time_ago' => $this->timeAgo($activity['created_at'])
+            ];
+        }, $activities);
+    }
+
+    private function buildActivitySummary(array $activity) {
+        $actor = trim((string)($activity['username'] ?? 'Unknown user'));
+        $type = (string)($activity['activity_type'] ?? '');
+        $relatedTitle = trim((string)($activity['related_title'] ?? ''));
+        $targetUsername = trim((string)($activity['target_username'] ?? ''));
+        $projectName = trim((string)($activity['project_name'] ?? ''));
+        $actionLabel = $this->getActivityActionLabel($type);
+        $target = $relatedTitle ?: $this->extractTargetFromDescription($activity['description'] ?? '');
+
+        if ($target !== '') {
+            $summary = "{$actor} {$actionLabel} \"{$target}\"";
+            if ($projectName !== '') {
+                $summary .= " in {$projectName}";
+            }
+            return $summary;
+        }
+
+        $description = trim((string)($activity['description'] ?? ''));
+        if ($description !== '') {
+            if (stripos($description, $actor) === 0) {
+                return $description;
+            }
+            return "{$actor} — {$description}";
+        }
+
+        return "{$actor} {$actionLabel}";
+    }
+
+    private function getActivityActionLabel($type) {
+        $labels = [
+            'bug_created' => 'created bug',
+            'bug_reported' => 'reported bug',
+            'bug_updated' => 'updated bug',
+            'bug_fixed' => 'fixed bug',
+            'bug_assigned' => 'assigned bug',
+            'bug_deleted' => 'deleted bug',
+            'bug_status_changed' => 'changed status for bug',
+            'task_created' => 'created task',
+            'task_updated' => 'updated task',
+            'task_completed' => 'completed task',
+            'task_deleted' => 'deleted task',
+            'task_assigned' => 'assigned task',
+            'update_created' => 'created update',
+            'update_updated' => 'updated update',
+            'update_deleted' => 'deleted update',
+            'fix_created' => 'created fix',
+            'fix_updated' => 'updated fix',
+            'fix_deleted' => 'deleted fix',
+            'project_created' => 'created project',
+            'project_updated' => 'updated project',
+            'project_deleted' => 'deleted project',
+            'member_added' => 'added member',
+            'member_removed' => 'removed member',
+            'user_created' => 'created user',
+            'user_updated' => 'updated user',
+            'user_deleted' => 'deleted user',
+            'user_role_changed' => 'changed role for user',
+            'announcement_created' => 'created announcement',
+            'announcement_updated' => 'updated announcement',
+            'announcement_deleted' => 'deleted announcement',
+            'announcement_broadcast' => 'broadcast announcement',
+            'settings_updated' => 'updated settings',
+            'file_uploaded' => 'uploaded file',
+            'file_deleted' => 'deleted file',
+            'message_sent' => 'sent message',
+            'comment_added' => 'added comment',
+            'milestone_reached' => 'reached milestone',
+        ];
+
+        if (isset($labels[$type])) {
+            return $labels[$type];
+        }
+
+        return str_replace('_', ' ', $type);
+    }
+
+    private function extractTargetFromDescription($description) {
+        $description = trim((string)$description);
+        if ($description === '') {
+            return '';
+        }
+
+        if (preg_match('/:\s*(.+)$/', $description, $matches)) {
+            return trim($matches[1], " \t\n\r\0\x0B\"'");
+        }
+
+        return '';
+    }
+    
     /**
      * Format activities for consistent output
+     * @deprecated replaced inline above - kept marker for merge safety
      */
-    private function formatActivities($activities) {
+    private function formatActivitiesLegacy($activities) {
         return array_map(function($activity) {
             // Handle metadata parsing for both JSON and TEXT columns
             $metadata = null;
