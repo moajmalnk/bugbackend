@@ -969,6 +969,17 @@ class WorkSubmissionController extends BaseAPI {
             $existingStmt->execute([$targetUserId, $date]);
             $existing = $existingStmt->fetch(PDO::FETCH_ASSOC) ?: null;
 
+            if ($existing) {
+                $existingHours = (float)($existing['hours_today'] ?? 0);
+                if ($existingHours >= 1) {
+                    $this->sendJsonResponse(
+                        409,
+                        'Work hours are already recorded for this date. Only one entry per day is allowed.'
+                    );
+                    return;
+                }
+            }
+
             $adminUsername = (string)($decoded->username ?? 'admin');
             $auditStamp = '[ADMIN HOURS ENTRY - ' . $adminUsername . ' - ' . date('Y-m-d H:i:s') . "]\n" . $adminNote;
             $existingNotes = trim((string)($existing['notes'] ?? ''));
