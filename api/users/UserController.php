@@ -59,6 +59,25 @@ class UserController extends BaseAPI {
             }
 
             $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $checkedInToday = [];
+            try {
+                $wsCheck = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'check_in_time'");
+                if ($wsCheck && $wsCheck->fetch(PDO::FETCH_ASSOC)) {
+                    $checkInStmt = $this->conn->query(
+                        "SELECT user_id, check_in_time
+                         FROM work_submissions
+                         WHERE submission_date = CURDATE() AND check_in_time IS NOT NULL"
+                    );
+                    if ($checkInStmt) {
+                        while ($row = $checkInStmt->fetch(PDO::FETCH_ASSOC)) {
+                            $checkedInToday[$row['user_id']] = $row['check_in_time'];
+                        }
+                    }
+                }
+            } catch (Exception $e) {
+                error_log('getUsers check-in lookup skipped: ' . $e->getMessage());
+            }
             
             // Add name field and ensure phone field exists
             foreach ($users as &$user) {
@@ -66,7 +85,10 @@ class UserController extends BaseAPI {
                 if (!isset($user['phone'])) {
                     $user['phone'] = null; // Set phone to null if column doesn't exist
                 }
+                $user['check_in_time'] = $checkedInToday[$user['id']] ?? null;
+                $user['checked_in_today'] = !empty($user['check_in_time']);
             }
+            unset($user);
 
             $this->sendJsonResponse(200, "Users retrieved successfully", $users);
         } catch (PDOException $e) {
