@@ -311,7 +311,7 @@ class BackupController {
         $fields = ['status = ?'];
         $values = [$status];
 
-        foreach (['backup_name', 'file_size_bytes', 'table_count', 'duration_seconds', 'error_message'] as $key) {
+        foreach (['backup_name', 'file_size_bytes', 'table_count', 'duration_seconds', 'error_message', 'mail_status', 'mail_error'] as $key) {
             if (array_key_exists($key, $extra)) {
                 $fields[] = "$key = ?";
                 $values[] = $extra[$key];
@@ -554,6 +554,7 @@ class BackupController {
                 'file_size_bytes' => $fileSize,
                 'table_count' => $tableCount,
                 'duration_seconds' => $duration,
+                'mail_status' => 'sent',
             ]);
             
             error_log("✅ Backup completed successfully for: $email");
@@ -565,17 +566,40 @@ class BackupController {
             $duration = $this->jobStartedAt
                 ? (int) max(1, round(microtime(true) - $this->jobStartedAt))
                 : null;
+
+            $mailStatus = 'pending';
+            $mailError = null;
+            $isMailFailure = stripos($e->getMessage(), 'email') !== false
+                || stripos($e->getMessage(), 'smtp') !== false
+                || stripos($e->getMessage(), 'attachment') !== false;
+
+            if ($isMailFailure) {
+                $mailStatus = 'failed';
+                $mailError = $e->getMessage();
+            }
+
+            try {
+                $this->sendErrorEmail($email, $e->getMessage());
+                if ($mailStatus === 'pending') {
+                    $mailStatus = 'error_sent';
+                }
+            } catch (Exception $emailError) {
+                error_log("Failed to send error email: " . $emailError->getMessage());
+                if ($mailStatus === 'pending') {
+                    $mailStatus = 'failed';
+                    $mailError = $emailError->getMessage();
+                }
+            }
+
             $this->updateJobStatus('failed', [
                 'error_message' => $e->getMessage(),
                 'duration_seconds' => $duration,
+                'mail_status' => $mailStatus,
+                'mail_error' => $mailError,
             ]);
             
-            // Try to send error notification
-            try {
-                $this->sendErrorEmail($email, $e->getMessage());
-            } catch (Exception $emailError) {
-                error_log("Failed to send error email: " . $emailError->getMessage());
-            }
+            // Error notification already attempted above
+            return;
         }
     }
     

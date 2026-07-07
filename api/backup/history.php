@@ -22,11 +22,17 @@ class BackupHistoryController extends BaseAPI
             ]);
         }
 
+        backup_ensure_jobs_table($this->conn);
+
+        $hasMailStatus = backup_job_has_mail_status($this->conn);
+        $mailColumns = $hasMailStatus ? 'bj.mail_status, bj.mail_error,' : '';
+
         $stmt = $this->conn->prepare(
             "SELECT
                 bj.id,
                 bj.email,
                 bj.status,
+                {$mailColumns}
                 bj.delivery_method,
                 bj.include_database,
                 bj.include_uploads,
@@ -54,6 +60,16 @@ class BackupHistoryController extends BaseAPI
             $item['include_database'] = (bool) $item['include_database'];
             $item['include_uploads'] = (bool) $item['include_uploads'];
             $item['include_config'] = (bool) $item['include_config'];
+
+            if (empty($item['mail_status'])) {
+                if ($item['status'] === 'completed') {
+                    $item['mail_status'] = 'sent';
+                } elseif ($item['status'] === 'failed') {
+                    $item['mail_status'] = 'failed';
+                } else {
+                    $item['mail_status'] = 'pending';
+                }
+            }
         }
         unset($item);
 

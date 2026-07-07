@@ -11,11 +11,31 @@ function backup_table_exists(PDO $conn, string $table): bool
 
 function backup_ensure_jobs_table(PDO $conn): void
 {
-    if (backup_table_exists($conn, 'backup_jobs')) {
+    if (!backup_table_exists($conn, 'backup_jobs')) {
+        $migration = realpath(__DIR__ . '/../../migrations/015_backup_jobs.sql');
+        if ($migration && is_readable($migration)) {
+            $sql = file_get_contents($migration);
+            if ($sql) {
+                $conn->exec($sql);
+            }
+        }
+    }
+
+    backup_ensure_mail_status_columns($conn);
+}
+
+function backup_ensure_mail_status_columns(PDO $conn): void
+{
+    if (!backup_table_exists($conn, 'backup_jobs')) {
         return;
     }
 
-    $migration = realpath(__DIR__ . '/../../migrations/015_backup_jobs.sql');
+    $stmt = $conn->query("SHOW COLUMNS FROM backup_jobs LIKE 'mail_status'");
+    if ($stmt && $stmt->fetch()) {
+        return;
+    }
+
+    $migration = realpath(__DIR__ . '/../../migrations/016_backup_jobs_mail_status.sql');
     if (!$migration || !is_readable($migration)) {
         return;
     }
@@ -95,7 +115,15 @@ function backup_resolve_uploads_path(): string
     return $backendPath . DIRECTORY_SEPARATOR . 'uploads';
 }
 
-function backup_require_settings_permission(BaseAPI $api): object
+function backup_job_has_mail_status(PDO $conn): bool
+{
+    if (!backup_table_exists($conn, 'backup_jobs')) {
+        return false;
+    }
+
+    $stmt = $conn->query("SHOW COLUMNS FROM backup_jobs LIKE 'mail_status'");
+    return (bool) ($stmt && $stmt->fetch());
+}
 {
     $decoded = $api->validateToken();
     if (!$decoded || !isset($decoded->user_id)) {
