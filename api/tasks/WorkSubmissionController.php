@@ -921,7 +921,147 @@ class WorkSubmissionController extends BaseAPI {
             $this->sendJsonResponse(500, 'Failed to update request');
         }
     }
+
+    /**
+     * Admin-only: add or fix regular work hours when a developer forgot checkout.
+     */
+    public function adminUpsertSubmission($payload) {
+        try {
+            $decoded = $this->validateToken();
+            if (strtolower((string)($decoded->role ?? '')) !== 'admin') {
+                $this->sendJsonResponse(403, 'Access denied');
+                return;
+            }
+
+            $targetUserId = trim((string)($payload['user_id'] ?? ''));
+            $date = trim((string)($payload['submission_date'] ?? ''));
+            $hours = isset($payload['hours_today']) ? (float)$payload['hours_today'] : 0;
+            $adminNote = trim((string)($payload['admin_note'] ?? ''));
+            $workNote = trim((string)($payload['work_note'] ?? 'Admin entry — developer forgot checkout'));
+
+            if ($targetUserId === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+                $this->sendJsonResponse(400, 'user_id and submission_date (YYYY-MM-DD) are required');
+                return;
+            }
+            if ($hours < 1 || $hours > 8) {
+                $this->sendJsonResponse(400, 'hours_today must be between 1 and 8');
+                return;
+            }
+            if ($adminNote === '') {
+                $this->sendJsonResponse(400, 'admin_note is required');
+                return;
+            }
+            if ($workNote === '') {
+                $workNote = 'Admin entry — developer forgot checkout';
+            }
+
+            $userStmt = $this->conn->prepare('SELECT id, username FROM users WHERE id = ? LIMIT 1');
+            $userStmt->execute([$targetUserId]);
+            $targetUser = $userStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$targetUser) {
+                $this->sendJsonResponse(404, 'User not found');
+                return;
+            }
+
+            $this->ensureExtraHoursApprovalColumns();
+
+            $existingStmt = $this->conn->prepare('SELECT * FROM work_submissions WHERE user_id = ? AND submission_date = ? LIMIT 1');
+            $existingStmt->execute([$targetUserId, $date]);
+            $existing = $existingStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+
+            $adminUsername = (string)($decoded->username ?? 'admin');
+            $auditStamp = '[ADMIN HOURS ENTRY - ' . $adminUsername . ' - ' . date('Y-m-d H:i:s') . "]\n" . $adminNote;
+            $existingNotes = trim((string)($existing['notes'] ?? ''));
+            $notes = $existingNotes !== '' ? $existingNotes . "\n\n" . $auditStamp : $auditStamp;
+
+            $completed = trim((string)($existing['completed_tasks'] ?? ''));
+            if ($completed === '') {
+                $completed = $workNote;
+            }
+
+            $overtime = 0.0;
+
+            if ($existing) {
+                $upd = $this->conn->prepare(
+                    'UPDATE work_submissions SET
+                        hours_today = ?,
+                        overtime_hours = ?,
+                        completed_tasks = ?,
+                        notes = ?,
+                        requested_extra_hours = 0,
+                        extra_hours_approval_status = \'none\',
+                        extra_hours_approved_amount = NULL,
+                        extra_hours_reviewed_by = NULL,
+                        extra_hours_reviewed_at = NULL,
+                        extra_hours_admin_note = NULL
+                     WHERE user_id = ? AND submission_date = ?'
+                );
+                $upd->execute([
+                    $hours,
+                    $overtime,
+                    $completed,
+                    $notes,
+                    $targetUserId,
+                    $date,
+                ]);
+            } else {
+                $ins = $this->conn->prepare(
+                    'INSERT INTO work_submissions (
+                        user_id, submission_date, hours_today, overtime_hours,
+                        completed_tasks, notes, requested_extra_hours, extra_hours_approval_status
+                    ) VALUES (?, ?, ?, ?, ?, ?, 0, \'none\')'
+                );
+                $ins->execute([
+                    $targetUserId,
+                    $date,
+                    $hours,
+                    $overtime,
+                    $completed,
+                    $notes,
+                ]);
+            }
+
+            $monthTotals = br_compute_calendar_month_totals($this->conn, $targetUserId, $date);
+            $totalsUpd = $this->conn->prepare(
+                'UPDATE work_submissions SET total_working_days = ?, total_hours_cumulative = ? WHERE user_id = ? AND submission_date = ?'
+            );
+            $totalsUpd->execute([
+                $monthTotals['days'],
+                $monthTotals['hours'],
+                $targetUserId,
+                $date,
+            ]);
+
+            try {
+                $auditStmt = $this->conn->prepare(
+                    'INSERT INTO admin_audit_log (admin_id, action, target_user_id, details, created_at) VALUES (?, ?, ?, ?, NOW())'
+                );
+                $auditStmt->execute([
+                    (string)$decoded->user_id,
+                    'admin_upsert_work_hours',
+                    $targetUserId,
+                    json_encode([
+                        'submission_date' => $date,
+                        'hours_today' => $hours,
+                        'admin_note' => $adminNote,
+                        'work_note' => $workNote,
+                        'was_update' => (bool)$existing,
+                    ]),
+                ]);
+            } catch (Exception $auditErr) {
+                error_log('adminUpsertSubmission audit log: ' . $auditErr->getMessage());
+            }
+
+            $outStmt = $this->conn->prepare(
+                'SELECT ws.*, u.username, u.role FROM work_submissions ws LEFT JOIN users u ON u.id = ws.user_id WHERE ws.user_id = ? AND ws.submission_date = ? LIMIT 1'
+            );
+            $outStmt->execute([$targetUserId, $date]);
+            $out = $outStmt->fetch(PDO::FETCH_ASSOC);
+            $this->sendJsonResponse(200, 'Work hours saved', $out);
+        } catch (Exception $e) {
+            error_log('adminUpsertSubmission: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Failed to save work hours');
+        }
+    }
 }
 ?>
-
-
