@@ -382,18 +382,23 @@ class ProjectActivityController extends BaseAPI {
         }
 
         $whereSql = $where ? 'WHERE ' . implode(' AND ', $where) : '';
+        $facetKey = md5(json_encode([$projectId, $userRole, $userId]));
 
         $types = $this->fetchCached(
             "SELECT pa.activity_type, COUNT(*) as count {$joinSql} {$whereSql} GROUP BY pa.activity_type ORDER BY count DESC LIMIT 30",
             $params,
-            'activity_facets_types_' . md5(json_encode([$projectId, $userRole, $userId])),
+            'activity_facets_types_' . $facetKey,
             300
         ) ?: [];
 
+        $usersWhere = $whereSql !== ''
+            ? "{$whereSql} AND u.username IS NOT NULL"
+            : 'WHERE u.username IS NOT NULL';
+
         $users = $this->fetchCached(
-            "SELECT u.username, COUNT(*) as count {$joinSql} {$whereSql} AND u.username IS NOT NULL GROUP BY u.username ORDER BY count DESC LIMIT 30",
+            "SELECT u.username, COUNT(*) as count {$joinSql} {$usersWhere} GROUP BY u.username ORDER BY count DESC LIMIT 30",
             $params,
-            'activity_facets_users_' . md5(json_encode([$projectId, $userRole, $userId])),
+            'activity_facets_users_' . $facetKey,
             300
         ) ?: [];
 
@@ -652,47 +657,6 @@ class ProjectActivityController extends BaseAPI {
         }
 
         return '';
-    }
-    
-    /**
-     * Format activities for consistent output
-     * @deprecated replaced inline above - kept marker for merge safety
-     */
-    private function formatActivitiesLegacy($activities) {
-        return array_map(function($activity) {
-            // Handle metadata parsing for both JSON and TEXT columns
-            $metadata = null;
-            if (!empty($activity['metadata'])) {
-                $metadata = is_string($activity['metadata']) 
-                    ? json_decode($activity['metadata'], true) 
-                    : $activity['metadata'];
-            }
-            
-            return [
-                'id' => $activity['id'],
-                'type' => $activity['activity_type'],
-                'description' => $activity['description'],
-                'user_id' => $activity['user_id'],
-                'project_id' => $activity['project_id'],
-                'related_id' => $activity['related_id'],
-                'username' => $activity['username'],
-                'email' => $activity['email'],
-                'project_name' => $activity['project_name'],
-                'user' => [
-                    'id' => $activity['user_id'],
-                    'username' => $activity['username'],
-                    'email' => $activity['email']
-                ],
-                'project' => $activity['project_id'] ? [
-                    'id' => $activity['project_id'],
-                    'name' => $activity['project_name']
-                ] : null,
-                'related_title' => $activity['related_title'],
-                'metadata' => $metadata,
-                'created_at' => $activity['created_at'],
-                'time_ago' => $this->timeAgo($activity['created_at'])
-            ];
-        }, $activities);
     }
     
     /**
