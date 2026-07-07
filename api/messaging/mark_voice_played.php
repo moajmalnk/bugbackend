@@ -1,7 +1,9 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/MessageReceiptHelper.php';
 
 class MarkVoicePlayedAPI extends BaseAPI {
+    use MessageReceiptHelper;
 
     public function handle() {
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -68,6 +70,7 @@ class MarkVoicePlayedAPI extends BaseAPI {
 
             $this->recordDeliveryStatus($messageId, $userId, 'delivered');
             $this->recordMessageRead($messageId, $userId);
+            $this->recordDeliveryStatus($messageId, $userId, 'read');
 
             $updateMemberStmt = $this->conn->prepare("
                 UPDATE chat_group_members
@@ -81,70 +84,6 @@ class MarkVoicePlayedAPI extends BaseAPI {
             error_log("Error marking voice as played: " . $e->getMessage());
             $this->sendJsonResponse(500, "Failed to mark voice as played: " . $e->getMessage());
         }
-    }
-
-    private function recordDeliveryStatus($messageId, $userId, $status) {
-        if (!$this->dbTableExists('message_delivery_status')) {
-            return;
-        }
-
-        $checkStmt = $this->conn->prepare("
-            SELECT id FROM message_delivery_status
-            WHERE message_id = ? AND user_id = ?
-        ");
-        $checkStmt->execute([$messageId, $userId]);
-        $existing = $checkStmt->fetch(PDO::FETCH_ASSOC);
-
-        if ($existing) {
-            if ($status === 'read') {
-                $stmt = $this->conn->prepare("
-                    UPDATE message_delivery_status
-                    SET status = 'read', timestamp = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                ");
-                $stmt->execute([$existing['id']]);
-            }
-            return;
-        }
-
-        $deliveryId = $this->utils->generateUUID();
-        $stmt = $this->conn->prepare("
-            INSERT INTO message_delivery_status (id, message_id, user_id, status)
-            VALUES (?, ?, ?, ?)
-        ");
-        $stmt->execute([$deliveryId, $messageId, $userId, $status === 'read' ? 'read' : 'delivered']);
-    }
-
-    private function recordMessageRead($messageId, $userId) {
-        if (!$this->dbTableExists('message_read_status')) {
-            return;
-        }
-
-        $checkStmt = $this->conn->prepare("
-            SELECT message_id FROM message_read_status
-            WHERE message_id = ? AND user_id = ?
-        ");
-        $checkStmt->execute([$messageId, $userId]);
-
-        if ($checkStmt->fetch()) {
-            return;
-        }
-
-        if ($this->dbColumnExists('message_read_status', 'id')) {
-            $readId = $this->utils->generateUUID();
-            $stmt = $this->conn->prepare("
-                INSERT INTO message_read_status (id, message_id, user_id)
-                VALUES (?, ?, ?)
-            ");
-            $stmt->execute([$readId, $messageId, $userId]);
-            return;
-        }
-
-        $stmt = $this->conn->prepare("
-            INSERT INTO message_read_status (message_id, user_id)
-            VALUES (?, ?)
-        ");
-        $stmt->execute([$messageId, $userId]);
     }
 }
 

@@ -209,8 +209,11 @@ class ProjectComplianceController extends BaseAPI
     {
         $devCount = $this->countVerified($projectId, 'developer');
         $qaCount = $this->countVerified($projectId, 'tester');
+        $projectCount = $this->countVerified($projectId, 'project');
         $devTotal = $this->countRules($projectId, 'developer');
         $qaTotal = $this->countRules($projectId, 'tester');
+        $projectTotal = $this->countRules($projectId, 'project');
+        $projectComplete = $projectTotal === 0 || $projectCount >= $projectTotal;
 
         $meta = $this->getComplianceMeta($projectId);
         if (!$meta) {
@@ -231,8 +234,14 @@ class ProjectComplianceController extends BaseAPI
             }
         }
 
-        if ($devTotal > 0 && $devCount >= $devTotal && $qaTotal > 0 && $qaCount >= $qaTotal) {
+        if ($devTotal > 0 && $devCount >= $devTotal && $qaTotal > 0 && $qaCount >= $qaTotal && $projectComplete) {
             $stage = 'admin_ready';
+            if (!$testerCompleteAt) {
+                $testerCompleteAt = date('Y-m-d H:i:s');
+                $testerCompleteBy = $actorUserId;
+            }
+        } elseif ($devTotal > 0 && $devCount >= $devTotal && $qaTotal > 0 && $qaCount >= $qaTotal) {
+            $stage = 'qa_complete';
             if (!$testerCompleteAt) {
                 $testerCompleteAt = date('Y-m-d H:i:s');
                 $testerCompleteBy = $actorUserId;
@@ -304,6 +313,7 @@ class ProjectComplianceController extends BaseAPI
 
         $developerChecks = [];
         $testerChecks = [];
+        $projectChecks = [];
         foreach ($rows as $row) {
             $item = [
                 'rule_key' => $row['rule_key'],
@@ -314,16 +324,24 @@ class ProjectComplianceController extends BaseAPI
             ];
             if ($row['phase'] === 'developer') {
                 $developerChecks[] = $item;
-            } else {
+            } elseif ($row['phase'] === 'tester') {
                 $testerChecks[] = $item;
+            } else {
+                $projectChecks[] = $item;
             }
         }
 
         $devVerified = $this->countVerified($projectId, 'developer');
         $qaVerified = $this->countVerified($projectId, 'tester');
+        $projectVerified = $this->countVerified($projectId, 'project');
         $devTotal = $this->countRules($projectId, 'developer');
         $qaTotal = $this->countRules($projectId, 'tester');
+        $projectTotal = $this->countRules($projectId, 'project');
         $customRules = $this->getCustomRulesForProject($projectId);
+
+        $projectStmt = $this->conn->prepare("SELECT id, name, status FROM projects WHERE id = ?");
+        $projectStmt->execute([$projectId]);
+        $project = $projectStmt->fetch(PDO::FETCH_ASSOC) ?: null;
 
         return [
             'project_id' => $projectId,
@@ -344,9 +362,15 @@ class ProjectComplianceController extends BaseAPI
                 'verified' => $qaVerified,
                 'total' => $qaTotal,
             ],
+            'project_progress' => [
+                'verified' => $projectVerified,
+                'total' => $projectTotal,
+            ],
             'developer_checks' => $developerChecks,
             'tester_checks' => $testerChecks,
+            'project_checks' => $projectChecks,
             'custom_rules' => $customRules,
+            'project' => $project,
         ];
     }
 
@@ -369,6 +393,8 @@ class ProjectComplianceController extends BaseAPI
             'developer_total' => $this->countRules($projectId, 'developer'),
             'tester_verified' => $this->countVerified($projectId, 'tester'),
             'tester_total' => $this->countRules($projectId, 'tester'),
+            'project_verified' => $this->countVerified($projectId, 'project'),
+            'project_total' => $this->countRules($projectId, 'project'),
             'emergency_bypass' => (bool) $meta['emergency_bypass'],
         ];
     }
@@ -429,7 +455,7 @@ class ProjectComplianceController extends BaseAPI
                 return;
             }
 
-            if (!in_array($phase, ['developer', 'tester'], true)) {
+            if (!in_array($phase, ['developer', 'tester', 'project'], true)) {
                 $this->sendJsonResponse(400, 'Invalid phase');
                 return;
             }
@@ -441,6 +467,11 @@ class ProjectComplianceController extends BaseAPI
 
             if ($phase === 'tester' && $userRole !== 'tester') {
                 $this->sendJsonResponse(403, 'Only testers can verify QA rules');
+                return;
+            }
+
+            if ($phase === 'project' && $userRole !== 'admin') {
+                $this->sendJsonResponse(403, 'Only admins can verify project-level rules');
                 return;
             }
 

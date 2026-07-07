@@ -8,4 +8,4 @@ CREATE TABLE IF NOT EXISTS `message_voice_played` (
   KEY `idx_message_voice_played_at` (`played_at`),
   CONSTRAINT `message_voice_played_message_fk` FOREIGN KEY (`message_id`) REFERENCES `chat_messages` (`id`) ON DELETE CASCADE,
   CONSTRAINT `message_voice_played_user_fk` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;

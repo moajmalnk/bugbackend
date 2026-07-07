@@ -1223,9 +1223,10 @@ class BugController extends BaseAPI {
     }
 
     /**
-     * Admin-only: bugs marked already raised and/or duplicate titles within a project.
+     * Common bugs: already raised and/or duplicate titles within a project.
+     * Admins see all projects; developers are scoped to their project memberships.
      */
-    public function getCommonBugs($page = 1, $limit = 20, $projectId = null, $reason = 'all') {
+    public function getCommonBugs($page = 1, $limit = 20, $projectId = null, $reason = 'all', $scopeUserId = null) {
         try {
             if (!$this->conn) {
                 throw new Exception("Database connection failed");
@@ -1262,6 +1263,20 @@ class BugController extends BaseAPI {
             if ($projectId) {
                 $where .= ' AND b.project_id = ?';
                 $params[] = $projectId;
+            }
+
+            if ($scopeUserId) {
+                if ($projectId && !$this->userHasProjectAccess($scopeUserId, $projectId)) {
+                    throw new Exception('You do not have access to this project');
+                }
+
+                $where .= " AND b.project_id IN (
+                    SELECT DISTINCT project_id FROM project_members WHERE user_id = ?
+                    UNION
+                    SELECT DISTINCT id FROM projects WHERE created_by = ?
+                )";
+                $params[] = $scopeUserId;
+                $params[] = $scopeUserId;
             }
 
             if ($reason === 'already_raised' && $hasAlreadyRaised) {
@@ -1324,6 +1339,15 @@ class BugController extends BaseAPI {
                 $summaryWhere .= ' AND b.project_id = ?';
                 $summaryParams[] = $projectId;
             }
+            if ($scopeUserId) {
+                $summaryWhere .= " AND b.project_id IN (
+                    SELECT DISTINCT project_id FROM project_members WHERE user_id = ?
+                    UNION
+                    SELECT DISTINCT id FROM projects WHERE created_by = ?
+                )";
+                $summaryParams[] = $scopeUserId;
+                $summaryParams[] = $scopeUserId;
+            }
 
             $summarySql = "
                 SELECT
@@ -1372,6 +1396,17 @@ class BugController extends BaseAPI {
         } catch (Exception $e) {
             throw new Exception($e->getMessage());
         }
+    }
+
+    private function userHasProjectAccess($userId, $projectId) {
+        $stmt = $this->conn->prepare("
+            SELECT 1 FROM project_members WHERE user_id = ? AND project_id = ?
+            UNION
+            SELECT 1 FROM projects WHERE created_by = ? AND id = ?
+            LIMIT 1
+        ");
+        $stmt->execute([$userId, $projectId, $userId, $projectId]);
+        return (bool) $stmt->fetch();
     }
 
     public function updateBug($data) {

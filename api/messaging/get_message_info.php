@@ -77,20 +77,39 @@ class GetMessageInfoAPI extends BaseAPI {
             $deliveryStmt->execute([$message['created_at'], $groupId, $message['sender_id']]);
             $deliveryInfo = $deliveryStmt->fetchAll(PDO::FETCH_ASSOC);
             
-            // Get read receipts
-            $readStmt = $this->conn->prepare("
-                SELECT 
-                    mrs.user_id,
-                    u.username,
-                    u.email,
-                    mrs.read_at
-                FROM message_read_status mrs
-                JOIN users u ON mrs.user_id = u.id
-                WHERE mrs.message_id = ?
-                ORDER BY mrs.read_at DESC
-            ");
-            $readStmt->execute([$messageId]);
-            $readReceipts = $readStmt->fetchAll(PDO::FETCH_ASSOC);
+            // Get read / played receipts
+            $isVoice = ($message['message_type'] ?? '') === 'voice';
+            $readReceipts = [];
+
+            if ($isVoice && $this->dbTableExists('message_voice_played')) {
+                $playedStmt = $this->conn->prepare("
+                    SELECT
+                        mvp.user_id,
+                        COALESCE(u.username, u.email, 'User') AS username,
+                        u.email,
+                        mvp.played_at AS read_at
+                    FROM message_voice_played mvp
+                    JOIN users u ON mvp.user_id = u.id
+                    WHERE mvp.message_id = ?
+                    ORDER BY mvp.played_at DESC
+                ");
+                $playedStmt->execute([$messageId]);
+                $readReceipts = $playedStmt->fetchAll(PDO::FETCH_ASSOC);
+            } elseif ($this->dbTableExists('message_read_status')) {
+                $readStmt = $this->conn->prepare("
+                    SELECT 
+                        mrs.user_id,
+                        u.username,
+                        u.email,
+                        mrs.read_at
+                    FROM message_read_status mrs
+                    JOIN users u ON mrs.user_id = u.id
+                    WHERE mrs.message_id = ?
+                    ORDER BY mrs.read_at DESC
+                ");
+                $readStmt->execute([$messageId]);
+                $readReceipts = $readStmt->fetchAll(PDO::FETCH_ASSOC);
+            }
             
             // Build user status map
             $userStatuses = [];
@@ -159,7 +178,8 @@ class GetMessageInfoAPI extends BaseAPI {
             $result = [
                 'read' => $read,
                 'delivered' => $delivered,
-                'pending' => $pending
+                'pending' => $pending,
+                'is_voice' => $isVoice,
             ];
             
             $this->sendJsonResponse(200, "Message info retrieved successfully", $result);

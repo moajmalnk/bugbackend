@@ -55,12 +55,16 @@ try {
     $admin_role = isset($decoded->admin_role) ? strtolower(trim($decoded->admin_role)) : null;
     $user_role_lower = strtolower(trim((string) $user_role));
     $isAdmin = ($user_role_lower === 'admin' && !$is_impersonated) || ($is_impersonated && $admin_role === 'admin');
+    $isDeveloper = $user_role_lower === 'developer';
 
-    if (!$isAdmin) {
+    if (!$isAdmin && !$isDeveloper) {
         http_response_code(403);
-        echo json_encode(['success' => false, 'message' => 'Admin access required']);
+        echo json_encode(['success' => false, 'message' => 'Admin or developer access required']);
         exit;
     }
+
+    $userId = $decoded->user_id ?? null;
+    $scopeUserId = $isAdmin ? null : $userId;
 
     $projectId = isset($_GET['project_id']) && $_GET['project_id'] !== '' ? $_GET['project_id'] : null;
     $page = isset($_GET['page']) ? (int) $_GET['page'] : 1;
@@ -68,7 +72,7 @@ try {
     $reason = isset($_GET['reason']) ? strtolower(trim((string) $_GET['reason'])) : 'all';
 
     $controller = new BugController();
-    $result = $controller->getCommonBugs($page, $limit, $projectId, $reason);
+    $result = $controller->getCommonBugs($page, $limit, $projectId, $reason, $scopeUserId);
 
     http_response_code(200);
     echo json_encode([
