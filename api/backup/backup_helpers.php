@@ -77,6 +77,24 @@ function backup_estimate_database_size(PDO $conn): int
     return (int) ($stmt ? $stmt->fetchColumn() : 0);
 }
 
+function backup_resolve_uploads_path(): string
+{
+    $backendPath = realpath(__DIR__ . '/../..') ?: dirname(dirname(__DIR__));
+    $candidates = [
+        $backendPath . DIRECTORY_SEPARATOR . 'uploads',
+        dirname($backendPath) . DIRECTORY_SEPARATOR . 'uploads',
+        $backendPath . DIRECTORY_SEPARATOR . 'public' . DIRECTORY_SEPARATOR . 'uploads',
+    ];
+
+    foreach ($candidates as $path) {
+        if (is_dir($path)) {
+            return $path;
+        }
+    }
+
+    return $backendPath . DIRECTORY_SEPARATOR . 'uploads';
+}
+
 function backup_require_settings_permission(BaseAPI $api): object
 {
     $decoded = $api->validateToken();

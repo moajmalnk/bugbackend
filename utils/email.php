@@ -144,6 +144,70 @@ function sendEmail($to, $subject, $html_body, $text_body = '') {
     }
 }
 
+/**
+ * Send HTML email with a file attachment using configured SMTP (.env).
+ */
+function sendEmailWithAttachment(
+    $to,
+    $subject,
+    $html_body,
+    $attachmentPath,
+    $attachmentName = null,
+    $text_body = ''
+) {
+    try {
+        if (!is_file($attachmentPath)) {
+            error_log("❌ sendEmailWithAttachment: file not found: $attachmentPath");
+            return false;
+        }
+
+        $smtpUser = Environment::get('SMTP_USER');
+        $smtpPass = Environment::get('SMTP_PASS');
+        if ($smtpUser === null || $smtpUser === '' || $smtpPass === null || $smtpPass === '') {
+            error_log('❌ SMTP not configured: set SMTP_USER and SMTP_PASS in backend/.env');
+            return false;
+        }
+
+        $smtpHost = Environment::get('SMTP_HOST', 'smtp.gmail.com');
+        $smtpPort = (int) Environment::get('SMTP_PORT', '587');
+        if ($smtpPort < 1 || $smtpPort > 65535) {
+            $smtpPort = 587;
+        }
+        $fromEmail = Environment::get('SMTP_FROM_EMAIL', $smtpUser);
+        $fromName = Environment::get('SMTP_FROM_NAME', 'BugRicer');
+
+        $mail = new PHPMailer(true);
+        $mail->isSMTP();
+        $mail->Host = $smtpHost;
+        $mail->SMTPAuth = true;
+        $mail->Username = $smtpUser;
+        $mail->Password = $smtpPass;
+        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port = $smtpPort;
+        $mail->setFrom($fromEmail, $fromName);
+        $mail->addAddress($to);
+        $mail->isHTML(true);
+        $mail->Subject = $subject;
+        $mail->Body = $html_body;
+        if ($text_body !== '') {
+            $mail->AltBody = $text_body;
+        }
+        $mail->addAttachment(
+            $attachmentPath,
+            $attachmentName ?: basename($attachmentPath)
+        );
+        $mail->Debugoutput = function ($str) {
+            error_log("PHPMailer debug: $str");
+        };
+        $mail->send();
+        error_log("✅ Email with attachment sent to: $to (Subject: $subject)");
+        return true;
+    } catch (Exception $e) {
+        error_log("❌ sendEmailWithAttachment error for $to: " . $e->getMessage());
+        return false;
+    }
+}
+
 function sendWelcomeEmail($email, $username) {
     $subject = "Welcome to BugRicer!";
     

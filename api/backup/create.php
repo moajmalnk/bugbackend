@@ -13,7 +13,6 @@ date_default_timezone_set('Asia/Kolkata');
 require_once __DIR__ . '/../../config/composer_autoload.php';
 require_once __DIR__ . '/backup_helpers.php';
 
-use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
 class BackupController {
@@ -177,30 +176,32 @@ class BackupController {
                 fastcgi_finish_request();
             }
             
-            // Run backup in background (after response sent)
-            // Use ignore_user_abort to continue even if client disconnects
+            // Run backup in a detached CLI worker (reliable on shared hosting / XAMPP)
             ignore_user_abort(true);
-            set_time_limit(0); // No time limit for background process
-            
-            try {
-                $this->createBackup($email, [
-                    'include_database' => $includeDatabase,
-                    'include_uploads' => $includeUploads,
-                    'include_config' => $includeConfig,
-                    'delivery_method' => $deliveryMethod,
-                ]);
-            } catch (Throwable $backupError) {
-                error_log("Backup process error: " . $backupError->getMessage());
-                error_log("Backup stack trace: " . $backupError->getTraceAsString());
-                // Try to send error email
-                try {
-                    $this->sendErrorEmail($email, $backupError->getMessage());
-                } catch (Exception $emailError) {
-                    error_log("Failed to send error email: " . $emailError->getMessage());
+            set_time_limit(0);
+
+            if ($this->jobId) {
+                $spawned = $this->spawnBackgroundJob($this->jobId);
+                if (!$spawned) {
+                    error_log("⚠️ Could not spawn backup worker; running inline for job {$this->jobId}");
+                    try {
+                        $this->createBackup($email, [
+                            'include_database' => $includeDatabase,
+                            'include_uploads' => $includeUploads,
+                            'include_config' => $includeConfig,
+                            'delivery_method' => $deliveryMethod,
+                        ]);
+                    } catch (Throwable $backupError) {
+                        error_log("Backup process error: " . $backupError->getMessage());
+                        try {
+                            $this->sendErrorEmail($email, $backupError->getMessage());
+                        } catch (Exception $emailError) {
+                            error_log("Failed to send error email: " . $emailError->getMessage());
+                        }
+                    }
                 }
             }
             
-            // Exit after backup starts (don't wait for completion)
             exit(0);
             
         } catch (Throwable $e) {
@@ -325,6 +326,77 @@ class BackupController {
         $sql = 'UPDATE backup_jobs SET ' . implode(', ', $fields) . ' WHERE id = ?';
         $stmt = $this->conn->prepare($sql);
         $stmt->execute($values);
+    }
+
+    /**
+     * CLI worker entry: load job row and run backup.
+     */
+    public function processJob(int $jobId): void
+    {
+        backup_ensure_jobs_table($this->conn);
+
+        if (!backup_table_exists($this->conn, 'backup_jobs')) {
+            throw new Exception('backup_jobs table is not available');
+        }
+
+        $stmt = $this->conn->prepare(
+            'SELECT id, email, delivery_method, include_database, include_uploads, include_config, status
+             FROM backup_jobs WHERE id = ? LIMIT 1'
+        );
+        $stmt->execute([$jobId]);
+        $job = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$job) {
+            throw new Exception("Backup job not found: $jobId");
+        }
+
+        if ($job['status'] === 'completed') {
+            error_log("Backup job $jobId already completed; skipping");
+            return;
+        }
+
+        $this->jobId = (int) $job['id'];
+        $this->createBackup($job['email'], [
+            'include_database' => (bool) $job['include_database'],
+            'include_uploads' => (bool) $job['include_uploads'],
+            'include_config' => (bool) $job['include_config'],
+            'delivery_method' => $job['delivery_method'] ?? 'email',
+        ]);
+    }
+
+    private function spawnBackgroundJob(int $jobId): bool
+    {
+        $worker = __DIR__ . '/run_backup_job.php';
+        if (!is_file($worker)) {
+            error_log("Backup worker script missing: $worker");
+            return false;
+        }
+
+        $phpBinary = PHP_BINARY;
+        if (!$phpBinary || !is_executable($phpBinary)) {
+            $candidates = [
+                '/Applications/XAMPP/xamppfiles/bin/php',
+                '/usr/local/bin/php',
+                '/usr/bin/php',
+                'php',
+            ];
+            foreach ($candidates as $candidate) {
+                if ($candidate === 'php' || (is_file($candidate) && is_executable($candidate))) {
+                    $phpBinary = $candidate;
+                    break;
+                }
+            }
+        }
+
+        $cmd = escapeshellarg($phpBinary) . ' ' . escapeshellarg($worker) . ' ' . (int) $jobId;
+        if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
+            pclose(popen('start /B ' . $cmd, 'r'));
+        } else {
+            exec($cmd . ' > /dev/null 2>&1 &');
+        }
+
+        error_log("🚀 Spawned backup worker for job $jobId");
+        return true;
     }
     
     private function createBackup($email, array $options = []) {
@@ -609,7 +681,7 @@ class BackupController {
     }
     
     private function createFilesBackup($outputDir) {
-        $uploadsDir = __DIR__ . '/../../uploads';
+        $uploadsDir = backup_resolve_uploads_path();
         
         if (!is_dir($uploadsDir)) {
             error_log("⚠️ Uploads directory not found: $uploadsDir");
@@ -871,49 +943,39 @@ The BugRicer Team
 © " . date('Y') . " BugRicer. All rights reserved.
         ";
         
-        // Send email with attachment
+        // Send email with attachment via shared SMTP config
         try {
-            $mail = new PHPMailer(true);
-            
-            // GMAIL SMTP CONFIGURATION
-            $mail->isSMTP();
-            $mail->Host = 'smtp.gmail.com';
-            $mail->SMTPAuth = true;
-            $mail->Username = 'codo.bugricer@gmail.com';
-            $mail->Password = 'ieka afeu uhds qkam';
-            $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-            $mail->Port = 587;
-            
-            // Recipients
-            $mail->setFrom('codo.bugricer@gmail.com', 'BugRicer');
-            $mail->addAddress($email);
-            
-            // Content
-            $mail->isHTML(true);
-            $mail->Subject = $subject;
-            $mail->Body = $html_body;
-            $mail->AltBody = $text_body;
-            
-            // Add attachment
+            if (!function_exists('sendEmailWithAttachment')) {
+                require_once __DIR__ . '/../../utils/email.php';
+            }
+
             if (!file_exists($zipFile)) {
                 throw new Exception("Backup ZIP file not found: $zipFile");
             }
-            
-            $mail->addAttachment($zipFile, $backupName . '.zip');
-            
-            // Add debug output
-            $mail->Debugoutput = function($str, $level) {
-                error_log("PHPMailer debug: $str");
-            };
-            
-            $mail->send();
+
+            $fileSizeMb = round(filesize($zipFile) / (1024 * 1024), 2);
+            if ($fileSizeMb > 24) {
+                error_log("⚠️ Backup ZIP is {$fileSizeMb}MB — may exceed Gmail attachment limits");
+            }
+
+            $sent = sendEmailWithAttachment(
+                $email,
+                $subject,
+                $html_body,
+                $zipFile,
+                $backupName . '.zip',
+                $text_body
+            );
+
+            if (!$sent) {
+                throw new Exception(
+                    'Failed to send backup email. Check SMTP settings in backend/.env and verify the archive is under your provider size limit (~25MB for Gmail).'
+                );
+            }
+
             error_log("✅ Backup email sent successfully to: $email");
-            
         } catch (Exception $e) {
             error_log("❌ Failed to send backup email: " . $e->getMessage());
-            if (isset($mail)) {
-                error_log("PHPMailer ErrorInfo: " . $mail->ErrorInfo);
-            }
             throw $e;
         }
     }
@@ -957,7 +1019,8 @@ The BugRicer Team
     }
 }
 
-// Handle request
+// Handle HTTP request only (skip when included by CLI worker)
+if (php_sapi_name() !== 'cli') {
 try {
     // Enable error reporting for debugging (remove in production)
     error_reporting(E_ALL);
@@ -991,6 +1054,7 @@ try {
         'file' => basename($e->getFile()),
         'line' => $e->getLine()
     ]);
+}
 }
 
 

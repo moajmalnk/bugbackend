@@ -18,7 +18,7 @@ class BackupStatsController extends BaseAPI
         $databaseBytes = backup_estimate_database_size($this->conn);
 
         $backendPath = realpath(__DIR__ . '/../..') ?: dirname(dirname(__DIR__));
-        $uploadsPath = $backendPath . DIRECTORY_SEPARATOR . 'uploads';
+        $uploadsPath = backup_resolve_uploads_path();
         $uploadsBytes = backup_directory_size($uploadsPath);
 
         $lastBackup = null;
