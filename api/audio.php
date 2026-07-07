@@ -69,7 +69,8 @@ $contentTypes = [
     'mp3' => 'audio/mpeg',
     'm4a' => 'audio/mp4',
     'ogg' => 'audio/ogg',
-    'webm' => 'audio/webm'
+    // MediaRecorder often produces video/webm containers with audio-only tracks
+    'webm' => 'audio/webm',
 ];
 
 if (isset($contentTypes[$extension])) {
