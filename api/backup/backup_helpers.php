@@ -115,15 +115,7 @@ function backup_resolve_uploads_path(): string
     return $backendPath . DIRECTORY_SEPARATOR . 'uploads';
 }
 
-function backup_job_has_mail_status(PDO $conn): bool
-{
-    if (!backup_table_exists($conn, 'backup_jobs')) {
-        return false;
-    }
-
-    $stmt = $conn->query("SHOW COLUMNS FROM backup_jobs LIKE 'mail_status'");
-    return (bool) ($stmt && $stmt->fetch());
-}
+function backup_require_settings_permission(BaseAPI $api): object
 {
     $decoded = $api->validateToken();
     if (!$decoded || !isset($decoded->user_id)) {
@@ -136,4 +128,14 @@ function backup_job_has_mail_status(PDO $conn): bool
     }
 
     return $decoded;
+}
+
+function backup_job_has_mail_status(PDO $conn): bool
+{
+    if (!backup_table_exists($conn, 'backup_jobs')) {
+        return false;
+    }
+
+    $stmt = $conn->query("SHOW COLUMNS FROM backup_jobs LIKE 'mail_status'");
+    return (bool) ($stmt && $stmt->fetch());
 }
