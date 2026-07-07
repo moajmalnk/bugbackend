@@ -555,8 +555,23 @@ class WorkSubmissionController extends BaseAPI {
         $stmt = $this->conn->prepare($sql);
         $stmt->execute([$from, $to]);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $adminSql = "SELECT ws.*,
+                            COALESCE(NULLIF(TRIM(u.username), ''), CONCAT('user #', ws.user_id)) AS username,
+                            COALESCE(u.role, '') AS role
+                     FROM work_submissions ws
+                     LEFT JOIN users u ON u.id = ws.user_id
+                     WHERE DATE(ws.submission_date) BETWEEN ? AND ?
+                       AND ws.notes LIKE '%[ADMIN HOURS ENTRY%'
+                       AND COALESCE(ws.hours_today, 0) >= 1
+                     ORDER BY ws.submission_date DESC, ws.id DESC";
+        $adminStmt = $this->conn->prepare($adminSql);
+        $adminStmt->execute([$from, $to]);
+        $adminRows = $adminStmt->fetchAll(PDO::FETCH_ASSOC);
+
         $this->sendJsonResponse(200, 'OK', [
             'submissions' => $rows,
+            'admin_hours_submissions' => $adminRows,
             'window' => ['from' => $from, 'to' => $to],
             'focus_window' => $win,
         ]);
