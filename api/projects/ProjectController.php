@@ -4,9 +4,93 @@ require_once __DIR__ . '/../ActivityLogger.php';
 
 class ProjectController extends BaseAPI
 {
+    private static $EXTENDED_FIELDS = [
+        'client_name',
+        'client_location',
+        'client_contact_name',
+        'client_email',
+        'client_phone',
+        'client_account_status',
+        'technology_stack',
+        'start_date',
+        'deadline_date',
+        'expected_publish_date',
+        'testing_start_date',
+        'testing_end_date',
+        'frontend_finish_date',
+        'backend_finish_date',
+    ];
+
     public function __construct()
     {
         parent::__construct();
+    }
+
+    private function normalizeDateField($value)
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+        return $value;
+    }
+
+    private function addMembersFromPayload($projectId, $members)
+    {
+        if (!is_array($members)) {
+            return;
+        }
+
+        $allowedRoles = ['manager', 'developer', 'tester'];
+        $stmt = $this->conn->prepare(
+            "INSERT INTO project_members (project_id, user_id, role, joined_at) VALUES (?, ?, ?, NOW())"
+        );
+
+        foreach ($members as $member) {
+            if (!isset($member['user_id'], $member['role'])) {
+                continue;
+            }
+            $role = $member['role'];
+            if (!in_array($role, $allowedRoles, true)) {
+                continue;
+            }
+
+            $check = $this->conn->prepare(
+                "SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ? LIMIT 1"
+            );
+            $check->execute([$projectId, $member['user_id']]);
+            if ($check->fetch()) {
+                continue;
+            }
+
+            $stmt->execute([$projectId, $member['user_id'], $role]);
+        }
+    }
+
+    private function getProjectAttachments($projectId)
+    {
+        $stmt = $this->conn->prepare(
+            "SELECT id, project_id, file_name, file_path, file_type, uploaded_by, created_at
+             FROM project_attachments WHERE project_id = ? ORDER BY created_at DESC"
+        );
+        $stmt->execute([$projectId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    private function enrichProjectRecord(&$project)
+    {
+        if (!isset($project['id'])) {
+            return;
+        }
+
+        $stmt = $this->conn->prepare(
+            "SELECT pm.user_id, pm.role, u.username, u.email
+             FROM project_members pm
+             INNER JOIN users u ON u.id = pm.user_id
+             WHERE pm.project_id = ?"
+        );
+        $stmt->execute([$project['id']]);
+        $project['members_detail'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $project['attachments'] = $this->getProjectAttachments($project['id']);
     }
 
     public function handleError($status, $message)
@@ -92,29 +176,32 @@ class ProjectController extends BaseAPI
             }
 
             $id = Utils::generateUUID();
-            $stmt = $this->conn->prepare(
-                "INSERT INTO projects (id, name, description, status, created_by) 
-                 VALUES (?, ?, ?, ?, ?)"
-            );
+            $status = isset($data['status']) ? $data['status'] : 'active';
 
-            $status = 'active';
-            $stmt->execute([
-                $id,
-                $data['name'],
-                $data['description'],
-                $status,
-                $decoded->user_id
-            ]);
+            $columns = ['id', 'name', 'description', 'status', 'created_by'];
+            $placeholders = ['?', '?', '?', '?', '?'];
+            $values = [$id, $data['name'], $data['description'], $status, $decoded->user_id];
 
-            $project = [
-                'id' => $id,
-                'name' => $data['name'],
-                'description' => $data['description'],
-                'status' => $status,
-                'created_by' => $decoded->user_id,
-                'created_at' => date('Y-m-d H:i:s'),
-                'updated_at' => date('Y-m-d H:i:s')
-            ];
+            foreach (self::$EXTENDED_FIELDS as $field) {
+                if (array_key_exists($field, $data)) {
+                    $columns[] = $field;
+                    $placeholders[] = '?';
+                    $values[] = $this->normalizeDateField($data[$field]);
+                }
+            }
+
+            $query = "INSERT INTO projects (" . implode(', ', $columns) . ") VALUES (" . implode(', ', $placeholders) . ")";
+            $stmt = $this->conn->prepare($query);
+            $stmt->execute($values);
+
+            if (isset($data['members'])) {
+                $this->addMembersFromPayload($id, $data['members']);
+            }
+
+            $fetchStmt = $this->conn->prepare("SELECT * FROM projects WHERE id = ?");
+            $fetchStmt->execute([$id]);
+            $project = $fetchStmt->fetch(PDO::FETCH_ASSOC);
+            $this->enrichProjectRecord($project);
 
             // Log activity
             try {
@@ -171,6 +258,7 @@ class ProjectController extends BaseAPI
                 return;
             }
 
+            $this->enrichProjectRecord($project);
             $this->sendJsonResponse(200, "Project retrieved successfully", $project);
 
         } catch (Exception $e) {
@@ -208,25 +296,49 @@ class ProjectController extends BaseAPI
                 $values[] = $data['status'];
             }
 
-            if (empty($updateFields)) {
+            foreach (self::$EXTENDED_FIELDS as $field) {
+                if (array_key_exists($field, $data)) {
+                    $updateFields[] = "$field = ?";
+                    $values[] = $this->normalizeDateField($data[$field]);
+                }
+            }
+
+            if (isset($data['members']) && is_array($data['members'])) {
+                $deleteStmt = $this->conn->prepare("DELETE FROM project_members WHERE project_id = ?");
+                $deleteStmt->execute([$id]);
+                $this->addMembersFromPayload($id, $data['members']);
+            }
+
+            if (empty($updateFields) && !isset($data['members'])) {
                 $this->sendJsonResponse(400, "No fields to update");
                 return;
             }
 
-            $updateFields[] = "updated_at = CURRENT_TIMESTAMP()";
+            if (!empty($updateFields)) {
+                $updateFields[] = "updated_at = CURRENT_TIMESTAMP()";
+                $query = "UPDATE projects SET " . implode(", ", $updateFields) . " WHERE id = ?";
+                $stmt = $this->conn->prepare($query);
+                $values[] = $id;
 
-            $query = "UPDATE projects SET " . implode(", ", $updateFields) . " WHERE id = ?";
-            $stmt = $this->conn->prepare($query);
+                if (!$stmt->execute($values)) {
+                    throw new Exception("Failed to update project");
+                }
 
-            $values[] = $id;
-
-            if (!$stmt->execute($values)) {
-                throw new Exception("Failed to update project");
-            }
-
-            if ($stmt->rowCount() === 0) {
-                $this->sendJsonResponse(404, "Project not found or no changes made");
-                return;
+                if ($stmt->rowCount() === 0) {
+                    $checkStmt = $this->conn->prepare("SELECT id FROM projects WHERE id = ?");
+                    $checkStmt->execute([$id]);
+                    if (!$checkStmt->fetch()) {
+                        $this->sendJsonResponse(404, "Project not found");
+                        return;
+                    }
+                }
+            } else {
+                $checkStmt = $this->conn->prepare("SELECT id FROM projects WHERE id = ?");
+                $checkStmt->execute([$id]);
+                if (!$checkStmt->fetch()) {
+                    $this->sendJsonResponse(404, "Project not found");
+                    return;
+                }
             }
 
             $this->sendJsonResponse(200, "Project updated successfully");
