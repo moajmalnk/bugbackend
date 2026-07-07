@@ -388,7 +388,7 @@ class ProjectComplianceController extends BaseAPI
                 return;
             }
 
-            if (!$this->userHasProjectAccess($decoded->user_id, $decoded->role, $decoded, $projectId)) {
+            if (!$this->userHasProjectAccess($decoded->user_id, $this->getEffectiveUserRole($decoded), $decoded, $projectId)) {
                 $this->sendJsonResponse(403, 'Access denied to this project');
                 return;
             }
@@ -657,7 +657,7 @@ class ProjectComplianceController extends BaseAPI
                 return;
             }
 
-            if (!$this->userHasProjectAccess($decoded->user_id, $decoded->role, $decoded, $projectId)) {
+            if (!$this->userHasProjectAccess($decoded->user_id, $userRole, $decoded, $projectId)) {
                 $this->sendJsonResponse(403, 'Access denied to this project');
                 return;
             }
