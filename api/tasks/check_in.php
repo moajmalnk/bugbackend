@@ -11,6 +11,7 @@ ini_set('log_errors', 1);
 error_log("🚀 check_in.php - Script started");
 
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../../utils/work_period.php';
 
 error_log("🚀 check_in.php - BaseAPI.php loaded");
 
@@ -53,16 +54,24 @@ class CheckInController extends BaseAPI {
             $plannedProjects = $input['planned_projects'] ?? [];
             $plannedWork = $input['planned_work'] ?? '';
             $plannedWorkStatus = $input['planned_work_status'] ?? 'not_started';
+
+            $isAdmin = strtolower((string)($decoded->role ?? '')) === 'admin';
+            $attendanceValidation = br_validate_attendance_date(
+                $this->conn,
+                (int)$userId,
+                (string)$submissionDate,
+                'check_in',
+                $isAdmin
+            );
+            if (!$attendanceValidation['ok']) {
+                $this->sendJsonResponse(400, $attendanceValidation['message'] ?? 'Invalid check-in date.');
+                return;
+            }
+            $submissionDate = $attendanceValidation['date'];
             
             error_log("🔍 CheckInController - User ID: $userId, Submission Date: $submissionDate");
             error_log("🔍 CheckInController - Planned Projects: " . json_encode($plannedProjects));
             error_log("🔍 CheckInController - Planned Work: " . substr($plannedWork, 0, 100));
-            
-            // Do not allow future dates
-            if (strtotime($submissionDate) > strtotime(date('Y-m-d'))) {
-                $this->sendJsonResponse(400, 'Future dates are not allowed');
-                return;
-            }
             
             // Validate planned_projects is an array
             if (!is_array($plannedProjects)) {

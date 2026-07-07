@@ -13,10 +13,11 @@ class OwnWorkSubmissionController extends WorkSubmissionController {
         error_log("🔍 OwnWorkSubmissionController::submitOwnWork - User ID: " . $userId . ", Username: " . ($decoded->username ?? 'unknown') . $impersonationInfo . $adminInfo . ", Date: " . ($payload['submission_date'] ?? 'no date'));
         
         $date = $payload['submission_date'] ?? date('Y-m-d');
-        // Do not allow future dates
-        if (strtotime($date) > strtotime(date('Y-m-d'))) {
-            return $this->sendJsonResponse(400, 'Future dates are not allowed');
+        $resolvedDate = $this->resolveAttendanceDateOrFail($decoded, $date, 'submit');
+        if ($resolvedDate === null) {
+            return null;
         }
+        $date = $resolvedDate;
         
         $start = isset($payload['start_time']) && trim($payload['start_time']) !== '' ? $payload['start_time'] : null;
         $hours = isset($payload['hours_today']) ? (float)$payload['hours_today'] : 0;

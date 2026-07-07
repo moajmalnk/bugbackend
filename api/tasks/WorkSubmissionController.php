@@ -12,10 +12,11 @@ class WorkSubmissionController extends BaseAPI {
             error_log("🔍 WorkSubmissionController::submit - User ID: " . $userId . ", Username: " . ($decoded->username ?? 'unknown') . ", Date: " . ($payload['submission_date'] ?? 'no date'));
 
             $date = $payload['submission_date'] ?? date('Y-m-d');
-            // Do not allow future dates
-            if (strtotime($date) > strtotime(date('Y-m-d'))) {
-                return $this->sendJsonResponse(400, 'Future dates are not allowed');
+            $resolvedDate = $this->resolveAttendanceDateOrFail($decoded, $date, 'submit');
+            if ($resolvedDate === null) {
+                return null;
             }
+            $date = $resolvedDate;
             $start = isset($payload['start_time']) && trim($payload['start_time']) !== '' ? $payload['start_time'] : null; // empty string -> NULL for TIME column
             $hours = isset($payload['hours_today']) ? (float)$payload['hours_today'] : 0;
             $days = isset($payload['total_working_days']) ? (int)$payload['total_working_days'] : null;
@@ -440,7 +441,45 @@ class WorkSubmissionController extends BaseAPI {
             error_log("🔍 WorkSubmissionController::mySubmissions - Request ID: $requestId - No rows returned for user: " . $userId);
         }
         
-        $this->sendJsonResponse(200, 'OK', $rows);
+        $this->sendSubmissionsListResponse($rows);
+    }
+
+    protected function isAdminRole($decoded): bool
+    {
+        return strtolower((string)($decoded->role ?? '')) === 'admin';
+    }
+
+    protected function resolveAttendanceDateOrFail($decoded, string $requestedDate, string $context): ?string
+    {
+        $userId = (int)($decoded->user_id ?? 0);
+        $result = br_validate_attendance_date(
+            $this->conn,
+            $userId,
+            $requestedDate,
+            $context,
+            $this->isAdminRole($decoded)
+        );
+        if (!$result['ok']) {
+            $this->sendJsonResponse(400, $result['message'] ?? 'Invalid attendance date.');
+            return null;
+        }
+        return $result['date'];
+    }
+
+    protected function sendSubmissionsListResponse(array $rows): void
+    {
+        if (headers_sent()) {
+            return;
+        }
+
+        http_response_code(200);
+        echo json_encode([
+            'success' => true,
+            'message' => 'OK',
+            'data' => $rows,
+            'server_today' => br_server_today(),
+        ]);
+        exit;
     }
 
     /**

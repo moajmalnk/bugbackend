@@ -20,7 +20,7 @@ class OwnWorkSubmissionController extends WorkSubmissionController {
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
         
         error_log("🔍 OwnWorkSubmissionController::myOwnSubmissions - Found " . count($rows) . " submissions for user: " . $userId . $impersonationInfo);
-        $this->sendJsonResponse(200, 'OK', $rows);
+        $this->sendSubmissionsListResponse($rows);
     }
 }
 
