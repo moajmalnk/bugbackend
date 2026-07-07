@@ -491,6 +491,20 @@ class ProjectComplianceController extends BaseAPI
                 }
             }
 
+            if ($phase === 'project') {
+                $devCount = $this->countVerified($projectId, 'developer');
+                $devTotal = $this->countRules($projectId, 'developer');
+                $qaCount = $this->countVerified($projectId, 'tester');
+                $qaTotal = $this->countRules($projectId, 'tester');
+                if (
+                    ($devTotal > 0 && $devCount < $devTotal) ||
+                    ($qaTotal > 0 && $qaCount < $qaTotal)
+                ) {
+                    $this->sendJsonResponse(403, 'Developer and QA checklists must be complete before project-level verification');
+                    return;
+                }
+            }
+
             if (!$this->ruleCheckExists($projectId, $phase, $ruleKey)) {
                 $this->sendJsonResponse(400, 'Invalid rule_key');
                 return;
@@ -673,7 +687,7 @@ class ProjectComplianceController extends BaseAPI
                 return;
             }
 
-            if (!in_array($phase, ['developer', 'tester'], true)) {
+            if (!in_array($phase, ['developer', 'tester', 'project'], true)) {
                 $this->sendJsonResponse(400, 'Invalid phase');
                 return;
             }
@@ -685,6 +699,11 @@ class ProjectComplianceController extends BaseAPI
 
             if ($phase === 'tester' && !in_array($userRole, ['tester', 'admin'], true)) {
                 $this->sendJsonResponse(403, 'Only testers or admins can add QA rules');
+                return;
+            }
+
+            if ($phase === 'project' && $userRole !== 'admin') {
+                $this->sendJsonResponse(403, 'Only admins can add project-level rules');
                 return;
             }
 
