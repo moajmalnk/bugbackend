@@ -130,23 +130,29 @@ class ProjectController extends BaseAPI
 
             $user_role_lower = strtolower(trim((string) $user_role));
 
-            // Real admin (not impersonating) sees all projects.
-            // When an admin impersonates a developer/tester, return that user's assigned projects
-            // so check-in and similar flows match their "Assigned Projects" view.
-            $is_real_admin = ($user_role_lower === 'admin' && !$is_impersonated);
-
-            if ($is_real_admin) {
+            // Projects list behavior:
+            // - Real admin: all projects
+            // - Developer/tester: all projects (All Projects tab is read-only browse;
+            //   Assigned Projects / check-in filter membership client-side)
+            // - Admin impersonating another user: only that user's assigned projects
+            //   so check-in matches their Assigned Projects view
+            if ($user_role_lower === 'admin' && !$is_impersonated) {
                 $query = "SELECT * FROM projects";
                 $stmt = $this->conn->prepare($query);
                 $stmt->execute();
                 $projects = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            } else {
-                // Developer/tester (including when impersonated as them): assigned projects only
+            } elseif ($is_impersonated) {
                 $query = "SELECT DISTINCT p.* FROM projects p
                           INNER JOIN project_members pm ON p.id = pm.project_id
                           WHERE pm.user_id = ?";
                 $stmt = $this->conn->prepare($query);
                 $stmt->execute([$user_id]);
+                $projects = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            } else {
+                // Developer / tester: allow browsing all projects
+                $query = "SELECT * FROM projects";
+                $stmt = $this->conn->prepare($query);
+                $stmt->execute();
                 $projects = $stmt->fetchAll(PDO::FETCH_ASSOC);
             }
 
