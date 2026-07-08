@@ -13,6 +13,7 @@ class ProjectController extends BaseAPI
         'client_phone',
         'client_account_status',
         'technology_stack',
+        'reference_sites_or_themes',
         'start_date',
         'deadline_date',
         'expected_publish_date',

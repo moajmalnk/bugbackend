@@ -836,8 +836,16 @@ class NotificationManager extends BaseAPI {
      */
     public function notifyWorkCheckIn($userId, $checkInTime, $submissionDate, $plannedWorkSummary = null) {
         $userId = (string) $userId;
+        $role = strtolower((string) $this->getUserRole($userId));
+        // Only notify admin channel for workforce check-ins.
+        if (!in_array($role, ['admin', 'developer', 'tester'], true)) {
+            error_log("NotificationManager::notifyWorkCheckIn - Skip non-workforce role '{$role}' for user {$userId}");
+            return false;
+        }
         $userName = $this->getUserName($userId);
-        $userIds = $this->resolveAdminRecipients($userId);
+        // Requirement: notify admins when admin/developer/tester checks in.
+        // Include all admins (do not exclude actor).
+        $userIds = $this->resolveAdminRecipients(null);
         $notificationType = $this->getValidNotificationType('work_check_in', 'new_update');
         $entityId = $userId . ':' . $submissionDate;
 
@@ -868,6 +876,22 @@ class NotificationManager extends BaseAPI {
                 'created_by' => $userName,
             ]
         );
+    }
+
+    /**
+     * Get user role by user ID.
+     */
+    private function getUserRole($userId) {
+        try {
+            $query = "SELECT role FROM users WHERE id = ? LIMIT 1";
+            $stmt = $this->conn->prepare($query);
+            $stmt->execute([(string) $userId]);
+            $result = $stmt->fetch(PDO::FETCH_ASSOC);
+            return $result ? (string) ($result['role'] ?? '') : '';
+        } catch (Exception $e) {
+            error_log("Error getting user role: " . $e->getMessage());
+            return '';
+        }
     }
 
     /**
