@@ -4,6 +4,22 @@ require_once __DIR__ . '/../BaseAPI.php';
 
 header('Content-Type: application/json');
 
+function tableExists(PDO $conn, string $table): bool {
+    $stmt = $conn->prepare(
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?"
+    );
+    $stmt->execute([$table]);
+    return (int) $stmt->fetchColumn() > 0;
+}
+
+function tableHasColumn(PDO $conn, string $table, string $column): bool {
+    $stmt = $conn->prepare(
+        "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?"
+    );
+    $stmt->execute([$table, $column]);
+    return (int) $stmt->fetchColumn() > 0;
+}
+
 try {
     $api = new BaseAPI();
     $decoded = $api->validateToken();
@@ -37,6 +53,12 @@ try {
         'notification_disabled_users' => 0,
     ];
 
+    $hasTokenTable = tableExists($conn, 'user_fcm_tokens');
+    $hasPwaInstalledColumn = $hasTokenTable && tableHasColumn($conn, 'user_fcm_tokens', 'pwa_installed');
+    $hasIsActiveColumn = $hasTokenTable && tableHasColumn($conn, 'user_fcm_tokens', 'is_active');
+    $activeTokenWhere = $hasIsActiveColumn ? 't.is_active = 1' : '1=1';
+    $pwaInstalledWhere = $hasPwaInstalledColumn ? 'COALESCE(t.pwa_installed, 0) = 1' : '1=0';
+
     $summarySql = "
         SELECT
             (SELECT COUNT(*) FROM users WHERE account_active = 1) AS active_users,
@@ -45,7 +67,7 @@ try {
                     SELECT t.user_id AS uid
                     FROM user_fcm_tokens t
                     INNER JOIN users u ON u.id = t.user_id
-                    WHERE u.account_active = 1 AND t.is_active = 1
+                    WHERE u.account_active = 1 AND {$activeTokenWhere}
                     UNION
                     SELECT u.id AS uid
                     FROM users u
@@ -57,17 +79,17 @@ try {
             (
                 SELECT COUNT(*) FROM user_fcm_tokens t
                 INNER JOIN users u ON u.id = t.user_id
-                WHERE u.account_active = 1 AND t.is_active = 1
+                WHERE u.account_active = 1 AND {$activeTokenWhere}
             ) AS total_device_tokens,
             (
                 SELECT COUNT(DISTINCT t.user_id)
                 FROM user_fcm_tokens t
                 INNER JOIN users u ON u.id = t.user_id
                 WHERE u.account_active = 1
-                  AND t.is_active = 1
-                  AND COALESCE(t.pwa_installed, 0) = 1
+                  AND {$activeTokenWhere}
+                  AND {$pwaInstalledWhere}
             ) AS pwa_installed_users,
-            (SELECT COUNT(*) FROM user_fcm_tokens WHERE is_active = 1 AND last_used >= NOW() - INTERVAL 1 DAY) AS recent_tokens_24h
+            (SELECT COUNT(*) FROM user_fcm_tokens t WHERE {$activeTokenWhere} AND t.last_used >= NOW() - INTERVAL 1 DAY) AS recent_tokens_24h
     ";
     $summaryStmt = $conn->query($summarySql);
     if ($summaryStmt) {
@@ -84,70 +106,90 @@ try {
         }
     }
 
-    $missingUsersSql = "
-        SELECT u.id, u.username, u.email
-        FROM users u
-        LEFT JOIN (
-            SELECT DISTINCT user_id
-            FROM user_fcm_tokens
-            WHERE is_active = 1
-        ) t ON t.user_id = u.id
-        WHERE u.account_active = 1
-          AND (u.fcm_token IS NULL OR TRIM(u.fcm_token) = '')
-          AND t.user_id IS NULL
-        ORDER BY u.username
-    ";
-    $missingUsersStmt = $conn->query($missingUsersSql);
-    $missingUsers = $missingUsersStmt ? $missingUsersStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+    $missingUsers = [];
+    $devices = [];
+    $pwaInstalledUsers = [];
+    $notificationEnabledUsers = [];
 
-    $deviceBreakdownSql = "
-        SELECT user_id, username, browser_name, os_name, device_label, last_used
-        FROM user_fcm_tokens
-        WHERE is_active = 1
-        ORDER BY last_used DESC
-        LIMIT 200
-    ";
-    $deviceBreakdownStmt = $conn->query($deviceBreakdownSql);
-    $devices = $deviceBreakdownStmt ? $deviceBreakdownStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+    if ($hasTokenTable) {
+        $missingUsersSql = "
+            SELECT u.id, u.username, u.email
+            FROM users u
+            LEFT JOIN (
+                SELECT DISTINCT user_id
+                FROM user_fcm_tokens
+                WHERE {$activeTokenWhere}
+            ) t ON t.user_id = u.id
+            WHERE u.account_active = 1
+              AND (u.fcm_token IS NULL OR TRIM(u.fcm_token) = '')
+              AND t.user_id IS NULL
+            ORDER BY u.username
+        ";
+        $missingUsersStmt = $conn->query($missingUsersSql);
+        $missingUsers = $missingUsersStmt ? $missingUsersStmt->fetchAll(PDO::FETCH_ASSOC) : [];
 
-    $pwaInstalledUsersSql = "
-        SELECT
-            u.id,
-            u.username,
-            u.email,
-            COUNT(*) AS device_count,
-            MAX(t.last_used) AS last_used
-        FROM user_fcm_tokens t
-        INNER JOIN users u ON u.id = t.user_id
-        WHERE u.account_active = 1
-          AND t.is_active = 1
-          AND COALESCE(t.pwa_installed, 0) = 1
-        GROUP BY u.id, u.username, u.email
-        ORDER BY last_used DESC
-        LIMIT 200
-    ";
-    $pwaInstalledUsersStmt = $conn->query($pwaInstalledUsersSql);
-    $pwaInstalledUsers = $pwaInstalledUsersStmt ? $pwaInstalledUsersStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+        $deviceBreakdownSql = "
+            SELECT user_id, username, browser_name, os_name, device_label, last_used
+            FROM user_fcm_tokens t
+            WHERE {$activeTokenWhere}
+            ORDER BY last_used DESC
+            LIMIT 200
+        ";
+        $deviceBreakdownStmt = $conn->query($deviceBreakdownSql);
+        $devices = $deviceBreakdownStmt ? $deviceBreakdownStmt->fetchAll(PDO::FETCH_ASSOC) : [];
 
-    $notificationEnabledUsersSql = "
-        SELECT
-            u.id,
-            u.username,
-            u.email,
-            COUNT(*) AS device_count,
-            MAX(t.last_used) AS last_used
-        FROM user_fcm_tokens t
-        INNER JOIN users u ON u.id = t.user_id
-        WHERE u.account_active = 1
-          AND t.is_active = 1
-        GROUP BY u.id, u.username, u.email
-        ORDER BY last_used DESC
-        LIMIT 200
-    ";
-    $notificationEnabledUsersStmt = $conn->query($notificationEnabledUsersSql);
-    $notificationEnabledUsers = $notificationEnabledUsersStmt
-        ? $notificationEnabledUsersStmt->fetchAll(PDO::FETCH_ASSOC)
-        : [];
+        if ($hasPwaInstalledColumn) {
+            $pwaInstalledUsersSql = "
+                SELECT
+                    u.id,
+                    u.username,
+                    u.email,
+                    COUNT(*) AS device_count,
+                    MAX(t.last_used) AS last_used
+                FROM user_fcm_tokens t
+                INNER JOIN users u ON u.id = t.user_id
+                WHERE u.account_active = 1
+                  AND {$activeTokenWhere}
+                  AND {$pwaInstalledWhere}
+                GROUP BY u.id, u.username, u.email
+                ORDER BY last_used DESC
+                LIMIT 200
+            ";
+            $pwaInstalledUsersStmt = $conn->query($pwaInstalledUsersSql);
+            $pwaInstalledUsers = $pwaInstalledUsersStmt ? $pwaInstalledUsersStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+        }
+
+        $notificationEnabledUsersSql = "
+            SELECT
+                u.id,
+                u.username,
+                u.email,
+                COUNT(*) AS device_count,
+                MAX(t.last_used) AS last_used
+            FROM user_fcm_tokens t
+            INNER JOIN users u ON u.id = t.user_id
+            WHERE u.account_active = 1
+              AND {$activeTokenWhere}
+            GROUP BY u.id, u.username, u.email
+            ORDER BY last_used DESC
+            LIMIT 200
+        ";
+        $notificationEnabledUsersStmt = $conn->query($notificationEnabledUsersSql);
+        $notificationEnabledUsers = $notificationEnabledUsersStmt
+            ? $notificationEnabledUsersStmt->fetchAll(PDO::FETCH_ASSOC)
+            : [];
+    } else {
+        $missingUsersSql = "
+            SELECT u.id, u.username, u.email
+            FROM users u
+            WHERE u.account_active = 1
+              AND (u.fcm_token IS NULL OR TRIM(u.fcm_token) = '')
+            ORDER BY u.username
+            LIMIT 200
+        ";
+        $missingUsersStmt = $conn->query($missingUsersSql);
+        $missingUsers = $missingUsersStmt ? $missingUsersStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+    }
 
     $notificationDisabledUsersSql = "
         SELECT u.id, u.username, u.email
