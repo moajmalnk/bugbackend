@@ -77,6 +77,7 @@ function ensureUserFcmTokensTable(PDO $conn) {
         'browser_name' => "VARCHAR(64) DEFAULT NULL",
         'os_name' => "VARCHAR(64) DEFAULT NULL",
         'device_label' => "VARCHAR(120) DEFAULT NULL",
+        'pwa_installed' => "TINYINT(1) NOT NULL DEFAULT 0",
         'is_active' => "TINYINT(1) NOT NULL DEFAULT 1",
         'last_delivered_at' => "TIMESTAMP NULL DEFAULT NULL",
         'delivery_failures' => "INT UNSIGNED NOT NULL DEFAULT 0",
@@ -154,6 +155,7 @@ try {
     $browserName = isset($data['browser_name']) ? trim((string) $data['browser_name']) : null;
     $osName = isset($data['os_name']) ? trim((string) $data['os_name']) : null;
     $deviceLabel = isset($data['device_label']) ? trim((string) $data['device_label']) : null;
+    $pwaInstalled = isset($data['pwa_installed']) ? (int) !!$data['pwa_installed'] : 0;
 
     if (!$token || !$userId) {
         throw new Exception('Missing token or user', 400);
@@ -211,6 +213,11 @@ try {
                 $columns[] = 'device_label';
                 $values[] = $deviceLabel;
                 $updates[] = 'device_label = VALUES(device_label)';
+            }
+            if (tableHasColumn($conn, 'user_fcm_tokens', 'pwa_installed')) {
+                $columns[] = 'pwa_installed';
+                $values[] = $pwaInstalled;
+                $updates[] = 'pwa_installed = VALUES(pwa_installed)';
             }
             if (tableHasColumn($conn, 'user_fcm_tokens', 'is_active')) {
                 $columns[] = 'is_active';

@@ -32,6 +32,9 @@ try {
         'users_without_tokens' => 0,
         'total_device_tokens' => 0,
         'recent_tokens_24h' => 0,
+        'pwa_installed_users' => 0,
+        'notification_enabled_users' => 0,
+        'notification_disabled_users' => 0,
     ];
 
     $summarySql = "
@@ -56,6 +59,14 @@ try {
                 INNER JOIN users u ON u.id = t.user_id
                 WHERE u.account_active = 1 AND t.is_active = 1
             ) AS total_device_tokens,
+            (
+                SELECT COUNT(DISTINCT t.user_id)
+                FROM user_fcm_tokens t
+                INNER JOIN users u ON u.id = t.user_id
+                WHERE u.account_active = 1
+                  AND t.is_active = 1
+                  AND COALESCE(t.pwa_installed, 0) = 1
+            ) AS pwa_installed_users,
             (SELECT COUNT(*) FROM user_fcm_tokens WHERE is_active = 1 AND last_used >= NOW() - INTERVAL 1 DAY) AS recent_tokens_24h
     ";
     $summaryStmt = $conn->query($summarySql);
@@ -65,8 +76,11 @@ try {
             $summary['active_users'] = (int)$row['active_users'];
             $summary['users_with_tokens'] = (int)$row['users_with_tokens'];
             $summary['total_device_tokens'] = (int)$row['total_device_tokens'];
+            $summary['pwa_installed_users'] = (int)$row['pwa_installed_users'];
             $summary['recent_tokens_24h'] = (int)$row['recent_tokens_24h'];
             $summary['users_without_tokens'] = max(0, $summary['active_users'] - $summary['users_with_tokens']);
+            $summary['notification_enabled_users'] = $summary['users_with_tokens'];
+            $summary['notification_disabled_users'] = $summary['users_without_tokens'];
         }
     }
 
@@ -96,12 +110,73 @@ try {
     $deviceBreakdownStmt = $conn->query($deviceBreakdownSql);
     $devices = $deviceBreakdownStmt ? $deviceBreakdownStmt->fetchAll(PDO::FETCH_ASSOC) : [];
 
+    $pwaInstalledUsersSql = "
+        SELECT
+            u.id,
+            u.username,
+            u.email,
+            COUNT(*) AS device_count,
+            MAX(t.last_used) AS last_used
+        FROM user_fcm_tokens t
+        INNER JOIN users u ON u.id = t.user_id
+        WHERE u.account_active = 1
+          AND t.is_active = 1
+          AND COALESCE(t.pwa_installed, 0) = 1
+        GROUP BY u.id, u.username, u.email
+        ORDER BY last_used DESC
+        LIMIT 200
+    ";
+    $pwaInstalledUsersStmt = $conn->query($pwaInstalledUsersSql);
+    $pwaInstalledUsers = $pwaInstalledUsersStmt ? $pwaInstalledUsersStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+
+    $notificationEnabledUsersSql = "
+        SELECT
+            u.id,
+            u.username,
+            u.email,
+            COUNT(*) AS device_count,
+            MAX(t.last_used) AS last_used
+        FROM user_fcm_tokens t
+        INNER JOIN users u ON u.id = t.user_id
+        WHERE u.account_active = 1
+          AND t.is_active = 1
+        GROUP BY u.id, u.username, u.email
+        ORDER BY last_used DESC
+        LIMIT 200
+    ";
+    $notificationEnabledUsersStmt = $conn->query($notificationEnabledUsersSql);
+    $notificationEnabledUsers = $notificationEnabledUsersStmt
+        ? $notificationEnabledUsersStmt->fetchAll(PDO::FETCH_ASSOC)
+        : [];
+
+    $notificationDisabledUsersSql = "
+        SELECT u.id, u.username, u.email
+        FROM users u
+        LEFT JOIN (
+            SELECT DISTINCT user_id
+            FROM user_fcm_tokens
+            WHERE is_active = 1
+        ) t ON t.user_id = u.id
+        WHERE u.account_active = 1
+          AND (u.fcm_token IS NULL OR TRIM(u.fcm_token) = '')
+          AND t.user_id IS NULL
+        ORDER BY u.username
+        LIMIT 200
+    ";
+    $notificationDisabledUsersStmt = $conn->query($notificationDisabledUsersSql);
+    $notificationDisabledUsers = $notificationDisabledUsersStmt
+        ? $notificationDisabledUsersStmt->fetchAll(PDO::FETCH_ASSOC)
+        : [];
+
     echo json_encode([
         'success' => true,
         'data' => [
             'summary' => $summary,
             'missing_users' => $missingUsers,
             'devices' => $devices,
+            'pwa_installed_users' => $pwaInstalledUsers,
+            'notification_enabled_users' => $notificationEnabledUsers,
+            'notification_disabled_users' => $notificationDisabledUsers,
         ],
     ]);
 } catch (Exception $e) {
