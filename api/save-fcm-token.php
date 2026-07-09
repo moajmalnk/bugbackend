@@ -83,7 +83,14 @@ try {
         error_log("save-fcm-token: Could not add fcm_token column: " . $e->getMessage());
     }
 
-    ensureUserFcmTokensSchema($conn);
+    $hasTokenTable = false;
+    try {
+        ensureUserFcmTokensSchema($conn);
+        $hasTokenTable = true;
+    } catch (Throwable $schemaError) {
+        // Do not hard-fail push setup if schema migration is blocked in production.
+        error_log("save-fcm-token: user_fcm_tokens schema unavailable, falling back to users.fcm_token only: " . $schemaError->getMessage());
+    }
 
     $decoded = $controller->validateToken();
     $userId = $decoded->user_id ?? null;
@@ -100,18 +107,25 @@ try {
 
     $tokenHash = hash('sha256', $token);
 
-    $upsertStmt = $conn->prepare("
-        INSERT INTO user_fcm_tokens (user_id, token, token_hash, device_type, platform, user_agent, last_used)
-        VALUES (?, ?, ?, ?, ?, ?, NOW())
-        ON DUPLICATE KEY UPDATE
-            user_id = VALUES(user_id),
-            token = VALUES(token),
-            device_type = VALUES(device_type),
-            platform = VALUES(platform),
-            user_agent = VALUES(user_agent),
-            last_used = NOW()
-    ");
-    $upsertStmt->execute([$userId, $token, $tokenHash, $deviceType, $platform, $userAgent]);
+    if ($hasTokenTable) {
+        try {
+            $upsertStmt = $conn->prepare("
+                INSERT INTO user_fcm_tokens (user_id, token, token_hash, device_type, platform, user_agent, last_used)
+                VALUES (?, ?, ?, ?, ?, ?, NOW())
+                ON DUPLICATE KEY UPDATE
+                    user_id = VALUES(user_id),
+                    token = VALUES(token),
+                    device_type = VALUES(device_type),
+                    platform = VALUES(platform),
+                    user_agent = VALUES(user_agent),
+                    last_used = NOW()
+            ");
+            $upsertStmt->execute([$userId, $token, $tokenHash, $deviceType, $platform, $userAgent]);
+        } catch (Throwable $upsertError) {
+            // Keep legacy path working even if side-table write fails.
+            error_log("save-fcm-token: user_fcm_tokens upsert failed, continuing with users.fcm_token update: " . $upsertError->getMessage());
+        }
+    }
 
     $stmt = $conn->prepare("UPDATE users SET fcm_token = ? WHERE id = ?");
     $stmt->execute([$token, $userId]);
