@@ -9,6 +9,7 @@ require_once __DIR__ . '/../../config/database.php';
 require_once __DIR__ . '/../../config/environment.php';
 require_once __DIR__ . '/../../config/utils.php';
 require_once __DIR__ . '/../../config/cors.php';
+require_once __DIR__ . '/../../config/fcm_config.php';
 
 // Set headers
 header('Content-Type: application/json');
@@ -118,7 +119,8 @@ try {
         'success' => true,
         'message' => 'Authentication successful',
         'token' => $token,
-        'user' => $user
+        'user' => $user,
+        'fcm_token_epoch' => FcmConfig::getTokenEpoch(),
     ]);
     
 } catch (Exception $e) {

@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../../config/fcm_config.php';
 
 class AuthController extends BaseAPI {
     protected $pdo;
@@ -71,12 +72,12 @@ class AuthController extends BaseAPI {
             
             $this->sendJsonResponse(201, "User registered successfully", [
                 "token" => $token,
-                "user" => [
+                "user" => FcmConfig::appendEpochToPayload([
                     "id" => $user_id,
                     "username" => $data['username'],
                     "email" => $data['email'],
                     "role" => $data['role']
-                ]
+                ])
             ]);
             
         } catch (Exception $e) {
@@ -137,7 +138,8 @@ class AuthController extends BaseAPI {
             
             $this->sendJsonResponse(200, "Login successful", [
                 "token" => $token,
-                "user" => $user
+                "user" => FcmConfig::appendEpochToPayload($user),
+                "fcm_token_epoch" => FcmConfig::getTokenEpoch(),
             ]);
             
         } catch (Exception $e) {
@@ -174,7 +176,7 @@ class AuthController extends BaseAPI {
             }
 
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
-            $this->sendJsonResponse(200, "User details retrieved successfully", $user);
+            $this->sendJsonResponse(200, "User details retrieved successfully", FcmConfig::appendEpochToPayload($user));
 
         } catch (Exception $e) {
             $this->sendJsonResponse(401, "Authentication failed: " . $e->getMessage());
@@ -202,8 +204,9 @@ class AuthController extends BaseAPI {
                 $token = Utils::generateJWT($user['id'], $username, $user['role']);
                 return [
                     'success' => true,
-                    'user' => $user,
-                    'token' => $token
+                    'user' => FcmConfig::appendEpochToPayload($user),
+                    'token' => $token,
+                    'fcm_token_epoch' => FcmConfig::getTokenEpoch(),
                 ];
             }
         }

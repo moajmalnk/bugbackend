@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../../config/cors.php';
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../../config/fcm_config.php';
 
 header('Content-Type: application/json');
 
@@ -53,6 +54,8 @@ try {
         'pwa_installed_users' => 0,
         'notification_enabled_users' => 0,
         'notification_disabled_users' => 0,
+        'stale_tokens_30d' => 0,
+        'legacy_recovered_tokens' => 0,
     ];
 
     $hasTokenTable = tableExists($conn, 'user_fcm_tokens');
@@ -97,7 +100,18 @@ try {
                     SELECT COUNT(*) FROM user_fcm_tokens t
                     WHERE {$activeWhereT}
                       AND t.last_used >= NOW() - INTERVAL 1 DAY
-                ) AS recent_tokens_24h
+                ) AS recent_tokens_24h,
+                (
+                    SELECT COUNT(*) FROM user_fcm_tokens t
+                    WHERE {$activeWhereT}
+                      AND (t.last_used IS NULL OR t.last_used < NOW() - INTERVAL 30 DAY)
+                ) AS stale_tokens_30d,
+                (
+                    SELECT COUNT(*) FROM user_fcm_tokens t
+                    WHERE (t.device_label LIKE '%Recovered%' OR t.device_label LIKE '%recovered%')
+                       OR (t.platform LIKE '%legacy%' OR t.platform LIKE '%migration%')
+                       OR (t.user_agent LIKE '%legacy%')
+                ) AS legacy_recovered_tokens
         ";
     } else {
         $summarySql = "
@@ -112,7 +126,9 @@ try {
                 ) AS users_with_tokens,
                 0 AS total_device_tokens,
                 0 AS pwa_installed_users,
-                0 AS recent_tokens_24h
+                0 AS recent_tokens_24h,
+                0 AS stale_tokens_30d,
+                0 AS legacy_recovered_tokens
         ";
     }
 
@@ -125,6 +141,8 @@ try {
             $summary['total_device_tokens'] = (int) ($row['total_device_tokens'] ?? 0);
             $summary['pwa_installed_users'] = (int) ($row['pwa_installed_users'] ?? 0);
             $summary['recent_tokens_24h'] = (int) ($row['recent_tokens_24h'] ?? 0);
+            $summary['stale_tokens_30d'] = (int) ($row['stale_tokens_30d'] ?? 0);
+            $summary['legacy_recovered_tokens'] = (int) ($row['legacy_recovered_tokens'] ?? 0);
             $summary['users_without_tokens'] = max(0, $summary['active_users'] - $summary['users_with_tokens']);
             $summary['notification_enabled_users'] = $summary['users_with_tokens'];
             $summary['notification_disabled_users'] = $summary['users_without_tokens'];
@@ -156,7 +174,24 @@ try {
         $missingUsers = $missingUsersStmt ? $missingUsersStmt->fetchAll(PDO::FETCH_ASSOC) : [];
 
         $deviceBreakdownSql = "
-            SELECT t.user_id, t.username, t.browser_name, t.os_name, t.device_label, t.last_used
+            SELECT
+                t.user_id,
+                t.username,
+                t.browser_name,
+                t.os_name,
+                t.device_label,
+                t.platform,
+                t.last_used,
+                CASE
+                    WHEN (t.device_label LIKE '%Recovered%' OR t.device_label LIKE '%recovered%'
+                       OR t.platform LIKE '%legacy%' OR t.platform LIKE '%migration%'
+                       OR t.user_agent LIKE '%legacy%') THEN 1
+                    ELSE 0
+                END AS is_legacy,
+                CASE
+                    WHEN t.last_used IS NULL OR t.last_used < NOW() - INTERVAL 30 DAY THEN 1
+                    ELSE 0
+                END AS is_stale
             FROM user_fcm_tokens t
             WHERE {$activeWhereT}
             ORDER BY t.last_used DESC
@@ -164,6 +199,11 @@ try {
         ";
         $deviceBreakdownStmt = $conn->query($deviceBreakdownSql);
         $devices = $deviceBreakdownStmt ? $deviceBreakdownStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+        foreach ($devices as &$deviceRow) {
+            $deviceRow['is_legacy'] = (int) ($deviceRow['is_legacy'] ?? 0);
+            $deviceRow['is_stale'] = (int) ($deviceRow['is_stale'] ?? 0);
+        }
+        unset($deviceRow);
 
         if ($hasPwaInstalledColumn) {
             $pwaInstalledUsersSql = "
@@ -247,6 +287,7 @@ try {
             'pwa_installed_users' => $pwaInstalledUsers,
             'notification_enabled_users' => $notificationEnabledUsers,
             'notification_disabled_users' => $notificationDisabledUsers,
+            'fcm_token_epoch' => FcmConfig::getTokenEpoch(),
         ],
     ]);
 } catch (Throwable $e) {

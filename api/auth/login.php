@@ -2,6 +2,7 @@
 require_once __DIR__ . '/../../config/cors.php';
 require_once __DIR__ . '/../../config/database.php';
 require_once __DIR__ . '/../../config/utils.php';
+require_once __DIR__ . '/../../config/fcm_config.php';
 require_once 'AuthController.php';
 
 header('Content-Type: application/json');
@@ -22,6 +23,7 @@ $auth = new AuthController($pdo);
 $result = $auth->loginWithIdentifier($identifier, $password);
 
 if ($result['success']) {
+    $result['fcm_token_epoch'] = FcmConfig::getTokenEpoch();
     echo json_encode($result);
 } else {
     http_response_code(401);

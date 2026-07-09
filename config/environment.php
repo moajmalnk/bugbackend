@@ -41,6 +41,9 @@ class Environment {
             'SMTP_PASS',
             'SMTP_FROM_EMAIL',
             'SMTP_FROM_NAME',
+            'FCM_TOKEN_EPOCH',
+            'FIREBASE_SERVICE_ACCOUNT_BASE64',
+            'FIREBASE_SERVICE_ACCOUNT_PATH',
         ];
         
         foreach ($envVars as $var) {

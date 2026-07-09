@@ -98,7 +98,35 @@ class FirebaseMessagingService {
         ");
     }
 
+    private function tokenTableHasIsActiveColumn() {
+        static $hasColumn = null;
+        if ($hasColumn !== null) {
+            return $hasColumn;
+        }
+        try {
+            $stmt = $this->conn->prepare(
+                "SELECT COUNT(*) FROM information_schema.columns
+                 WHERE table_schema = DATABASE()
+                   AND table_name = 'user_fcm_tokens'
+                   AND column_name = 'is_active'"
+            );
+            $stmt->execute();
+            $hasColumn = (int) $stmt->fetchColumn() > 0;
+        } catch (Throwable $e) {
+            $hasColumn = false;
+        }
+        return $hasColumn;
+    }
+
+    private function activeTokenSqlCondition($alias = 't') {
+        if ($this->tokenTableHasIsActiveColumn()) {
+            return " AND {$alias}.is_active = 1";
+        }
+        return '';
+    }
+
     public function sendToAllUsers($title, $body, array $data = []) {
+        $activeWhere = $this->activeTokenSqlCondition('t');
         $tokenRows = $this->conn
             ->query("
                 SELECT DISTINCT t.token
@@ -107,6 +135,7 @@ class FirebaseMessagingService {
                 WHERE u.account_active = 1
                   AND t.token IS NOT NULL
                   AND TRIM(t.token) <> ''
+                  {$activeWhere}
             ")
             ->fetchAll(PDO::FETCH_COLUMN);
 
@@ -146,6 +175,7 @@ class FirebaseMessagingService {
         }
 
         $placeholders = implode(',', array_fill(0, count($userIds), '?'));
+        $activeWhere = $this->activeTokenSqlCondition('t');
 
         $stmt = $this->conn->prepare(
             "SELECT DISTINCT t.token
@@ -153,7 +183,8 @@ class FirebaseMessagingService {
              INNER JOIN users u ON u.id = t.user_id
              WHERE u.account_active = 1
                AND t.user_id IN ($placeholders)
-               AND t.token IS NOT NULL AND TRIM(t.token) <> ''"
+               AND t.token IS NOT NULL AND TRIM(t.token) <> ''
+               {$activeWhere}"
         );
         $stmt->execute($userIds);
         $tokenRows = $stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];

@@ -1,5 +1,6 @@
 <?php
 require_once '../BaseAPI.php';
+require_once __DIR__ . '/../../config/fcm_config.php';
 
 class MeController extends BaseAPI {
     public function __construct() {
@@ -42,6 +43,7 @@ class MeController extends BaseAPI {
                     return;
                 }
                 unset($user['account_active']);
+                $user = FcmConfig::appendEpochToPayload($user);
                 $this->sendJsonResponse(200, "User data retrieved successfully", $user);
             } else {
                 $this->sendJsonResponse(403, "Account no longer available.", null, false, 'ACCOUNT_REVOKED');
