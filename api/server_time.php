@@ -3,6 +3,8 @@
  * Lightweight server clock endpoint (no Composer / JWT dependencies).
  * Used to detect manual device date changes before login and attendance.
  */
+require_once __DIR__ . '/../config/cors.php';
+
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 
