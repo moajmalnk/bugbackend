@@ -1,6 +1,9 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../ActivityLogger.php';
+require_once __DIR__ . '/../NotificationManager.php';
+require_once __DIR__ . '/../../utils/send_email.php';
+require_once __DIR__ . '/../../services/FirebaseMessagingService.php';
 
 class AnnouncementController extends BaseAPI {
 
@@ -114,6 +117,9 @@ class AnnouncementController extends BaseAPI {
             $isActive = isset($data['is_active']) ? (int)$data['is_active'] : 0;
             $expiryDate = isset($data['expiry_date']) ? $data['expiry_date'] : null;
             $role = isset($data['role']) ? $data['role'] : 'all';
+            $recipientUserIds = isset($data['recipient_user_ids']) && is_array($data['recipient_user_ids'])
+                ? array_values(array_unique(array_filter(array_map('strval', $data['recipient_user_ids']))))
+                : [];
 
             $stmt->execute([
                 $data['title'],
@@ -148,6 +154,18 @@ class AnnouncementController extends BaseAPI {
                 );
             } catch (Exception $e) {
                 error_log("Failed to log announcement creation activity: " . $e->getMessage());
+            }
+
+            try {
+                $this->notifyAnnouncementRecipients(
+                    (string)$data['title'],
+                    (string)$data['content'],
+                    $role,
+                    $recipientUserIds,
+                    (string)$decoded->user_id
+                );
+            } catch (Exception $e) {
+                error_log("Failed to notify announcement recipients: " . $e->getMessage());
             }
 
             $this->sendJsonResponse(201, "Announcement created successfully", $announcement);
@@ -326,5 +344,130 @@ class AnnouncementController extends BaseAPI {
 
         curl_exec($ch);
         curl_close($ch);
+    }
+
+    private function notifyAnnouncementRecipients($title, $content, $role, array $recipientUserIds, $actorUserId) {
+        $userIds = $this->resolveAnnouncementRecipientUserIds($role, $recipientUserIds);
+        if (empty($userIds)) {
+            error_log('Announcement notifications skipped: no active recipients.');
+            return;
+        }
+
+        try {
+            $notificationManager = NotificationManager::getInstance();
+            $notificationManager->createNotification(
+                'new_update',
+                'New Announcement',
+                $content,
+                $userIds,
+                [
+                    'entity_type' => 'announcement',
+                    'entity_id' => null,
+                    'created_by' => (string)$actorUserId,
+                ]
+            );
+        } catch (Exception $e) {
+            error_log('Announcement in-app notification failed: ' . $e->getMessage());
+        }
+
+        try {
+            $messaging = new FirebaseMessagingService($this->conn);
+            $messaging->sendToUsers($userIds, 'New Announcement', $content, [
+                'type' => 'announcement_broadcast',
+                'entity_type' => 'announcement',
+                'url' => '/notifications',
+                'click_action' => '/notifications',
+            ]);
+        } catch (Exception $e) {
+            error_log('Announcement push notification failed: ' . $e->getMessage());
+        }
+
+        $emails = $this->getRecipientEmailsByUserIds($userIds);
+        if (!empty($emails)) {
+            $body = $this->buildAnnouncementEmailBody($title, $content);
+            sendBugNotification($emails, '📣 New Announcement: ' . $title, $body, []);
+        }
+    }
+
+    private function resolveAnnouncementRecipientUserIds($role, array $recipientUserIds) {
+        if (!empty($recipientUserIds)) {
+            return $this->filterActiveUserIds($recipientUserIds);
+        }
+
+        $roles = [];
+        $role = trim((string)$role);
+        if ($role === '' || strtolower($role) === 'all') {
+            return $this->getAllActiveUserIds();
+        }
+
+        foreach (explode(',', $role) as $roleValue) {
+            $normalized = strtolower(trim($roleValue));
+            if ($normalized === 'admins') {
+                $roles[] = 'admin';
+            } elseif ($normalized === 'developers') {
+                $roles[] = 'developer';
+            } elseif ($normalized === 'testers') {
+                $roles[] = 'tester';
+            }
+        }
+
+        if (empty($roles)) {
+            return $this->getAllActiveUserIds();
+        }
+
+        $placeholders = implode(',', array_fill(0, count($roles), '?'));
+        $stmt = $this->conn->prepare("SELECT id FROM users WHERE account_active = 1 AND role IN ($placeholders)");
+        $stmt->execute($roles);
+        $ids = $stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+        return array_values(array_unique(array_map('strval', $ids)));
+    }
+
+    private function filterActiveUserIds(array $userIds) {
+        $userIds = array_values(array_unique(array_filter(array_map('strval', $userIds))));
+        if (empty($userIds)) {
+            return [];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($userIds), '?'));
+        $stmt = $this->conn->prepare("SELECT id FROM users WHERE account_active = 1 AND id IN ($placeholders)");
+        $stmt->execute($userIds);
+        $ids = $stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+        return array_values(array_unique(array_map('strval', $ids)));
+    }
+
+    private function getAllActiveUserIds() {
+        $stmt = $this->conn->query("SELECT id FROM users WHERE account_active = 1");
+        $ids = $stmt ? ($stmt->fetchAll(PDO::FETCH_COLUMN) ?: []) : [];
+        return array_values(array_unique(array_map('strval', $ids)));
+    }
+
+    private function getRecipientEmailsByUserIds(array $userIds) {
+        if (empty($userIds)) {
+            return [];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($userIds), '?'));
+        $stmt = $this->conn->prepare(
+            "SELECT DISTINCT email FROM users WHERE account_active = 1 AND id IN ($placeholders) AND email IS NOT NULL AND TRIM(email) <> ''"
+        );
+        $stmt->execute($userIds);
+        $emails = $stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+        return array_values(array_unique(array_filter(array_map('trim', $emails))));
+    }
+
+    private function buildAnnouncementEmailBody($title, $content) {
+        $safeTitle = htmlspecialchars((string)$title);
+        $safeContent = nl2br(htmlspecialchars((string)$content));
+        return '<div style="font-family: Segoe UI, Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;">'
+            . '<div style="max-width: 620px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">'
+            . '<div style="background: linear-gradient(135deg, #4f46e5 0%, #9333ea 100%); color: #ffffff; padding: 20px; text-align: center;">'
+            . '<h1 style="margin: 0; font-size: 22px;">New Announcement</h1>'
+            . '<p style="margin: 8px 0 0 0; font-size: 14px; opacity: 0.95;">BugRicer Broadcast</p></div>'
+            . '<div style="padding: 24px;">'
+            . '<h2 style="margin: 0 0 14px 0; color: #1e293b; font-size: 18px;">' . $safeTitle . '</h2>'
+            . '<div style="background: #f8fafc; border-radius: 6px; padding: 14px; font-size: 14px;">' . $safeContent . '</div>'
+            . '<p style="margin-top: 18px; color: #64748b; font-size: 13px;">Open BugRicer to view complete announcement details.</p>'
+            . '</div><div style="background: #f8fafc; color: #64748b; padding: 14px; text-align: center; font-size: 12px;">'
+            . '&copy; ' . date('Y') . ' BugRicer. Automated notification.</div></div></div>';
     }
 }
