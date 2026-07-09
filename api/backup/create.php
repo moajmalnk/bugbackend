@@ -391,12 +391,20 @@ class BackupController {
         $cmd = escapeshellarg($phpBinary) . ' ' . escapeshellarg($worker) . ' ' . (int) $jobId;
         if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
             pclose(popen('start /B ' . $cmd, 'r'));
+            error_log("🚀 Spawned backup worker for job $jobId (windows)");
+            return true;
         } else {
-            exec($cmd . ' > /dev/null 2>&1 &');
+            $output = [];
+            $exitCode = 0;
+            exec($cmd . ' > /dev/null 2>&1 & echo $!', $output, $exitCode);
+            $pid = isset($output[0]) ? (int) $output[0] : 0;
+            if ($exitCode !== 0 || $pid <= 0) {
+                error_log("❌ Failed to spawn backup worker for job $jobId (exit=$exitCode, pid=$pid)");
+                return false;
+            }
+            error_log("🚀 Spawned backup worker for job $jobId with pid $pid");
+            return true;
         }
-
-        error_log("🚀 Spawned backup worker for job $jobId");
-        return true;
     }
     
     private function createBackup($email, array $options = []) {
