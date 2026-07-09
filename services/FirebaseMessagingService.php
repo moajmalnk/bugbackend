@@ -217,52 +217,57 @@ class FirebaseMessagingService {
         $sentCount = 0;
         $failureCount = 0;
         $invalidTokens = [];
+        $unknownTokens = [];
 
         foreach (array_chunk($tokens, 500) as $chunk) {
             $report = $this->messaging->sendMulticast($message, $chunk);
             $sentCount += $report->successes()->count();
             $failureCount += $report->failures()->count();
-            $invalidTokens = array_merge(
-                $invalidTokens,
-                $report->invalidTokens(),
-                $report->unknownTokens()
-            );
+            $invalidTokens = array_merge($invalidTokens, $report->invalidTokens());
+            $unknownTokens = array_merge($unknownTokens, $report->unknownTokens());
         }
 
         $invalidTokens = array_values(array_unique($invalidTokens));
-        $deletedCount = $this->deleteInvalidTokens($invalidTokens);
+        $unknownTokens = array_values(array_unique($unknownTokens));
+        $deactivatedCount = $this->deactivateInvalidTokens($invalidTokens);
 
         error_log(sprintf(
-            'FCM multicast report: sent=%d, failed=%d, invalid_removed=%d',
+            'FCM multicast report: sent=%d, failed=%d, invalid_deactivated=%d, unknown=%d',
             $sentCount,
             $failureCount,
-            $deletedCount
+            $deactivatedCount,
+            count($unknownTokens)
         ));
 
         return [
             'success' => $sentCount > 0,
             'sent_count' => $sentCount,
             'failure_count' => $failureCount,
-            'invalid_tokens_removed' => $deletedCount,
+            'invalid_tokens_removed' => $deactivatedCount,
             'invalid_tokens' => $invalidTokens,
+            'unknown_tokens' => $unknownTokens,
         ];
     }
 
-    private function deleteInvalidTokens(array $tokens) {
+    private function deactivateInvalidTokens(array $tokens) {
         if (empty($tokens)) {
             return 0;
         }
 
-        $deleteStmt = $this->conn->prepare("DELETE FROM user_fcm_tokens WHERE token_hash = ?");
+        $deactivateStmt = $this->conn->prepare(
+            "UPDATE user_fcm_tokens
+             SET is_active = 0, delivery_failures = delivery_failures + 1
+             WHERE token_hash = ?"
+        );
         $updateLegacyStmt = $this->conn->prepare("UPDATE users SET fcm_token = NULL WHERE fcm_token = ?");
-        $deletedCount = 0;
+        $updatedCount = 0;
 
         foreach ($tokens as $token) {
-            $deleteStmt->execute([hash('sha256', $token)]);
-            $deletedCount += $deleteStmt->rowCount();
+            $deactivateStmt->execute([hash('sha256', $token)]);
+            $updatedCount += $deactivateStmt->rowCount();
             $updateLegacyStmt->execute([$token]);
         }
 
-        return $deletedCount;
+        return $updatedCount;
     }
 }

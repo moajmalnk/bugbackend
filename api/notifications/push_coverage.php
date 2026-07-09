@@ -37,8 +37,25 @@ try {
     $summarySql = "
         SELECT
             (SELECT COUNT(*) FROM users WHERE account_active = 1) AS active_users,
-            (SELECT COUNT(DISTINCT user_id) FROM user_fcm_tokens WHERE is_active = 1) AS users_with_tokens,
-            (SELECT COUNT(*) FROM user_fcm_tokens WHERE is_active = 1) AS total_device_tokens,
+            (
+                SELECT COUNT(DISTINCT uid) FROM (
+                    SELECT t.user_id AS uid
+                    FROM user_fcm_tokens t
+                    INNER JOIN users u ON u.id = t.user_id
+                    WHERE u.account_active = 1 AND t.is_active = 1
+                    UNION
+                    SELECT u.id AS uid
+                    FROM users u
+                    WHERE u.account_active = 1
+                      AND u.fcm_token IS NOT NULL
+                      AND TRIM(u.fcm_token) <> ''
+                ) as covered
+            ) AS users_with_tokens,
+            (
+                SELECT COUNT(*) FROM user_fcm_tokens t
+                INNER JOIN users u ON u.id = t.user_id
+                WHERE u.account_active = 1 AND t.is_active = 1
+            ) AS total_device_tokens,
             (SELECT COUNT(*) FROM user_fcm_tokens WHERE is_active = 1 AND last_used >= NOW() - INTERVAL 1 DAY) AS recent_tokens_24h
     ";
     $summaryStmt = $conn->query($summarySql);
@@ -62,6 +79,7 @@ try {
             WHERE is_active = 1
         ) t ON t.user_id = u.id
         WHERE u.account_active = 1
+          AND (u.fcm_token IS NULL OR TRIM(u.fcm_token) = '')
           AND t.user_id IS NULL
         ORDER BY u.username
     ";
