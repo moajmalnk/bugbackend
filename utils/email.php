@@ -114,6 +114,9 @@ function sendEmail($to, $subject, $html_body, $text_body = '') {
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port = $smtpPort;
 
+        $mail->CharSet = PHPMailer::CHARSET_UTF8;
+        $mail->Encoding = 'base64';
+
         $mail->setFrom($fromEmail, $fromName);
         $mail->addAddress($to);
         
@@ -184,6 +187,8 @@ function sendEmailWithAttachment(
         $mail->Password = $smtpPass;
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port = $smtpPort;
+        $mail->CharSet = PHPMailer::CHARSET_UTF8;
+        $mail->Encoding = 'base64';
         $mail->setFrom($fromEmail, $fromName);
         $mail->addAddress($to);
         $mail->isHTML(true);

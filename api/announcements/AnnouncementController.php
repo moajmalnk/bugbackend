@@ -385,7 +385,7 @@ class AnnouncementController extends BaseAPI {
         $emails = $this->getRecipientEmailsByUserIds($userIds);
         if (!empty($emails)) {
             $body = $this->buildAnnouncementEmailBody($title, $content);
-            sendBugNotification($emails, '📣 New Announcement: ' . $title, $body, []);
+            sendBugNotification($emails, '[BugRicer] New Announcement: ' . $title, $body, []);
         }
     }
 

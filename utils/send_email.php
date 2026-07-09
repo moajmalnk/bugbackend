@@ -9,6 +9,11 @@ if (!class_exists('PHPMailer\PHPMailer\PHPMailer')) {
     require_once __DIR__ . '/../config/composer_autoload.php';
 }
 
+function configurePhpMailerUtf8(PHPMailer $mail): void {
+    $mail->CharSet = PHPMailer::CHARSET_UTF8;
+    $mail->Encoding = 'base64';
+}
+
 function sendBugNotification($to, $subject, $body, $attachments = []) {
     // Log function call
     error_log("Sending bug notification to: " . (is_array($to) ? implode(',', $to) : $to));
@@ -24,6 +29,8 @@ function sendBugNotification($to, $subject, $body, $attachments = []) {
         $mail->Password = 'gwgh vtlm fzkx rdkj';
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port = 587;
+
+        configurePhpMailerUtf8($mail);
         
         // Recipients
         $mail->setFrom('codo.bugricer@gmail.com', 'BugRicer');
@@ -117,7 +124,7 @@ function sendBugCreatedEmail($emails, $bugId, $bugTitle, $projectName, $reported
     }
     $emails = array_unique(array_filter(array_map('trim', $emails)));
     if (empty($emails)) return false;
-    $subject = "🐛 New Bug: " . substr($bugTitle, 0, 60) . (strlen($bugTitle) > 60 ? '...' : '');
+    $subject = "[BugRicer] New Bug: " . substr($bugTitle, 0, 60) . (strlen($bugTitle) > 60 ? '...' : '');
     $body = formatBugCreatedEmailBody($bugId, $bugTitle, $projectName, $reportedByName, $priority, $description, $expectedResult, $actualResult, $bugUrl, $bugLevel, $alreadyRaised);
     error_log("📧 Sending bug created email to " . count($emails) . " recipients");
     return sendBugNotification($emails, $subject, $body, []);
@@ -138,6 +145,8 @@ function sendWelcomeEmail($to, $subject, $body) {
         $mail->Password = 'gwgh vtlm fzkx rdkj';
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port = 587;
+
+        configurePhpMailerUtf8($mail);
         
         // Recipients
         $mail->setFrom('codo.bugricer@gmail.com', 'BugRicer');
@@ -170,6 +179,7 @@ function sendOtpEmail($to, $otp) {
         $mail->Password = 'gwgh vtlm fzkx rdkj';
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port = 587;
+        configurePhpMailerUtf8($mail);
         $mail->setFrom('codo.bugricer@gmail.com', 'BugRicer');
         $mail->addAddress($to);
         $mail->isHTML(true);
