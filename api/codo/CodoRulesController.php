@@ -328,6 +328,11 @@ class CodoRulesController extends BaseAPI
         if (!$decoded) {
             return;
         }
+        $role = strtolower(trim((string)($decoded->role ?? '')));
+        if ($role !== 'admin') {
+            $this->sendJsonResponse(403, 'Only administrators can delete CODO rules');
+            return;
+        }
         if (!$this->tablesReady()) {
             $this->sendJsonResponse(503, 'Common CODO is not set up. Run migration 022_codo_common_rules.sql.');
             return;
