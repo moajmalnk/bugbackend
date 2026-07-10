@@ -15,7 +15,8 @@ INSERT INTO leave_types (code, name, monthly_quota, is_active)
 VALUES
   ('paid', 'Paid Leave', 1.00, 1),
   ('sick', 'Sick Leave', 1.00, 1),
-  ('personal', 'Personal Leave', 1.00, 1)
+  ('personal', 'Personal Leave', 1.00, 1),
+  ('unpaid', 'Unpaid Leave', 5.00, 1)
 ON DUPLICATE KEY UPDATE
   name = VALUES(name),
   monthly_quota = VALUES(monthly_quota),

@@ -8,12 +8,17 @@ class LeaveController extends BaseAPI
 {
     private function requireAuth()
     {
-        $decoded = $this->validateToken();
-        if (!$decoded || !isset($decoded->user_id)) {
-            $this->sendJsonResponse(401, 'Authentication failed');
+        try {
+            $decoded = $this->validateToken();
+            if (!$decoded || !isset($decoded->user_id)) {
+                $this->sendJsonResponse(401, 'Authentication failed');
+                return null;
+            }
+            return $decoded;
+        } catch (Throwable $e) {
+            $this->sendJsonResponse(401, $e->getMessage() ?: 'Authentication failed');
             return null;
         }
-        return $decoded;
     }
 
     private function requireAdmin($decoded): bool
@@ -157,93 +162,103 @@ class LeaveController extends BaseAPI
 
     public function request($payload)
     {
-        $decoded = $this->requireAuth();
-        if (!$decoded || !$this->ensureLeaveReady()) {
-            return;
-        }
-        $userId = (string)$decoded->user_id;
-        $leaveTypeId = isset($payload['leave_type_id']) ? (int)$payload['leave_type_id'] : 0;
-        $startDate = trim((string)($payload['start_date'] ?? ''));
-        $endDate = trim((string)($payload['end_date'] ?? $startDate));
-        $reason = trim((string)($payload['reason'] ?? ''));
-
-        if ($leaveTypeId <= 0 || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $startDate) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $endDate)) {
-            $this->sendJsonResponse(400, 'leave_type_id, start_date, and end_date are required');
-            return;
-        }
-        if ($endDate < $startDate) {
-            $this->sendJsonResponse(400, 'end_date cannot be before start_date');
-            return;
-        }
-
-        $typeStmt = $this->conn->prepare('SELECT id, code, name, monthly_quota FROM leave_types WHERE id = ? AND is_active = 1 LIMIT 1');
-        $typeStmt->execute([$leaveTypeId]);
-        $type = $typeStmt->fetch(PDO::FETCH_ASSOC);
-        if (!$type) {
-            $this->sendJsonResponse(400, 'Invalid leave type');
-            return;
-        }
-
-        $joining = br_user_joining_date($this->conn, $userId);
-        if ($joining !== null && $startDate < $joining) {
-            $this->sendJsonResponse(400, "Leave cannot start before joining date ({$joining}).");
-            return;
-        }
-
-        $days = br_leave_calendar_days($startDate, $endDate);
-        if ($days <= 0) {
-            $this->sendJsonResponse(400, 'Invalid leave duration');
-            return;
-        }
-
-        if (br_leave_has_overlap($this->conn, $userId, $startDate, $endDate)) {
-            $this->sendJsonResponse(409, 'Overlapping pending or approved leave already exists for these dates.');
-            return;
-        }
-
-        // Balance check per month spanned by the request (against approved usage only)
-        $tz = new DateTimeZone('Asia/Kolkata');
-        $cursor = DateTime::createFromFormat('Y-m-d', $startDate, $tz);
-        $endDt = DateTime::createFromFormat('Y-m-d', $endDate, $tz);
-        $monthsChecked = [];
-        while ($cursor && $endDt && $cursor <= $endDt) {
-            $ym = $cursor->format('Y-m');
-            if (!isset($monthsChecked[$ym])) {
-                $needed = br_leave_days_in_month($startDate, $endDate, $ym);
-                $used = br_leave_used_days_in_month($this->conn, $userId, $leaveTypeId, $ym);
-                $quota = (float)$type['monthly_quota'];
-                if ($used + $needed > $quota + 0.001) {
-                    $remaining = max(0.0, $quota - $used);
-                    $this->sendJsonResponse(
-                        400,
-                        "Insufficient {$type['name']} balance for {$ym}. Remaining: {$remaining}, requested in month: {$needed}."
-                    );
-                    return;
-                }
-                $monthsChecked[$ym] = true;
-            }
-            $cursor->modify('+1 day');
-        }
-
-        $stmt = $this->conn->prepare(
-            "INSERT INTO leave_requests
-             (user_id, leave_type_id, start_date, end_date, days_count, reason, status)
-             VALUES (?, ?, ?, ?, ?, ?, 'pending')"
-        );
-        $stmt->execute([$userId, $leaveTypeId, $startDate, $endDate, $days, $reason !== '' ? $reason : null]);
-        $id = (int)$this->conn->lastInsertId();
-
         try {
-            $nm = new NotificationManager();
-            $nm->notifyLeaveRequested($id, $userId, (string)$type['name'], $startDate, $endDate);
-        } catch (Exception $e) {
-            error_log('notifyLeaveRequested: ' . $e->getMessage());
-        }
+            $decoded = $this->requireAuth();
+            if (!$decoded || !$this->ensureLeaveReady()) {
+                return;
+            }
+            $userId = (string)$decoded->user_id;
+            $leaveTypeId = isset($payload['leave_type_id']) ? (int)$payload['leave_type_id'] : 0;
+            $startDate = trim((string)($payload['start_date'] ?? ''));
+            $endDate = trim((string)($payload['end_date'] ?? $startDate));
+            $reason = trim((string)($payload['reason'] ?? ''));
 
-        $fetch = $this->conn->prepare($this->selectSql() . ' WHERE lr.id = ? LIMIT 1');
-        $fetch->execute([$id]);
-        $row = $fetch->fetch(PDO::FETCH_ASSOC);
-        $this->sendJsonResponse(201, 'Leave request submitted', $row ? $this->formatRequestRow($row) : ['id' => $id]);
+            if ($leaveTypeId <= 0 || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $startDate) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $endDate)) {
+                $this->sendJsonResponse(400, 'leave_type_id, start_date, and end_date are required');
+                return;
+            }
+            if ($endDate < $startDate) {
+                $this->sendJsonResponse(400, 'end_date cannot be before start_date');
+                return;
+            }
+
+            $typeStmt = $this->conn->prepare('SELECT id, code, name, monthly_quota FROM leave_types WHERE id = ? AND is_active = 1 LIMIT 1');
+            $typeStmt->execute([$leaveTypeId]);
+            $type = $typeStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$type) {
+                $this->sendJsonResponse(400, 'Invalid leave type');
+                return;
+            }
+
+            $joining = br_user_joining_date($this->conn, $userId);
+            if ($joining !== null && $startDate < $joining) {
+                $this->sendJsonResponse(400, "Leave cannot start before joining date ({$joining}).");
+                return;
+            }
+
+            $days = br_leave_calendar_days($startDate, $endDate);
+            if ($days <= 0) {
+                $this->sendJsonResponse(400, 'Invalid leave duration');
+                return;
+            }
+
+            if (br_leave_has_overlap($this->conn, $userId, $startDate, $endDate)) {
+                $this->sendJsonResponse(409, 'Overlapping pending or approved leave already exists for these dates.');
+                return;
+            }
+
+            // Balance check per month spanned by the request (against approved usage only)
+            $tz = new DateTimeZone('Asia/Kolkata');
+            $cursor = DateTime::createFromFormat('Y-m-d', $startDate, $tz);
+            $endDt = DateTime::createFromFormat('Y-m-d', $endDate, $tz);
+            $monthsChecked = [];
+            while ($cursor && $endDt && $cursor <= $endDt) {
+                $ym = $cursor->format('Y-m');
+                if (!isset($monthsChecked[$ym])) {
+                    $needed = br_leave_days_in_month($startDate, $endDate, $ym);
+                    $used = br_leave_used_days_in_month($this->conn, $userId, $leaveTypeId, $ym);
+                    $quota = (float)$type['monthly_quota'];
+                    if ($used + $needed > $quota + 0.001) {
+                        $remaining = max(0.0, $quota - $used);
+                        $this->sendJsonResponse(
+                            400,
+                            "Insufficient {$type['name']} balance for {$ym}. Remaining: {$remaining}, requested in month: {$needed}."
+                        );
+                        return;
+                    }
+                    $monthsChecked[$ym] = true;
+                }
+                $cursor->modify('+1 day');
+            }
+
+            $stmt = $this->conn->prepare(
+                "INSERT INTO leave_requests
+                 (user_id, leave_type_id, start_date, end_date, days_count, reason, status)
+                 VALUES (?, ?, ?, ?, ?, ?, 'pending')"
+            );
+            $stmt->execute([$userId, $leaveTypeId, $startDate, $endDate, $days, $reason !== '' ? $reason : null]);
+            $id = (int)$this->conn->lastInsertId();
+
+            try {
+                NotificationManager::getInstance()->notifyLeaveRequested(
+                    $id,
+                    $userId,
+                    (string)$type['name'],
+                    $startDate,
+                    $endDate
+                );
+            } catch (Throwable $e) {
+                error_log('notifyLeaveRequested: ' . $e->getMessage());
+            }
+
+            $fetch = $this->conn->prepare($this->selectSql() . ' WHERE lr.id = ? LIMIT 1');
+            $fetch->execute([$id]);
+            $row = $fetch->fetch(PDO::FETCH_ASSOC);
+            $this->sendJsonResponse(201, 'Leave request submitted', $row ? $this->formatRequestRow($row) : ['id' => $id]);
+        } catch (Throwable $e) {
+            error_log('LeaveController::request: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Failed to submit leave request: ' . $e->getMessage());
+        }
     }
 
     public function cancel($payload)
@@ -352,8 +367,7 @@ class LeaveController extends BaseAPI
         ]);
 
         try {
-            $nm = new NotificationManager();
-            $nm->notifyLeaveReviewed(
+            NotificationManager::getInstance()->notifyLeaveReviewed(
                 $id,
                 (string)$row['user_id'],
                 $newStatus,
@@ -361,7 +375,7 @@ class LeaveController extends BaseAPI
                 (string)$row['end_date'],
                 $adminNote
             );
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             error_log('notifyLeaveReviewed: ' . $e->getMessage());
         }
 
