@@ -392,7 +392,132 @@ class CodoRulesController extends BaseAPI
             'updated_at' => $row['updated_at'] ?? null,
             'created_by_username' => $row['created_by_username'] ?? null,
             'updated_by_username' => $row['updated_by_username'] ?? null,
+            'project_ids' => [],
+            'projects' => [],
         ];
+    }
+
+    private function ruleProjectsTableReady(): bool
+    {
+        static $ready = null;
+        if ($ready !== null) {
+            return $ready;
+        }
+        try {
+            $res = $this->conn->query("SHOW TABLES LIKE 'codo_rule_projects'");
+            $ready = (bool)($res && $res->fetch(PDO::FETCH_NUM));
+        } catch (Throwable $e) {
+            $ready = false;
+        }
+        return $ready;
+    }
+
+    /**
+     * @param mixed $raw
+     * @return string[]
+     */
+    private function normalizeProjectIds($raw): array
+    {
+        if (!is_array($raw)) {
+            return [];
+        }
+        $ids = [];
+        foreach ($raw as $id) {
+            $id = trim((string)$id);
+            if ($id !== '' && !in_array($id, $ids, true)) {
+                $ids[] = $id;
+            }
+        }
+        return $ids;
+    }
+
+    /**
+     * Validate project IDs exist. Returns cleaned list or null on failure (response already sent).
+     * @param string[] $projectIds
+     * @return string[]|null
+     */
+    private function validateProjectIds(array $projectIds): ?array
+    {
+        if (empty($projectIds)) {
+            return [];
+        }
+        $placeholders = implode(',', array_fill(0, count($projectIds), '?'));
+        $stmt = $this->conn->prepare("SELECT id FROM projects WHERE id IN ($placeholders)");
+        $stmt->execute($projectIds);
+        $found = [];
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $found[] = (string)$row['id'];
+        }
+        if (count($found) !== count($projectIds)) {
+            $this->sendJsonResponse(400, 'One or more selected projects were not found');
+            return null;
+        }
+        return $found;
+    }
+
+    /**
+     * @param string[] $projectIds
+     */
+    private function syncRuleProjects(int $ruleId, string $phase, array $projectIds): void
+    {
+        if (!$this->ruleProjectsTableReady()) {
+            return;
+        }
+        $del = $this->conn->prepare('DELETE FROM codo_rule_projects WHERE rule_id = ?');
+        $del->execute([$ruleId]);
+        if ($phase !== 'project' || empty($projectIds)) {
+            return;
+        }
+        $ins = $this->conn->prepare(
+            'INSERT INTO codo_rule_projects (rule_id, project_id) VALUES (?, ?)'
+        );
+        foreach ($projectIds as $pid) {
+            $ins->execute([$ruleId, $pid]);
+        }
+    }
+
+    /**
+     * @param array<int, array> $items
+     * @return array<int, array>
+     */
+    private function attachRuleProjects(array $items): array
+    {
+        if (empty($items) || !$this->ruleProjectsTableReady()) {
+            return $items;
+        }
+        $ruleIds = array_values(array_unique(array_map(static fn($r) => (int)$r['id'], $items)));
+        if (empty($ruleIds)) {
+            return $items;
+        }
+        $placeholders = implode(',', array_fill(0, count($ruleIds), '?'));
+        $stmt = $this->conn->prepare(
+            "SELECT rp.rule_id, rp.project_id, p.name AS project_name
+             FROM codo_rule_projects rp
+             LEFT JOIN projects p ON p.id = rp.project_id
+             WHERE rp.rule_id IN ($placeholders)
+             ORDER BY p.name ASC"
+        );
+        $stmt->execute($ruleIds);
+        $byRule = [];
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $rid = (int)$row['rule_id'];
+            if (!isset($byRule[$rid])) {
+                $byRule[$rid] = ['ids' => [], 'projects' => []];
+            }
+            $pid = (string)$row['project_id'];
+            $byRule[$rid]['ids'][] = $pid;
+            $byRule[$rid]['projects'][] = [
+                'id' => $pid,
+                'name' => (string)($row['project_name'] ?? $pid),
+            ];
+        }
+        foreach ($items as &$item) {
+            $rid = (int)$item['id'];
+            $item['project_ids'] = $byRule[$rid]['ids'] ?? [];
+            $item['projects'] = $byRule[$rid]['projects'] ?? [];
+        }
+        unset($item);
+        return $items;
     }
 
     private function slugifyKey(string $title, string $phase): string
@@ -464,6 +589,7 @@ class CodoRulesController extends BaseAPI
             $stmt->execute($params);
             $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
             $items = array_map([$this, 'formatRow'], $rows);
+            $items = $this->attachRuleProjects($items);
             $items = $this->attachAckSummaries($items, (string)$decoded->user_id);
             $viewerRole = strtolower(trim((string)($decoded->role ?? '')));
             if ($viewerRole !== 'admin') {
@@ -522,6 +648,7 @@ class CodoRulesController extends BaseAPI
         $description = trim((string)($payload['description'] ?? ''));
         $ruleKey = trim((string)($payload['rule_key'] ?? ''));
         $sortOrder = isset($payload['sort_order']) ? (int)$payload['sort_order'] : null;
+        $projectIds = $this->normalizeProjectIds($payload['project_ids'] ?? []);
 
         if (!in_array($phase, self::PHASES, true)) {
             $this->sendJsonResponse(400, 'phase must be developer, tester, or project');
@@ -534,6 +661,22 @@ class CodoRulesController extends BaseAPI
         if (strlen($description) < 10) {
             $this->sendJsonResponse(400, 'description must be at least 10 characters');
             return;
+        }
+        if ($phase === 'project') {
+            if (empty($projectIds)) {
+                $this->sendJsonResponse(400, 'Select at least one project for project-phase rules');
+                return;
+            }
+            if (!$this->ruleProjectsTableReady()) {
+                $this->sendJsonResponse(503, 'Run migration 025_codo_rule_projects.sql to link projects.');
+                return;
+            }
+            $projectIds = $this->validateProjectIds($projectIds);
+            if ($projectIds === null) {
+                return;
+            }
+        } else {
+            $projectIds = [];
         }
 
         if ($ruleKey === '') {
@@ -577,10 +720,13 @@ class CodoRulesController extends BaseAPI
                 $uid,
             ]);
             $id = (int)$this->conn->lastInsertId();
+            $this->syncRuleProjects($id, $phase, $projectIds);
             $fetch = $this->conn->prepare('SELECT * FROM codo_common_rules WHERE id = ? LIMIT 1');
             $fetch->execute([$id]);
             $row = $fetch->fetch(PDO::FETCH_ASSOC);
-            $this->sendJsonResponse(201, 'Rule created', $row ? $this->formatRow($row) : ['id' => $id]);
+            $out = $row ? $this->formatRow($row) : ['id' => $id];
+            $attached = $this->attachRuleProjects([$out]);
+            $this->sendJsonResponse(201, 'Rule created', $attached[0] ?? $out);
         } catch (Throwable $e) {
             error_log('CodoRulesController::create: ' . $e->getMessage());
             $this->sendJsonResponse(500, 'Failed to create rule: ' . $e->getMessage());
@@ -631,6 +777,25 @@ class CodoRulesController extends BaseAPI
             ? (($payload['is_active'] === true || $payload['is_active'] === 1 || $payload['is_active'] === '1') ? 1 : 0)
             : (int)$row['is_active'];
 
+        $projectIds = null;
+        if ($phase !== 'project') {
+            $projectIds = [];
+        } elseif (array_key_exists('project_ids', $payload)) {
+            $projectIds = $this->normalizeProjectIds($payload['project_ids']);
+            if (empty($projectIds)) {
+                $this->sendJsonResponse(400, 'Select at least one project for project-phase rules');
+                return;
+            }
+            if (!$this->ruleProjectsTableReady()) {
+                $this->sendJsonResponse(503, 'Run migration 025_codo_rule_projects.sql to link projects.');
+                return;
+            }
+            $projectIds = $this->validateProjectIds($projectIds);
+            if ($projectIds === null) {
+                return;
+            }
+        }
+
         if (!in_array($phase, self::PHASES, true)) {
             $this->sendJsonResponse(400, 'phase must be developer, tester, or project');
             return;
@@ -661,10 +826,19 @@ class CodoRulesController extends BaseAPI
                 $id,
             ]);
 
+            if ($projectIds !== null) {
+                $this->syncRuleProjects($id, $phase, $projectIds);
+            }
+
             $fetch = $this->conn->prepare('SELECT * FROM codo_common_rules WHERE id = ? LIMIT 1');
             $fetch->execute([$id]);
             $out = $fetch->fetch(PDO::FETCH_ASSOC);
-            $this->sendJsonResponse(200, 'Rule updated', $out ? $this->formatRow($out) : null);
+            $formatted = $out ? $this->formatRow($out) : null;
+            if ($formatted) {
+                $attached = $this->attachRuleProjects([$formatted]);
+                $formatted = $attached[0] ?? $formatted;
+            }
+            $this->sendJsonResponse(200, 'Rule updated', $formatted);
         } catch (Throwable $e) {
             error_log('CodoRulesController::update: ' . $e->getMessage());
             $this->sendJsonResponse(500, 'Failed to update rule');
