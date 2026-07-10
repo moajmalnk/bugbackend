@@ -11,11 +11,19 @@
   RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
 </IfModule>
 
+# Emit CORS on every response (including LiteSpeed/Apache errors) so browsers
+# do not mis-report origin blocks as "No Access-Control-Allow-Origin".
+# PHP cors.php still handles the precise allow-list for successful requests.
 <IfModule mod_headers.c>
-  RewriteCond %{HTTP:Origin} ^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$ [NC]
-  RewriteRule ^ - [E=ALLOWED_ORIGIN:%{HTTP:Origin}]
+  # Localhost (any port)
+  SetEnvIf Origin "^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$" ALLOWED_ORIGIN=$0
+  # Production frontends
+  SetEnvIf Origin "^https://(bugs\.bugricer\.com|bugricer\.com|www\.bugricer\.com|bugs\.moajmalnk\.in|bugracers\.vercel\.app)$" ALLOWED_ORIGIN=$0
+
   Header always set Access-Control-Allow-Origin "%{ALLOWED_ORIGIN}e" env=ALLOWED_ORIGIN
+  Header always set Access-Control-Allow-Credentials "true" env=ALLOWED_ORIGIN
   Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" env=ALLOWED_ORIGIN
   Header always set Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Impersonate-User, X-User-Id" env=ALLOWED_ORIGIN
   Header always set Access-Control-Max-Age "3600" env=ALLOWED_ORIGIN
+  Header always set Vary "Origin"
 </IfModule>
