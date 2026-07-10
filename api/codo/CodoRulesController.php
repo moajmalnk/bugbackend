@@ -104,12 +104,8 @@ class CodoRulesController extends BaseAPI
         $search = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
         $includeInactive = isset($_GET['include_inactive']) && (string)$_GET['include_inactive'] === '1';
 
-        $sql = "SELECT r.*,
-                       cu.username AS created_by_username,
-                       uu.username AS updated_by_username
+        $sql = "SELECT r.*
                 FROM codo_common_rules r
-                LEFT JOIN users cu ON cu.id = r.created_by
-                LEFT JOIN users uu ON uu.id = r.updated_by
                 WHERE 1=1";
         $params = [];
         if (!$includeInactive) {
@@ -151,7 +147,12 @@ class CodoRulesController extends BaseAPI
             ]);
         } catch (Throwable $e) {
             error_log('CodoRulesController::list: ' . $e->getMessage());
-            $this->sendJsonResponse(500, 'Failed to load CODO rules');
+            $msg = $e->getMessage();
+            if (stripos($msg, "doesn't exist") !== false || stripos($msg, 'codo_common_rules') !== false) {
+                $this->sendJsonResponse(503, 'Common CODO is not set up. Run migration 022_codo_common_rules.sql on the database.');
+                return;
+            }
+            $this->sendJsonResponse(500, 'Failed to load CODO rules: ' . $msg);
         }
     }
 
@@ -227,13 +228,7 @@ class CodoRulesController extends BaseAPI
                 $uid,
             ]);
             $id = (int)$this->conn->lastInsertId();
-            $fetch = $this->conn->prepare(
-                "SELECT r.*, cu.username AS created_by_username, uu.username AS updated_by_username
-                 FROM codo_common_rules r
-                 LEFT JOIN users cu ON cu.id = r.created_by
-                 LEFT JOIN users uu ON uu.id = r.updated_by
-                 WHERE r.id = ? LIMIT 1"
-            );
+            $fetch = $this->conn->prepare('SELECT * FROM codo_common_rules WHERE id = ? LIMIT 1');
             $fetch->execute([$id]);
             $row = $fetch->fetch(PDO::FETCH_ASSOC);
             $this->sendJsonResponse(201, 'Rule created', $row ? $this->formatRow($row) : ['id' => $id]);
@@ -317,13 +312,7 @@ class CodoRulesController extends BaseAPI
                 $id,
             ]);
 
-            $fetch = $this->conn->prepare(
-                "SELECT r.*, cu.username AS created_by_username, uu.username AS updated_by_username
-                 FROM codo_common_rules r
-                 LEFT JOIN users cu ON cu.id = r.created_by
-                 LEFT JOIN users uu ON uu.id = r.updated_by
-                 WHERE r.id = ? LIMIT 1"
-            );
+            $fetch = $this->conn->prepare('SELECT * FROM codo_common_rules WHERE id = ? LIMIT 1');
             $fetch->execute([$id]);
             $out = $fetch->fetch(PDO::FETCH_ASSOC);
             $this->sendJsonResponse(200, 'Rule updated', $out ? $this->formatRow($out) : null);
