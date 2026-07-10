@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../utils/work_period.php';
+require_once __DIR__ . '/../../utils/leave_attendance.php';
 
 class WorkSubmissionController extends BaseAPI {
     public function submit($payload) {
@@ -17,6 +18,12 @@ class WorkSubmissionController extends BaseAPI {
                 return null;
             }
             $date = $resolvedDate;
+
+            $leaveGate = br_assert_attendance_allowed($this->conn, (string)$userId, (string)$date, 'submit');
+            if (empty($leaveGate['ok'])) {
+                $this->sendJsonResponse(400, $leaveGate['message'] ?? 'Attendance not allowed for this date.');
+                return null;
+            }
             $start = isset($payload['start_time']) && trim($payload['start_time']) !== '' ? $payload['start_time'] : null; // empty string -> NULL for TIME column
             $hours = isset($payload['hours_today']) ? (float)$payload['hours_today'] : 0;
             $days = isset($payload['total_working_days']) ? (int)$payload['total_working_days'] : null;
@@ -975,6 +982,12 @@ class WorkSubmissionController extends BaseAPI {
             $targetUser = $userStmt->fetch(PDO::FETCH_ASSOC);
             if (!$targetUser) {
                 $this->sendJsonResponse(404, 'User not found');
+                return;
+            }
+
+            $leaveGate = br_assert_attendance_allowed($this->conn, $targetUserId, $date, 'admin_hours');
+            if (empty($leaveGate['ok'])) {
+                $this->sendJsonResponse(400, $leaveGate['message'] ?? 'Cannot record hours for this date.');
                 return;
             }
 

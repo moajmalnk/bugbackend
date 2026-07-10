@@ -2,6 +2,7 @@
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../PermissionManager.php';
 require_once __DIR__ . '/../../utils/work_submission_ot.php';
+require_once __DIR__ . '/../../utils/leave_attendance.php';
 
 class UserWorkStatsController extends BaseAPI {
     private function splitTaskLines($text) {
@@ -259,6 +260,10 @@ class UserWorkStatsController extends BaseAPI {
             'planned_projects' => $projectIds,
             'project_names' => $projectNames,
             'project_updates' => $this->parseProjectUpdates($submission['project_updates'] ?? null, $projectNameMap),
+            'day_status' => $submission['day_status'] ?? 'worked',
+            'leave_type_code' => $submission['leave_type_code'] ?? null,
+            'leave_type_name' => $submission['leave_type_name'] ?? null,
+            'leave_request_id' => isset($submission['leave_request_id']) ? (int)$submission['leave_request_id'] : null,
             'tasks' => [
                 'completed' => $completedLines,
                 'pending' => $pendingLines,
@@ -716,6 +721,43 @@ class UserWorkStatsController extends BaseAPI {
                 $dailyBreakdown[] = $this->buildDailySubmissionEntry($submission, $projectNameMap);
             }
 
+            // Merge approved leave days that have no work submission
+            $leaveMap = br_leave_day_map($this->conn, (string)$userId, (string)$periodStart, (string)$periodEnd);
+            $submissionDates = [];
+            foreach ($dailyBreakdown as &$entry) {
+                $d = (string)($entry['date'] ?? '');
+                if ($d !== '') {
+                    $submissionDates[$d] = true;
+                }
+                if (isset($leaveMap[$d])) {
+                    $entry['day_status'] = 'leave';
+                    $entry['leave_type_code'] = $leaveMap[$d]['leave_type_code'];
+                    $entry['leave_type_name'] = $leaveMap[$d]['leave_type_name'];
+                    $entry['leave_request_id'] = $leaveMap[$d]['leave_request_id'];
+                }
+            }
+            unset($entry);
+
+            foreach ($leaveMap as $leaveDate => $leaveInfo) {
+                if (isset($submissionDates[$leaveDate])) {
+                    continue;
+                }
+                $dailyBreakdown[] = $this->buildDailySubmissionEntry([
+                    'id' => null,
+                    'submission_date' => $leaveDate,
+                    'user_id' => $userId,
+                    'hours_today' => 0,
+                    'day_status' => 'leave',
+                    'leave_type_code' => $leaveInfo['leave_type_code'],
+                    'leave_type_name' => $leaveInfo['leave_type_name'],
+                    'leave_request_id' => $leaveInfo['leave_request_id'],
+                ], $projectNameMap);
+            }
+
+            usort($dailyBreakdown, static function ($a, $b) {
+                return strcmp((string)($b['date'] ?? ''), (string)($a['date'] ?? ''));
+            });
+
             $details = [
                 'period_start' => $periodStart,
                 'period_end' => $periodEnd,
@@ -723,9 +765,13 @@ class UserWorkStatsController extends BaseAPI {
                     'overtime_hours' => round($totalOvertimeHours, 2),
                     'requested_extra_hours' => round($totalRequestedExtraHours, 2),
                     'approval_requests' => (int)$totalApprovalRequests,
-                    'break_minutes' => (int)$totalBreakMinutes
+                    'break_minutes' => (int)$totalBreakMinutes,
+                    'leave_days' => count($leaveMap),
                 ],
                 'submissions' => $dailyBreakdown,
+                'leave_days' => array_values(array_map(static function ($date, $info) {
+                    return array_merge(['date' => $date], $info);
+                }, array_keys($leaveMap), array_values($leaveMap))),
                 'tasks' => [
                     'completed' => $allCompleted,
                     'pending' => $allPending,

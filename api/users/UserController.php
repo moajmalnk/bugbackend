@@ -32,10 +32,12 @@ class UserController extends BaseAPI {
             $hasPhone = in_array('phone', $cols);
             $hasLastActive = in_array('last_active_at', $cols);
             $hasAccountActive = in_array('account_active', $cols);
+            $hasJoiningDate = in_array('joining_date', $cols);
 
             $select = ['id', 'username', 'email', 'role', 'role_id', 'created_at', 'updated_at'];
             if ($hasPhone) $select[] = 'phone';
             if ($hasAccountActive) $select[] = 'account_active';
+            if ($hasJoiningDate) $select[] = 'joining_date';
             if ($hasLastActive) {
                 $select[] = 'last_active_at';
                 $select[] = "(CASE WHEN last_active_at IS NULL THEN 'offline' WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 120 THEN 'active' WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 900 THEN 'idle' ELSE 'offline' END) as status";
@@ -171,8 +173,22 @@ class UserController extends BaseAPI {
                 return;
             }
 
-            // Prepare and execute query
-            $query = "SELECT id, username, email, phone, role, role_id, created_at, updated_at FROM users WHERE id = ?";
+            $cols = [];
+            $res = $this->conn->query("SHOW COLUMNS FROM users");
+            if ($res) {
+                while ($row = $res->fetch(PDO::FETCH_ASSOC)) {
+                    $cols[] = $row['Field'];
+                }
+            }
+            $select = ['id', 'username', 'email', 'phone', 'role', 'role_id', 'created_at', 'updated_at'];
+            if (in_array('account_active', $cols, true)) {
+                $select[] = 'account_active';
+            }
+            if (in_array('joining_date', $cols, true)) {
+                $select[] = 'joining_date';
+            }
+
+            $query = "SELECT " . implode(', ', $select) . " FROM users WHERE id = ?";
             $stmt = $this->conn->prepare($query);
             
             if (!$stmt) {
@@ -432,6 +448,15 @@ class UserController extends BaseAPI {
             $role = $data['role'] ?? '';
             $roleId = isset($data['role_id']) && !empty($data['role_id']) ? $data['role_id'] : null;
             $phone = isset($data['phone']) && trim($data['phone']) !== '' ? trim($data['phone']) : null;
+            $joiningDateRaw = isset($data['joining_date']) ? trim((string)$data['joining_date']) : '';
+            $joiningDate = null;
+            if ($joiningDateRaw !== '') {
+                if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $joiningDateRaw)) {
+                    $this->sendJsonResponse(400, "joining_date must be YYYY-MM-DD");
+                    return;
+                }
+                $joiningDate = $joiningDateRaw;
+            }
 
             // Log the incoming data for debugging (remove in production if sensitive)
             error_log("Creating user - Username: $username, Email: $email, Phone: " . ($phone ?? 'null'));
@@ -511,9 +536,25 @@ class UserController extends BaseAPI {
             }
 
             // Insert user
-            $query = "INSERT INTO users (id, username, email, phone, password, role, role_id) VALUES (?, ?, ?, ?, ?, ?, ?)";
-            $stmt = $this->conn->prepare($query);
-            if (!$stmt->execute([$id, $username, $email, $phone, $hashedPassword, $role, $roleId])) {
+            $userCols = [];
+            $ucRes = $this->conn->query("SHOW COLUMNS FROM users");
+            if ($ucRes) {
+                while ($row = $ucRes->fetch(PDO::FETCH_ASSOC)) {
+                    $userCols[] = $row['Field'];
+                }
+            }
+            $hasJoiningDateCol = in_array('joining_date', $userCols, true);
+
+            if ($hasJoiningDateCol) {
+                $query = "INSERT INTO users (id, username, email, phone, password, role, role_id, joining_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+                $stmt = $this->conn->prepare($query);
+                $ok = $stmt->execute([$id, $username, $email, $phone, $hashedPassword, $role, $roleId, $joiningDate]);
+            } else {
+                $query = "INSERT INTO users (id, username, email, phone, password, role, role_id) VALUES (?, ?, ?, ?, ?, ?, ?)";
+                $stmt = $this->conn->prepare($query);
+                $ok = $stmt->execute([$id, $username, $email, $phone, $hashedPassword, $role, $roleId]);
+            }
+            if (!$ok) {
                 $errorInfo = $stmt->errorInfo();
                 if (strpos($errorInfo[2], 'username') !== false) {
                     $this->sendJsonResponse(409, "Username already exists.");
@@ -675,6 +716,7 @@ class UserController extends BaseAPI {
                 }
             }
             $hasAccountActiveCol = in_array('account_active', $userCols, true);
+            $hasJoiningDateCol = in_array('joining_date', $userCols, true);
 
             $fields = [];
             $params = [];
@@ -774,6 +816,22 @@ class UserController extends BaseAPI {
                 $params[] = $activeVal;
             }
 
+            if (array_key_exists('joining_date', $data) && $hasJoiningDateCol) {
+                $jd = $data['joining_date'];
+                if ($jd === null || $jd === '') {
+                    $fields[] = "joining_date = ?";
+                    $params[] = null;
+                } else {
+                    $jd = trim((string)$jd);
+                    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $jd)) {
+                        $this->sendJsonResponse(400, "joining_date must be YYYY-MM-DD");
+                        return;
+                    }
+                    $fields[] = "joining_date = ?";
+                    $params[] = $jd;
+                }
+            }
+
             if (empty($fields)) {
                 $this->sendJsonResponse(400, "No fields to update");
                 return;
@@ -819,6 +877,9 @@ class UserController extends BaseAPI {
                 ];
                 if ($hasAccountActiveCol) {
                     $selectParts[] = 'account_active';
+                }
+                if ($hasJoiningDateCol) {
+                    $selectParts[] = 'joining_date';
                 }
                 $selectSql = implode(",\n                        ", $selectParts) . ",
                         COALESCE(

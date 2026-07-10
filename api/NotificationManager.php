@@ -210,6 +210,8 @@ class NotificationManager extends BaseAPI {
                 return $entityId ? '/users/' . $entityId : '/users';
             case 'overtime':
                 return '/overtime-requests';
+            case 'leave':
+                return '/leave-requests';
             case 'feedback':
                 return '/feedback-stats';
             case 'message':
@@ -999,6 +1001,62 @@ class NotificationManager extends BaseAPI {
                 'entity_type' => 'overtime',
                 'entity_id' => $requestId,
                 'created_by' => $userName,
+            ]
+        );
+    }
+
+    public function notifyLeaveRequested($requestId, $userId, $leaveTypeName = null, $startDate = null, $endDate = null) {
+        $requestId = (string) $requestId;
+        $userId = (string) $userId;
+        $userName = $this->getUserName($userId);
+        $userIds = $this->resolveAdminRecipients($userId);
+        $notificationType = $this->getValidNotificationType('leave', 'status_change');
+        $typeLabel = $leaveTypeName ? " ({$leaveTypeName})" : '';
+        $range = '';
+        if ($startDate && $endDate) {
+            $range = $startDate === $endDate ? " on {$startDate}" : " from {$startDate} to {$endDate}";
+        }
+
+        return $this->createNotification(
+            $notificationType,
+            'Leave Request',
+            "{$userName} requested leave{$typeLabel}{$range}",
+            $userIds,
+            [
+                'entity_type' => 'leave',
+                'entity_id' => $userId . ':' . $requestId,
+                'created_by' => $userName,
+            ]
+        );
+    }
+
+    public function notifyLeaveReviewed($requestId, $userId, $status, $startDate = null, $endDate = null, $adminNote = '') {
+        $requestId = (string) $requestId;
+        $userId = (string) $userId;
+        $status = strtolower((string) $status);
+        $notificationType = $this->getValidNotificationType('leave', 'status_change');
+        $title = $status === 'approved' ? 'Leave Approved' : 'Leave Rejected';
+        $range = '';
+        if ($startDate && $endDate) {
+            $range = $startDate === $endDate ? " for {$startDate}" : " for {$startDate} to {$endDate}";
+        }
+        $note = trim((string) $adminNote);
+        $message = $status === 'approved'
+            ? "Your leave request{$range} was approved."
+            : "Your leave request{$range} was rejected.";
+        if ($note !== '') {
+            $message .= ' Note: ' . mb_substr($note, 0, 120);
+        }
+
+        return $this->createNotification(
+            $notificationType,
+            $title,
+            $message,
+            [$userId],
+            [
+                'entity_type' => 'leave',
+                'entity_id' => $userId . ':' . $requestId,
+                'created_by' => 'system',
             ]
         );
     }
