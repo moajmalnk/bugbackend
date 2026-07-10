@@ -192,6 +192,40 @@ function br_leave_day_map(PDO $conn, string $userId, string $from, string $to): 
 }
 
 /**
+ * Hours credited toward work stats for an approved leave day.
+ * Paid leave counts as a full workday (8h); other leave types credit 0.
+ */
+function br_leave_credited_hours(?string $leaveTypeCode): float
+{
+    return strtolower(trim((string)$leaveTypeCode)) === 'paid' ? 8.0 : 0.0;
+}
+
+/**
+ * Add leave-only days and paid-leave hour credits into month totals.
+ *
+ * @param array<string, float> $submissionHoursByDate date => hours_today
+ * @return array{days:int,hours:float}
+ */
+function br_apply_leave_to_work_totals(array $submissionHoursByDate, array $leaveMap): array
+{
+    $days = count($submissionHoursByDate);
+    $hours = array_sum($submissionHoursByDate);
+    foreach ($leaveMap as $date => $info) {
+        $credited = br_leave_credited_hours($info['leave_type_code'] ?? null);
+        if (!isset($submissionHoursByDate[$date])) {
+            $days += 1;
+            $hours += $credited;
+            continue;
+        }
+        $existing = (float)$submissionHoursByDate[$date];
+        if ($credited > $existing) {
+            $hours += ($credited - $existing);
+        }
+    }
+    return ['days' => (int)$days, 'hours' => (float)$hours];
+}
+
+/**
  * Whether pending/approved leave overlaps the given range (excluding optional request id).
  */
 function br_leave_has_overlap(PDO $conn, string $userId, string $startDate, string $endDate, ?int $excludeId = null): bool

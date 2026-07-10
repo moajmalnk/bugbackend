@@ -355,14 +355,20 @@ class UserWorkStatsController extends BaseAPI {
             $stmt->execute([$userId, $periodStart, $periodEnd]);
             $submissions = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
-            // Calculate statistics
-            $totalHours = 0;
-            $totalDays = count($submissions);
-            $monthName = $periodName;
-            
+            // Calculate statistics (include paid leave as 8h workdays)
+            $submissionHoursByDate = [];
             foreach ($submissions as $submission) {
-                $totalHours += (float)($submission['hours_today'] ?? 0);
+                $d = (string)($submission['submission_date'] ?? '');
+                if ($d === '') {
+                    continue;
+                }
+                $submissionHoursByDate[$d] = (float)($submission['hours_today'] ?? 0);
             }
+            $leaveMapCurrent = br_leave_day_map($this->conn, (string)$userId, (string)$periodStart, (string)$periodEnd);
+            $leaveTotals = br_apply_leave_to_work_totals($submissionHoursByDate, $leaveMapCurrent);
+            $totalHours = $leaveTotals['hours'];
+            $totalDays = $leaveTotals['days'];
+            $monthName = $periodName;
             
             // Get task counts from work_submissions table for current period
             $taskStmt = $this->conn->prepare("
@@ -463,6 +469,29 @@ class UserWorkStatsController extends BaseAPI {
                 ");
                 $stmt->execute([$userId, $periodStartStr, $periodEndStr]);
                 $periodData = $stmt->fetch(PDO::FETCH_ASSOC);
+
+                // Pull per-day hours so paid leave can be credited into trend totals
+                $hoursStmt = $this->conn->prepare("
+                    SELECT submission_date, hours_today
+                    FROM work_submissions
+                    WHERE user_id = ?
+                    AND submission_date >= ?
+                    AND submission_date <= ?
+                ");
+                $hoursStmt->execute([$userId, $periodStartStr, $periodEndStr]);
+                $periodHourRows = $hoursStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+                $periodHoursByDate = [];
+                foreach ($periodHourRows as $row) {
+                    $d = (string)($row['submission_date'] ?? '');
+                    if ($d === '') {
+                        continue;
+                    }
+                    $periodHoursByDate[$d] = (float)($row['hours_today'] ?? 0);
+                }
+                $periodLeaveMap = br_leave_day_map($this->conn, (string)$userId, (string)$periodStartStr, (string)$periodEndStr);
+                $periodLeaveTotals = br_apply_leave_to_work_totals($periodHoursByDate, $periodLeaveMap);
+                $periodData['days'] = $periodLeaveTotals['days'];
+                $periodData['hours'] = $periodLeaveTotals['hours'];
                 
                 // Get task counts from work_submissions table for this period
                 $taskStmt = $this->conn->prepare("
@@ -734,6 +763,11 @@ class UserWorkStatsController extends BaseAPI {
                     $entry['leave_type_code'] = $leaveMap[$d]['leave_type_code'];
                     $entry['leave_type_name'] = $leaveMap[$d]['leave_type_name'];
                     $entry['leave_request_id'] = $leaveMap[$d]['leave_request_id'];
+                    $credited = br_leave_credited_hours($leaveMap[$d]['leave_type_code'] ?? null);
+                    if ($credited > (float)($entry['hours_today'] ?? 0)) {
+                        $entry['hours_today'] = $credited;
+                        $entry['hours'] = $credited;
+                    }
                 }
             }
             unset($entry);
@@ -742,11 +776,12 @@ class UserWorkStatsController extends BaseAPI {
                 if (isset($submissionDates[$leaveDate])) {
                     continue;
                 }
+                $credited = br_leave_credited_hours($leaveInfo['leave_type_code'] ?? null);
                 $dailyBreakdown[] = $this->buildDailySubmissionEntry([
                     'id' => null,
                     'submission_date' => $leaveDate,
                     'user_id' => $userId,
-                    'hours_today' => 0,
+                    'hours_today' => $credited,
                     'day_status' => 'leave',
                     'leave_type_code' => $leaveInfo['leave_type_code'],
                     'leave_type_name' => $leaveInfo['leave_type_name'],
