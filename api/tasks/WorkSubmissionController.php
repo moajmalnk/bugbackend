@@ -1089,5 +1089,276 @@ class WorkSubmissionController extends BaseAPI {
             $this->sendJsonResponse(500, 'Failed to save work hours');
         }
     }
+
+    /**
+     * Admin full-day edit: update any fields on an existing work_submissions row.
+     */
+    public function adminUpdateSubmission($payload) {
+        try {
+            $decoded = $this->validateToken();
+            if (strtolower((string)($decoded->role ?? '')) !== 'admin') {
+                $this->sendJsonResponse(403, 'Access denied');
+                return;
+            }
+
+            $id = isset($payload['id']) ? (int)$payload['id'] : 0;
+            if ($id <= 0) {
+                $this->sendJsonResponse(400, 'id is required');
+                return;
+            }
+
+            $this->ensureExtraHoursApprovalColumns();
+            $this->ensureProjectUpdatesColumn();
+
+            $existingStmt = $this->conn->prepare('SELECT * FROM work_submissions WHERE id = ? LIMIT 1');
+            $existingStmt->execute([$id]);
+            $existing = $existingStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$existing) {
+                $this->sendJsonResponse(404, 'Submission not found');
+                return;
+            }
+
+            $targetUserId = (string)$existing['user_id'];
+            $date = (string)$existing['submission_date'];
+
+            $hours = array_key_exists('hours_today', $payload)
+                ? (float)$payload['hours_today']
+                : (float)($existing['hours_today'] ?? 0);
+            if ($hours < 0 || $hours > 24) {
+                $this->sendJsonResponse(400, 'hours_today must be between 0 and 24');
+                return;
+            }
+
+            $overtime = array_key_exists('overtime_hours', $payload)
+                ? (float)$payload['overtime_hours']
+                : (float)($existing['overtime_hours'] ?? 0);
+            if ($overtime < 0) {
+                $overtime = 0.0;
+            }
+
+            $requestedExtra = array_key_exists('requested_extra_hours', $payload)
+                ? (float)$payload['requested_extra_hours']
+                : (float)($existing['requested_extra_hours'] ?? 0);
+            if ($requestedExtra < 0) {
+                $requestedExtra = 0.0;
+            }
+
+            $approvalReason = array_key_exists('approval_reason', $payload)
+                ? trim((string)$payload['approval_reason'])
+                : ($existing['approval_reason'] ?? null);
+            if ($approvalReason === '') {
+                $approvalReason = null;
+            }
+
+            $otStatus = array_key_exists('extra_hours_approval_status', $payload)
+                ? strtolower(trim((string)$payload['extra_hours_approval_status']))
+                : strtolower(trim((string)($existing['extra_hours_approval_status'] ?? 'none')));
+            $allowedStatuses = ['none', 'pending', 'approved', 'rejected', 'changed'];
+            if (!in_array($otStatus, $allowedStatuses, true)) {
+                $this->sendJsonResponse(400, 'Invalid extra_hours_approval_status');
+                return;
+            }
+
+            $approvedAmount = array_key_exists('extra_hours_approved_amount', $payload)
+                ? ($payload['extra_hours_approved_amount'] === null || $payload['extra_hours_approved_amount'] === ''
+                    ? null
+                    : (float)$payload['extra_hours_approved_amount'])
+                : (isset($existing['extra_hours_approved_amount']) ? (float)$existing['extra_hours_approved_amount'] : null);
+
+            $startTime = array_key_exists('start_time', $payload)
+                ? (trim((string)$payload['start_time']) !== '' ? trim((string)$payload['start_time']) : null)
+                : ($existing['start_time'] ?? null);
+
+            $checkInTime = array_key_exists('check_in_time', $payload)
+                ? (trim((string)$payload['check_in_time']) !== '' ? trim((string)$payload['check_in_time']) : null)
+                : ($existing['check_in_time'] ?? null);
+
+            $completed = array_key_exists('completed_tasks', $payload)
+                ? (string)$payload['completed_tasks']
+                : (string)($existing['completed_tasks'] ?? '');
+            $pending = array_key_exists('pending_tasks', $payload)
+                ? (string)$payload['pending_tasks']
+                : (string)($existing['pending_tasks'] ?? '');
+            $ongoing = array_key_exists('ongoing_tasks', $payload)
+                ? (string)$payload['ongoing_tasks']
+                : (string)($existing['ongoing_tasks'] ?? '');
+            $notes = array_key_exists('notes', $payload)
+                ? (string)$payload['notes']
+                : (string)($existing['notes'] ?? '');
+
+            $plannedWork = array_key_exists('planned_work', $payload)
+                ? (trim((string)$payload['planned_work']) !== '' ? (string)$payload['planned_work'] : null)
+                : ($existing['planned_work'] ?? null);
+            $plannedWorkStatus = array_key_exists('planned_work_status', $payload)
+                ? (trim((string)$payload['planned_work_status']) !== '' ? trim((string)$payload['planned_work_status']) : null)
+                : ($existing['planned_work_status'] ?? null);
+            $plannedWorkNotes = array_key_exists('planned_work_notes', $payload)
+                ? (trim((string)$payload['planned_work_notes']) !== '' ? (string)$payload['planned_work_notes'] : null)
+                : ($existing['planned_work_notes'] ?? null);
+
+            if (array_key_exists('planned_projects', $payload)) {
+                if (is_array($payload['planned_projects'])) {
+                    $plannedProjects = !empty($payload['planned_projects'])
+                        ? json_encode(array_values($payload['planned_projects']))
+                        : null;
+                } elseif (is_string($payload['planned_projects']) && trim($payload['planned_projects']) !== '') {
+                    $plannedProjects = trim($payload['planned_projects']);
+                } else {
+                    $plannedProjects = null;
+                }
+            } else {
+                $plannedProjects = $existing['planned_projects'] ?? null;
+            }
+
+            $breakEntries = [];
+            if (array_key_exists('break_entries', $payload)) {
+                if (is_array($payload['break_entries'])) {
+                    $breakEntries = array_values(array_filter(array_map(function ($entry) {
+                        return trim((string)$entry);
+                    }, $payload['break_entries']), function ($entry) {
+                        return $entry !== '';
+                    }));
+                } elseif (is_string($payload['break_entries']) && trim($payload['break_entries']) !== '') {
+                    $breakEntries = array_values(array_filter(array_map('trim', explode("\n", $payload['break_entries']))));
+                }
+            } else {
+                $rawBreak = $existing['break_entries'] ?? null;
+                if (is_string($rawBreak) && $rawBreak !== '') {
+                    $decodedBreak = json_decode($rawBreak, true);
+                    if (is_array($decodedBreak)) {
+                        $breakEntries = $decodedBreak;
+                    }
+                } elseif (is_array($rawBreak)) {
+                    $breakEntries = $rawBreak;
+                }
+            }
+
+            $totalBreakMinutes = array_key_exists('total_break_minutes', $payload)
+                ? max(0, (int)$payload['total_break_minutes'])
+                : (int)($existing['total_break_minutes'] ?? 0);
+            if ($totalBreakMinutes === 0 && !empty($breakEntries)) {
+                $computedMins = 0;
+                foreach ($breakEntries as $entry) {
+                    if (preg_match('/\((\d+)\s*min\)/i', (string)$entry, $matches)) {
+                        $computedMins += (int)$matches[1];
+                    }
+                }
+                $totalBreakMinutes = $computedMins;
+            }
+
+            $adminNote = trim((string)($payload['admin_note'] ?? ''));
+            if ($adminNote !== '') {
+                $adminUsername = (string)($decoded->username ?? 'admin');
+                $auditStamp = '[ADMIN EDIT - ' . $adminUsername . ' - ' . date('Y-m-d H:i:s') . "]\n" . $adminNote;
+                $notes = trim($notes) !== '' ? $notes . "\n\n" . $auditStamp : $auditStamp;
+            }
+
+            $cols = $this->conn->query('SHOW COLUMNS FROM work_submissions')->fetchAll(PDO::FETCH_COLUMN);
+            $setParts = [
+                'hours_today = ?',
+                'overtime_hours = ?',
+                'completed_tasks = ?',
+                'pending_tasks = ?',
+                'ongoing_tasks = ?',
+                'notes = ?',
+            ];
+            $values = [$hours, $overtime, $completed, $pending, $ongoing, $notes];
+
+            if (in_array('start_time', $cols, true)) {
+                $setParts[] = 'start_time = ?';
+                $values[] = $startTime;
+            }
+            if (in_array('check_in_time', $cols, true)) {
+                $setParts[] = 'check_in_time = ?';
+                $values[] = $checkInTime;
+            }
+            if (in_array('requested_extra_hours', $cols, true)) {
+                $setParts[] = 'requested_extra_hours = ?';
+                $values[] = $requestedExtra;
+            }
+            if (in_array('approval_reason', $cols, true)) {
+                $setParts[] = 'approval_reason = ?';
+                $values[] = $approvalReason;
+            }
+            if (in_array('extra_hours_approval_status', $cols, true)) {
+                $setParts[] = 'extra_hours_approval_status = ?';
+                $values[] = $otStatus;
+            }
+            if (in_array('extra_hours_approved_amount', $cols, true)) {
+                $setParts[] = 'extra_hours_approved_amount = ?';
+                $values[] = $approvedAmount;
+            }
+            if (in_array('break_entries', $cols, true)) {
+                $setParts[] = 'break_entries = ?';
+                $values[] = !empty($breakEntries) ? json_encode($breakEntries) : null;
+            }
+            if (in_array('total_break_minutes', $cols, true)) {
+                $setParts[] = 'total_break_minutes = ?';
+                $values[] = $totalBreakMinutes;
+            }
+            if (in_array('planned_projects', $cols, true)) {
+                $setParts[] = 'planned_projects = ?';
+                $values[] = $plannedProjects;
+            }
+            if (in_array('planned_work', $cols, true)) {
+                $setParts[] = 'planned_work = ?';
+                $values[] = $plannedWork;
+            }
+            if (in_array('planned_work_status', $cols, true)) {
+                $setParts[] = 'planned_work_status = ?';
+                $values[] = $plannedWorkStatus;
+            }
+            if (in_array('planned_work_notes', $cols, true)) {
+                $setParts[] = 'planned_work_notes = ?';
+                $values[] = $plannedWorkNotes;
+            }
+
+            $values[] = $id;
+            $sql = 'UPDATE work_submissions SET ' . implode(', ', $setParts) . ' WHERE id = ?';
+            $upd = $this->conn->prepare($sql);
+            $upd->execute($values);
+
+            $monthTotals = br_compute_calendar_month_totals($this->conn, $targetUserId, $date);
+            $totalsUpd = $this->conn->prepare(
+                'UPDATE work_submissions SET total_working_days = ?, total_hours_cumulative = ? WHERE user_id = ? AND submission_date = ?'
+            );
+            $totalsUpd->execute([
+                $monthTotals['days'],
+                $monthTotals['hours'],
+                $targetUserId,
+                $date,
+            ]);
+
+            try {
+                $auditStmt = $this->conn->prepare(
+                    'INSERT INTO admin_audit_log (admin_id, action, target_user_id, details, created_at) VALUES (?, ?, ?, ?, NOW())'
+                );
+                $auditStmt->execute([
+                    (string)$decoded->user_id,
+                    'admin_update_work_submission',
+                    $targetUserId,
+                    json_encode([
+                        'id' => $id,
+                        'submission_date' => $date,
+                        'hours_today' => $hours,
+                        'overtime_hours' => $overtime,
+                        'admin_note' => $adminNote !== '' ? $adminNote : null,
+                    ]),
+                ]);
+            } catch (Exception $auditErr) {
+                error_log('adminUpdateSubmission audit log: ' . $auditErr->getMessage());
+            }
+
+            $outStmt = $this->conn->prepare(
+                'SELECT ws.*, u.username, u.role FROM work_submissions ws LEFT JOIN users u ON u.id = ws.user_id WHERE ws.id = ? LIMIT 1'
+            );
+            $outStmt->execute([$id]);
+            $out = $outStmt->fetch(PDO::FETCH_ASSOC);
+            $this->sendJsonResponse(200, 'Submission updated', $out);
+        } catch (Exception $e) {
+            error_log('adminUpdateSubmission: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Failed to update submission');
+        }
+    }
 }
 ?>

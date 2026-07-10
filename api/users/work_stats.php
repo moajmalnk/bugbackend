@@ -223,6 +223,7 @@ class UserWorkStatsController extends BaseAPI {
         $projectNames = $this->resolveProjectNames($submission['planned_projects'] ?? null, $projectNameMap);
 
         return [
+            'id' => isset($submission['id']) ? (int)$submission['id'] : null,
             'date' => $date,
             'submission_date' => $date,
             'user_id' => $submission['user_id'] ?? null,
@@ -617,6 +618,8 @@ class UserWorkStatsController extends BaseAPI {
             // Get all work submissions for the period with all details
             $stmt = $this->conn->prepare("
                 SELECT 
+                    id,
+                    user_id,
                     submission_date,
                     created_at,
                     updated_at,
