@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS `codo_common_rules` (
   UNIQUE KEY `uq_codo_common_phase_key` (`phase`, `rule_key`),
   KEY `idx_codo_common_phase_active` (`phase`, `is_active`),
   KEY `idx_codo_common_sort` (`phase`, `sort_order`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- Seed developer rules (25)
 INSERT IGNORE INTO `codo_common_rules` (`phase`, `rule_key`, `title`, `subtitle`, `description`, `sort_order`, `is_active`) VALUES ('developer', 'dev_rule_1', 'Hard State Reset', 'Rule 1', 'Reset components cleanly on form submit and modal unmount (useEffect cleanup phase).', 1, 1);
