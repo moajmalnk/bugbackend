@@ -172,6 +172,7 @@ class CodoRulesController extends BaseAPI
         $requiredIds = array_column($required, 'id');
         $mustRespond = in_array($currentUserId, $requiredIds, true);
         $currentStatus = isset($ackMap[$currentUserId]) ? $ackMap[$currentUserId]['status'] : null;
+        $currentAt = isset($ackMap[$currentUserId]) ? ($ackMap[$currentUserId]['acknowledged_at'] ?? null) : null;
         $responded = count($acknowledged) + count($doubt) + count($notRequired);
 
         return [
@@ -182,6 +183,7 @@ class CodoRulesController extends BaseAPI
             'not_required_count' => count($notRequired),
             'pending_count' => count($pending),
             'current_user_status' => $currentStatus,
+            'current_user_acknowledged_at' => $currentAt,
             'current_user_acknowledged' => $currentStatus === 'acknowledged',
             'current_user_must_acknowledge' => $mustRespond && $currentStatus === null,
             'acknowledged' => $acknowledged,
