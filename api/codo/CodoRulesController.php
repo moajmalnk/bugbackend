@@ -306,6 +306,10 @@ class CodoRulesController extends BaseAPI
             $stmt->execute([$ruleId, $userId]);
 
             $summary = $this->buildAckSummary($ruleId, (string)$rule['phase'], $userId);
+            if ($role !== 'admin') {
+                $summary['acknowledged'] = [];
+                $summary['pending'] = [];
+            }
             $this->sendJsonResponse(200, 'Rule acknowledged', [
                 'rule_id' => $ruleId,
                 'acknowledgements' => $summary,
@@ -406,6 +410,17 @@ class CodoRulesController extends BaseAPI
             $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
             $items = array_map([$this, 'formatRow'], $rows);
             $items = $this->attachAckSummaries($items, (string)$decoded->user_id);
+            $viewerRole = strtolower(trim((string)($decoded->role ?? '')));
+            if ($viewerRole !== 'admin') {
+                foreach ($items as &$item) {
+                    if (!isset($item['acknowledgements']) || !is_array($item['acknowledgements'])) {
+                        continue;
+                    }
+                    $item['acknowledgements']['acknowledged'] = [];
+                    $item['acknowledgements']['pending'] = [];
+                }
+                unset($item);
+            }
 
             $counts = ['all' => 0, 'developer' => 0, 'tester' => 0, 'project' => 0];
             $countSql = 'SELECT phase, COUNT(*) AS c FROM codo_common_rules WHERE is_active = 1 GROUP BY phase';
