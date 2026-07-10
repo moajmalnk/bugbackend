@@ -41,6 +41,281 @@ class CodoRulesController extends BaseAPI
         }
     }
 
+    private function ackTableReady(): bool
+    {
+        static $ready = null;
+        if ($ready !== null) {
+            return $ready;
+        }
+        try {
+            $res = $this->conn->query("SHOW TABLES LIKE 'codo_rule_acknowledgements'");
+            $ready = (bool)($res && $res->fetch(PDO::FETCH_NUM));
+        } catch (Throwable $e) {
+            $ready = false;
+        }
+        return $ready;
+    }
+
+    private function usersHasAccountActive(): bool
+    {
+        static $has = null;
+        if ($has !== null) {
+            return $has;
+        }
+        try {
+            $res = $this->conn->query("SHOW COLUMNS FROM users LIKE 'account_active'");
+            $has = (bool)($res && $res->fetch(PDO::FETCH_ASSOC));
+        } catch (Throwable $e) {
+            $has = false;
+        }
+        return $has;
+    }
+
+    /**
+     * Roles that must acknowledge a rule for a given phase.
+     * @return string[]
+     */
+    private function requiredRolesForPhase(string $phase): array
+    {
+        if ($phase === 'developer') {
+            return ['developer'];
+        }
+        if ($phase === 'tester') {
+            return ['tester'];
+        }
+        // project rules: both developers and testers
+        return ['developer', 'tester'];
+    }
+
+    /**
+     * Active users who must acknowledge rules for the given phase.
+     * @return array<int, array{id:string,username:string,role:string}>
+     */
+    private function requiredUsersForPhase(string $phase): array
+    {
+        $roles = $this->requiredRolesForPhase($phase);
+        if (empty($roles)) {
+            return [];
+        }
+        $placeholders = implode(',', array_fill(0, count($roles), '?'));
+        $sql = "SELECT id, username, role FROM users WHERE role IN ($placeholders)";
+        $params = $roles;
+        if ($this->usersHasAccountActive()) {
+            $sql .= ' AND account_active = 1';
+        }
+        $sql .= ' ORDER BY username ASC';
+        $stmt = $this->conn->prepare($sql);
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        return array_map(static function ($r) {
+            return [
+                'id' => (string)$r['id'],
+                'username' => (string)$r['username'],
+                'role' => strtolower((string)$r['role']),
+            ];
+        }, $rows);
+    }
+
+    private function buildAckSummary(int $ruleId, string $phase, string $currentUserId): array
+    {
+        $required = $this->requiredUsersForPhase($phase);
+        $requiredIds = array_column($required, 'id');
+        $ackMap = [];
+        if ($this->ackTableReady() && !empty($requiredIds)) {
+            $placeholders = implode(',', array_fill(0, count($requiredIds), '?'));
+            $stmt = $this->conn->prepare(
+                "SELECT user_id, acknowledged_at FROM codo_rule_acknowledgements
+                 WHERE rule_id = ? AND user_id IN ($placeholders)"
+            );
+            $stmt->execute(array_merge([$ruleId], $requiredIds));
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $ackMap[(string)$row['user_id']] = $row['acknowledged_at'];
+            }
+        }
+
+        $acknowledged = [];
+        $pending = [];
+        foreach ($required as $u) {
+            if (isset($ackMap[$u['id']])) {
+                $acknowledged[] = [
+                    'id' => $u['id'],
+                    'username' => $u['username'],
+                    'role' => $u['role'],
+                    'acknowledged_at' => $ackMap[$u['id']],
+                ];
+            } else {
+                $pending[] = [
+                    'id' => $u['id'],
+                    'username' => $u['username'],
+                    'role' => $u['role'],
+                ];
+            }
+        }
+
+        $mustAck = in_array($currentUserId, $requiredIds, true);
+
+        return [
+            'required_total' => count($required),
+            'acknowledged_count' => count($acknowledged),
+            'pending_count' => count($pending),
+            'current_user_acknowledged' => isset($ackMap[$currentUserId]),
+            'current_user_must_acknowledge' => $mustAck && !isset($ackMap[$currentUserId]),
+            'acknowledged' => $acknowledged,
+            'pending' => $pending,
+        ];
+    }
+
+    /**
+     * @param array<int, array> $items formatted rules
+     * @return array<int, array>
+     */
+    private function attachAckSummaries(array $items, string $currentUserId): array
+    {
+        if (empty($items)) {
+            return $items;
+        }
+
+        $empty = [
+            'required_total' => 0,
+            'acknowledged_count' => 0,
+            'pending_count' => 0,
+            'current_user_acknowledged' => false,
+            'current_user_must_acknowledge' => false,
+            'acknowledged' => [],
+            'pending' => [],
+        ];
+
+        if (!$this->ackTableReady()) {
+            foreach ($items as &$item) {
+                $item['acknowledgements'] = $empty;
+            }
+            unset($item);
+            return $items;
+        }
+
+        $usersByPhase = [];
+        foreach (self::PHASES as $phase) {
+            $usersByPhase[$phase] = $this->requiredUsersForPhase($phase);
+        }
+
+        $ruleIds = array_map(static fn($r) => (int)$r['id'], $items);
+        $ackByRule = [];
+        if (!empty($ruleIds)) {
+            $placeholders = implode(',', array_fill(0, count($ruleIds), '?'));
+            $stmt = $this->conn->prepare(
+                "SELECT rule_id, user_id, acknowledged_at
+                 FROM codo_rule_acknowledgements
+                 WHERE rule_id IN ($placeholders)"
+            );
+            $stmt->execute($ruleIds);
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $rid = (int)$row['rule_id'];
+                if (!isset($ackByRule[$rid])) {
+                    $ackByRule[$rid] = [];
+                }
+                $ackByRule[$rid][(string)$row['user_id']] = $row['acknowledged_at'];
+            }
+        }
+
+        foreach ($items as &$item) {
+            $phase = (string)$item['phase'];
+            $required = $usersByPhase[$phase] ?? [];
+            $requiredIds = array_column($required, 'id');
+            $ackMap = $ackByRule[(int)$item['id']] ?? [];
+            $acknowledged = [];
+            $pending = [];
+            foreach ($required as $u) {
+                if (isset($ackMap[$u['id']])) {
+                    $acknowledged[] = [
+                        'id' => $u['id'],
+                        'username' => $u['username'],
+                        'role' => $u['role'],
+                        'acknowledged_at' => $ackMap[$u['id']],
+                    ];
+                } else {
+                    $pending[] = [
+                        'id' => $u['id'],
+                        'username' => $u['username'],
+                        'role' => $u['role'],
+                    ];
+                }
+            }
+            $mustAck = in_array($currentUserId, $requiredIds, true);
+            $item['acknowledgements'] = [
+                'required_total' => count($required),
+                'acknowledged_count' => count($acknowledged),
+                'pending_count' => count($pending),
+                'current_user_acknowledged' => isset($ackMap[$currentUserId]),
+                'current_user_must_acknowledge' => $mustAck && !isset($ackMap[$currentUserId]),
+                'acknowledged' => $acknowledged,
+                'pending' => $pending,
+            ];
+        }
+        unset($item);
+        return $items;
+    }
+
+    public function acknowledge($payload)
+    {
+        $decoded = $this->requireTeamAuth();
+        if (!$decoded) {
+            return;
+        }
+        if (!$this->tablesReady()) {
+            $this->sendJsonResponse(503, 'Common CODO is not set up. Run migration 022_codo_common_rules.sql.');
+            return;
+        }
+        if (!$this->ackTableReady()) {
+            $this->sendJsonResponse(503, 'Acknowledgements are not set up. Run migration 023_codo_rule_acknowledgements.sql.');
+            return;
+        }
+
+        $ruleId = isset($payload['rule_id']) ? (int)$payload['rule_id'] : 0;
+        if ($ruleId <= 0) {
+            $this->sendJsonResponse(400, 'rule_id is required');
+            return;
+        }
+
+        $fetch = $this->conn->prepare(
+            'SELECT id, phase, is_active FROM codo_common_rules WHERE id = ? LIMIT 1'
+        );
+        $fetch->execute([$ruleId]);
+        $rule = $fetch->fetch(PDO::FETCH_ASSOC);
+        if (!$rule || (int)($rule['is_active'] ?? 1) !== 1) {
+            $this->sendJsonResponse(404, 'Rule not found');
+            return;
+        }
+
+        $userId = (string)$decoded->user_id;
+        $role = strtolower(trim((string)($decoded->role ?? '')));
+        $requiredRoles = $this->requiredRolesForPhase((string)$rule['phase']);
+        if (!in_array($role, $requiredRoles, true)) {
+            $this->sendJsonResponse(
+                403,
+                'Only ' . implode(' / ', $requiredRoles) . ' roles must acknowledge this rule'
+            );
+            return;
+        }
+
+        try {
+            $stmt = $this->conn->prepare(
+                "INSERT INTO codo_rule_acknowledgements (rule_id, user_id, acknowledged_at)
+                 VALUES (?, ?, NOW())
+                 ON DUPLICATE KEY UPDATE acknowledged_at = acknowledged_at"
+            );
+            $stmt->execute([$ruleId, $userId]);
+
+            $summary = $this->buildAckSummary($ruleId, (string)$rule['phase'], $userId);
+            $this->sendJsonResponse(200, 'Rule acknowledged', [
+                'rule_id' => $ruleId,
+                'acknowledgements' => $summary,
+            ]);
+        } catch (Throwable $e) {
+            error_log('CodoRulesController::acknowledge: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Failed to acknowledge rule: ' . $e->getMessage());
+        }
+    }
+
     private function formatRow(array $row): array
     {
         return [
@@ -130,6 +405,7 @@ class CodoRulesController extends BaseAPI
             $stmt->execute($params);
             $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
             $items = array_map([$this, 'formatRow'], $rows);
+            $items = $this->attachAckSummaries($items, (string)$decoded->user_id);
 
             $counts = ['all' => 0, 'developer' => 0, 'tester' => 0, 'project' => 0];
             $countSql = 'SELECT phase, COUNT(*) AS c FROM codo_common_rules WHERE is_active = 1 GROUP BY phase';
@@ -144,6 +420,7 @@ class CodoRulesController extends BaseAPI
             $this->sendJsonResponse(200, 'OK', [
                 'rules' => $items,
                 'counts' => $counts,
+                'ack_table_ready' => $this->ackTableReady(),
             ]);
         } catch (Throwable $e) {
             error_log('CodoRulesController::list: ' . $e->getMessage());
