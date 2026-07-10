@@ -451,6 +451,11 @@ class UserController extends BaseAPI {
             $joiningDateRaw = isset($data['joining_date']) ? trim((string)$data['joining_date']) : '';
             $joiningDate = null;
             if ($joiningDateRaw !== '') {
+                $actor = $this->validateToken();
+                if (!isset($actor->role) || strtolower((string)$actor->role) !== 'admin') {
+                    $this->sendJsonResponse(403, "Only administrators can set joining date");
+                    return;
+                }
                 if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $joiningDateRaw)) {
                     $this->sendJsonResponse(400, "joining_date must be YYYY-MM-DD");
                     return;
@@ -817,6 +822,11 @@ class UserController extends BaseAPI {
             }
 
             if (array_key_exists('joining_date', $data) && $hasJoiningDateCol) {
+                $actor = $this->validateToken();
+                if (!isset($actor->role) || strtolower((string)$actor->role) !== 'admin') {
+                    $this->sendJsonResponse(403, "Only administrators can set joining date");
+                    return;
+                }
                 $jd = $data['joining_date'];
                 if ($jd === null || $jd === '') {
                     $fields[] = "joining_date = ?";
