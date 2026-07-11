@@ -321,6 +321,7 @@ class WorkSubmissionController extends BaseAPI {
                 'submission_date' => $date,
                 'start_time' => $start,
                 'check_in_time' => null, // Will be fetched from DB if exists
+                'check_out_time' => date('Y-m-d H:i:s'),
                 'hours_today' => $hours,
                 'overtime_hours' => $overtime,
                 'requested_extra_hours' => $requestedExtraHours,
@@ -340,14 +341,30 @@ class WorkSubmissionController extends BaseAPI {
                 'is_update' => $isUpdate,
                 '_db_conn' => $this->conn // Pass connection for project name lookup
             ];
-            
-            // Fetch check_in_time if it exists
-            if ($hasPlannedProjects) {
-                $checkInStmt = $this->conn->prepare("SELECT check_in_time FROM work_submissions WHERE user_id = ? AND submission_date = ? LIMIT 1");
-                $checkInStmt->execute([$userId, $date]);
-                $checkInData = $checkInStmt->fetch(PDO::FETCH_ASSOC);
-                if ($checkInData && $checkInData['check_in_time']) {
-                    $submissionData['check_in_time'] = $checkInData['check_in_time'];
+
+            // Always load check-in time when the column exists (not tied to planned_projects).
+            $hasCheckInTime = in_array('check_in_time', $columns, true);
+            if ($hasCheckInTime) {
+                try {
+                    $checkInStmt = $this->conn->prepare(
+                        'SELECT check_in_time FROM work_submissions WHERE user_id = ? AND submission_date = ? LIMIT 1'
+                    );
+                    $checkInStmt->execute([$userId, $date]);
+                    $checkInData = $checkInStmt->fetch(PDO::FETCH_ASSOC);
+                    if ($checkInData && !empty($checkInData['check_in_time'])) {
+                        $submissionData['check_in_time'] = $checkInData['check_in_time'];
+                    }
+                } catch (Exception $e) {
+                    error_log('⚠️ Could not fetch check_in_time for work update notice: ' . $e->getMessage());
+                }
+            }
+            // Fallback: payload start_time / check_in_time if DB value missing
+            if (empty($submissionData['check_in_time'])) {
+                $payloadCheckIn = isset($payload['check_in_time']) ? trim((string)$payload['check_in_time']) : '';
+                if ($payloadCheckIn !== '') {
+                    $submissionData['check_in_time'] = $payloadCheckIn;
+                } elseif (!empty($start)) {
+                    $submissionData['start_time'] = $start;
                 }
             }
 

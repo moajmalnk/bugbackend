@@ -174,119 +174,156 @@ function sendWhatsAppMessage($mobile, $message) {
 }
 
 /**
+ * Format task text into WhatsApp bullet lines (truncated).
+ */
+function br_format_whatsapp_task_block($text, $limit = 400): string {
+    $text = trim((string)$text);
+    if ($text === '') {
+        return '';
+    }
+    $lines = array_values(array_filter(array_map('trim', preg_split('/\r\n|\r|\n/', $text) ?: []), function ($line) {
+        return $line !== '';
+    }));
+    if (empty($lines)) {
+        return '';
+    }
+    $out = '';
+    foreach ($lines as $line) {
+        $clean = ltrim($line, "•\t -");
+        $out .= '• ' . $clean . "\n";
+    }
+    $out = rtrim($out);
+    if (strlen($out) > $limit) {
+        $out = substr($out, 0, $limit - 3) . '...';
+    }
+    return $out;
+}
+
+/**
  * Format work update data into WhatsApp-friendly message
- * 
+ *
  * @param string $userName User's name
  * @param string $userEmail User's email
  * @param array $submissionData Submission data
  * @return string Formatted WhatsApp message
  */
 function formatWorkUpdateForWhatsApp($userName, $userEmail, $submissionData) {
-    // Format date
     $date = $submissionData['submission_date'] ?? date('Y-m-d');
-    $dateFormatted = date('j/n/Y l', strtotime($date));
-    
-    // Format check-in time (preferred) or start time
+    $dateLabel = date('D, M j, Y', strtotime($date));
+
     $checkInTime = $submissionData['check_in_time'] ?? null;
     $startTime = $submissionData['start_time'] ?? null;
-    $timeFormatted = '----';
-    if ($checkInTime) {
-        $timeFormatted = date('h:i A', strtotime($checkInTime));
-    } elseif ($startTime) {
-        $timeFormatted = date('h:i A', strtotime($startTime));
+    $checkOutTime = $submissionData['check_out_time'] ?? date('Y-m-d H:i:s');
+
+    $checkInLabel = '—';
+    if (!empty($checkInTime)) {
+        $checkInLabel = br_format_whatsapp_time($checkInTime);
+    } elseif (!empty($startTime)) {
+        $ts = strtotime((string)$startTime);
+        if ($ts === false && preg_match('/^\d{1,2}:\d{2}/', (string)$startTime)) {
+            $ts = strtotime($date . ' ' . $startTime);
+        }
+        $checkInLabel = $ts ? date('h:i A', $ts) : '—';
     }
-    
-    // Hours worked
-    $hours = number_format((float)($submissionData['hours_today'] ?? 0), 2);
-    $overtimeHours = number_format((float)($submissionData['overtime_hours'] ?? 0), 2);
-    $regularHours = min((float)($submissionData['hours_today'] ?? 0), 8);
-    
-    // Planned projects and work
+
+    $checkOutLabel = br_format_whatsapp_time($checkOutTime);
+    $hoursRaw = (float)($submissionData['hours_today'] ?? 0);
+    $otRaw = (float)($submissionData['overtime_hours'] ?? 0);
+    $regularRaw = max(0, min($hoursRaw, 8));
+    $hoursLabel = br_format_whatsapp_hours($hoursRaw);
+    $otLabel = br_format_whatsapp_hours($otRaw);
+    $regularLabel = br_format_whatsapp_hours($regularRaw);
+    $breakMinutes = (int)($submissionData['total_break_minutes'] ?? 0);
+
     $plannedProjects = $submissionData['planned_projects'] ?? null;
-    $plannedWork = trim($submissionData['planned_work'] ?? '');
-    
-    // Tasks
-    $completedTasks = trim($submissionData['completed_tasks'] ?? '');
-    $pendingTasks = trim($submissionData['pending_tasks'] ?? '');
-    $ongoingTasks = trim($submissionData['ongoing_tasks'] ?? '');
-    $upcomingTasks = trim($submissionData['notes'] ?? '');
-    
-    // Count items
-    $countItems = function($txt) {
-        if (empty($txt)) return 0;
-        $lines = array_filter(array_map('trim', explode("\n", $txt)), function($x){ return $x !== ''; });
+    $plannedWork = trim((string)($submissionData['planned_work'] ?? ''));
+    $plannedWorkStatus = $submissionData['planned_work_status'] ?? null;
+    $plannedWorkNotes = trim((string)($submissionData['planned_work_notes'] ?? ''));
+
+    $completedTasks = trim((string)($submissionData['completed_tasks'] ?? ''));
+    $pendingTasks = trim((string)($submissionData['pending_tasks'] ?? ''));
+    $ongoingTasks = trim((string)($submissionData['ongoing_tasks'] ?? ''));
+    $upcomingTasks = trim((string)($submissionData['notes'] ?? ''));
+
+    $countItems = static function ($txt) {
+        if ($txt === '') {
+            return 0;
+        }
+        $lines = array_filter(array_map('trim', preg_split('/\r\n|\r|\n/', $txt) ?: []), function ($x) {
+            return $x !== '';
+        });
         return count($lines);
     };
-    
+
     $completedCount = $countItems($completedTasks);
     $pendingCount = $countItems($pendingTasks);
     $ongoingCount = $countItems($ongoingTasks);
     $upcomingCount = $countItems($upcomingTasks);
-    
-    $isUpdate = isset($submissionData['is_update']) && $submissionData['is_update'];
+
+    $isUpdate = !empty($submissionData['is_update']);
     $actionText = $isUpdate ? 'Updated' : 'Submitted';
-    
-    // Build WhatsApp message (concise format)
-    $message = "🧾 *BugRicer Daily Work Update*\n";
+
+    $message = "🧾 *WORK UPDATE*\n";
     $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
-    $message .= "📌 *Status:* $actionText\n";
-    $message .= "👤 *User:* $userName\n";
-    if ($userEmail) {
-        $message .= "📧 $userEmail\n";
+    $message .= "*" . $userName . "* · " . $actionText . "\n";
+    if (!empty($userEmail)) {
+        $message .= "📧 " . $userEmail . "\n";
     }
-    $message .= "\n";
-    $message .= "📅 *Date:* $dateFormatted\n";
-    $message .= "🕘 *Check-in Time:* $timeFormatted\n";
-    $message .= "⏱ *Working Hours:* $hours Hours\n";
-    
-    if ($overtimeHours > 0) {
-        $message .= "📊 *Regular:* $regularHours Hours\n";
-        $message .= "⏰ *Overtime:* $overtimeHours Hours\n";
+
+    $message .= "\n📅 *Work day* — " . $dateLabel . "\n";
+    $message .= "🕘 Check-in: *" . $checkInLabel . "*\n";
+    $message .= "🕕 Check-out: *" . $checkOutLabel . "*\n";
+    $message .= "⏱ Hours worked: *" . $hoursLabel . "*\n";
+
+    if ($otRaw > 0) {
+        $message .= "📊 Regular: *" . $regularLabel . "*\n";
+        $message .= "⚡ Overtime (OT): *" . $otLabel . "*\n";
+    } else {
+        $message .= "⚡ Overtime (OT): *0*\n";
     }
-    
-    // Add planned projects and work if available
-    if (!empty($plannedProjects) || !empty($plannedWork)) {
-        $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
-        $message .= "*📋 Planning Details:*\n";
-        
-        if (!empty($plannedProjects) && is_array($plannedProjects)) {
-            // Get project names from database if connection available
-            $projectNames = [];
-            if (isset($submissionData['_db_conn']) && $submissionData['_db_conn']) {
-                try {
-                    $conn = $submissionData['_db_conn'];
-                    $placeholders = str_repeat('?,', count($plannedProjects) - 1) . '?';
+
+    if ($breakMinutes > 0) {
+        $message .= "☕ Breaks: *" . $breakMinutes . " min*\n";
+    }
+
+    $projectNames = [];
+    if (!empty($plannedProjects) && is_array($plannedProjects)) {
+        if (isset($submissionData['_db_conn']) && $submissionData['_db_conn']) {
+            try {
+                $conn = $submissionData['_db_conn'];
+                $ids = array_values(array_filter(array_map(function ($p) {
+                    return is_array($p) ? ($p['id'] ?? null) : $p;
+                }, $plannedProjects)));
+                if (!empty($ids)) {
+                    $placeholders = implode(',', array_fill(0, count($ids), '?'));
                     $projectStmt = $conn->prepare("SELECT id, name FROM projects WHERE id IN ($placeholders)");
-                    $projectStmt->execute($plannedProjects);
+                    $projectStmt->execute($ids);
                     $projectRows = $projectStmt->fetchAll(PDO::FETCH_ASSOC);
                     foreach ($projectRows as $row) {
                         $projectNames[] = $row['name'];
                     }
-                } catch (Exception $e) {
-                    error_log("⚠️ Could not fetch project names: " . $e->getMessage());
-                    $projectNames = $plannedProjects; // Fallback to IDs
                 }
-            } else {
-                $projectNames = $plannedProjects; // Fallback to IDs
-            }
-            
-            if (!empty($projectNames)) {
-                $message .= "\n📁 *Projects:* " . implode(', ', $projectNames) . "\n";
+            } catch (Exception $e) {
+                error_log('⚠️ Could not fetch project names: ' . $e->getMessage());
             }
         }
-        
-        if (!empty($plannedWork)) {
-            $message .= "\n📝 *Planned Work:*\n";
-            // Truncate if too long
-            $plannedWorkPreview = $plannedWork;
-            if (strlen($plannedWorkPreview) > 300) {
-                $plannedWorkPreview = substr($plannedWorkPreview, 0, 297) . '...';
-            }
-            $message .= $plannedWorkPreview . "\n";
+        if (empty($projectNames)) {
+            $projectNames = br_normalize_planned_project_names($plannedProjects);
         }
-        
-        // Add Planned Work Status if available
-        $plannedWorkStatus = $submissionData['planned_work_status'] ?? null;
+    }
+
+    if (!empty($projectNames) || $plannedWork !== '' || $plannedWorkNotes !== '' || (!empty($plannedWorkStatus) && $plannedWorkStatus !== 'not_started')) {
+        $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
+        $message .= "📂 *Plan & Projects*\n";
+        if (!empty($projectNames)) {
+            foreach ($projectNames as $name) {
+                $message .= '• ' . $name . "\n";
+            }
+        }
+        if ($plannedWork !== '') {
+            $preview = strlen($plannedWork) > 300 ? substr($plannedWork, 0, 297) . '...' : $plannedWork;
+            $message .= "\n*Work focus*\n" . $preview . "\n";
+        }
         if (!empty($plannedWorkStatus) && $plannedWorkStatus !== 'not_started') {
             $statusLabels = [
                 'not_started' => 'Not Started',
@@ -294,69 +331,56 @@ function formatWorkUpdateForWhatsApp($userName, $userEmail, $submissionData) {
                 'completed' => 'Completed',
                 'on_hold' => 'On Hold',
                 'blocked' => 'Blocked',
-                'cancelled' => 'Cancelled'
+                'cancelled' => 'Cancelled',
             ];
-            $statusLabel = $statusLabels[$plannedWorkStatus] ?? ucfirst(str_replace('_', ' ', $plannedWorkStatus));
-            $message .= "\n📊 *Planned Work Status:* $statusLabel\n";
+            $statusLabel = $statusLabels[$plannedWorkStatus] ?? ucfirst(str_replace('_', ' ', (string)$plannedWorkStatus));
+            $message .= "\n📊 Plan status: *" . $statusLabel . "*\n";
         }
-        
-        // Add Work Notes if available
-        $plannedWorkNotes = trim($submissionData['planned_work_notes'] ?? '');
-        if (!empty($plannedWorkNotes)) {
-            $message .= "\n📝 *Work Notes:*\n";
-            // Truncate if too long
-            $workNotesPreview = $plannedWorkNotes;
-            if (strlen($workNotesPreview) > 300) {
-                $workNotesPreview = substr($workNotesPreview, 0, 297) . '...';
-            }
-            $message .= $workNotesPreview . "\n";
+        if ($plannedWorkNotes !== '') {
+            $notesPreview = strlen($plannedWorkNotes) > 300 ? substr($plannedWorkNotes, 0, 297) . '...' : $plannedWorkNotes;
+            $message .= "\n*Notes*\n" . $notesPreview . "\n";
         }
     }
-    
+
+    if ($completedCount + $pendingCount + $ongoingCount + $upcomingCount > 0) {
+        $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
+        $message .= "✅ *Tasks*\n";
+
+        if ($completedCount > 0) {
+            $message .= "\n*Completed (" . $completedCount . ")*\n";
+            $message .= br_format_whatsapp_task_block($completedTasks) . "\n";
+        }
+        if ($pendingCount > 0) {
+            $message .= "\n*Pending (" . $pendingCount . ")*\n";
+            $message .= br_format_whatsapp_task_block($pendingTasks) . "\n";
+        }
+        if ($ongoingCount > 0) {
+            $message .= "\n*Ongoing (" . $ongoingCount . ")*\n";
+            $message .= br_format_whatsapp_task_block($ongoingTasks) . "\n";
+        }
+        if ($upcomingCount > 0) {
+            $message .= "\n*Upcoming (" . $upcomingCount . ")*\n";
+            $message .= br_format_whatsapp_task_block($upcomingTasks) . "\n";
+        }
+    }
+
+    $totalDays = (int)($submissionData['total_working_days'] ?? 0);
+    $totalHours = (float)($submissionData['total_hours_cumulative'] ?? 0);
+    if ($totalDays > 0 || $totalHours > 0) {
+        $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
+        $message .= "📈 *Period totals*\n";
+        if ($totalDays > 0) {
+            $message .= "Working days: *" . $totalDays . "*\n";
+        }
+        if ($totalHours > 0) {
+            $message .= "Hours completed: *" . br_format_whatsapp_hours($totalHours) . "*\n";
+        }
+    }
+
     $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
-    $message .= "*Tasks Summary:*\n";
-    
-    if ($completedCount > 0) {
-        $message .= "\n✅ *Completed ($completedCount):*\n";
-        // Truncate if too long (WhatsApp has limits)
-        $completedPreview = $completedTasks;
-        if (strlen($completedPreview) > 200) {
-            $completedPreview = substr($completedPreview, 0, 197) . '...';
-        }
-        $message .= $completedPreview . "\n";
-    }
-    
-    if ($pendingCount > 0) {
-        $message .= "\n⌛ *Pending ($pendingCount):*\n";
-        $pendingPreview = $pendingTasks;
-        if (strlen($pendingPreview) > 200) {
-            $pendingPreview = substr($pendingPreview, 0, 197) . '...';
-        }
-        $message .= $pendingPreview . "\n";
-    }
-    
-    if ($ongoingCount > 0) {
-        $message .= "\n🔄 *Ongoing ($ongoingCount):*\n";
-        $ongoingPreview = $ongoingTasks;
-        if (strlen($ongoingPreview) > 200) {
-            $ongoingPreview = substr($ongoingPreview, 0, 197) . '...';
-        }
-        $message .= $ongoingPreview . "\n";
-    }
-    
-    if ($upcomingCount > 0) {
-        $message .= "\n🔥 *Upcoming ($upcomingCount):*\n";
-        $upcomingPreview = $upcomingTasks;
-        if (strlen($upcomingPreview) > 200) {
-            $upcomingPreview = substr($upcomingPreview, 0, 197) . '...';
-        }
-        $message .= $upcomingPreview . "\n";
-    }
-    
-    $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
-    $message .= "⏰ Submitted: " . date('d/m/Y H:i:s') . "\n";
-    $message .= "\n🐞 _BugRicer Automated Notification_";
-    
+    $message .= "_Submitted " . date('M j, Y · h:i A') . "_\n";
+    $message .= "🐞 _BugRicer · Automated Attendance_";
+
     return $message;
 }
 

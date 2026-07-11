@@ -355,22 +355,29 @@ function sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $
     
     // Format date
     $date = $submissionData['submission_date'] ?? date('Y-m-d');
-    $dateFormatted = date('j/n/Y l', strtotime($date));
+    $dateFormatted = date('D, M j, Y', strtotime($date));
     
-    // Format check-in time (preferred) or start time
+    // Format check-in / check-out
     $checkInTime = $submissionData['check_in_time'] ?? null;
     $startTime = $submissionData['start_time'] ?? null;
-    $timeFormatted = '----';
+    $checkOutTime = $submissionData['check_out_time'] ?? date('Y-m-d H:i:s');
+    $timeFormatted = '—';
     if ($checkInTime) {
         $timeFormatted = date('h:i A', strtotime($checkInTime));
     } elseif ($startTime) {
-        $timeFormatted = date('h:i A', strtotime($startTime));
+        $ts = strtotime((string)$startTime);
+        if ($ts === false && preg_match('/^\d{1,2}:\d{2}/', (string)$startTime)) {
+            $ts = strtotime($date . ' ' . $startTime);
+        }
+        $timeFormatted = $ts ? date('h:i A', $ts) : '—';
     }
+    $checkOutFormatted = date('h:i A', strtotime($checkOutTime));
     
     // Hours worked
     $hours = number_format((float)($submissionData['hours_today'] ?? 0), 2);
     $overtimeHours = number_format((float)($submissionData['overtime_hours'] ?? 0), 2);
     $regularHours = min((float)($submissionData['hours_today'] ?? 0), 8);
+    $breakMinutes = (int)($submissionData['total_break_minutes'] ?? 0);
     
     // Total working days and cumulative hours
     $totalWorkingDays = $submissionData['total_working_days'] ?? 0;
@@ -417,24 +424,21 @@ function sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $
           <h3 style=\"margin-top: 0; color: #1e293b; font-size: 20px; font-weight: 700; margin-bottom: 20px;\">🧾 CODO Daily Work Update — $userName</h3>
           
           <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0f9ff; border-left: 4px solid #0ea5e9; border-radius: 4px;\">
-            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;\"><strong>📅 Date:</strong></p>
-            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\">$dateFormatted</p>
-          </div>
-          
-          <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0f9ff; border-left: 4px solid #0ea5e9; border-radius: 4px;\">
-            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;\"><strong>🕘 Check-in Time:</strong></p>
-            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\">$timeFormatted</p>
-          </div>
-          
-          <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0f9ff; border-left: 4px solid #0ea5e9; border-radius: 4px;\">
-            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;\"><strong>⏱ Today's Working Hours:</strong></p>
-            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\">$hours Hours";
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;\"><strong>Attendance — $dateFormatted</strong></p>
+            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\"><strong>Check-in:</strong> $timeFormatted</p>
+            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\"><strong>Check-out:</strong> $checkOutFormatted</p>
+            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\"><strong>Hours worked:</strong> $hours</p>";
     
     if ($overtimeHours > 0) {
-        $html_body .= "<br/><strong>Regular Hours:</strong> $regularHours Hours<br/><strong>Overtime Hours:</strong> $overtimeHours Hours";
+        $html_body .= "<p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\"><strong>Regular:</strong> $regularHours · <strong>OT:</strong> $overtimeHours</p>";
+    } else {
+        $html_body .= "<p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\"><strong>Overtime (OT):</strong> 0</p>";
+    }
+    if ($breakMinutes > 0) {
+        $html_body .= "<p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\"><strong>Breaks:</strong> {$breakMinutes} min</p>";
     }
     
-    $html_body .= "</p>
+    $html_body .= "
           </div>
           
           <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0f9ff; border-left: 4px solid #0ea5e9; border-radius: 4px;\">
