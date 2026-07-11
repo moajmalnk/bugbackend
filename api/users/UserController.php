@@ -1047,6 +1047,338 @@ class UserController extends BaseAPI {
         ];
     }
 
+    /**
+     * Admin-only activity snapshot for a single user (today's work + recent bugs/fixes/updates).
+     */
+    public function getActivitySnapshot($userId) {
+        try {
+            try {
+                $decoded = $this->validateToken();
+            } catch (Exception $e) {
+                error_log("Token validation failed: " . $e->getMessage());
+                $this->sendJsonResponse(401, "Authentication failed");
+                return;
+            }
+
+            if (!$decoded || strtolower((string)($decoded->role ?? '')) !== 'admin') {
+                $this->sendJsonResponse(403, "Only administrators can view activity snapshots");
+                return;
+            }
+
+            if (!$this->conn) {
+                $this->sendJsonResponse(500, "Database connection failed");
+                return;
+            }
+
+            if (!$userId || !$this->utils->isValidUUID($userId)) {
+                $this->sendJsonResponse(400, "Invalid user ID format");
+                return;
+            }
+
+            $cols = [];
+            $res = $this->conn->query("SHOW COLUMNS FROM users");
+            if ($res) {
+                while ($row = $res->fetch(PDO::FETCH_ASSOC)) {
+                    $cols[] = $row['Field'];
+                }
+            }
+            $hasLastActive = in_array('last_active_at', $cols, true);
+
+            $select = ['id', 'username', 'email', 'role', 'role_id'];
+            if ($hasLastActive) {
+                $select[] = 'last_active_at';
+                $select[] = "(CASE WHEN last_active_at IS NULL THEN 'offline' WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 120 THEN 'active' WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 900 THEN 'idle' ELSE 'offline' END) as status";
+            } else {
+                $select[] = "'offline' as status";
+            }
+
+            $stmt = $this->conn->prepare("SELECT " . implode(', ', $select) . " FROM users WHERE id = ? LIMIT 1");
+            $stmt->execute([$userId]);
+            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$user) {
+                $this->sendJsonResponse(404, "User not found");
+                return;
+            }
+            $user['name'] = $user['username'];
+
+            $checkInTime = null;
+            $todayHours = 0.0;
+            $breakMinutes = 0;
+            $checkoutTime = null;
+            $work = null;
+
+            try {
+                $wsColumns = [];
+                $colRes = $this->conn->query("SHOW COLUMNS FROM work_submissions");
+                if ($colRes) {
+                    while ($colRow = $colRes->fetch(PDO::FETCH_ASSOC)) {
+                        $wsColumns[] = $colRow['Field'];
+                    }
+                }
+
+                if (!empty($wsColumns)) {
+                    $hasTotalBreakMinutes = in_array('total_break_minutes', $wsColumns, true);
+                    $hasCheckIn = in_array('check_in_time', $wsColumns, true);
+                    $hasPlannedWork = in_array('planned_work', $wsColumns, true);
+                    $hasPlannedWorkStatus = in_array('planned_work_status', $wsColumns, true);
+                    $hasPlannedWorkNotes = in_array('planned_work_notes', $wsColumns, true);
+                    $hasPlannedProjects = in_array('planned_projects', $wsColumns, true);
+                    $hasProjectUpdates = in_array('project_updates', $wsColumns, true);
+
+                    $selectFields = [
+                        'id',
+                        'user_id',
+                        'submission_date',
+                        'hours_today',
+                        'updated_at',
+                        'created_at',
+                        'completed_tasks',
+                        'pending_tasks',
+                        'ongoing_tasks',
+                        'notes',
+                        'start_time',
+                    ];
+                    if ($hasCheckIn) $selectFields[] = 'check_in_time';
+                    if ($hasTotalBreakMinutes) $selectFields[] = 'total_break_minutes';
+                    if ($hasPlannedWork) $selectFields[] = 'planned_work';
+                    if ($hasPlannedWorkStatus) $selectFields[] = 'planned_work_status';
+                    if ($hasPlannedWorkNotes) $selectFields[] = 'planned_work_notes';
+                    if ($hasPlannedProjects) $selectFields[] = 'planned_projects';
+                    if ($hasProjectUpdates) $selectFields[] = 'project_updates';
+
+                    $wsStmt = $this->conn->prepare(
+                        'SELECT ' . implode(', ', $selectFields) . '
+                         FROM work_submissions
+                         WHERE user_id = ? AND submission_date = CURDATE()
+                         LIMIT 1'
+                    );
+                    $wsStmt->execute([$userId]);
+                    $submission = $wsStmt->fetch(PDO::FETCH_ASSOC);
+
+                    if ($submission) {
+                        $checkInTime = $hasCheckIn ? ($submission['check_in_time'] ?? null) : null;
+                        $todayHours = (float)($submission['hours_today'] ?? 0);
+                        $breakMinutes = $hasTotalBreakMinutes ? (int)($submission['total_break_minutes'] ?? 0) : 0;
+
+                        $hasWorkUpdate = $todayHours > 0
+                            || $breakMinutes > 0
+                            || trim((string)($submission['completed_tasks'] ?? '')) !== ''
+                            || trim((string)($submission['pending_tasks'] ?? '')) !== ''
+                            || trim((string)($submission['ongoing_tasks'] ?? '')) !== ''
+                            || trim((string)($submission['notes'] ?? '')) !== '';
+
+                        if ($hasWorkUpdate && !empty($submission['updated_at'])) {
+                            $updatedAt = strtotime($submission['updated_at']);
+                            $checkInAt = !empty($checkInTime) ? strtotime($checkInTime) : null;
+                            if ($updatedAt && (!$checkInAt || $updatedAt > ($checkInAt + 60))) {
+                                $checkoutTime = $submission['updated_at'];
+                            }
+                        }
+
+                        $projectNames = [];
+                        $projectIds = [];
+                        if ($hasPlannedProjects && !empty($submission['planned_projects'])) {
+                            $decodedProjects = json_decode($submission['planned_projects'], true);
+                            if (is_array($decodedProjects)) {
+                                $projectIds = array_values(array_filter($decodedProjects));
+                            } elseif (is_string($submission['planned_projects']) && trim($submission['planned_projects']) !== '') {
+                                $projectIds = [trim($submission['planned_projects'])];
+                            }
+                            if (!empty($projectIds)) {
+                                $placeholders = implode(',', array_fill(0, count($projectIds), '?'));
+                                $pStmt = $this->conn->prepare("SELECT id, name FROM projects WHERE id IN ($placeholders)");
+                                $pStmt->execute($projectIds);
+                                foreach ($pStmt->fetchAll(PDO::FETCH_ASSOC) as $pRow) {
+                                    $projectNames[(string)$pRow['id']] = $pRow['name'];
+                                }
+                            }
+                        }
+
+                        $splitLines = function ($text) {
+                            $lines = [];
+                            foreach (explode("\n", (string)$text) as $line) {
+                                $line = trim($line);
+                                if ($line === '' || preg_match('/^\[BREAK\]/i', $line)) continue;
+                                if (stripos($line, '[OVERTIME APPROVAL REQUEST]') === 0) continue;
+                                $lines[] = $line;
+                            }
+                            return $lines;
+                        };
+
+                        $completedLines = $splitLines($submission['completed_tasks'] ?? '');
+                        $pendingLines = $splitLines($submission['pending_tasks'] ?? '');
+                        $ongoingLines = $splitLines($submission['ongoing_tasks'] ?? '');
+                        $upcomingLines = $splitLines($submission['notes'] ?? '');
+
+                        $projectUpdates = [];
+                        if ($hasProjectUpdates && !empty($submission['project_updates'])) {
+                            $decodedUpdates = json_decode($submission['project_updates'], true);
+                            if (is_array($decodedUpdates)) {
+                                foreach ($decodedUpdates as $pu) {
+                                    $pid = (string)($pu['project_id'] ?? $pu['id'] ?? '');
+                                    $projectUpdates[] = [
+                                        'project_id' => $pid,
+                                        'project_name' => $projectNames[$pid] ?? ($pu['project_name'] ?? null),
+                                        'update' => $pu['update'] ?? $pu['text'] ?? $pu['notes'] ?? '',
+                                    ];
+                                }
+                            }
+                        }
+
+                        $work = [
+                            'id' => isset($submission['id']) ? (int)$submission['id'] : null,
+                            'submission_date' => $submission['submission_date'] ?? null,
+                            'check_in_time' => $checkInTime,
+                            'checkout_time' => $checkoutTime,
+                            'hours_today' => $todayHours,
+                            'break_minutes' => $breakMinutes,
+                            'start_time' => $submission['start_time'] ?? null,
+                            'planned_work' => $hasPlannedWork ? ($submission['planned_work'] ?? null) : null,
+                            'planned_work_status' => $hasPlannedWorkStatus ? ($submission['planned_work_status'] ?? null) : null,
+                            'planned_work_notes' => $hasPlannedWorkNotes ? ($submission['planned_work_notes'] ?? null) : null,
+                            'planned_projects' => $projectIds,
+                            'project_names' => array_values($projectNames),
+                            'project_updates' => $projectUpdates,
+                            'completed_tasks' => $submission['completed_tasks'] ?? '',
+                            'pending_tasks' => $submission['pending_tasks'] ?? '',
+                            'ongoing_tasks' => $submission['ongoing_tasks'] ?? '',
+                            'notes' => $submission['notes'] ?? '',
+                            'tasks' => [
+                                'completed' => $completedLines,
+                                'pending' => $pendingLines,
+                                'ongoing' => $ongoingLines,
+                                'upcoming' => $upcomingLines,
+                            ],
+                        ];
+                    }
+                }
+            } catch (Exception $e) {
+                error_log('getActivitySnapshot work lookup skipped: ' . $e->getMessage());
+            }
+
+            $user['check_in_time'] = $checkInTime;
+            $user['checked_in_today'] = !empty($checkInTime);
+            $user['today_hours_worked'] = $todayHours;
+            $user['today_break_minutes'] = $breakMinutes;
+            $user['checkout_time'] = $checkoutTime;
+
+            $bugs = [];
+            $fixes = [];
+            $updates = [];
+            $bugCount = 0;
+            $fixCount = 0;
+            $updateCount = 0;
+
+            try {
+                $countStmt = $this->conn->prepare("SELECT COUNT(id) as total FROM bugs WHERE reported_by = ?");
+                $countStmt->execute([$userId]);
+                $bugCount = (int)($countStmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
+
+                $bugsStmt = $this->conn->prepare(
+                    "SELECT b.id, b.title, b.status, b.priority, b.created_at, b.updated_at, b.project_id, p.name as project_name
+                     FROM bugs b
+                     LEFT JOIN projects p ON p.id = b.project_id
+                     WHERE b.reported_by = ?
+                     ORDER BY b.created_at DESC
+                     LIMIT 15"
+                );
+                $bugsStmt->execute([$userId]);
+                $bugs = $bugsStmt->fetchAll(PDO::FETCH_ASSOC);
+            } catch (Exception $e) {
+                error_log('getActivitySnapshot bugs skipped: ' . $e->getMessage());
+            }
+
+            try {
+                $bugCols = [];
+                $bugColRes = $this->conn->query("SHOW COLUMNS FROM bugs");
+                if ($bugColRes) {
+                    while ($r = $bugColRes->fetch(PDO::FETCH_ASSOC)) {
+                        $bugCols[] = $r['Field'];
+                    }
+                }
+                $hasFixedBy = in_array('fixed_by', $bugCols, true);
+
+                if ($hasFixedBy) {
+                    $fixCountStmt = $this->conn->prepare(
+                        "SELECT COUNT(id) as total FROM bugs
+                         WHERE status = 'fixed' AND (fixed_by = ? OR (fixed_by IS NULL AND updated_by = ?))"
+                    );
+                    $fixCountStmt->execute([$userId, $userId]);
+                    $fixCount = (int)($fixCountStmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
+
+                    $fixesStmt = $this->conn->prepare(
+                        "SELECT b.id, b.title, b.status, b.priority, b.created_at, b.updated_at, b.project_id, p.name as project_name,
+                                b.fixed_by, b.updated_by
+                         FROM bugs b
+                         LEFT JOIN projects p ON p.id = b.project_id
+                         WHERE b.status = 'fixed' AND (b.fixed_by = ? OR (b.fixed_by IS NULL AND b.updated_by = ?))
+                         ORDER BY COALESCE(b.updated_at, b.created_at) DESC
+                         LIMIT 15"
+                    );
+                    $fixesStmt->execute([$userId, $userId]);
+                } else {
+                    $fixCountStmt = $this->conn->prepare(
+                        "SELECT COUNT(id) as total FROM bugs WHERE status = 'fixed' AND updated_by = ?"
+                    );
+                    $fixCountStmt->execute([$userId]);
+                    $fixCount = (int)($fixCountStmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
+
+                    $fixesStmt = $this->conn->prepare(
+                        "SELECT b.id, b.title, b.status, b.priority, b.created_at, b.updated_at, b.project_id, p.name as project_name,
+                                b.updated_by
+                         FROM bugs b
+                         LEFT JOIN projects p ON p.id = b.project_id
+                         WHERE b.status = 'fixed' AND b.updated_by = ?
+                         ORDER BY COALESCE(b.updated_at, b.created_at) DESC
+                         LIMIT 15"
+                    );
+                    $fixesStmt->execute([$userId]);
+                }
+                $fixes = $fixesStmt->fetchAll(PDO::FETCH_ASSOC);
+            } catch (Exception $e) {
+                error_log('getActivitySnapshot fixes skipped: ' . $e->getMessage());
+            }
+
+            try {
+                $updCountStmt = $this->conn->prepare("SELECT COUNT(id) as total FROM updates WHERE created_by = ?");
+                $updCountStmt->execute([$userId]);
+                $updateCount = (int)($updCountStmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
+
+                $updStmt = $this->conn->prepare(
+                    "SELECT u.id, u.title, u.type, u.status, u.created_at, u.updated_at, u.project_id, p.name as project_name
+                     FROM updates u
+                     LEFT JOIN projects p ON p.id = u.project_id
+                     WHERE u.created_by = ?
+                     ORDER BY u.created_at DESC
+                     LIMIT 15"
+                );
+                $updStmt->execute([$userId]);
+                $updates = $updStmt->fetchAll(PDO::FETCH_ASSOC);
+            } catch (Exception $e) {
+                error_log('getActivitySnapshot updates skipped: ' . $e->getMessage());
+            }
+
+            $this->sendJsonResponse(200, "Activity snapshot retrieved successfully", [
+                'user' => $user,
+                'work' => $work,
+                'bugs' => $bugs,
+                'fixes' => $fixes,
+                'updates' => $updates,
+                'counts' => [
+                    'bugs' => $bugCount,
+                    'fixes' => $fixCount,
+                    'updates' => $updateCount,
+                ],
+            ]);
+        } catch (PDOException $e) {
+            error_log("Database error in getActivitySnapshot: " . $e->getMessage());
+            $this->sendJsonResponse(500, "Database error occurred");
+        } catch (Exception $e) {
+            error_log("Error in getActivitySnapshot: " . $e->getMessage());
+            $this->sendJsonResponse(500, "An unexpected error occurred");
+        }
+    }
+
     public function getConnection() {
         return $this->conn;
     }
