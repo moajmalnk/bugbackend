@@ -1606,11 +1606,19 @@ function sendMeetingInvitationWhatsApp($conn, $participantEmails, $meetingTitle,
  * Format a clock time for WhatsApp (h:i A), or em dash when missing.
  */
 function br_format_whatsapp_time($value): string {
-    if (empty($value)) {
+    if ($value === null) {
         return '—';
     }
-    $ts = strtotime((string)$value);
-    if ($ts === false) {
+    $raw = trim((string)$value);
+    if ($raw === '' || $raw === '0000-00-00 00:00:00' || $raw === '0000-00-00') {
+        return '—';
+    }
+    // JS ISO → parseable
+    $raw = str_replace('T', ' ', $raw);
+    $raw = preg_replace('/\.\d+Z?$/', '', $raw) ?? $raw;
+    $raw = preg_replace('/Z$/', '', $raw) ?? $raw;
+    $ts = strtotime($raw);
+    if ($ts === false || $ts <= 0) {
         return '—';
     }
     return date('h:i A', $ts);

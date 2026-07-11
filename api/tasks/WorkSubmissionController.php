@@ -317,10 +317,26 @@ class WorkSubmissionController extends BaseAPI {
                 error_log("⚠️ Could not fetch total working days/hours: " . $e->getMessage());
             }
             
+            $resolvedCheckIn = $this->resolveCheckInTimeForNotice($userId, $date, $payload, $start, $columns);
+            // Backfill DB when check-in exists in payload/created_at but column is still null
+            if ($resolvedCheckIn !== null && in_array('check_in_time', $columns, true)) {
+                try {
+                    $backfillStmt = $this->conn->prepare(
+                        "UPDATE work_submissions
+                         SET check_in_time = ?
+                         WHERE user_id = ? AND submission_date = ?
+                           AND (check_in_time IS NULL OR check_in_time = '0000-00-00 00:00:00')"
+                    );
+                    $backfillStmt->execute([$resolvedCheckIn, $userId, $date]);
+                } catch (Exception $e) {
+                    error_log('⚠️ Could not backfill check_in_time: ' . $e->getMessage());
+                }
+            }
+
             $submissionData = [
                 'submission_date' => $date,
                 'start_time' => $start,
-                'check_in_time' => null, // Will be fetched from DB if exists
+                'check_in_time' => $resolvedCheckIn,
                 'check_out_time' => date('Y-m-d H:i:s'),
                 'hours_today' => $hours,
                 'overtime_hours' => $overtime,
@@ -341,32 +357,6 @@ class WorkSubmissionController extends BaseAPI {
                 'is_update' => $isUpdate,
                 '_db_conn' => $this->conn // Pass connection for project name lookup
             ];
-
-            // Always load check-in time when the column exists (not tied to planned_projects).
-            $hasCheckInTime = in_array('check_in_time', $columns, true);
-            if ($hasCheckInTime) {
-                try {
-                    $checkInStmt = $this->conn->prepare(
-                        'SELECT check_in_time FROM work_submissions WHERE user_id = ? AND submission_date = ? LIMIT 1'
-                    );
-                    $checkInStmt->execute([$userId, $date]);
-                    $checkInData = $checkInStmt->fetch(PDO::FETCH_ASSOC);
-                    if ($checkInData && !empty($checkInData['check_in_time'])) {
-                        $submissionData['check_in_time'] = $checkInData['check_in_time'];
-                    }
-                } catch (Exception $e) {
-                    error_log('⚠️ Could not fetch check_in_time for work update notice: ' . $e->getMessage());
-                }
-            }
-            // Fallback: payload start_time / check_in_time if DB value missing
-            if (empty($submissionData['check_in_time'])) {
-                $payloadCheckIn = isset($payload['check_in_time']) ? trim((string)$payload['check_in_time']) : '';
-                if ($payloadCheckIn !== '') {
-                    $submissionData['check_in_time'] = $payloadCheckIn;
-                } elseif (!empty($start)) {
-                    $submissionData['start_time'] = $start;
-                }
-            }
 
             // Send notifications BEFORE the HTTP response — sendJsonResponse() calls exit()
             $updateStatus = $isUpdate ? 'UPDATE' : 'NEW SUBMISSION';
@@ -778,6 +768,82 @@ class WorkSubmissionController extends BaseAPI {
             ];
         }
         return $out;
+    }
+
+    /**
+     * Resolve check-in datetime for email/WhatsApp notices.
+     * Prefer stored check_in_time, then payload, then start_time, then row created_at
+     * (created when the user first checked in).
+     */
+    protected function resolveCheckInTimeForNotice(
+        string $userId,
+        string $date,
+        array $payload,
+        $start,
+        array $columns
+    ): ?string {
+        $row = [];
+        try {
+            $fields = ['created_at', 'start_time'];
+            if (in_array('check_in_time', $columns, true)) {
+                array_unshift($fields, 'check_in_time');
+            }
+            $stmt = $this->conn->prepare(
+                'SELECT ' . implode(', ', $fields) . ' FROM work_submissions WHERE user_id = ? AND submission_date = ? LIMIT 1'
+            );
+            $stmt->execute([$userId, $date]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+        } catch (Exception $e) {
+            error_log('⚠️ Could not load attendance row for check-in notice: ' . $e->getMessage());
+        }
+
+        $payloadCheckIn = isset($payload['check_in_time']) ? trim((string)$payload['check_in_time']) : '';
+        $candidates = [
+            $row['check_in_time'] ?? null,
+            $payloadCheckIn !== '' ? $payloadCheckIn : null,
+            $row['start_time'] ?? null,
+            $start,
+            $row['created_at'] ?? null,
+        ];
+
+        foreach ($candidates as $candidate) {
+            $normalized = $this->normalizeAttendanceDateTime($candidate, $date);
+            if ($normalized !== null) {
+                return $normalized;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Normalize TIME / TIMESTAMP / ISO strings into Y-m-d H:i:s, or null when unusable.
+     */
+    protected function normalizeAttendanceDateTime($value, string $date): ?string {
+        if ($value === null) {
+            return null;
+        }
+        $raw = trim((string)$value);
+        if ($raw === '' || $raw === '0000-00-00 00:00:00' || $raw === '0000-00-00') {
+            return null;
+        }
+
+        // JS ISO → MySQL-friendly
+        $raw = str_replace('T', ' ', $raw);
+        $raw = preg_replace('/\.\d+Z?$/', '', $raw) ?? $raw;
+        $raw = preg_replace('/Z$/', '', $raw) ?? $raw;
+
+        // TIME-only values (HH:MM[:SS])
+        if (preg_match('/^\d{1,2}:\d{2}(:\d{2})?$/', $raw)) {
+            $raw = $date . ' ' . $raw;
+        }
+
+        $ts = strtotime($raw);
+        if ($ts === false || $ts <= 0) {
+            return null;
+        }
+
+        return date('Y-m-d H:i:s', $ts);
     }
 
     protected function persistCheckoutPlannedFields(string $userId, string $date, array $payload): void {
