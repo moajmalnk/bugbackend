@@ -1133,27 +1133,35 @@ class BugController extends BaseAPI {
                      LEFT JOIN projects p ON b.project_id = p.id";
             
             $countQuery = "SELECT COUNT(*) as total FROM bugs b";
+            $where = [];
             $params = [];
+            $countParams = [];
 
             // Add project filter if specified
             if ($projectId) {
-                $query .= " WHERE b.project_id = ?";
-                $countQuery .= " WHERE b.project_id = ?";
+                $where[] = "b.project_id = ?";
                 $params[] = $projectId;
+                $countParams[] = $projectId;
             }
 
             // Add status filter if specified
             if ($status) {
-                $query .= " AND b.status = ?";
-                $countQuery .= " AND b.status = ?";
+                $where[] = "b.status = ?";
                 $params[] = $status;
+                $countParams[] = $status;
             }
 
             // Add user filter if specified
             if ($userId) {
-                $query .= " AND b.reported_by = ?";
-                $countQuery .= " AND b.reported_by = ?";
+                $where[] = "b.reported_by = ?";
                 $params[] = $userId;
+                $countParams[] = $userId;
+            }
+
+            if (!empty($where)) {
+                $whereSql = " WHERE " . implode(" AND ", $where);
+                $query .= $whereSql;
+                $countQuery .= $whereSql;
             }
 
             // Add sorting
@@ -1162,12 +1170,17 @@ class BugController extends BaseAPI {
             // Add pagination
             $offset = ($page - 1) * $limit;
             $query .= " LIMIT ? OFFSET ?";
-            $params[] = $limit;
-            $params[] = $offset;
+            $params[] = (int)$limit;
+            $params[] = (int)$offset;
 
             // Execute both queries using prepared statements with caching
-            $countParams = $projectId ? [$projectId] : [];
-            $totalBugs = $this->fetchSingleCached($countQuery, $countParams, 'bug_count_' . ($projectId ?? 'all') . '_' . ($status ?? 'all') . '_' . ($userId ?? 'all'), 600)['total'];
+            $totalRow = $this->fetchSingleCached(
+                $countQuery,
+                $countParams,
+                'bug_count_' . ($projectId ?? 'all') . '_' . ($status ?? 'all') . '_' . ($userId ?? 'all'),
+                600
+            );
+            $totalBugs = (int)($totalRow['total'] ?? 0);
 
             // Execute main query
             $stmt = $this->conn->prepare($query);
@@ -1216,9 +1229,11 @@ class BugController extends BaseAPI {
             return $response;
             
         } catch (PDOException $e) {
-            throw new Exception("Failed to retrieve bugs");
+            error_log('getAllBugs PDO error: ' . $e->getMessage());
+            throw new Exception("Failed to retrieve bugs: " . $e->getMessage());
         } catch (Exception $e) {
-            throw new Exception("An unexpected error occurred");
+            error_log('getAllBugs error: ' . $e->getMessage());
+            throw new Exception($e->getMessage());
         }
     }
 
