@@ -108,6 +108,16 @@ class ShortsController extends BaseAPI
             if (empty($row['thumbnail_path'])) {
                 $row['thumbnail_url'] = self::youtubeThumbnailUrl($ytId);
             }
+        } elseif (($row['source_type'] ?? '') === 'instagram' && !empty($row['source_url'])) {
+            if (preg_match('#instagram\.com/(?:share/)?(?:reel|reels|p|tv)/([A-Za-z0-9_-]+)#i', (string)$row['source_url'], $m)) {
+                $kind = preg_match('#/(?:reel|reels)(/|$)#i', (string)$row['source_url']) ? 'reel'
+                    : (preg_match('#/tv(/|$)#i', (string)$row['source_url']) ? 'tv' : 'p');
+                $row['embed_url'] = 'https://www.instagram.com/' . $kind . '/' . $m[1] . '/embed/';
+            }
+        } elseif (($row['source_type'] ?? '') === 'facebook' && !empty($row['source_url'])) {
+            $row['embed_url'] = 'https://www.facebook.com/plugins/video.php?href='
+                . rawurlencode((string)$row['source_url'])
+                . '&show_text=false&width=320&height=560';
         }
         if (!empty($row['thumbnail_path'])) {
             $row['thumbnail_url'] = $row['thumbnail_path'];
