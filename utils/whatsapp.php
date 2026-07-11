@@ -1579,102 +1579,190 @@ function sendMeetingInvitationWhatsApp($conn, $participantEmails, $meetingTitle,
 }
 
 /**
+ * Format a clock time for WhatsApp (h:i A), or em dash when missing.
+ */
+function br_format_whatsapp_time($value): string {
+    if (empty($value)) {
+        return '—';
+    }
+    $ts = strtotime((string)$value);
+    if ($ts === false) {
+        return '—';
+    }
+    return date('h:i A', $ts);
+}
+
+/**
+ * Format decimal hours for WhatsApp (e.g. 8, 8.5).
+ */
+function br_format_whatsapp_hours($hours): string {
+    $h = round((float)$hours, 2);
+    if (abs($h - (int)$h) < 0.001) {
+        return (string)(int)$h;
+    }
+    return rtrim(rtrim(number_format($h, 2, '.', ''), '0'), '.');
+}
+
+/**
+ * Normalize planned project names for WhatsApp bullets.
+ *
+ * @param mixed $plannedProjects
+ * @return string[]
+ */
+function br_normalize_planned_project_names($plannedProjects): array {
+    if (empty($plannedProjects)) {
+        return [];
+    }
+    if (!is_array($plannedProjects)) {
+        $name = trim((string)$plannedProjects);
+        return $name !== '' ? [$name] : [];
+    }
+
+    $names = [];
+    foreach ($plannedProjects as $project) {
+        if (is_array($project)) {
+            $name = trim((string)($project['name'] ?? $project['id'] ?? ''));
+        } else {
+            $name = trim((string)$project);
+        }
+        if ($name !== '') {
+            $names[] = $name;
+        }
+    }
+    return $names;
+}
+
+/**
  * Format check-in notification message for WhatsApp
- * 
+ *
  * @param string $username User's username
  * @param string $checkInTime Check-in time (datetime format)
  * @param string $date Check-in date
  * @param array|null $plannedProjects Array of planned project names or IDs
  * @param string|null $plannedWork Planned work description
+ * @param array|null $yesterdaySummary Optional yesterday attendance:
+ *        date, check_in_time, check_out_time, hours_today, overtime_hours, has_record
  * @return string Formatted WhatsApp message
  */
-function formatCheckInNotificationForWhatsApp($username, $checkInTime, $date, $plannedProjects = null, $plannedWork = null) {
-    $message = "⏰ *Check-in Notification*\n";
+function formatCheckInNotificationForWhatsApp(
+    $username,
+    $checkInTime,
+    $date,
+    $plannedProjects = null,
+    $plannedWork = null,
+    $yesterdaySummary = null
+) {
+    $todayLabel = date('D, M j, Y', strtotime($date));
+    $checkInLabel = br_format_whatsapp_time($checkInTime);
+    $projectNames = br_normalize_planned_project_names($plannedProjects);
+
+    $message = "✅ *CHECK-IN*\n";
     $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
-    $message .= "A team member has checked in for their work day.\n\n";
-    
-    // Format date
-    $dateFormatted = date('F j, Y (l)', strtotime($date));
-    
-    // Format check-in time
-    $timeFormatted = date('h:i A', strtotime($checkInTime));
-    
-    $message .= "👤 *User:* " . $username . "\n";
-    $message .= "📅 *Date:* " . $dateFormatted . "\n";
-    $message .= "🕘 *Check-in Time:* " . $timeFormatted . "\n";
-    
-    // Add planned projects if available
-    if (!empty($plannedProjects)) {
+    $message .= "*" . $username . "* has checked in for the work day.\n\n";
+
+    $message .= "📅 *Today* — " . $todayLabel . "\n";
+    $message .= "🕘 Check-in: *" . $checkInLabel . "*\n";
+
+    if (!empty($projectNames) || (!empty($plannedWork) && trim((string)$plannedWork) !== '')) {
         $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
-        $message .= "*📁 Planned Projects:*\n";
-        
-        if (is_array($plannedProjects)) {
-            if (count($plannedProjects) > 0) {
-                $message .= implode("\n• ", array_map(function($p) {
-                    return "• " . (is_array($p) ? ($p['name'] ?? $p['id'] ?? '') : $p);
-                }, $plannedProjects));
-            } else {
-                $message .= "None";
+        $message .= "📂 *Today's Plan*\n";
+
+        if (!empty($projectNames)) {
+            $message .= "*Projects*\n";
+            foreach ($projectNames as $name) {
+                $message .= "• " . $name . "\n";
             }
-        } else {
-            $message .= "• " . $plannedProjects;
+        }
+
+        if (!empty($plannedWork) && trim((string)$plannedWork) !== '') {
+            $workText = trim((string)$plannedWork);
+            if (strlen($workText) > 500) {
+                $workText = substr($workText, 0, 497) . '...';
+            }
+            if (!empty($projectNames)) {
+                $message .= "\n";
+            }
+            $message .= "*Work focus*\n";
+            $message .= $workText . "\n";
         }
     }
-    
-    // Add planned work if available
-    if (!empty($plannedWork) && trim($plannedWork) !== '') {
-        $message .= "\n\n━━━━━━━━━━━━━━━━━━━━\n";
-        $message .= "*📝 Planned Work:*\n";
-        // Truncate if too long
-        $workText = trim($plannedWork);
-        if (strlen($workText) > 500) {
-            $workText = substr($workText, 0, 497) . '...';
-        }
-        $message .= $workText;
+
+    $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
+    $message .= "📊 *Yesterday's Summary*";
+
+    if (is_array($yesterdaySummary) && !empty($yesterdaySummary['has_record'])) {
+        $yDate = $yesterdaySummary['date'] ?? null;
+        $yDateLabel = $yDate ? date('D, M j, Y', strtotime((string)$yDate)) : 'Previous day';
+        $yIn = br_format_whatsapp_time($yesterdaySummary['check_in_time'] ?? null);
+        $yOut = br_format_whatsapp_time($yesterdaySummary['check_out_time'] ?? null);
+        $yHours = br_format_whatsapp_hours($yesterdaySummary['hours_today'] ?? 0);
+        $yOt = br_format_whatsapp_hours($yesterdaySummary['overtime_hours'] ?? 0);
+
+        $message .= " — " . $yDateLabel . "\n";
+        $message .= "🕘 In: *" . $yIn . "*\n";
+        $message .= "🕕 Out: *" . $yOut . "*\n";
+        $message .= "⏱ Hours worked: *" . $yHours . "*\n";
+        $message .= "⚡ Overtime (OT): *" . $yOt . "*\n";
+    } else {
+        $message .= "\n";
+        $message .= "_No attendance record for yesterday._\n";
     }
-    
-    $message .= "\n\n━━━━━━━━━━━━━━━━━━━━\n";
-    $message .= "🐞 _BugRicer Automated Notification_";
-    
+
+    $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
+    $message .= "🐞 _BugRicer · Automated Attendance_";
+
     return $message;
 }
 
 /**
  * Send check-in notification WhatsApp to admin
- * 
+ *
  * @param string $adminPhone Admin phone number
  * @param string $username User's username
  * @param string $checkInTime Check-in time (datetime format)
  * @param string $date Check-in date
  * @param array|null $plannedProjects Array of planned project names or IDs
  * @param string|null $plannedWork Planned work description
+ * @param array|null $yesterdaySummary Optional yesterday attendance summary
  * @return bool Success status
  */
-function sendCheckInNotificationWhatsApp($adminPhone, $username, $checkInTime, $date, $plannedProjects = null, $plannedWork = null) {
+function sendCheckInNotificationWhatsApp(
+    $adminPhone,
+    $username,
+    $checkInTime,
+    $date,
+    $plannedProjects = null,
+    $plannedWork = null,
+    $yesterdaySummary = null
+) {
     try {
         error_log("📱 sendCheckInNotificationWhatsApp called for user: $username");
-        
+
         if (empty(trim($adminPhone))) {
             error_log("⚠️ Admin phone number is empty, skipping WhatsApp notification");
             return false;
         }
-        
-        // Format message
-        $message = formatCheckInNotificationForWhatsApp($username, $checkInTime, $date, $plannedProjects, $plannedWork);
-        
+
+        $message = formatCheckInNotificationForWhatsApp(
+            $username,
+            $checkInTime,
+            $date,
+            $plannedProjects,
+            $plannedWork,
+            $yesterdaySummary
+        );
+
         error_log("📱 Sending check-in notification WhatsApp to admin: $adminPhone");
-        
-        // Send WhatsApp message
+
         $result = sendWhatsAppMessage($adminPhone, $message);
-        
+
         if ($result) {
             error_log("✅ Successfully sent check-in notification WhatsApp to admin");
         } else {
             error_log("❌ Failed to send check-in notification WhatsApp to admin");
         }
-        
+
         return $result;
-        
     } catch (Exception $e) {
         error_log("⚠️ Exception in sendCheckInNotificationWhatsApp: " . $e->getMessage());
         error_log("⚠️ Exception trace: " . $e->getTraceAsString());

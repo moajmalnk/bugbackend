@@ -313,6 +313,85 @@ class CheckInController extends BaseAPI {
                     $projectNames = [];
                 }
 
+                $yesterdaySummary = [
+                    'has_record' => false,
+                    'date' => date('Y-m-d', strtotime($submissionDate . ' -1 day')),
+                    'check_in_time' => null,
+                    'check_out_time' => null,
+                    'hours_today' => 0,
+                    'overtime_hours' => 0,
+                ];
+                try {
+                    require_once __DIR__ . '/../../utils/work_submission_ot.php';
+                    $yesterdayDate = $yesterdaySummary['date'];
+                    $yCols = [];
+                    $yColRes = $this->conn->query('SHOW COLUMNS FROM work_submissions');
+                    if ($yColRes) {
+                        while ($yCol = $yColRes->fetch(PDO::FETCH_ASSOC)) {
+                            $yCols[] = $yCol['Field'];
+                        }
+                    }
+                    $selectParts = ['submission_date', 'hours_today', 'updated_at', 'created_at'];
+                    foreach ([
+                        'check_in_time',
+                        'start_time',
+                        'overtime_hours',
+                        'requested_extra_hours',
+                        'approval_reason',
+                        'extra_hours_approval_status',
+                        'extra_hours_approved_amount',
+                        'completed_tasks',
+                        'pending_tasks',
+                        'ongoing_tasks',
+                        'notes',
+                        'total_break_minutes',
+                    ] as $optionalCol) {
+                        if (in_array($optionalCol, $yCols, true)) {
+                            $selectParts[] = $optionalCol;
+                        }
+                    }
+                    $yStmt = $this->conn->prepare(
+                        'SELECT ' . implode(', ', $selectParts) . '
+                         FROM work_submissions
+                         WHERE user_id = ? AND submission_date = ?
+                         LIMIT 1'
+                    );
+                    $yStmt->execute([$userId, $yesterdayDate]);
+                    $yRow = $yStmt->fetch(PDO::FETCH_ASSOC);
+                    if ($yRow) {
+                        $hoursToday = (float)($yRow['hours_today'] ?? 0);
+                        $hasWorkUpdate = $hoursToday > 0
+                            || ((int)($yRow['total_break_minutes'] ?? 0)) > 0
+                            || trim((string)($yRow['completed_tasks'] ?? '')) !== ''
+                            || trim((string)($yRow['pending_tasks'] ?? '')) !== ''
+                            || trim((string)($yRow['ongoing_tasks'] ?? '')) !== ''
+                            || trim((string)($yRow['notes'] ?? '')) !== '';
+
+                        $checkOutTime = null;
+                        if ($hasWorkUpdate && !empty($yRow['updated_at'])) {
+                            $updatedAt = strtotime($yRow['updated_at']);
+                            $checkInAt = !empty($yRow['check_in_time'])
+                                ? strtotime($yRow['check_in_time'])
+                                : (!empty($yRow['start_time']) ? strtotime($yesterdayDate . ' ' . $yRow['start_time']) : null);
+                            if ($updatedAt && (!$checkInAt || $updatedAt > $checkInAt)) {
+                                $checkOutTime = $yRow['updated_at'];
+                            }
+                        }
+
+                        $yesterdaySummary = [
+                            'has_record' => true,
+                            'date' => $yRow['submission_date'] ?? $yesterdayDate,
+                            'check_in_time' => $yRow['check_in_time']
+                                ?? (!empty($yRow['start_time']) ? ($yesterdayDate . ' ' . $yRow['start_time']) : null),
+                            'check_out_time' => $checkOutTime,
+                            'hours_today' => $hoursToday,
+                            'overtime_hours' => br_effective_overtime_hours_for_stats($yRow),
+                        ];
+                    }
+                } catch (Exception $e) {
+                    error_log("⚠️ Failed to load yesterday attendance for check-in notice: " . $e->getMessage());
+                }
+
                 $plannedSummary = $plannedWork;
                 if (!empty($projectNames)) {
                     $plannedSummary = implode(', ', $projectNames);
@@ -346,7 +425,8 @@ class CheckInController extends BaseAPI {
                             $checkInTime,
                             $submissionDate,
                             !empty($projectNames) ? $projectNames : null,
-                            $plannedWork
+                            $plannedWork,
+                            $yesterdaySummary
                         );
                     }
                 } catch (Exception $e) {
@@ -362,7 +442,8 @@ class CheckInController extends BaseAPI {
                             $checkInTime,
                             $submissionDate,
                             !empty($projectNames) ? $projectNames : null,
-                            $plannedWork
+                            $plannedWork,
+                            $yesterdaySummary
                         );
                     }
                 } catch (Exception $e) {

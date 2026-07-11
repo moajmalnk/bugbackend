@@ -761,99 +761,134 @@ The BugRicer Team
     return sendEmail($email, $subject, $html_body, $text_body);
 }
 
-function sendCheckInNotificationEmail($adminEmail, $username, $checkInTime, $date, $plannedProjects = null, $plannedWork = null) {
-    $subject = "Check-in Notification - " . $username;
-    
-    // Format date
-    $dateFormatted = date('F j, Y (l)', strtotime($date));
-    
-    // Format check-in time
+function sendCheckInNotificationEmail($adminEmail, $username, $checkInTime, $date, $plannedProjects = null, $plannedWork = null, $yesterdaySummary = null) {
+    $subject = "Check-in — " . $username;
+
+    $dateFormatted = date('D, M j, Y', strtotime($date));
     $timeFormatted = date('h:i A', strtotime($checkInTime));
-    
-    // Format planned projects
-    $projectsList = 'None';
+
+    $projectsList = 'None specified';
     if (!empty($plannedProjects)) {
         if (is_array($plannedProjects)) {
-            $projectsList = implode(', ', $plannedProjects);
+            $projectsList = implode(', ', array_filter(array_map(function ($p) {
+                return is_array($p) ? trim((string)($p['name'] ?? $p['id'] ?? '')) : trim((string)$p);
+            }, $plannedProjects)));
+            if ($projectsList === '') {
+                $projectsList = 'None specified';
+            }
         } else {
-            $projectsList = $plannedProjects;
+            $projectsList = (string)$plannedProjects;
         }
     }
-    
-    // Format planned work
-    $workText = !empty($plannedWork) ? trim($plannedWork) : 'No planned work specified';
-    
+
+    $workText = !empty($plannedWork) ? trim((string)$plannedWork) : 'No planned work specified';
+
+    $formatTime = static function ($value) {
+        if (empty($value)) {
+            return '—';
+        }
+        $ts = strtotime((string)$value);
+        return $ts ? date('h:i A', $ts) : '—';
+    };
+    $formatHours = static function ($hours) {
+        $h = round((float)$hours, 2);
+        if (abs($h - (int)$h) < 0.001) {
+            return (string)(int)$h;
+        }
+        return rtrim(rtrim(number_format($h, 2, '.', ''), '0'), '.');
+    };
+
+    $yesterdayHtml = '';
+    $yesterdayText = '';
+    if (is_array($yesterdaySummary) && !empty($yesterdaySummary['has_record'])) {
+        $yDate = $yesterdaySummary['date'] ?? null;
+        $yDateLabel = $yDate ? date('D, M j, Y', strtotime((string)$yDate)) : 'Previous day';
+        $yIn = $formatTime($yesterdaySummary['check_in_time'] ?? null);
+        $yOut = $formatTime($yesterdaySummary['check_out_time'] ?? null);
+        $yHours = $formatHours($yesterdaySummary['hours_today'] ?? 0);
+        $yOt = $formatHours($yesterdaySummary['overtime_hours'] ?? 0);
+
+        $yesterdayHtml = "
+          <div style=\"margin-bottom: 15px; padding: 12px; background-color: #eef2ff; border-left: 4px solid #6366f1; border-radius: 4px;\">
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #3730a3;\"><strong>Yesterday's Summary — " . htmlspecialchars($yDateLabel) . "</strong></p>
+            <p style=\"margin: 0; font-size: 14px; color: #3730a3;\"><strong>Check-in:</strong> " . htmlspecialchars($yIn) . "</p>
+            <p style=\"margin: 0; font-size: 14px; color: #3730a3;\"><strong>Check-out:</strong> " . htmlspecialchars($yOut) . "</p>
+            <p style=\"margin: 0; font-size: 14px; color: #3730a3;\"><strong>Hours worked:</strong> " . htmlspecialchars($yHours) . "</p>
+            <p style=\"margin: 0; font-size: 14px; color: #3730a3;\"><strong>Overtime (OT):</strong> " . htmlspecialchars($yOt) . "</p>
+          </div>";
+
+        $yesterdayText = "
+Yesterday's Summary — " . $yDateLabel . "
+Check-in: " . $yIn . "
+Check-out: " . $yOut . "
+Hours worked: " . $yHours . "
+Overtime (OT): " . $yOt . "
+";
+    } else {
+        $yesterdayHtml = "
+          <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f8fafc; border-left: 4px solid #94a3b8; border-radius: 4px;\">
+            <p style=\"margin: 0; font-size: 14px; color: #475569;\"><strong>Yesterday's Summary:</strong> No attendance record found.</p>
+          </div>";
+        $yesterdayText = "
+Yesterday's Summary: No attendance record found.
+";
+    }
+
     $html_body = "
     <div style=\"font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;\">
       <div style=\"max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">
-        
-        <!-- Header -->
-        <div style=\"background-color: #10b981; color: #ffffff; padding: 20px; text-align: center;\">
-           <h1 style=\"margin: 0; font-size: 24px; display: flex; align-items: center; justify-content: center;\">
-            <span style=\"font-size: 28px; margin-right: 10px;\">⏰</span>
-            Check-in Notification
-          </h1>
-          <p style=\"margin: 5px 0 0 0; font-size: 16px;\">User Check-in Alert</p>
+
+        <div style=\"background-color: #059669; color: #ffffff; padding: 20px; text-align: center;\">
+           <h1 style=\"margin: 0; font-size: 22px;\">Check-in</h1>
+          <p style=\"margin: 6px 0 0 0; font-size: 14px; opacity: 0.95;\">Attendance alert</p>
         </div>
-        
-        <!-- Body -->
+
         <div style=\"padding: 20px; border-bottom: 1px solid #e2e8f0;\">
-          <h3 style=\"margin-top: 0; color: #1e293b; font-size: 18px;\">Hello Admin,</h3>
-          <p style=\"white-space: pre-line; margin-bottom: 15px; font-size: 14px;\">A team member has checked in for their work day.</p>
-          
+          <p style=\"margin: 0 0 16px 0; font-size: 14px;\"><strong>" . htmlspecialchars($username) . "</strong> has checked in for the work day.</p>
+
           <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0fdf4; border-left: 4px solid #10b981; border-radius: 4px;\">
-            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #166534;\"><strong>📋 Check-in Details:</strong></p>
-            <p style=\"margin: 0; font-size: 14px; color: #166534;\"><strong>User:</strong> " . htmlspecialchars($username) . "</p>
-            <p style=\"margin: 0; font-size: 14px; color: #166534;\"><strong>Date:</strong> " . htmlspecialchars($dateFormatted) . "</p>
-            <p style=\"margin: 0; font-size: 14px; color: #166534;\"><strong>Check-in Time:</strong> " . htmlspecialchars($timeFormatted) . "</p>
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #166534;\"><strong>Today — " . htmlspecialchars($dateFormatted) . "</strong></p>
+            <p style=\"margin: 0; font-size: 14px; color: #166534;\"><strong>Check-in:</strong> " . htmlspecialchars($timeFormatted) . "</p>
           </div>
-          
+
           <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0f9ff; border-left: 4px solid #0ea5e9; border-radius: 4px;\">
-            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;\"><strong>📁 Planned Projects:</strong></p>
-            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\">" . htmlspecialchars($projectsList) . "</p>
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;\"><strong>Today's Plan</strong></p>
+            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\"><strong>Projects:</strong> " . htmlspecialchars($projectsList) . "</p>
+            <p style=\"margin: 8px 0 0 0; font-size: 14px; color: #0c4a6e; white-space: pre-wrap;\"><strong>Work focus:</strong> " . htmlspecialchars($workText) . "</p>
           </div>
-          
-          <div style=\"margin-bottom: 15px; padding: 12px; background-color: #fef3c7; border-left: 4px solid #f59e0b; border-radius: 4px;\">
-            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #92400e;\"><strong>📝 Planned Work:</strong></p>
-            <p style=\"margin: 0; font-size: 14px; color: #92400e; white-space: pre-wrap;\">" . htmlspecialchars($workText) . "</p>
-          </div>
-          
+
+          " . $yesterdayHtml . "
+
           <p style=\"font-size: 14px; margin-bottom: 0;\">Best regards,<br>The BugRicer Team</p>
         </div>
-        
-        <!-- Footer -->
+
         <div style=\"background-color: #f8fafc; color: #64748b; padding: 20px; text-align: center; font-size: 12px;\">
-          <p style=\"margin: 0;\">This is an automated notification from BugRicer. Please do not reply to this email.</p>
+          <p style=\"margin: 0;\">Automated attendance notification from BugRicer.</p>
           <p style=\"margin: 5px 0 0 0;\">&copy; " . date('Y') . " BugRicer. All rights reserved.</p>
         </div>
-        
+
       </div>
     </div>
     ";
-    
+
     $text_body = "
-Check-in Notification - BugRicer
+Check-in — BugRicer
 
-Hello Admin,
+" . $username . " has checked in for the work day.
 
-A team member has checked in for their work day.
+Today — " . $dateFormatted . "
+Check-in: " . $timeFormatted . "
 
-Check-in Details:
-User: " . htmlspecialchars($username) . "
-Date: " . htmlspecialchars($dateFormatted) . "
-Check-in Time: " . htmlspecialchars($timeFormatted) . "
-
-Planned Projects: " . htmlspecialchars($projectsList) . "
-
-Planned Work:
-" . htmlspecialchars($workText) . "
-
+Today's Plan
+Projects: " . $projectsList . "
+Work focus: " . $workText . "
+" . $yesterdayText . "
 Best regards,
 The BugRicer Team
 
 © " . date('Y') . " BugRicer. All rights reserved.
     ";
-    
+
     return sendEmail($adminEmail, $subject, $html_body, $text_body);
 }
 ?>
