@@ -1358,9 +1358,39 @@ class UserController extends BaseAPI {
                 error_log('getActivitySnapshot updates skipped: ' . $e->getMessage());
             }
 
+            $assignedProjects = [];
+            try {
+                $projCols = [];
+                $projColRes = $this->conn->query("SHOW COLUMNS FROM projects");
+                if ($projColRes) {
+                    while ($r = $projColRes->fetch(PDO::FETCH_ASSOC)) {
+                        $projCols[] = $r['Field'];
+                    }
+                }
+                $hasIsActive = in_array('is_active', $projCols, true);
+                $hasStatus = in_array('status', $projCols, true);
+
+                $projectSelect = "p.id, p.name, pm.role as member_role";
+                if ($hasIsActive) $projectSelect .= ", p.is_active";
+                if ($hasStatus) $projectSelect .= ", p.status";
+
+                $assignedStmt = $this->conn->prepare(
+                    "SELECT $projectSelect
+                     FROM project_members pm
+                     INNER JOIN projects p ON p.id = pm.project_id
+                     WHERE pm.user_id = ?
+                     ORDER BY p.name ASC"
+                );
+                $assignedStmt->execute([$userId]);
+                $assignedProjects = $assignedStmt->fetchAll(PDO::FETCH_ASSOC);
+            } catch (Exception $e) {
+                error_log('getActivitySnapshot assigned projects skipped: ' . $e->getMessage());
+            }
+
             $this->sendJsonResponse(200, "Activity snapshot retrieved successfully", [
                 'user' => $user,
                 'work' => $work,
+                'assigned_projects' => $assignedProjects,
                 'bugs' => $bugs,
                 'fixes' => $fixes,
                 'updates' => $updates,
@@ -1368,6 +1398,7 @@ class UserController extends BaseAPI {
                     'bugs' => $bugCount,
                     'fixes' => $fixCount,
                     'updates' => $updateCount,
+                    'projects' => count($assignedProjects),
                 ],
             ]);
         } catch (PDOException $e) {
