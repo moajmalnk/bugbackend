@@ -13,8 +13,8 @@ try {
     $api = new BaseAPI();
     $conn = $api->getConnection();
     
-    // Get all users
-    $stmt = $conn->query("SELECT id, username, email, role FROM users ORDER BY username");
+    // Get active users only
+    $stmt = $conn->query("SELECT id, username, email, role FROM users WHERE account_active = 1 ORDER BY username");
     $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
     
     // Get total notifications

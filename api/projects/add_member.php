@@ -72,8 +72,8 @@ try {
     try {
         $conn = $api->getConnection();
         
-        // Fetch user details (email, username, role)
-        $userStmt = $conn->prepare("SELECT username, email, role FROM users WHERE id = ? LIMIT 1");
+        // Fetch active user details (email, username, role) — skip deactivated accounts
+        $userStmt = $conn->prepare("SELECT username, email, role FROM users WHERE id = ? AND account_active = 1 LIMIT 1");
         $userStmt->execute([$user_id]);
         $user = $userStmt->fetch(PDO::FETCH_ASSOC);
         

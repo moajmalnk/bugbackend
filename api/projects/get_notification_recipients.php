@@ -35,17 +35,17 @@ try {
 
     $pdo = $api->getConnection();
 
-    // Get all admins with role information
-    $adminStmt = $pdo->prepare("SELECT email, role FROM users WHERE role = 'admin'");
+    // Get all active admins with role information
+    $adminStmt = $pdo->prepare("SELECT email, role FROM users WHERE role = 'admin' AND account_active = 1");
     $adminStmt->execute();
     $adminRecipients = $adminStmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // Get project members (developers and testers) with role information
+    // Get active project members (developers and testers) with role information
     $memberStmt = $pdo->prepare("
         SELECT u.email, u.role 
         FROM project_members pm
         JOIN users u ON pm.user_id = u.id
-        WHERE pm.project_id = ? AND (u.role = 'developer' OR u.role = 'tester')
+        WHERE pm.project_id = ? AND (u.role = 'developer' OR u.role = 'tester') AND u.account_active = 1
     ");
     $memberStmt->execute([$project_id]);
     $memberRecipients = $memberStmt->fetchAll(PDO::FETCH_ASSOC);

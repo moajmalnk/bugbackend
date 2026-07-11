@@ -18,7 +18,7 @@ try {
     
     // Use cached query for better performance - include phone number
     $users = $api->fetchCached(
-        "SELECT email, phone FROM users WHERE role = 'developer'",
+        "SELECT email, phone FROM users WHERE role = 'developer' AND account_active = 1",
         [],
         'developers_data',
         600 // Cache for 10 minutes

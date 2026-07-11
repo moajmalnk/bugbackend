@@ -725,6 +725,7 @@ class UserController extends BaseAPI {
 
             $fields = [];
             $params = [];
+            $deactivatingAccount = false;
             if (isset($data['username'])) {
                 $fields[] = "username = ?";
                 $params[] = $data['username'];
@@ -819,6 +820,9 @@ class UserController extends BaseAPI {
                 }
                 $fields[] = "account_active = ?";
                 $params[] = $activeVal;
+                if ($activeVal === 0) {
+                    $deactivatingAccount = true;
+                }
             }
 
             if (array_key_exists('joining_date', $data) && $hasJoiningDateCol) {
@@ -851,6 +855,32 @@ class UserController extends BaseAPI {
             $sql = "UPDATE users SET " . implode(", ", $fields) . " WHERE id = ?";
             $stmt = $conn->prepare($sql);
             if ($stmt->execute($params)) {
+                // Revoke push tokens so deactivated users cannot receive FCM
+                if ($deactivatingAccount) {
+                    try {
+                        $fcmCols = [];
+                        $fcmColRes = $conn->query("SHOW COLUMNS FROM user_fcm_tokens");
+                        if ($fcmColRes) {
+                            while ($row = $fcmColRes->fetch(PDO::FETCH_ASSOC)) {
+                                $fcmCols[] = $row['Field'];
+                            }
+                        }
+                        if (in_array('is_active', $fcmCols, true)) {
+                            $fcmStmt = $conn->prepare("UPDATE user_fcm_tokens SET is_active = 0 WHERE user_id = ?");
+                            $fcmStmt->execute([$id]);
+                        } else {
+                            $fcmStmt = $conn->prepare("DELETE FROM user_fcm_tokens WHERE user_id = ?");
+                            $fcmStmt->execute([$id]);
+                        }
+                        if (in_array('fcm_token', $userCols, true)) {
+                            $legacyStmt = $conn->prepare("UPDATE users SET fcm_token = NULL WHERE id = ?");
+                            $legacyStmt->execute([$id]);
+                        }
+                    } catch (Exception $e) {
+                        error_log("Failed to deactivate FCM tokens for user {$id}: " . $e->getMessage());
+                    }
+                }
+
                 // Log user update activity
                 try {
                     // Get current user info for logging

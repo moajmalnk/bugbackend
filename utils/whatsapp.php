@@ -466,7 +466,7 @@ function getProjectDevelopers($conn, $projectId) {
         $query = "SELECT pm.user_id 
                   FROM project_members pm
                   JOIN users u ON pm.user_id = u.id
-                  WHERE pm.project_id = ? AND u.role = 'developer'";
+                  WHERE pm.project_id = ? AND u.role = 'developer' AND u.account_active = 1";
         $stmt = $conn->prepare($query);
         $stmt->execute([$projectId]);
         $developers = $stmt->fetchAll(PDO::FETCH_COLUMN);
@@ -485,7 +485,7 @@ function getProjectDevelopers($conn, $projectId) {
  */
 function getAllAdmins($conn) {
     try {
-        $query = "SELECT id FROM users WHERE role = 'admin'";
+        $query = "SELECT id FROM users WHERE role = 'admin' AND account_active = 1";
         $stmt = $conn->prepare($query);
         $stmt->execute();
         $admins = $stmt->fetchAll(PDO::FETCH_COLUMN);
@@ -569,7 +569,7 @@ function getUserPhoneNumbers($conn, $userIds) {
     try {
         // Create placeholders for IN clause
         $placeholders = str_repeat('?,', count($userIds) - 1) . '?';
-        $stmt = $conn->prepare("SELECT id, phone FROM users WHERE id IN ($placeholders) AND phone IS NOT NULL AND phone != ''");
+        $stmt = $conn->prepare("SELECT id, phone FROM users WHERE id IN ($placeholders) AND account_active = 1 AND phone IS NOT NULL AND phone != ''");
         $stmt->execute($userIds);
         
         $result = [];
@@ -609,7 +609,7 @@ function getUserPhoneNumbersWithRoles($conn, $userIds) {
     try {
         // Create placeholders for IN clause
         $placeholders = str_repeat('?,', count($userIds) - 1) . '?';
-        $stmt = $conn->prepare("SELECT id, phone, role FROM users WHERE id IN ($placeholders) AND phone IS NOT NULL AND phone != ''");
+        $stmt = $conn->prepare("SELECT id, phone, role FROM users WHERE id IN ($placeholders) AND account_active = 1 AND phone IS NOT NULL AND phone != ''");
         $stmt->execute($userIds);
         
         $result = [];
@@ -1404,13 +1404,13 @@ function sendProjectMemberAddedWhatsApp($conn, $userId, $projectId, $projectRole
     try {
         error_log("📱 sendProjectMemberAddedWhatsApp called for user: $userId, project: $projectId");
         
-        // Get user details (phone and role)
-        $userStmt = $conn->prepare("SELECT username, phone, role FROM users WHERE id = ? LIMIT 1");
+        // Get user details (phone and role) — skip deactivated accounts
+        $userStmt = $conn->prepare("SELECT username, phone, role FROM users WHERE id = ? AND account_active = 1 LIMIT 1");
         $userStmt->execute([$userId]);
         $user = $userStmt->fetch(PDO::FETCH_ASSOC);
         
         if (!$user || empty($user['phone'])) {
-            error_log("⚠️ User $userId has no phone number for WhatsApp notification");
+            error_log("⚠️ User $userId is inactive or has no phone number for WhatsApp notification");
             return false;
         }
         
@@ -1550,9 +1550,9 @@ function sendMeetingInvitationWhatsApp($conn, $participantEmails, $meetingTitle,
             }
         }
         
-        // Get phone numbers for participant emails
+        // Get phone numbers for participant emails (active accounts only)
         $placeholders = str_repeat('?,', count($participantEmails) - 1) . '?';
-        $phoneStmt = $conn->prepare("SELECT email, phone FROM users WHERE email IN ($placeholders) AND phone IS NOT NULL AND phone != ''");
+        $phoneStmt = $conn->prepare("SELECT email, phone FROM users WHERE email IN ($placeholders) AND account_active = 1 AND phone IS NOT NULL AND phone != ''");
         $phoneStmt->execute($participantEmails);
         $usersWithPhones = $phoneStmt->fetchAll(PDO::FETCH_ASSOC);
         
