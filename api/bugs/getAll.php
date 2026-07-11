@@ -67,9 +67,11 @@ try {
     $projectId = isset($_GET['project_id']) ? $_GET['project_id'] : null;
     $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
     $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 10;
+    $status = isset($_GET['status']) && $_GET['status'] !== '' ? $_GET['status'] : null;
+    $userId = isset($_GET['user_id']) && $_GET['user_id'] !== '' ? $_GET['user_id'] : null;
     
     // Create cache key for this request
-    $cacheKey = 'user_bugs_' . $user_id . '_' . ($projectId ?? 'all') . '_' . $page . '_' . $limit;
+    $cacheKey = 'user_bugs_' . $user_id . '_' . ($projectId ?? 'all') . '_' . $page . '_' . $limit . '_' . ($status ?? 'all') . '_' . ($userId ?? 'all');
     $cachedResult = $api->getCache($cacheKey);
     
     if ($cachedResult !== null) {
@@ -86,7 +88,7 @@ try {
     
     // Admin users can see all bugs (real admins or admins impersonating)
     if ($isAdmin) {
-        $result = $controller->getAllBugs($projectId, $page, $limit);
+        $result = $controller->getAllBugs($projectId, $page, $limit, $status, $userId);
         $api->setCache($cacheKey, $result, 300); // Cache for 5 minutes
         http_response_code(200);
         echo json_encode([
