@@ -413,8 +413,9 @@ class NotificationManager extends BaseAPI {
                 'title' => (string) $title,
                 'body' => (string) $message,
                 'image' => (string) $imageUrl,
+                // icon = full-color large icon; badge = white silhouette on transparent (Android status bar)
                 'icon' => $this->getFrontendAbsoluteUrl('/notification-icon.png'),
-                'badge' => $this->getFrontendAbsoluteUrl('/notification-badge.png'),
+                'badge' => $this->getFrontendAbsoluteUrl('/notification-badge-96.png'),
                 'bug_id' => (string) ($bugId ?: ''),
                 'entity_id' => (string) ($entityId ?: ''),
                 'project_id' => (string) ($data['project_id'] ?? ''),
