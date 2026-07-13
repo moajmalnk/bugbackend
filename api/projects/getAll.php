@@ -58,11 +58,8 @@ if ($is_admin || $is_developer) {
     error_log("Projects getAll - Found " . count($projects) . " assigned projects");
 }
 
-// Add members array to each project for frontend filtering
-foreach ($projects as &$project) {
-    $stmt2 = $conn->prepare("SELECT user_id FROM project_members WHERE project_id = ?");
-    $stmt2->execute([$project['id']]);
-    $project['members'] = array_column($stmt2->fetchAll(PDO::FETCH_ASSOC), 'user_id');
-}
+// Add members + bug/member stats in batch (avoids N+1 API calls from the frontend)
+require_once __DIR__ . '/projectStatsHelper.php';
+attachProjectListStats($conn, $projects);
 
 $api->sendJsonResponse(200, "Projects retrieved successfully", $projects); 
