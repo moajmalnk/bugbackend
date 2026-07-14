@@ -13,17 +13,20 @@ function attachProjectListStats(PDO $conn, array &$projects): void
     $placeholders = implode(',', array_fill(0, count($projectIds), '?'));
 
     $membersByProject = [];
+    $membersDetailByProject = [];
     $memberStatsByProject = [];
     $memberStmt = $conn->prepare(
-        "SELECT project_id, user_id, role
-         FROM project_members
-         WHERE project_id IN ($placeholders)"
+        "SELECT pm.project_id, pm.user_id, pm.role, u.username, u.email
+         FROM project_members pm
+         LEFT JOIN users u ON u.id = pm.user_id
+         WHERE pm.project_id IN ($placeholders)"
     );
     $memberStmt->execute($projectIds);
     foreach ($memberStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
         $pid = (string) $row['project_id'];
         if (!isset($membersByProject[$pid])) {
             $membersByProject[$pid] = [];
+            $membersDetailByProject[$pid] = [];
             $memberStatsByProject[$pid] = [
                 'total' => 0,
                 'developers' => 0,
@@ -31,6 +34,12 @@ function attachProjectListStats(PDO $conn, array &$projects): void
             ];
         }
         $membersByProject[$pid][] = $row['user_id'];
+        $membersDetailByProject[$pid][] = [
+            'user_id' => $row['user_id'],
+            'role' => $row['role'],
+            'username' => $row['username'] ?? null,
+            'email' => $row['email'] ?? null,
+        ];
         $memberStatsByProject[$pid]['total']++;
         if ($row['role'] === 'developer') {
             $memberStatsByProject[$pid]['developers']++;
@@ -66,6 +75,7 @@ function attachProjectListStats(PDO $conn, array &$projects): void
     foreach ($projects as &$project) {
         $pid = (string) $project['id'];
         $project['members'] = $membersByProject[$pid] ?? [];
+        $project['members_detail'] = $membersDetailByProject[$pid] ?? [];
         $project['bug_stats'] = $bugStatsByProject[$pid] ?? $defaultBug;
         $project['member_stats'] = $memberStatsByProject[$pid] ?? $defaultMember;
     }
