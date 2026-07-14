@@ -198,7 +198,7 @@ try {
     }
     
     // Determine which fields are actually being changed (not just present)
-    $updatableFields = ['title', 'description', 'priority', 'status', 'expected_result', 'actual_result', 'fix_description', 'fixed_by', 'project_id', 'already_raised', 'bug_level', 'tester_retested', 'tester_issue_fixed'];
+    $updatableFields = ['title', 'description', 'priority', 'status', 'expected_result', 'actual_result', 'fix_description', 'fixed_by', 'project_id', 'already_raised', 'bug_level', 'tester_retested', 'tester_issue_fixed', 'tester_verification_notes'];
     $fieldsBeingChanged = [];
     foreach ($updatableFields as $field) {
         if (isset($data[$field]) || array_key_exists($field, $data)) {
@@ -227,15 +227,14 @@ try {
     // Allow: status, status + fix_description, status + fixed_by, status + fix_description + fixed_by
     // Developers can update status and fix_description together (common in FixBug page)
     $allowedDeveloperFields = ['status', 'fix_description', 'fixed_by'];
-    $allowedTesterRetestFields = ['tester_retested', 'tester_issue_fixed', 'bug_level'];
+    $allowedTesterRetestFields = ['tester_retested', 'tester_issue_fixed', 'bug_level', 'tester_verification_notes'];
     $hasStatusChange = in_array('status', $fieldsBeingChanged);
     
     // Check if all changed fields are in the allowed list for developers
     // array_diff returns fields in $fieldsBeingChanged that are NOT in $allowedDeveloperFields
     // If empty, it means all fields are allowed
     $hasOnlyAllowedFields = empty(array_diff($fieldsBeingChanged, $allowedDeveloperFields));
-    $hasOnlyTesterRetestFields = !empty($fieldsBeingChanged)
-        && empty(array_diff($fieldsBeingChanged, $allowedTesterRetestFields));
+    $hasOnlyTesterRetestFields = empty(array_diff($fieldsBeingChanged, $allowedTesterRetestFields));
     
     // Check if only status-related fields are being changed
     $isStatusUpdate = $hasStatusChange && 
@@ -244,10 +243,13 @@ try {
                       (!isset($data['attachments_to_delete']) || empty($data['attachments_to_delete']));
 
     $isTester = $user_role_lower === 'tester';
-    $isRetestUpdate = $hasOnlyTesterRetestFields
-        && (($bug['status'] ?? '') === 'fixed' || ($data['status'] ?? '') === 'fixed')
-        && empty($_FILES)
-        && (!isset($data['attachments_to_delete']) || empty($data['attachments_to_delete']));
+    $hasVerificationIntent = array_key_exists('tester_retested', $data)
+        || array_key_exists('tester_issue_fixed', $data)
+        || array_key_exists('tester_verification_notes', $data)
+        || (!empty($data['verification_upload']) || ($data['upload_context'] ?? '') === 'verification');
+    $isRetestUpdate = $hasVerificationIntent
+        && $hasOnlyTesterRetestFields
+        && (($bug['status'] ?? '') === 'fixed' || ($data['status'] ?? '') === 'fixed');
     
     // Check if user is admin or the bug creator (using reported_by from bug array)
     // In impersonation mode, check if the impersonated user is the creator
@@ -303,7 +305,7 @@ try {
         } elseif ($isDeveloper && !$isProjectMember) {
             $errorMessage = 'You do not have permission to edit this bug. You must be a member of the project to update bug status.';
         } elseif ($isTester && !$isRetestUpdate) {
-            $errorMessage = 'Testers can only update verification fields (retested / issue fixed / bug level) on fixed bugs.';
+            $errorMessage = 'Testers can only update verification fields (retested / issue fixed / bug level / notes / evidence) on fixed bugs.';
         } elseif ($isTester && !$isProjectMember) {
             $errorMessage = 'You must be a project member to verify fixes.';
         } else {

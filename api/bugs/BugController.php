@@ -203,25 +203,117 @@ class BugController extends BaseAPI {
         }
     }
 
+    private function bugsTableHasTesterVerificationNotesColumn(): bool
+    {
+        try {
+            $st = $this->conn->query("SHOW COLUMNS FROM bugs LIKE 'tester_verification_notes'");
+            return (bool) ($st && $st->rowCount() > 0);
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+
+    private function bugAttachmentsHasUploadContextColumn(): bool
+    {
+        try {
+            $st = $this->conn->query("SHOW COLUMNS FROM bug_attachments LIKE 'upload_context'");
+            return (bool) ($st && $st->rowCount() > 0);
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+
     /**
      * Ensure tester retest columns exist (idempotent for hosts that skip migrations).
      */
     private function ensureTesterRetestColumns(): void
     {
-        if ($this->bugsTableHasTesterRetestColumns()) {
-            return;
+        if (!$this->bugsTableHasTesterRetestColumns()) {
+            try {
+                $this->conn->exec(
+                    "ALTER TABLE bugs
+                     ADD COLUMN tester_retested TINYINT(1) NULL DEFAULT NULL,
+                     ADD COLUMN tester_issue_fixed TINYINT(1) NULL DEFAULT NULL,
+                     ADD COLUMN tester_verified_by VARCHAR(36) NULL DEFAULT NULL,
+                     ADD COLUMN tester_verified_at DATETIME NULL DEFAULT NULL"
+                );
+            } catch (Throwable $e) {
+                error_log('ensureTesterRetestColumns: ' . $e->getMessage());
+            }
         }
-        try {
-            $this->conn->exec(
-                "ALTER TABLE bugs
-                 ADD COLUMN tester_retested TINYINT(1) NULL DEFAULT NULL,
-                 ADD COLUMN tester_issue_fixed TINYINT(1) NULL DEFAULT NULL,
-                 ADD COLUMN tester_verified_by VARCHAR(36) NULL DEFAULT NULL,
-                 ADD COLUMN tester_verified_at DATETIME NULL DEFAULT NULL"
+        if (!$this->bugsTableHasTesterVerificationNotesColumn()) {
+            try {
+                $this->conn->exec(
+                    "ALTER TABLE bugs ADD COLUMN tester_verification_notes TEXT NULL"
+                );
+            } catch (Throwable $e) {
+                error_log('ensureTesterVerificationNotes: ' . $e->getMessage());
+            }
+        }
+        if (!$this->bugAttachmentsHasUploadContextColumn()) {
+            try {
+                $this->conn->exec(
+                    "ALTER TABLE bug_attachments ADD COLUMN upload_context VARCHAR(32) NULL DEFAULT NULL"
+                );
+            } catch (Throwable $e) {
+                error_log('ensureAttachmentUploadContext: ' . $e->getMessage());
+            }
+        }
+    }
+
+    /**
+     * Insert a bug attachment; tags upload_context when available.
+     */
+    private function insertBugAttachmentRow(
+        string $bugId,
+        string $fileName,
+        string $relativePath,
+        string $fileType,
+        $uploadedBy,
+        ?string $uploadContext = null
+    ): bool {
+        $this->ensureTesterRetestColumns();
+        $attachmentId = $this->generateUUID();
+        if ($this->bugAttachmentsHasUploadContextColumn()) {
+            $stmt = $this->conn->prepare(
+                "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by, upload_context)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)"
             );
-        } catch (Throwable $e) {
-            error_log('ensureTesterRetestColumns: ' . $e->getMessage());
+            return (bool) $stmt->execute([
+                $attachmentId,
+                $bugId,
+                $fileName,
+                $relativePath,
+                $fileType,
+                $uploadedBy,
+                $uploadContext,
+            ]);
         }
+        $stmt = $this->conn->prepare(
+            "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by)
+             VALUES (?, ?, ?, ?, ?, ?)"
+        );
+        return (bool) $stmt->execute([
+            $attachmentId,
+            $bugId,
+            $fileName,
+            $relativePath,
+            $fileType,
+            $uploadedBy,
+        ]);
+    }
+
+    private function resolveUploadContextFromRequest(array $data): ?string
+    {
+        $raw = $data['upload_context'] ?? $data['verification_upload'] ?? null;
+        if ($raw === null || $raw === '') {
+            return null;
+        }
+        if ($raw === '1' || $raw === 1 || $raw === true || $raw === 'true' || $raw === 'verification') {
+            return 'verification';
+        }
+        $normalized = strtolower(trim((string) $raw));
+        return in_array($normalized, ['verification', 'report'], true) ? $normalized : null;
     }
 
     /**
@@ -696,7 +788,8 @@ class BugController extends BaseAPI {
                     'file_path' => $attachment['file_path'], // Keep original path for frontend
                     'file_type' => $attachment['file_type'],
                     'uploaded_by' => $attachment['uploaded_by'],
-                    'created_at' => $attachment['created_at']
+                    'created_at' => $attachment['created_at'],
+                    'upload_context' => $attachment['upload_context'] ?? null,
                 ];
                 
                 $bug['attachments'][] = $attachmentObj;
@@ -1584,6 +1677,11 @@ class BugController extends BaseAPI {
             }
             $actorId = (string) ($data['updated_by'] ?? $data['tester_verified_by'] ?? '');
             $this->appendTesterRetestUpdateFields($updateFields, $params, $data, $actorId);
+            if ($this->bugsTableHasTesterVerificationNotesColumn() && array_key_exists('tester_verification_notes', $data)) {
+                $updateFields[] = 'tester_verification_notes = ?';
+                $notes = $data['tester_verification_notes'];
+                $params[] = ($notes === null || $notes === '') ? null : (string) $notes;
+            }
             if (isset($data['fix_description'])) {
                 $updateFields[] = "fix_description = ?";
                 $params[] = $data['fix_description'];
@@ -1777,6 +1875,11 @@ class BugController extends BaseAPI {
             }
             $actorId = (string) ($data['updated_by'] ?? $userId ?? '');
             $this->appendTesterRetestUpdateFields($updateFields, $params, $data, $actorId);
+            if ($this->bugsTableHasTesterVerificationNotesColumn() && array_key_exists('tester_verification_notes', $data)) {
+                $updateFields[] = 'tester_verification_notes = ?';
+                $notes = $data['tester_verification_notes'];
+                $params[] = ($notes === null || $notes === '') ? null : (string) $notes;
+            }
             if (isset($data['updated_by'])) {
                 $updateFields[] = "updated_by = ?";
                 $params[] = $data['updated_by'];
@@ -1817,6 +1920,7 @@ class BugController extends BaseAPI {
             }
 
             // Handle new screenshots
+            $uploadContext = $this->resolveUploadContextFromRequest($data);
             if (!empty($_FILES['screenshots'])) {
                 error_log("BugController::updateBugWithAttachments - Processing screenshots, count: " . count($_FILES['screenshots']['tmp_name'] ?? []));
                 $uploadDir = __DIR__ . '/../../uploads/screenshots/';
@@ -1844,27 +1948,17 @@ class BugController extends BaseAPI {
                     $filePath = $uploadDir . uniqid() . '_' . $fileName;
                     
                     if (move_uploaded_file($tmp_name, $filePath)) {
-                        $attachmentId = $this->generateUUID();
                         $relativePath = str_replace(__DIR__ . '/../../uploads/', 'uploads/', $filePath);
-                        $bugIdForAttachment = (string)$data['id']; // Ensure string type
-                        $stmt = $this->conn->prepare(
-                            "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by) 
-                             VALUES (?, ?, ?, ?, ?, ?)"
-                        );
-                        $result = $stmt->execute([
-                            $attachmentId,
+                        $bugIdForAttachment = (string)$data['id'];
+                        $result = $this->insertBugAttachmentRow(
                             $bugIdForAttachment,
                             $fileName,
                             $relativePath,
                             $fileType,
-                            $userId
-                        ]);
-                        $insertId = $this->conn->lastInsertId();
-                        error_log("BugController::updateBugWithAttachments - Saved screenshot: bug_id=$bugIdForAttachment, file=$fileName, attachment_id=$attachmentId, insert_id=$insertId, success=" . ($result ? 'yes' : 'no'));
-                        if (!$result) {
-                            $errorInfo = $stmt->errorInfo();
-                            error_log("BugController::updateBugWithAttachments - SQL Error: " . json_encode($errorInfo));
-                        }
+                            $userId,
+                            $uploadContext
+                        );
+                        error_log("BugController::updateBugWithAttachments - Saved screenshot: bug_id=$bugIdForAttachment, file=$fileName, success=" . ($result ? 'yes' : 'no'));
                     } else {
                         error_log("BugController::updateBugWithAttachments - Failed to move uploaded file: $tmp_name to $filePath");
                     }
@@ -1886,21 +1980,16 @@ class BugController extends BaseAPI {
                     $filePath = $uploadDir . uniqid() . '_' . $fileName;
                     
                     if (move_uploaded_file($tmp_name, $filePath)) {
-                        $attachmentId = $this->generateUUID();
                         $relativePath = str_replace(__DIR__ . '/../../uploads/', 'uploads/', $filePath);
-                        $bugIdForAttachment = (string)$data['id']; // Ensure string type
-                        $stmt = $this->conn->prepare(
-                            "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by) 
-                             VALUES (?, ?, ?, ?, ?, ?)"
-                        );
-                        $result = $stmt->execute([
-                            $attachmentId,
+                        $bugIdForAttachment = (string)$data['id'];
+                        $result = $this->insertBugAttachmentRow(
                             $bugIdForAttachment,
                             $fileName,
                             $relativePath,
                             $fileType,
-                            $userId
-                        ]);
+                            $userId,
+                            $uploadContext
+                        );
                         error_log("BugController::updateBugWithAttachments - Saved file: bug_id=$bugIdForAttachment, file=$fileName, success=" . ($result ? 'yes' : 'no'));
                     }
                 }
@@ -1934,27 +2023,17 @@ class BugController extends BaseAPI {
                     $filePath = $uploadDir . uniqid() . '_' . $fileName;
                     
                     if (move_uploaded_file($tmp_name, $filePath)) {
-                        $attachmentId = $this->generateUUID();
                         $relativePath = str_replace(__DIR__ . '/../../uploads/', 'uploads/', $filePath);
-                        $bugIdForAttachment = (string)$data['id']; // Ensure string type
-                        $stmt = $this->conn->prepare(
-                            "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by) 
-                             VALUES (?, ?, ?, ?, ?, ?)"
-                        );
-                        $result = $stmt->execute([
-                            $attachmentId,
+                        $bugIdForAttachment = (string)$data['id'];
+                        $result = $this->insertBugAttachmentRow(
                             $bugIdForAttachment,
                             $fileName,
                             $relativePath,
                             $fileType,
-                            $userId
-                        ]);
-                        $insertId = $this->conn->lastInsertId();
-                        error_log("BugController::updateBugWithAttachments - Saved voice note: bug_id=$bugIdForAttachment, file=$fileName, attachment_id=$attachmentId, insert_id=$insertId, success=" . ($result ? 'yes' : 'no'));
-                        if (!$result) {
-                            $errorInfo = $stmt->errorInfo();
-                            error_log("BugController::updateBugWithAttachments - SQL Error: " . json_encode($errorInfo));
-                        }
+                            $userId,
+                            $uploadContext
+                        );
+                        error_log("BugController::updateBugWithAttachments - Saved voice note: bug_id=$bugIdForAttachment, file=$fileName, success=" . ($result ? 'yes' : 'no'));
                     } else {
                         error_log("BugController::updateBugWithAttachments - Failed to move uploaded file: $tmp_name to $filePath");
                     }
@@ -2025,7 +2104,8 @@ class BugController extends BaseAPI {
                     'file_path' => $attachment['file_path'],
                     'file_type' => $attachment['file_type'],
                     'uploaded_by' => $attachment['uploaded_by'],
-                    'created_at' => $attachment['created_at']
+                    'created_at' => $attachment['created_at'],
+                    'upload_context' => $attachment['upload_context'] ?? null,
                 ];
                 
                 $updatedBug['attachments'][] = $attachmentObj;
