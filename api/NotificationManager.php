@@ -897,6 +897,78 @@ class NotificationManager extends BaseAPI {
         }
     }
 
+    /**
+     * Notify project members + admins about an upcoming/due/overdue timeline milestone.
+     *
+     * @param string $projectId
+     * @param string $projectName
+     * @param string $milestoneKey e.g. deadline_date
+     * @param string $milestoneLabel e.g. Deadline Date
+     * @param string $milestoneDate Y-m-d
+     * @param int $reminderOffset Days relative to milestone (7,3,1,0,-1)
+     * @return int|false
+     */
+    public function notifyProjectDeadlineReminder(
+        $projectId,
+        $projectName,
+        $milestoneKey,
+        $milestoneLabel,
+        $milestoneDate,
+        $reminderOffset
+    ) {
+        $projectId = (string) $projectId;
+        $userIds = $this->resolveProjectRecipients($projectId, null);
+        if (empty($userIds)) {
+            error_log('NotificationManager::notifyProjectDeadlineReminder - No recipients for project ' . $projectId);
+            return false;
+        }
+
+        $offset = (int) $reminderOffset;
+        $label = trim((string) $milestoneLabel) !== '' ? trim((string) $milestoneLabel) : 'Timeline date';
+        $projectLabel = trim((string) $projectName) !== '' ? trim((string) $projectName) : 'a project';
+        $dateLabel = $this->formatReminderDateLabel($milestoneDate);
+
+        if ($offset > 0) {
+            $title = $offset === 1 ? 'Project milestone tomorrow' : "Project milestone in {$offset} days";
+            $message = "{$projectLabel}: {$label} is on {$dateLabel} ({$offset} day" . ($offset === 1 ? '' : 's') . ' left)';
+        } elseif ($offset === 0) {
+            $title = 'Project milestone today';
+            $message = "{$projectLabel}: {$label} is due today ({$dateLabel})";
+        } else {
+            $overdueDays = abs($offset);
+            $title = 'Project milestone overdue';
+            $message = "{$projectLabel}: {$label} was due {$dateLabel} ({$overdueDays} day" . ($overdueDays === 1 ? '' : 's') . ' overdue)';
+        }
+
+        $notificationType = $this->getValidNotificationType('meeting_reminder', 'project_created');
+
+        return $this->createNotification(
+            $notificationType,
+            $title,
+            $message,
+            $userIds,
+            [
+                'entity_type' => 'project',
+                'entity_id' => $projectId,
+                'project_id' => $projectId,
+                'milestone_key' => (string) $milestoneKey,
+                'milestone_label' => $label,
+                'milestone_date' => (string) $milestoneDate,
+                'reminder_offset' => $offset,
+                'created_by' => 'system',
+            ]
+        );
+    }
+
+    private function formatReminderDateLabel($date): string
+    {
+        $ts = strtotime((string) $date);
+        if (!$ts) {
+            return (string) $date;
+        }
+        return date('M j, Y', $ts);
+    }
+
     public function notifyWorkUpdateSubmitted($submissionId, $userId, $userName = null, $date = null) {
         return $this->notifyWorkCheckOut($submissionId, $userId, $userName, $date, null, false);
     }

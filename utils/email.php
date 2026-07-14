@@ -961,4 +961,100 @@ The BugRicer Team
 
     return sendEmail($adminEmail, $subject, $html_body, $text_body);
 }
+
+/**
+ * Email project members/admins about upcoming, due, or overdue project timeline milestones.
+ */
+function sendProjectDeadlineReminderEmail(
+    $email,
+    $username,
+    $projectName,
+    $milestoneLabel,
+    $milestoneDate,
+    $reminderOffset,
+    $projectUrl = null
+) {
+    $offset = (int) $reminderOffset;
+    $safeName = htmlspecialchars((string) ($username ?: 'there'));
+    $safeProject = htmlspecialchars((string) $projectName);
+    $safeMilestone = htmlspecialchars((string) $milestoneLabel);
+    $dateTs = strtotime((string) $milestoneDate);
+    $dateLabel = $dateTs ? date('l, F j, Y', $dateTs) : htmlspecialchars((string) $milestoneDate);
+    $url = $projectUrl ?: 'https://bugs.bugricer.com';
+
+    if ($offset > 0) {
+        $headline = $offset === 1 ? 'Milestone tomorrow' : "Milestone in {$offset} days";
+        $urgency = $offset === 1
+            ? 'This milestone is tomorrow — please confirm the team is on track.'
+            : "This milestone is coming up in {$offset} days.";
+        $accent = '#2563eb';
+        $bg = '#eff6ff';
+        $text = '#1e3a8a';
+    } elseif ($offset === 0) {
+        $headline = 'Milestone due today';
+        $urgency = 'This milestone is due today. Please review progress and next steps.';
+        $accent = '#d97706';
+        $bg = '#fffbeb';
+        $text = '#92400e';
+    } else {
+        $overdueDays = abs($offset);
+        $headline = 'Milestone overdue';
+        $urgency = "This milestone is {$overdueDays} day" . ($overdueDays === 1 ? '' : 's') . ' overdue.';
+        $accent = '#dc2626';
+        $bg = '#fef2f2';
+        $text = '#991b1b';
+    }
+
+    $subject = $headline . ' — ' . $projectName;
+
+    $html_body = "
+    <div style=\"font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;\">
+      <div style=\"max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">
+        <div style=\"background-color: {$accent}; color: #ffffff; padding: 20px; text-align: center;\">
+          <h1 style=\"margin: 0; font-size: 22px;\">" . htmlspecialchars($headline) . "</h1>
+          <p style=\"margin: 6px 0 0 0; font-size: 14px; opacity: 0.95;\">Project timeline reminder</p>
+        </div>
+        <div style=\"padding: 24px;\">
+          <p style=\"font-size: 15px; margin-top: 0;\">Hello {$safeName},</p>
+          <p style=\"font-size: 14px;\">{$urgency}</p>
+          <div style=\"margin: 18px 0; padding: 14px; background-color: {$bg}; border-left: 4px solid {$accent}; border-radius: 4px;\">
+            <p style=\"margin: 0; font-size: 14px; color: {$text};\"><strong>Project:</strong> {$safeProject}</p>
+            <p style=\"margin: 6px 0 0 0; font-size: 14px; color: {$text};\"><strong>Milestone:</strong> {$safeMilestone}</p>
+            <p style=\"margin: 6px 0 0 0; font-size: 14px; color: {$text};\"><strong>Date:</strong> {$dateLabel}</p>
+          </div>
+          <p style=\"text-align: center; margin: 24px 0 8px 0;\">
+            <a href=\"" . htmlspecialchars((string) $url) . "\"
+               style=\"display: inline-block; background-color: {$accent}; color: #ffffff; text-decoration: none; padding: 12px 22px; border-radius: 8px; font-weight: 600;\">
+              Open Project
+            </a>
+          </p>
+          <p style=\"font-size: 14px; margin-bottom: 0;\">Best regards,<br>The BugRicer Team</p>
+        </div>
+        <div style=\"background-color: #f8fafc; color: #64748b; padding: 20px; text-align: center; font-size: 12px;\">
+          <p style=\"margin: 0;\">This is an automated reminder from BugRicer. Please do not reply to this email.</p>
+          <p style=\"margin: 5px 0 0 0;\">&copy; " . date('Y') . " BugRicer. All rights reserved.</p>
+        </div>
+      </div>
+    </div>
+    ";
+
+    $text_body = "
+{$headline} — BugRicer
+
+Hello " . ($username ?: 'there') . ",
+
+{$urgency}
+
+Project: {$projectName}
+Milestone: {$milestoneLabel}
+Date: {$dateLabel}
+
+Open project: {$url}
+
+Best regards,
+The BugRicer Team
+";
+
+    return sendEmail($email, $subject, $html_body, $text_body);
+}
 ?>
