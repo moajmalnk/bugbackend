@@ -1449,9 +1449,23 @@ class UpdateController extends BaseAPI
                 $this->sendJsonResponse(403, "Only admin can approve or decline updates");
                 return;
             }
-            if ($status === 'approved') {
+            $cols = [];
+            try {
+                $colRes = $this->conn->query("SHOW COLUMNS FROM updates");
+                if ($colRes) {
+                    while ($row = $colRes->fetch(PDO::FETCH_ASSOC)) {
+                        $cols[] = $row['Field'];
+                    }
+                }
+            } catch (Exception $e) {
+                // Ignore — fall back to status-only update
+            }
+            $hasApprovedAt = in_array('approved_at', $cols, true);
+            $hasDeclinedAt = in_array('declined_at', $cols, true);
+
+            if ($status === 'approved' && $hasApprovedAt) {
                 $stmt = $this->conn->prepare("UPDATE updates SET status = ?, approved_at = NOW() WHERE id = ?");
-            } elseif ($status === 'declined') {
+            } elseif ($status === 'declined' && $hasDeclinedAt) {
                 $stmt = $this->conn->prepare("UPDATE updates SET status = ?, declined_at = NOW() WHERE id = ?");
             } else {
                 $stmt = $this->conn->prepare("UPDATE updates SET status = ? WHERE id = ?");
