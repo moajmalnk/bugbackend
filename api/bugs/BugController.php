@@ -193,6 +193,95 @@ class BugController extends BaseAPI {
         return in_array($normalized, $allowed, true) ? $normalized : 'normal';
     }
 
+    private function bugsTableHasTesterRetestColumns(): bool
+    {
+        try {
+            $st = $this->conn->query("SHOW COLUMNS FROM bugs LIKE 'tester_retested'");
+            return (bool) ($st && $st->rowCount() > 0);
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Ensure tester retest columns exist (idempotent for hosts that skip migrations).
+     */
+    private function ensureTesterRetestColumns(): void
+    {
+        if ($this->bugsTableHasTesterRetestColumns()) {
+            return;
+        }
+        try {
+            $this->conn->exec(
+                "ALTER TABLE bugs
+                 ADD COLUMN tester_retested TINYINT(1) NULL DEFAULT NULL,
+                 ADD COLUMN tester_issue_fixed TINYINT(1) NULL DEFAULT NULL,
+                 ADD COLUMN tester_verified_by VARCHAR(36) NULL DEFAULT NULL,
+                 ADD COLUMN tester_verified_at DATETIME NULL DEFAULT NULL"
+            );
+        } catch (Throwable $e) {
+            error_log('ensureTesterRetestColumns: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Nullable yes/no: null=unset, 0=no, 1=yes
+     */
+    private function parseNullableYesNo($value): ?int
+    {
+        if ($value === null || $value === '' || $value === 'null') {
+            return null;
+        }
+        if (is_bool($value)) {
+            return $value ? 1 : 0;
+        }
+        $normalized = strtolower(trim((string) $value));
+        if (in_array($normalized, ['1', 'true', 'yes', 'on'], true)) {
+            return 1;
+        }
+        if (in_array($normalized, ['0', 'false', 'no', 'off'], true)) {
+            return 0;
+        }
+        return null;
+    }
+
+    /**
+     * Apply tester verification fields onto an UPDATE field/param list.
+     */
+    private function appendTesterRetestUpdateFields(array &$updateFields, array &$params, array $data, string $actorUserId): void
+    {
+        $this->ensureTesterRetestColumns();
+        if (!$this->bugsTableHasTesterRetestColumns()) {
+            return;
+        }
+
+        $hasRetestKey = array_key_exists('tester_retested', $data);
+        $hasIssueKey = array_key_exists('tester_issue_fixed', $data);
+        if (!$hasRetestKey && !$hasIssueKey) {
+            return;
+        }
+
+        $retested = $hasRetestKey ? $this->parseNullableYesNo($data['tester_retested']) : null;
+        $issueFixed = $hasIssueKey ? $this->parseNullableYesNo($data['tester_issue_fixed']) : null;
+
+        if ($hasRetestKey) {
+            $updateFields[] = 'tester_retested = ?';
+            $params[] = $retested;
+            // If not retested, clear issue-fixed confirmation
+            if ($retested !== 1) {
+                $issueFixed = null;
+            }
+        }
+
+        if ($hasRetestKey || $hasIssueKey) {
+            $updateFields[] = 'tester_issue_fixed = ?';
+            $params[] = ($retested === 1) ? $issueFixed : null;
+            $updateFields[] = 'tester_verified_by = ?';
+            $params[] = $actorUserId !== '' ? $actorUserId : null;
+            $updateFields[] = 'tester_verified_at = NOW()';
+        }
+    }
+
     /**
      * Create bug from BugBot JSON path; triggers same WhatsApp/in-app flow as create().
      *
@@ -523,6 +612,13 @@ class BugController extends BaseAPI {
         try {
             // Ensure ID is string for consistent comparison
             $id = (string)$id;
+            $this->ensureTesterRetestColumns();
+
+            $hasRetest = $this->bugsTableHasTesterRetestColumns();
+            $retesterSelect = $hasRetest ? ', retester.username as tester_verified_by_name' : '';
+            $retesterJoin = $hasRetest
+                ? 'LEFT JOIN users retester ON b.tester_verified_by = retester.id'
+                : '';
             
             $stmt = $this->conn->prepare("
                 SELECT b.*, 
@@ -530,11 +626,13 @@ class BugController extends BaseAPI {
                        reporter.username as reporter_name,
                        updater.username as updated_by_name,
                        fixer.username as fixed_by_name
+                       $retesterSelect
                 FROM bugs b
                 LEFT JOIN projects p ON b.project_id = p.id
                 LEFT JOIN users reporter ON b.reported_by = reporter.id
                 LEFT JOIN users updater ON b.updated_by = updater.id
                 LEFT JOIN users fixer ON b.fixed_by = fixer.id
+                $retesterJoin
                 WHERE b.id = ?
             ");
             
@@ -1484,6 +1582,8 @@ class BugController extends BaseAPI {
                 $updateFields[] = "bug_level = ?";
                 $params[] = $this->parseBugLevel($data['bug_level']);
             }
+            $actorId = (string) ($data['updated_by'] ?? $data['tester_verified_by'] ?? '');
+            $this->appendTesterRetestUpdateFields($updateFields, $params, $data, $actorId);
             if (isset($data['fix_description'])) {
                 $updateFields[] = "fix_description = ?";
                 $params[] = $data['fix_description'];
@@ -1528,12 +1628,14 @@ class BugController extends BaseAPI {
                            p.name as project_name, 
                            reporter.username as reporter_name,
                            updater.username as updated_by_name,
-                           fixer.username as fixed_by_name
+                           fixer.username as fixed_by_name,
+                           retester.username as tester_verified_by_name
                     FROM bugs b
                     LEFT JOIN projects p ON b.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci
                     LEFT JOIN users reporter ON b.reported_by COLLATE utf8mb4_unicode_ci = reporter.id COLLATE utf8mb4_unicode_ci
                     LEFT JOIN users updater ON b.updated_by COLLATE utf8mb4_unicode_ci = updater.id COLLATE utf8mb4_unicode_ci
                     LEFT JOIN users fixer ON b.fixed_by COLLATE utf8mb4_unicode_ci = fixer.id COLLATE utf8mb4_unicode_ci
+                    LEFT JOIN users retester ON b.tester_verified_by COLLATE utf8mb4_unicode_ci = retester.id COLLATE utf8mb4_unicode_ci
                     WHERE b.id = ?
                 ";
                 
@@ -1673,6 +1775,8 @@ class BugController extends BaseAPI {
                 $updateFields[] = "bug_level = ?";
                 $params[] = $this->parseBugLevel($data['bug_level']);
             }
+            $actorId = (string) ($data['updated_by'] ?? $userId ?? '');
+            $this->appendTesterRetestUpdateFields($updateFields, $params, $data, $actorId);
             if (isset($data['updated_by'])) {
                 $updateFields[] = "updated_by = ?";
                 $params[] = $data['updated_by'];
@@ -1861,17 +1965,25 @@ class BugController extends BaseAPI {
 
             // Get updated bug data with attachments (same format as getById)
             $bugIdForQuery = (string)$data['id']; // Ensure string type for consistent querying
+            $this->ensureTesterRetestColumns();
+            $hasRetest = $this->bugsTableHasTesterRetestColumns();
+            $retesterSelect = $hasRetest ? ', retester.username as tester_verified_by_name' : '';
+            $retesterJoin = $hasRetest
+                ? 'LEFT JOIN users retester ON b.tester_verified_by = retester.id'
+                : '';
             $stmt = $this->conn->prepare("
                 SELECT b.*, 
                        p.name as project_name,
                        reporter.username as reporter_name,
                        updater.username as updated_by_name,
                        fixer.username as fixed_by_name
+                       $retesterSelect
                 FROM bugs b
                 LEFT JOIN projects p ON b.project_id = p.id
                 LEFT JOIN users reporter ON b.reported_by = reporter.id
                 LEFT JOIN users updater ON b.updated_by = updater.id
                 LEFT JOIN users fixer ON b.fixed_by = fixer.id
+                $retesterJoin
                 WHERE CAST(b.id AS CHAR) = CAST(? AS CHAR)
             ");
             $stmt->execute([$bugIdForQuery]);

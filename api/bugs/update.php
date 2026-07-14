@@ -198,10 +198,17 @@ try {
     }
     
     // Determine which fields are actually being changed (not just present)
-    $updatableFields = ['title', 'description', 'priority', 'status', 'expected_result', 'actual_result', 'fix_description', 'fixed_by', 'project_id', 'already_raised', 'bug_level'];
+    $updatableFields = ['title', 'description', 'priority', 'status', 'expected_result', 'actual_result', 'fix_description', 'fixed_by', 'project_id', 'already_raised', 'bug_level', 'tester_retested', 'tester_issue_fixed'];
     $fieldsBeingChanged = [];
     foreach ($updatableFields as $field) {
-        if (isset($data[$field])) {
+        if (isset($data[$field]) || array_key_exists($field, $data)) {
+            // isset misses null; allow nullable retest clears via array_key_exists for retest fields
+            if (!array_key_exists($field, $data) && !isset($data[$field])) {
+                continue;
+            }
+            if (!array_key_exists($field, $data)) {
+                continue;
+            }
             $oldValue = $bug[$field] ?? null;
             $newValue = $data[$field];
             
@@ -220,18 +227,27 @@ try {
     // Allow: status, status + fix_description, status + fixed_by, status + fix_description + fixed_by
     // Developers can update status and fix_description together (common in FixBug page)
     $allowedDeveloperFields = ['status', 'fix_description', 'fixed_by'];
+    $allowedTesterRetestFields = ['tester_retested', 'tester_issue_fixed', 'bug_level'];
     $hasStatusChange = in_array('status', $fieldsBeingChanged);
     
     // Check if all changed fields are in the allowed list for developers
     // array_diff returns fields in $fieldsBeingChanged that are NOT in $allowedDeveloperFields
     // If empty, it means all fields are allowed
     $hasOnlyAllowedFields = empty(array_diff($fieldsBeingChanged, $allowedDeveloperFields));
+    $hasOnlyTesterRetestFields = !empty($fieldsBeingChanged)
+        && empty(array_diff($fieldsBeingChanged, $allowedTesterRetestFields));
     
     // Check if only status-related fields are being changed
     $isStatusUpdate = $hasStatusChange && 
                       $hasOnlyAllowedFields && // All changed fields are in allowed list
                       empty($_FILES) && 
                       (!isset($data['attachments_to_delete']) || empty($data['attachments_to_delete']));
+
+    $isTester = $user_role_lower === 'tester';
+    $isRetestUpdate = $hasOnlyTesterRetestFields
+        && (($bug['status'] ?? '') === 'fixed' || ($data['status'] ?? '') === 'fixed')
+        && empty($_FILES)
+        && (!isset($data['attachments_to_delete']) || empty($data['attachments_to_delete']));
     
     // Check if user is admin or the bug creator (using reported_by from bug array)
     // In impersonation mode, check if the impersonated user is the creator
@@ -241,14 +257,14 @@ try {
     // In impersonation mode, if admin is impersonating, they should have admin privileges
     // But we still check project membership for the impersonated developer
     $isProjectMember = false;
-    if ($isDeveloper && !$isAdmin && isset($bug['project_id']) && $bug['project_id']) {
+    if (($isDeveloper || $isTester) && !$isAdmin && isset($bug['project_id']) && $bug['project_id']) {
         $projectMemberController = new ProjectMemberController();
         $isProjectMember = $projectMemberController->hasProjectAccess($userId, $bug['project_id']);
         
         // Debug logging for permission issues
-        error_log("BUG UPDATE PERMISSION CHECK - Developer: {$userId}, Project: {$bug['project_id']}, IsMember: " . ($isProjectMember ? 'true' : 'false'));
+        error_log("BUG UPDATE PERMISSION CHECK - Role user: {$userId}, Project: {$bug['project_id']}, IsMember: " . ($isProjectMember ? 'true' : 'false'));
         error_log("BUG UPDATE PERMISSION CHECK - Fields being changed: " . json_encode($fieldsBeingChanged));
-        error_log("BUG UPDATE PERMISSION CHECK - IsStatusUpdate: " . ($isStatusUpdate ? 'true' : 'false'));
+        error_log("BUG UPDATE PERMISSION CHECK - IsStatusUpdate: " . ($isStatusUpdate ? 'true' : 'false') . ", IsRetestUpdate: " . ($isRetestUpdate ? 'true' : 'false'));
     } elseif ($isAdmin && $is_impersonated) {
         // Admin impersonating - they have full access, so skip project membership check
         error_log("BUG UPDATE PERMISSION CHECK - Admin impersonating, granting full access");
@@ -258,11 +274,12 @@ try {
     // 1. Admins can edit everything (including when impersonating)
     // 2. Bug creators can edit everything
     // 3. Developers can edit status only if they are members of the project
+    // 4. Testers/admins can save retest verification on fixed bugs
     $canEdit = false;
     $errorMessage = 'You do not have permission to edit this bug.';
     
     // Debug logging before permission check
-    error_log("BUG UPDATE PERMISSION - isAdmin: " . ($isAdmin ? 'true' : 'false') . ", isCreator: " . ($isCreator ? 'true' : 'false') . ", isDeveloper: " . ($isDeveloper ? 'true' : 'false') . ", isStatusUpdate: " . ($isStatusUpdate ? 'true' : 'false') . ", isProjectMember: " . ($isProjectMember ? 'true' : 'false'));
+    error_log("BUG UPDATE PERMISSION - isAdmin: " . ($isAdmin ? 'true' : 'false') . ", isCreator: " . ($isCreator ? 'true' : 'false') . ", isDeveloper: " . ($isDeveloper ? 'true' : 'false') . ", isTester: " . ($isTester ? 'true' : 'false') . ", isStatusUpdate: " . ($isStatusUpdate ? 'true' : 'false') . ", isProjectMember: " . ($isProjectMember ? 'true' : 'false'));
     
     if ($isAdmin) {
         // Admins can edit all fields (including when impersonating a developer)
@@ -276,12 +293,19 @@ try {
         // Developers can edit status and fix_description if they are project members
         $canEdit = true;
         error_log("BUG UPDATE PERMISSION - Granted: Developer project member");
+    } elseif ($isTester && $isRetestUpdate && $isProjectMember) {
+        $canEdit = true;
+        error_log("BUG UPDATE PERMISSION - Granted: Tester retest verification");
     } else {
         // For other cases, determine specific error message
         if ($isDeveloper && !$isStatusUpdate) {
             $errorMessage = 'You do not have permission to edit this bug. Developers can only update the status and fix description fields.';
         } elseif ($isDeveloper && !$isProjectMember) {
             $errorMessage = 'You do not have permission to edit this bug. You must be a member of the project to update bug status.';
+        } elseif ($isTester && !$isRetestUpdate) {
+            $errorMessage = 'Testers can only update verification fields (retested / issue fixed / bug level) on fixed bugs.';
+        } elseif ($isTester && !$isProjectMember) {
+            $errorMessage = 'You must be a project member to verify fixes.';
         } else {
             $errorMessage = 'You do not have permission to edit this bug. Only admins and the bug creator can edit bugs.';
         }
