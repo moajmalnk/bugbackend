@@ -1136,6 +1136,7 @@ class UserController extends BaseAPI {
             $breakMinutes = 0;
             $checkoutTime = null;
             $work = null;
+            $workHistory = [];
 
             try {
                 $wsColumns = [];
@@ -1176,64 +1177,77 @@ class UserController extends BaseAPI {
                     if ($hasPlannedProjects) $selectFields[] = 'planned_projects';
                     if ($hasProjectUpdates) $selectFields[] = 'project_updates';
 
+                    $splitLines = function ($text) {
+                        $lines = [];
+                        foreach (explode("\n", (string)$text) as $line) {
+                            $line = trim($line);
+                            if ($line === '' || preg_match('/^\[BREAK\]/i', $line)) continue;
+                            if (stripos($line, '[OVERTIME APPROVAL REQUEST]') === 0) continue;
+                            $lines[] = $line;
+                        }
+                        return $lines;
+                    };
+
+                    $parseProjectIds = function ($raw) {
+                        if ($raw === null || $raw === '') {
+                            return [];
+                        }
+                        if (is_array($raw)) {
+                            return array_values(array_filter(array_map('strval', $raw)));
+                        }
+                        $decoded = json_decode((string)$raw, true);
+                        if (is_array($decoded)) {
+                            return array_values(array_filter(array_map('strval', $decoded)));
+                        }
+                        $trimmed = trim((string)$raw);
+                        return $trimmed !== '' ? [$trimmed] : [];
+                    };
+
+                    // Today + previous days (newest first). Cap keeps payload reasonable for long tenure.
                     $wsStmt = $this->conn->prepare(
                         'SELECT ' . implode(', ', $selectFields) . '
                          FROM work_submissions
-                         WHERE user_id = ? AND submission_date = CURDATE()
-                         LIMIT 1'
+                         WHERE user_id = ?
+                         ORDER BY submission_date DESC, id DESC
+                         LIMIT 120'
                     );
                     $wsStmt->execute([$userId]);
-                    $submission = $wsStmt->fetch(PDO::FETCH_ASSOC);
+                    $submissions = $wsStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
-                    if ($submission) {
-                        $checkInTime = $hasCheckIn ? ($submission['check_in_time'] ?? null) : null;
-                        $todayHours = (float)($submission['hours_today'] ?? 0);
-                        $breakMinutes = $hasTotalBreakMinutes ? (int)($submission['total_break_minutes'] ?? 0) : 0;
-
-                        $hasWorkUpdate = $todayHours > 0
-                            || $breakMinutes > 0
-                            || trim((string)($submission['completed_tasks'] ?? '')) !== ''
-                            || trim((string)($submission['pending_tasks'] ?? '')) !== ''
-                            || trim((string)($submission['ongoing_tasks'] ?? '')) !== ''
-                            || trim((string)($submission['notes'] ?? '')) !== '';
-
-                        if ($hasWorkUpdate && !empty($submission['updated_at'])) {
-                            $updatedAt = strtotime($submission['updated_at']);
-                            $checkInAt = !empty($checkInTime) ? strtotime($checkInTime) : null;
-                            if ($updatedAt && (!$checkInAt || $updatedAt > ($checkInAt + 60))) {
-                                $checkoutTime = $submission['updated_at'];
-                            }
+                    $allProjectIds = [];
+                    foreach ($submissions as $row) {
+                        if (!$hasPlannedProjects) {
+                            break;
                         }
+                        foreach ($parseProjectIds($row['planned_projects'] ?? null) as $pid) {
+                            $allProjectIds[$pid] = true;
+                        }
+                    }
 
+                    $projectNameMap = [];
+                    if (!empty($allProjectIds)) {
+                        $ids = array_keys($allProjectIds);
+                        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+                        $pStmt = $this->conn->prepare("SELECT id, name FROM projects WHERE id IN ($placeholders)");
+                        $pStmt->execute($ids);
+                        foreach ($pStmt->fetchAll(PDO::FETCH_ASSOC) as $pRow) {
+                            $projectNameMap[(string)$pRow['id']] = $pRow['name'];
+                        }
+                    }
+
+                    $todayDate = (new DateTime('now', new DateTimeZone('Asia/Kolkata')))->format('Y-m-d');
+
+                    foreach ($submissions as $submission) {
+                        $submissionDate = (string)($submission['submission_date'] ?? '');
+                        $projectIds = $hasPlannedProjects
+                            ? $parseProjectIds($submission['planned_projects'] ?? null)
+                            : [];
                         $projectNames = [];
-                        $projectIds = [];
-                        if ($hasPlannedProjects && !empty($submission['planned_projects'])) {
-                            $decodedProjects = json_decode($submission['planned_projects'], true);
-                            if (is_array($decodedProjects)) {
-                                $projectIds = array_values(array_filter($decodedProjects));
-                            } elseif (is_string($submission['planned_projects']) && trim($submission['planned_projects']) !== '') {
-                                $projectIds = [trim($submission['planned_projects'])];
-                            }
-                            if (!empty($projectIds)) {
-                                $placeholders = implode(',', array_fill(0, count($projectIds), '?'));
-                                $pStmt = $this->conn->prepare("SELECT id, name FROM projects WHERE id IN ($placeholders)");
-                                $pStmt->execute($projectIds);
-                                foreach ($pStmt->fetchAll(PDO::FETCH_ASSOC) as $pRow) {
-                                    $projectNames[(string)$pRow['id']] = $pRow['name'];
-                                }
+                        foreach ($projectIds as $pid) {
+                            if (isset($projectNameMap[$pid])) {
+                                $projectNames[] = $projectNameMap[$pid];
                             }
                         }
-
-                        $splitLines = function ($text) {
-                            $lines = [];
-                            foreach (explode("\n", (string)$text) as $line) {
-                                $line = trim($line);
-                                if ($line === '' || preg_match('/^\[BREAK\]/i', $line)) continue;
-                                if (stripos($line, '[OVERTIME APPROVAL REQUEST]') === 0) continue;
-                                $lines[] = $line;
-                            }
-                            return $lines;
-                        };
 
                         $completedLines = $splitLines($submission['completed_tasks'] ?? '');
                         $pendingLines = $splitLines($submission['pending_tasks'] ?? '');
@@ -1248,30 +1262,53 @@ class UserController extends BaseAPI {
                                     $pid = (string)($pu['project_id'] ?? $pu['id'] ?? '');
                                     $projectUpdates[] = [
                                         'project_id' => $pid,
-                                        'project_name' => $projectNames[$pid] ?? ($pu['project_name'] ?? null),
+                                        'project_name' => $projectNameMap[$pid] ?? ($pu['project_name'] ?? null),
                                         'update' => $pu['update'] ?? $pu['text'] ?? $pu['notes'] ?? '',
                                     ];
                                 }
                             }
                         }
 
-                        $work = [
+                        $rowCheckIn = $hasCheckIn ? ($submission['check_in_time'] ?? null) : null;
+                        $rowHours = (float)($submission['hours_today'] ?? 0);
+                        $rowBreak = $hasTotalBreakMinutes ? (int)($submission['total_break_minutes'] ?? 0) : 0;
+                        $plannedWork = $hasPlannedWork ? ($submission['planned_work'] ?? null) : null;
+                        $plannedWorkNotes = $hasPlannedWorkNotes ? ($submission['planned_work_notes'] ?? null) : null;
+                        $plannedWorkStatus = $hasPlannedWorkStatus ? ($submission['planned_work_status'] ?? null) : null;
+
+                        $hasPlannedOrNotes = !empty($projectNames)
+                            || trim((string)$plannedWork) !== ''
+                            || trim((string)$plannedWorkNotes) !== ''
+                            || !empty($upcomingLines)
+                            || !empty($projectUpdates);
+
+                        // Keep days that have check-in / hours / tasks / planned content
+                        $hasAnySignal = $hasPlannedOrNotes
+                            || !empty($rowCheckIn)
+                            || $rowHours > 0
+                            || $rowBreak > 0
+                            || !empty($completedLines)
+                            || !empty($pendingLines)
+                            || !empty($ongoingLines);
+
+                        if (!$hasAnySignal) {
+                            continue;
+                        }
+
+                        $dayEntry = [
                             'id' => isset($submission['id']) ? (int)$submission['id'] : null,
-                            'submission_date' => $submission['submission_date'] ?? null,
-                            'check_in_time' => $checkInTime,
-                            'checkout_time' => $checkoutTime,
-                            'hours_today' => $todayHours,
-                            'break_minutes' => $breakMinutes,
+                            'submission_date' => $submissionDate,
+                            'is_today' => ($submissionDate === $todayDate),
+                            'check_in_time' => $rowCheckIn,
+                            'hours_today' => $rowHours,
+                            'break_minutes' => $rowBreak,
                             'start_time' => $submission['start_time'] ?? null,
-                            'planned_work' => $hasPlannedWork ? ($submission['planned_work'] ?? null) : null,
-                            'planned_work_status' => $hasPlannedWorkStatus ? ($submission['planned_work_status'] ?? null) : null,
-                            'planned_work_notes' => $hasPlannedWorkNotes ? ($submission['planned_work_notes'] ?? null) : null,
+                            'planned_work' => $plannedWork,
+                            'planned_work_status' => $plannedWorkStatus,
+                            'planned_work_notes' => $plannedWorkNotes,
                             'planned_projects' => $projectIds,
-                            'project_names' => array_values($projectNames),
+                            'project_names' => $projectNames,
                             'project_updates' => $projectUpdates,
-                            'completed_tasks' => $submission['completed_tasks'] ?? '',
-                            'pending_tasks' => $submission['pending_tasks'] ?? '',
-                            'ongoing_tasks' => $submission['ongoing_tasks'] ?? '',
                             'notes' => $submission['notes'] ?? '',
                             'tasks' => [
                                 'completed' => $completedLines,
@@ -1280,6 +1317,54 @@ class UserController extends BaseAPI {
                                 'upcoming' => $upcomingLines,
                             ],
                         ];
+
+                        if ($submissionDate === $todayDate && $work === null) {
+                            $checkInTime = $rowCheckIn;
+                            $todayHours = $rowHours;
+                            $breakMinutes = $rowBreak;
+
+                            $hasWorkUpdate = $todayHours > 0
+                                || $breakMinutes > 0
+                                || trim((string)($submission['completed_tasks'] ?? '')) !== ''
+                                || trim((string)($submission['pending_tasks'] ?? '')) !== ''
+                                || trim((string)($submission['ongoing_tasks'] ?? '')) !== ''
+                                || trim((string)($submission['notes'] ?? '')) !== '';
+
+                            if ($hasWorkUpdate && !empty($submission['updated_at'])) {
+                                $updatedAt = strtotime($submission['updated_at']);
+                                $checkInAt = !empty($checkInTime) ? strtotime($checkInTime) : null;
+                                if ($updatedAt && (!$checkInAt || $updatedAt > ($checkInAt + 60))) {
+                                    $checkoutTime = $submission['updated_at'];
+                                }
+                            }
+
+                            $work = array_merge($dayEntry, [
+                                'checkout_time' => $checkoutTime,
+                                'completed_tasks' => $submission['completed_tasks'] ?? '',
+                                'pending_tasks' => $submission['pending_tasks'] ?? '',
+                                'ongoing_tasks' => $submission['ongoing_tasks'] ?? '',
+                            ]);
+                        }
+
+                        // History: days that actually have planned projects / notes (today + previous)
+                        if ($hasPlannedOrNotes) {
+                            $workHistory[] = [
+                                'id' => $dayEntry['id'],
+                                'submission_date' => $submissionDate,
+                                'is_today' => $dayEntry['is_today'],
+                                'check_in_time' => $rowCheckIn,
+                                'hours_today' => $rowHours,
+                                'planned_work' => $plannedWork,
+                                'planned_work_status' => $plannedWorkStatus,
+                                'planned_work_notes' => $plannedWorkNotes,
+                                'planned_projects' => $projectIds,
+                                'project_names' => $projectNames,
+                                'notes' => $submission['notes'] ?? '',
+                                'tasks' => [
+                                    'upcoming' => $upcomingLines,
+                                ],
+                            ];
+                        }
                     }
                 }
             } catch (Exception $e) {
@@ -1420,6 +1505,7 @@ class UserController extends BaseAPI {
             $this->sendJsonResponse(200, "Activity snapshot retrieved successfully", [
                 'user' => $user,
                 'work' => $work,
+                'work_history' => $workHistory,
                 'assigned_projects' => $assignedProjects,
                 'bugs' => $bugs,
                 'fixes' => $fixes,
