@@ -189,6 +189,10 @@ class NotificationManager extends BaseAPI {
                 return $entityId ? '/updates/' . $entityId : '/updates';
             case 'project':
                 return $entityId ? '/projects/' . $entityId : '/projects';
+            case 'compliance':
+                return $projectId
+                    ? '/projects/' . $projectId . '/compliance'
+                    : ($entityId ? '/projects/' . $entityId . '/compliance' : '/projects');
             case 'task':
                 return $entityId ? '/tasks/' . $entityId : '/my-tasks';
             case 'meet':
@@ -828,6 +832,69 @@ class NotificationManager extends BaseAPI {
                 'created_by' => $creatorName,
             ]
         );
+    }
+
+    /**
+     * Notify admins when a compliance rule is marked verified.
+     *
+     * @param string $projectId
+     * @param string $projectName
+     * @param string $phase developer|tester|project
+     * @param string $ruleKey
+     * @param string $ruleTitle
+     * @param string $verifiedBy User ID who verified
+     * @return int|false
+     */
+    public function notifyComplianceRuleVerified(
+        $projectId,
+        $projectName,
+        $phase,
+        $ruleKey,
+        $ruleTitle,
+        $verifiedBy
+    ) {
+        $projectId = (string) $projectId;
+        $verifiedBy = (string) $verifiedBy;
+        $userIds = $this->resolveAdminRecipients($verifiedBy);
+        if (empty($userIds)) {
+            error_log('NotificationManager::notifyComplianceRuleVerified - No admin recipients');
+            return false;
+        }
+
+        $verifierName = $this->getUserName($verifiedBy);
+        $phaseLabel = $this->formatCompliancePhaseLabel($phase);
+        $titleLabel = trim((string) $ruleTitle) !== '' ? trim((string) $ruleTitle) : (string) $ruleKey;
+        $projectLabel = trim((string) $projectName) !== '' ? trim((string) $projectName) : 'a project';
+        $notificationType = $this->getValidNotificationType('compliance_verified', 'new_update');
+
+        return $this->createNotification(
+            $notificationType,
+            'Compliance Verified',
+            "{$verifierName} verified {$phaseLabel}: {$titleLabel} on {$projectLabel}",
+            $userIds,
+            [
+                'entity_type' => 'compliance',
+                'entity_id' => $projectId,
+                'project_id' => $projectId,
+                'phase' => (string) $phase,
+                'rule_key' => (string) $ruleKey,
+                'created_by' => $verifierName,
+            ]
+        );
+    }
+
+    private function formatCompliancePhaseLabel($phase): string
+    {
+        switch (strtolower(trim((string) $phase))) {
+            case 'developer':
+                return 'Developer Matrix';
+            case 'tester':
+                return 'Tester Matrix';
+            case 'project':
+                return 'Project Checklist';
+            default:
+                return 'Compliance';
+        }
     }
 
     public function notifyWorkUpdateSubmitted($submissionId, $userId, $userName = null, $date = null) {

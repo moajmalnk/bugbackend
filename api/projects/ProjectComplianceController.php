@@ -1,6 +1,8 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../ActivityLogger.php';
+require_once __DIR__ . '/../NotificationManager.php';
+require_once __DIR__ . '/../../utils/email.php';
 
 class ProjectComplianceController extends BaseAPI
 {
@@ -23,6 +25,41 @@ class ProjectComplianceController extends BaseAPI
         'qa_empty_array',
         'qa_boundary_expansion',
         'qa_network_break',
+    ];
+
+    private static $BUILTIN_RULE_TITLES = [
+        'dev_rule_1' => 'Hard State Reset',
+        'dev_rule_2' => 'Real-Time Input Validation',
+        'dev_rule_3' => 'Persistent Input Protection',
+        'dev_rule_4' => 'Data-Clear Verification',
+        'dev_rule_5' => 'Numeric Character Constraints',
+        'dev_rule_6' => 'Sanitization Defenses',
+        'dev_rule_7' => 'Length Guardrails',
+        'dev_rule_8' => 'Anti-Double Click Lockout',
+        'dev_rule_9' => 'Mandatory Deletion Gating',
+        'dev_rule_10' => 'Submit Button Lock',
+        'dev_rule_11' => 'The Codo Corner',
+        'dev_rule_12' => '12-Column Grid Alignment',
+        'dev_rule_13' => 'Whitespace Isolation',
+        'dev_rule_14' => 'Viewport Scroll Defenses',
+        'dev_rule_15' => 'Theme Integrity',
+        'dev_rule_16' => 'Bidirectional Text Safety',
+        'dev_rule_17' => 'Custom Picker Normalization',
+        'dev_rule_18' => 'Strict Data Sorting',
+        'dev_rule_19' => 'Skeleton Shimmer Loaders',
+        'dev_rule_20' => 'The 1.5-Second Threshold',
+        'dev_rule_21' => 'Database Indexing',
+        'dev_rule_22' => 'High-Volume Scale',
+        'dev_rule_23' => 'Console Scrubbing',
+        'dev_rule_24' => 'Secret Variable Isolation',
+        'dev_rule_25' => 'Documentation Mandate',
+        'qa_apple_sandbox' => 'The Apple Ecosystem Sandbox',
+        'qa_click_attack' => 'The Click Attack Safeguard',
+        'qa_theme_interruption' => 'The Theme Interruption Matrix',
+        'qa_input_interception' => 'The Input Interception Prompt',
+        'qa_empty_array' => 'The Empty Array Fallback',
+        'qa_boundary_expansion' => 'The Boundary Expansion Constraint',
+        'qa_network_break' => 'The Network Break Strategy',
     ];
 
     private static $CLOSED_STATUSES = ['completed', 'release_ready', 'archived'];
@@ -162,6 +199,107 @@ class ProjectComplianceController extends BaseAPI
         );
         $stmt->execute([$projectId, $phase, $ruleKey]);
         return (bool) $stmt->fetch();
+    }
+
+    private function resolveRuleTitle(string $projectId, string $phase, string $ruleKey): string
+    {
+        if (isset(self::$BUILTIN_RULE_TITLES[$ruleKey])) {
+            return self::$BUILTIN_RULE_TITLES[$ruleKey];
+        }
+
+        try {
+            $custom = $this->getCustomRulesForProject($projectId, $phase);
+            foreach ($custom as $rule) {
+                if (($rule['rule_key'] ?? '') === $ruleKey && !empty($rule['title'])) {
+                    return (string) $rule['title'];
+                }
+            }
+        } catch (Exception $e) {
+            error_log('resolveRuleTitle custom lookup failed: ' . $e->getMessage());
+        }
+
+        return $ruleKey;
+    }
+
+    private function formatPhaseLabel(string $phase): string
+    {
+        switch ($phase) {
+            case 'developer':
+                return 'Developer Matrix';
+            case 'tester':
+                return 'Tester Matrix';
+            case 'project':
+                return 'Project Checklist';
+            default:
+                return 'Compliance';
+        }
+    }
+
+    private function notifyAdminsOfComplianceVerification(
+        string $projectId,
+        string $phase,
+        string $ruleKey,
+        string $verifiedBy
+    ): void {
+        try {
+            $projectStmt = $this->conn->prepare('SELECT name FROM projects WHERE id = ? LIMIT 1');
+            $projectStmt->execute([$projectId]);
+            $project = $projectStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+            $projectName = trim((string) ($project['name'] ?? '')) ?: 'Untitled project';
+            $ruleTitle = $this->resolveRuleTitle($projectId, $phase, $ruleKey);
+            $phaseLabel = $this->formatPhaseLabel($phase);
+
+            $verifierStmt = $this->conn->prepare('SELECT username FROM users WHERE id = ? LIMIT 1');
+            $verifierStmt->execute([$verifiedBy]);
+            $verifierName = trim((string) ($verifierStmt->fetchColumn() ?: '')) ?: 'A team member';
+
+            try {
+                NotificationManager::getInstance()->notifyComplianceRuleVerified(
+                    $projectId,
+                    $projectName,
+                    $phase,
+                    $ruleKey,
+                    $ruleTitle,
+                    $verifiedBy
+                );
+            } catch (Throwable $e) {
+                error_log('Compliance push notification failed: ' . $e->getMessage());
+            }
+
+            $adminStmt = $this->conn->prepare(
+                "SELECT email FROM users
+                 WHERE account_active = 1
+                   AND (role = 'admin' OR role_id = 1)
+                   AND email IS NOT NULL
+                   AND TRIM(email) <> ''
+                   AND id <> ?"
+            );
+            $adminStmt->execute([$verifiedBy]);
+            $adminEmails = $adminStmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+
+            if (empty($adminEmails)) {
+                return;
+            }
+
+            $complianceUrl = 'https://bugs.bugricer.com/admin/projects/' . rawurlencode($projectId) . '/compliance';
+            foreach ($adminEmails as $adminEmail) {
+                try {
+                    sendComplianceVerifiedEmail(
+                        $adminEmail,
+                        $verifierName,
+                        $projectName,
+                        $phaseLabel,
+                        $ruleTitle,
+                        $ruleKey,
+                        $complianceUrl
+                    );
+                } catch (Throwable $e) {
+                    error_log('Compliance email failed for ' . $adminEmail . ': ' . $e->getMessage());
+                }
+            }
+        } catch (Throwable $e) {
+            error_log('notifyAdminsOfComplianceVerification failed: ' . $e->getMessage());
+        }
     }
 
     private function getCustomRulesForProject(string $projectId, ?string $phase = null): array
@@ -524,6 +662,15 @@ class ProjectComplianceController extends BaseAPI
             if ($stmt->rowCount() === 0) {
                 $this->sendJsonResponse(404, 'Compliance check not found');
                 return;
+            }
+
+            if ($verified) {
+                $this->notifyAdminsOfComplianceVerification(
+                    $projectId,
+                    $phase,
+                    $ruleKey,
+                    $decoded->user_id
+                );
             }
 
             $stage = $this->recomputePipelineStage($projectId, $decoded->user_id);

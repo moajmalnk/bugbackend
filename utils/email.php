@@ -895,4 +895,70 @@ The BugRicer Team
 
     return sendEmail($adminEmail, $subject, $html_body, $text_body);
 }
+
+/**
+ * Email admins when a CODO compliance rule is marked verified.
+ */
+function sendComplianceVerifiedEmail(
+    $adminEmail,
+    $verifierName,
+    $projectName,
+    $phaseLabel,
+    $ruleTitle,
+    $ruleKey = null,
+    $complianceUrl = null
+) {
+    $subject = 'Compliance verified — ' . $projectName;
+    $ruleDisplay = trim((string) $ruleTitle) !== '' ? trim((string) $ruleTitle) : (string) $ruleKey;
+    $url = $complianceUrl ?: 'https://bugs.bugricer.com';
+
+    $html_body = "
+    <div style=\"font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;\">
+      <div style=\"max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">
+        <div style=\"background-color: #2563eb; color: #ffffff; padding: 20px; text-align: center;\">
+          <h1 style=\"margin: 0; font-size: 22px;\">Compliance Verified</h1>
+          <p style=\"margin: 6px 0 0 0; font-size: 14px; opacity: 0.95;\">CODO verification alert</p>
+        </div>
+        <div style=\"padding: 24px;\">
+          <p style=\"font-size: 15px; margin-top: 0;\">
+            <strong>" . htmlspecialchars((string) $verifierName) . "</strong> marked a compliance rule as verified.
+          </p>
+          <div style=\"margin: 18px 0; padding: 14px; background-color: #eff6ff; border-left: 4px solid #2563eb; border-radius: 4px;\">
+            <p style=\"margin: 0; font-size: 14px; color: #1e3a8a;\"><strong>Project:</strong> " . htmlspecialchars((string) $projectName) . "</p>
+            <p style=\"margin: 6px 0 0 0; font-size: 14px; color: #1e3a8a;\"><strong>Phase:</strong> " . htmlspecialchars((string) $phaseLabel) . "</p>
+            <p style=\"margin: 6px 0 0 0; font-size: 14px; color: #1e3a8a;\"><strong>Rule:</strong> " . htmlspecialchars((string) $ruleDisplay) . "</p>
+          </div>
+          <p style=\"text-align: center; margin: 24px 0 8px 0;\">
+            <a href=\"" . htmlspecialchars((string) $url) . "\"
+               style=\"display: inline-block; background-color: #2563eb; color: #ffffff; text-decoration: none; padding: 12px 22px; border-radius: 8px; font-weight: 600;\">
+              Open Compliance
+            </a>
+          </p>
+          <p style=\"font-size: 14px; margin-bottom: 0;\">Best regards,<br>The BugRicer Team</p>
+        </div>
+        <div style=\"background-color: #f8fafc; color: #64748b; padding: 20px; text-align: center; font-size: 12px;\">
+          <p style=\"margin: 0;\">Automated compliance notification from BugRicer.</p>
+          <p style=\"margin: 5px 0 0 0;\">&copy; " . date('Y') . " BugRicer. All rights reserved.</p>
+        </div>
+      </div>
+    </div>
+    ";
+
+    $text_body = "
+Compliance Verified — BugRicer
+
+" . $verifierName . " marked a compliance rule as verified.
+
+Project: " . $projectName . "
+Phase: " . $phaseLabel . "
+Rule: " . $ruleDisplay . "
+
+Open: " . $url . "
+
+Best regards,
+The BugRicer Team
+";
+
+    return sendEmail($adminEmail, $subject, $html_body, $text_body);
+}
 ?>
