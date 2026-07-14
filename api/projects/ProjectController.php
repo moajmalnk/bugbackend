@@ -78,11 +78,29 @@ class ProjectController extends BaseAPI
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
+    private function attachClientToProject(array &$project): void
+    {
+        if (!empty($project['client_id'])) {
+            $stmt = $this->conn->prepare(
+                "SELECT id, corporate_name, website, market_industry, commercial_status,
+                        primary_contact_name, direct_email, direct_phone, hq_location
+                 FROM clients WHERE id = ? LIMIT 1"
+            );
+            $stmt->execute([$project['client_id']]);
+            $client = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($client) {
+                $project['client'] = $client;
+            }
+        }
+    }
+
     private function enrichProjectRecord(&$project)
     {
         if (!isset($project['id'])) {
             return;
         }
+
+        $this->attachClientToProject($project);
 
         $stmt = $this->conn->prepare(
             "SELECT pm.user_id, pm.role, u.username, u.email
@@ -136,10 +154,14 @@ class ProjectController extends BaseAPI
             //   Assigned Projects / check-in filter membership client-side)
             // - Admin impersonating another user: only that user's assigned projects
             //   so check-in matches their Assigned Projects view
+            $clientIdFilter = isset($_GET['client_id']) ? trim((string) $_GET['client_id']) : '';
+            $clientWhere = $clientIdFilter !== '' ? ' WHERE client_id = ?' : '';
+            $clientParams = $clientIdFilter !== '' ? [$clientIdFilter] : [];
+
             if ($user_role_lower === 'admin' && !$is_impersonated) {
-                $query = "SELECT * FROM projects";
+                $query = "SELECT * FROM projects" . $clientWhere;
                 $stmt = $this->conn->prepare($query);
-                $stmt->execute();
+                $stmt->execute($clientParams);
                 $projects = $stmt->fetchAll(PDO::FETCH_ASSOC);
             } elseif ($is_impersonated) {
                 $query = "SELECT DISTINCT p.* FROM projects p
@@ -150,9 +172,9 @@ class ProjectController extends BaseAPI
                 $projects = $stmt->fetchAll(PDO::FETCH_ASSOC);
             } else {
                 // Developer / tester: allow browsing all projects
-                $query = "SELECT * FROM projects";
+                $query = "SELECT * FROM projects" . $clientWhere;
                 $stmt = $this->conn->prepare($query);
-                $stmt->execute();
+                $stmt->execute($clientParams);
                 $projects = $stmt->fetchAll(PDO::FETCH_ASSOC);
             }
 
@@ -162,6 +184,8 @@ class ProjectController extends BaseAPI
                 $stmt2 = $this->conn->prepare("SELECT user_id FROM project_members WHERE project_id = ?");
                 $stmt2->execute([$project['id']]);
                 $project['members'] = array_column($stmt2->fetchAll(PDO::FETCH_ASSOC), 'user_id');
+
+                $this->attachClientToProject($project);
 
                 $summary = $complianceController->getSummaryForProject($project['id']);
                 if ($summary) {
@@ -206,6 +230,12 @@ class ProjectController extends BaseAPI
                     $placeholders[] = '?';
                     $values[] = $this->normalizeDateField($data[$field]);
                 }
+            }
+
+            if (array_key_exists('client_id', $data)) {
+                $columns[] = 'client_id';
+                $placeholders[] = '?';
+                $values[] = $data['client_id'] ?: null;
             }
 
             $query = "INSERT INTO projects (" . implode(', ', $columns) . ") VALUES (" . implode(', ', $placeholders) . ")";
@@ -338,6 +368,11 @@ class ProjectController extends BaseAPI
                     $updateFields[] = "$field = ?";
                     $values[] = $this->normalizeDateField($data[$field]);
                 }
+            }
+
+            if (array_key_exists('client_id', $data)) {
+                $updateFields[] = 'client_id = ?';
+                $values[] = $data['client_id'] ?: null;
             }
 
             if (isset($data['members']) && is_array($data['members'])) {
