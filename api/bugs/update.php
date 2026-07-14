@@ -372,7 +372,9 @@ try {
                 $notificationData['project_id'],
                 $notificationData['updated_by'],
                 $notificationData['reported_by'] ?? null,
-                $notificationData['fixed_at'] ?? null
+                $notificationData['fixed_at'] ?? null,
+                $notificationData['bug_level'] ?? 'normal',
+                $notificationData['already_raised'] ?? 0
             );
             error_log("BUG UPDATE: Notifications sent for bug ID: " . $notificationData['bug_id']);
         } catch (Exception $e) {

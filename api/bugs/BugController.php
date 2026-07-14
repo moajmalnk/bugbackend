@@ -1596,6 +1596,8 @@ class BugController extends BaseAPI {
                     'updated_by' => $data['updated_by'] ?? null,
                     'reported_by' => $updatedBug['reported_by'] ?? $existingBug['reported_by'] ?? null,
                     'fixed_at' => $updatedBug['updated_at'] ?? date('Y-m-d H:i:s'),
+                    'bug_level' => $updatedBug['bug_level'] ?? $existingBug['bug_level'] ?? 'normal',
+                    'already_raised' => $updatedBug['already_raised'] ?? $existingBug['already_raised'] ?? 0,
                 ];
             }
 
@@ -1977,6 +1979,8 @@ class BugController extends BaseAPI {
                     'updated_by' => $data['updated_by'] ?? $userId,
                     'reported_by' => $updatedBug['reported_by'] ?? $existingBug['reported_by'] ?? null,
                     'fixed_at' => $updatedBug['updated_at'] ?? date('Y-m-d H:i:s'),
+                    'bug_level' => $updatedBug['bug_level'] ?? $existingBug['bug_level'] ?? 'normal',
+                    'already_raised' => $updatedBug['already_raised'] ?? $existingBug['already_raised'] ?? 0,
                 ];
             }
 

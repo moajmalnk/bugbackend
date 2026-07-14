@@ -426,6 +426,8 @@ class NotificationManager extends BaseAPI {
                 'bug_id' => (string) ($bugId ?: ''),
                 'entity_id' => (string) ($entityId ?: ''),
                 'project_id' => (string) ($data['project_id'] ?? ''),
+                'bug_level' => (string) ($data['bug_level'] ?? ''),
+                'already_raised' => (string) ($data['already_raised'] ?? ''),
                 'tag' => (string) $type . '-' . ($entityId ?: $notificationId),
                 'actions' => 'view,dismiss',
             ];
@@ -543,6 +545,8 @@ class NotificationManager extends BaseAPI {
                 'project_id' => $projectId,
                 'bug_id' => $bugId,
                 'bug_title' => $bugTitle,
+                'bug_level' => $bugLevel !== null ? (string) $bugLevel : 'normal',
+                'already_raised' => isAlreadyRaisedValue($alreadyRaised) ? '1' : '0',
                 'created_by' => $creatorName,
             ]
         );
@@ -558,7 +562,7 @@ class NotificationManager extends BaseAPI {
      * @param string $fixedBy User ID who fixed the bug
      * @return int|false Notification ID or false
      */
-    public function notifyBugFixed($bugId, $bugTitle, $projectId, $fixedBy, $reportedBy = null, $fixedAt = null) {
+    public function notifyBugFixed($bugId, $bugTitle, $projectId, $fixedBy, $reportedBy = null, $fixedAt = null, $bugLevel = null, $alreadyRaised = null) {
         require_once __DIR__ . '/../utils/bug_meta.php';
         $bugId = (string) $bugId;
         $projectId = $projectId ? (string) $projectId : null;
@@ -579,7 +583,7 @@ class NotificationManager extends BaseAPI {
             ? $this->getUserName($reportedBy)
             : 'Unknown';
         $fixedAtLabel = $fixedAt ?: date('Y-m-d H:i:s');
-        $message = buildBugFixedNotificationMessage($bugTitle, $reporterName, $fixerName, $fixedAtLabel);
+        $message = buildBugFixedNotificationMessage($bugTitle, $reporterName, $fixerName, $fixedAtLabel, $bugLevel, $alreadyRaised);
         $notificationType = $this->getValidNotificationType('bug_fixed', 'status_change');
 
         return $this->createNotification(
@@ -593,6 +597,8 @@ class NotificationManager extends BaseAPI {
                 'project_id' => $projectId,
                 'bug_id' => $bugId,
                 'bug_title' => $bugTitle,
+                'bug_level' => $bugLevel !== null ? (string) $bugLevel : 'normal',
+                'already_raised' => isAlreadyRaisedValue($alreadyRaised) ? '1' : '0',
                 'status' => 'fixed',
                 'created_by' => $fixerName,
             ]
