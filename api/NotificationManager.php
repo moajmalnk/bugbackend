@@ -222,6 +222,9 @@ class NotificationManager extends BaseAPI {
                 return '/messages';
             case 'user':
                 return $entityId ? '/users/' . $entityId : '/users';
+            case 'codo':
+            case 'codo_rule':
+                return '/common-codo';
             default:
                 return '/notifications';
         }
@@ -967,6 +970,64 @@ class NotificationManager extends BaseAPI {
             return (string) $date;
         }
         return date('M j, Y', $ts);
+    }
+
+    /**
+     * Notify admins when a user marks a Common CODO rule status
+     * (acknowledged / doubt / not_required).
+     */
+    public function notifyCodoRuleStatusMarked(
+        $ruleId,
+        $ruleTitle,
+        $ruleKey,
+        $phase,
+        $status,
+        $userId
+    ) {
+        $userId = (string) $userId;
+        $ruleId = (string) $ruleId;
+        $userIds = $this->resolveAdminRecipients($userId);
+        if (empty($userIds)) {
+            error_log('NotificationManager::notifyCodoRuleStatusMarked - No admin recipients');
+            return false;
+        }
+
+        $userName = $this->getUserName($userId);
+        $titleLabel = trim((string) $ruleTitle) !== ''
+            ? trim((string) $ruleTitle)
+            : (trim((string) $ruleKey) !== '' ? trim((string) $ruleKey) : 'a CODO rule');
+        $statusLabel = $this->formatCodoAckStatusLabel($status);
+        $phaseLabel = ucfirst(strtolower(trim((string) $phase))) ?: 'Team';
+        $notificationType = $this->getValidNotificationType('meeting_reminder', 'new_update');
+
+        return $this->createNotification(
+            $notificationType,
+            'CODO Rule Response',
+            "{$userName} marked {$titleLabel} as {$statusLabel} ({$phaseLabel})",
+            $userIds,
+            [
+                'entity_type' => 'codo',
+                'entity_id' => $ruleId,
+                'status' => (string) $status,
+                'rule_key' => (string) $ruleKey,
+                'phase' => (string) $phase,
+                'created_by' => $userName,
+            ]
+        );
+    }
+
+    private function formatCodoAckStatusLabel($status): string
+    {
+        switch (strtolower(trim((string) $status))) {
+            case 'acknowledged':
+                return 'Acknowledged';
+            case 'doubt':
+                return 'Doubt';
+            case 'not_required':
+                return 'Not Required';
+            default:
+                return ucwords(str_replace('_', ' ', (string) $status));
+        }
     }
 
     public function notifyWorkUpdateSubmitted($submissionId, $userId, $userName = null, $date = null) {

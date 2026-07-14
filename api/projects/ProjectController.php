@@ -178,12 +178,24 @@ class ProjectController extends BaseAPI
                 $projects = $stmt->fetchAll(PDO::FETCH_ASSOC);
             }
 
-            // Add members array and compliance summary to each project
+            // Add members, client, and compliance summary to each project
             $complianceController = new ProjectComplianceController();
             foreach ($projects as &$project) {
-                $stmt2 = $this->conn->prepare("SELECT user_id FROM project_members WHERE project_id = ?");
+                $stmt2 = $this->conn->prepare(
+                    "SELECT pm.user_id, pm.role, u.username, u.email
+                     FROM project_members pm
+                     INNER JOIN users u ON u.id = pm.user_id
+                     WHERE pm.project_id = ?"
+                );
                 $stmt2->execute([$project['id']]);
-                $project['members'] = array_column($stmt2->fetchAll(PDO::FETCH_ASSOC), 'user_id');
+                $membersDetail = $stmt2->fetchAll(PDO::FETCH_ASSOC) ?: [];
+                $project['members_detail'] = $membersDetail;
+                $project['members'] = array_values(array_map(
+                    static function ($row) {
+                        return $row['user_id'];
+                    },
+                    $membersDetail
+                ));
 
                 $this->attachClientToProject($project);
 

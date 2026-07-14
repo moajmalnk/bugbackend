@@ -311,7 +311,7 @@ class CodoRulesController extends BaseAPI
         }
 
         $fetch = $this->conn->prepare(
-            'SELECT id, phase, is_active FROM codo_common_rules WHERE id = ? LIMIT 1'
+            'SELECT id, phase, is_active, title, rule_key FROM codo_common_rules WHERE id = ? LIMIT 1'
         );
         $fetch->execute([$ruleId]);
         $rule = $fetch->fetch(PDO::FETCH_ASSOC);
@@ -352,6 +352,15 @@ class CodoRulesController extends BaseAPI
                 $stmt->execute([$ruleId, $userId]);
             }
 
+            $this->notifyAdminsOfCodoStatus(
+                $ruleId,
+                (string)($rule['title'] ?? ''),
+                (string)($rule['rule_key'] ?? ''),
+                (string)($rule['phase'] ?? ''),
+                $status,
+                $userId
+            );
+
             $summary = $this->buildAckSummary($ruleId, (string)$rule['phase'], $userId);
             if ($role !== 'admin') {
                 $summary['acknowledged'] = [];
@@ -372,6 +381,83 @@ class CodoRulesController extends BaseAPI
         } catch (Throwable $e) {
             error_log('CodoRulesController::acknowledge: ' . $e->getMessage());
             $this->sendJsonResponse(500, 'Failed to save response: ' . $e->getMessage());
+        }
+    }
+
+    private function notifyAdminsOfCodoStatus(
+        int $ruleId,
+        string $ruleTitle,
+        string $ruleKey,
+        string $phase,
+        string $status,
+        string $userId
+    ): void {
+        try {
+            $nameStmt = $this->conn->prepare('SELECT username FROM users WHERE id = ? LIMIT 1');
+            $nameStmt->execute([$userId]);
+            $username = trim((string)($nameStmt->fetchColumn() ?: '')) ?: 'A team member';
+            $codoUrl = 'https://bugs.bugricer.com/admin/common-codo';
+
+            try {
+                require_once __DIR__ . '/../NotificationManager.php';
+                NotificationManager::getInstance()->notifyCodoRuleStatusMarked(
+                    $ruleId,
+                    $ruleTitle,
+                    $ruleKey,
+                    $phase,
+                    $status,
+                    $userId
+                );
+            } catch (Throwable $e) {
+                error_log('CODO push notification failed: ' . $e->getMessage());
+            }
+
+            try {
+                require_once __DIR__ . '/../../utils/email.php';
+                $adminStmt = $this->conn->prepare(
+                    "SELECT email FROM users
+                     WHERE account_active = 1
+                       AND (role = 'admin' OR role_id = 1)
+                       AND email IS NOT NULL
+                       AND TRIM(email) <> ''
+                       AND id <> ?"
+                );
+                $adminStmt->execute([$userId]);
+                $emails = $adminStmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+                foreach ($emails as $email) {
+                    try {
+                        sendCodoRuleStatusEmail(
+                            $email,
+                            $username,
+                            $ruleTitle,
+                            $ruleKey,
+                            $phase,
+                            $status,
+                            $codoUrl
+                        );
+                    } catch (Throwable $e) {
+                        error_log('CODO email failed for ' . $email . ': ' . $e->getMessage());
+                    }
+                }
+            } catch (Throwable $e) {
+                error_log('CODO email notify failed: ' . $e->getMessage());
+            }
+
+            try {
+                require_once __DIR__ . '/../../utils/whatsapp.php';
+                sendCodoRuleStatusWhatsAppToAdmins(
+                    $username,
+                    $ruleTitle,
+                    $ruleKey,
+                    $phase,
+                    $status,
+                    $codoUrl
+                );
+            } catch (Throwable $e) {
+                error_log('CODO WhatsApp notify failed: ' . $e->getMessage());
+            }
+        } catch (Throwable $e) {
+            error_log('notifyAdminsOfCodoStatus failed: ' . $e->getMessage());
         }
     }
 

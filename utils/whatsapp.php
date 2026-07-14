@@ -1801,5 +1801,60 @@ function sendCheckInNotificationWhatsApp(
         return false;
     }
 }
+
+/**
+ * Send Common CODO rule status WhatsApp notification to configured admin numbers.
+ */
+function sendCodoRuleStatusWhatsAppToAdmins(
+    $username,
+    $ruleTitle,
+    $ruleKey,
+    $phase,
+    $status,
+    $codoUrl = null
+) {
+    try {
+        $statusLabels = [
+            'acknowledged' => 'Acknowledged',
+            'doubt' => 'Doubt',
+            'not_required' => 'Not Required',
+        ];
+        $statusKey = strtolower(trim((string) $status));
+        $statusLabel = $statusLabels[$statusKey] ?? ucwords(str_replace('_', ' ', $statusKey));
+        $phaseLabel = ucfirst(strtolower(trim((string) $phase))) ?: 'Team';
+        $titleDisplay = trim((string) $ruleTitle) !== '' ? trim((string) $ruleTitle) : (string) $ruleKey;
+        $url = $codoUrl ?: 'https://bugs.bugricer.com/admin/common-codo';
+
+        $message = "📋 *CODO Rule Response*\n\n";
+        $message .= "*" . trim((string) $username) . "* marked a rule as *{$statusLabel}*\n\n";
+        $message .= "• Rule: {$titleDisplay}\n";
+        if (trim((string) $ruleKey) !== '') {
+            $message .= "• Key: {$ruleKey}\n";
+        }
+        $message .= "• Phase: {$phaseLabel}\n";
+        $message .= "• Status: {$statusLabel}\n";
+        $message .= "\n🔗 Open: {$url}\n";
+        $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
+        $message .= "_BugRicer · Common CODO_";
+
+        $phoneNumbers = explode(',', WHATSAPP_ADMIN_NUMBERS);
+        $results = [];
+        foreach ($phoneNumbers as $phoneNumber) {
+            $phoneNumber = trim($phoneNumber);
+            if ($phoneNumber === '') {
+                continue;
+            }
+            $ok = sendWhatsAppMessage($phoneNumber, $message);
+            $results[$phoneNumber] = $ok;
+            if (count($phoneNumbers) > 1) {
+                usleep(400000);
+            }
+        }
+        return in_array(true, $results, true);
+    } catch (Exception $e) {
+        error_log('⚠️ Exception in sendCodoRuleStatusWhatsAppToAdmins: ' . $e->getMessage());
+        return false;
+    }
+}
 ?>
 

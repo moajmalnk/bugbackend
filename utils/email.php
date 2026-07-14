@@ -1057,4 +1057,100 @@ The BugRicer Team
 
     return sendEmail($email, $subject, $html_body, $text_body);
 }
+
+/**
+ * Email admins when a user marks a Common CODO rule status.
+ */
+function sendCodoRuleStatusEmail(
+    $adminEmail,
+    $username,
+    $ruleTitle,
+    $ruleKey,
+    $phase,
+    $status,
+    $codoUrl = null
+) {
+    $statusLabels = [
+        'acknowledged' => 'Acknowledged',
+        'doubt' => 'Doubt',
+        'not_required' => 'Not Required',
+    ];
+    $statusKey = strtolower(trim((string) $status));
+    $statusLabel = $statusLabels[$statusKey] ?? ucwords(str_replace('_', ' ', $statusKey));
+    $phaseLabel = ucfirst(strtolower(trim((string) $phase))) ?: 'Team';
+    $titleDisplay = trim((string) $ruleTitle) !== '' ? trim((string) $ruleTitle) : (string) $ruleKey;
+    $url = $codoUrl ?: 'https://bugs.bugricer.com/admin/common-codo';
+
+    if ($statusKey === 'doubt') {
+        $accent = '#d97706';
+        $bg = '#fffbeb';
+        $text = '#92400e';
+    } elseif ($statusKey === 'not_required') {
+        $accent = '#64748b';
+        $bg = '#f8fafc';
+        $text = '#334155';
+    } else {
+        $accent = '#16a34a';
+        $bg = '#f0fdf4';
+        $text = '#166534';
+    }
+
+    $subject = "CODO {$statusLabel} — {$titleDisplay}";
+    $safeUser = htmlspecialchars((string) $username);
+    $safeTitle = htmlspecialchars((string) $titleDisplay);
+    $safeKey = htmlspecialchars((string) $ruleKey);
+    $safePhase = htmlspecialchars((string) $phaseLabel);
+    $safeStatus = htmlspecialchars((string) $statusLabel);
+
+    $html_body = "
+    <div style=\"font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;\">
+      <div style=\"max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">
+        <div style=\"background-color: {$accent}; color: #ffffff; padding: 20px; text-align: center;\">
+          <h1 style=\"margin: 0; font-size: 22px;\">CODO Rule Response</h1>
+          <p style=\"margin: 6px 0 0 0; font-size: 14px; opacity: 0.95;\">{$safeStatus}</p>
+        </div>
+        <div style=\"padding: 24px;\">
+          <p style=\"font-size: 15px; margin-top: 0;\">
+            <strong>{$safeUser}</strong> marked a Common CODO rule as <strong>{$safeStatus}</strong>.
+          </p>
+          <div style=\"margin: 18px 0; padding: 14px; background-color: {$bg}; border-left: 4px solid {$accent}; border-radius: 4px;\">
+            <p style=\"margin: 0; font-size: 14px; color: {$text};\"><strong>Rule:</strong> {$safeTitle}</p>
+            <p style=\"margin: 6px 0 0 0; font-size: 14px; color: {$text};\"><strong>Key:</strong> {$safeKey}</p>
+            <p style=\"margin: 6px 0 0 0; font-size: 14px; color: {$text};\"><strong>Phase:</strong> {$safePhase}</p>
+            <p style=\"margin: 6px 0 0 0; font-size: 14px; color: {$text};\"><strong>Status:</strong> {$safeStatus}</p>
+          </div>
+          <p style=\"text-align: center; margin: 24px 0 8px 0;\">
+            <a href=\"" . htmlspecialchars((string) $url) . "\"
+               style=\"display: inline-block; background-color: {$accent}; color: #ffffff; text-decoration: none; padding: 12px 22px; border-radius: 8px; font-weight: 600;\">
+              Open Common CODO
+            </a>
+          </p>
+          <p style=\"font-size: 14px; margin-bottom: 0;\">Best regards,<br>The BugRicer Team</p>
+        </div>
+        <div style=\"background-color: #f8fafc; color: #64748b; padding: 20px; text-align: center; font-size: 12px;\">
+          <p style=\"margin: 0;\">Automated CODO notification from BugRicer.</p>
+          <p style=\"margin: 5px 0 0 0;\">&copy; " . date('Y') . " BugRicer. All rights reserved.</p>
+        </div>
+      </div>
+    </div>
+    ";
+
+    $text_body = "
+CODO Rule Response — BugRicer
+
+{$username} marked a Common CODO rule as {$statusLabel}.
+
+Rule: {$titleDisplay}
+Key: {$ruleKey}
+Phase: {$phaseLabel}
+Status: {$statusLabel}
+
+Open: {$url}
+
+Best regards,
+The BugRicer Team
+";
+
+    return sendEmail($adminEmail, $subject, $html_body, $text_body);
+}
 ?>
