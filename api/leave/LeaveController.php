@@ -207,28 +207,66 @@ class LeaveController extends BaseAPI
                 return;
             }
 
-            // Balance check per month spanned by the request (against approved usage only)
-            $tz = new DateTimeZone('Asia/Kolkata');
-            $cursor = DateTime::createFromFormat('Y-m-d', $startDate, $tz);
-            $endDt = DateTime::createFromFormat('Y-m-d', $endDate, $tz);
-            $monthsChecked = [];
-            while ($cursor && $endDt && $cursor <= $endDt) {
-                $ym = $cursor->format('Y-m');
-                if (!isset($monthsChecked[$ym])) {
-                    $needed = br_leave_days_in_month($startDate, $endDate, $ym);
-                    $used = br_leave_used_days_in_month($this->conn, $userId, $leaveTypeId, $ym);
-                    $quota = (float)$type['monthly_quota'];
-                    if ($used + $needed > $quota + 0.001) {
-                        $remaining = max(0.0, $quota - $used);
+            // Split the request into segments: days within the monthly balance keep the
+            // requested (paid) type; overflow days are automatically marked Unpaid Leave.
+            // Unpaid leave itself is uncapped.
+            $isUnpaidRequest = strtolower((string)$type['code']) === 'unpaid';
+            $unpaidType = null;
+            if (!$isUnpaidRequest) {
+                $u = $this->conn->prepare("SELECT id, code, name, monthly_quota FROM leave_types WHERE code = 'unpaid' AND is_active = 1 LIMIT 1");
+                $u->execute();
+                $unpaidType = $u->fetch(PDO::FETCH_ASSOC) ?: null;
+            }
+
+            $segments = [];
+            if ($isUnpaidRequest) {
+                $segments[] = ['type' => $type, 'start' => $startDate, 'end' => $endDate];
+            } else {
+                $tz = new DateTimeZone('Asia/Kolkata');
+                $cursor = DateTime::createFromFormat('Y-m-d', $startDate, $tz);
+                $endDt = DateTime::createFromFormat('Y-m-d', $endDate, $tz);
+                $remainingByMonth = [];
+                $current = null;
+                while ($cursor && $endDt && $cursor <= $endDt) {
+                    $ym = $cursor->format('Y-m');
+                    if (!isset($remainingByMonth[$ym])) {
+                        $used = br_leave_used_days_in_month($this->conn, $userId, $leaveTypeId, $ym);
+                        $remainingByMonth[$ym] = max(0.0, (float)$type['monthly_quota'] - $used);
+                    }
+                    if ($remainingByMonth[$ym] >= 1.0 - 0.001) {
+                        $dayType = $type;
+                        $remainingByMonth[$ym] -= 1.0;
+                    } elseif ($unpaidType) {
+                        $dayType = $unpaidType;
+                    } else {
+                        // No unpaid type configured — keep the original strict behaviour
+                        $needed = br_leave_days_in_month($startDate, $endDate, $ym);
+                        $remaining = $remainingByMonth[$ym];
                         $this->sendJsonResponse(
                             400,
                             "Insufficient {$type['name']} balance for {$ym}. Remaining: {$remaining}, requested in month: {$needed}."
                         );
                         return;
                     }
-                    $monthsChecked[$ym] = true;
+                    $date = $cursor->format('Y-m-d');
+                    if ($current && (int)$current['type']['id'] === (int)$dayType['id']) {
+                        $current['end'] = $date;
+                    } else {
+                        if ($current) {
+                            $segments[] = $current;
+                        }
+                        $current = ['type' => $dayType, 'start' => $date, 'end' => $date];
+                    }
+                    $cursor->modify('+1 day');
                 }
-                $cursor->modify('+1 day');
+                if ($current) {
+                    $segments[] = $current;
+                }
+            }
+
+            if (empty($segments)) {
+                $this->sendJsonResponse(400, 'Invalid leave duration');
+                return;
             }
 
             $stmt = $this->conn->prepare(
@@ -236,25 +274,49 @@ class LeaveController extends BaseAPI
                  (user_id, leave_type_id, start_date, end_date, days_count, reason, status)
                  VALUES (?, ?, ?, ?, ?, ?, 'pending')"
             );
-            $stmt->execute([$userId, $leaveTypeId, $startDate, $endDate, $days, $reason !== '' ? $reason : null]);
-            $id = (int)$this->conn->lastInsertId();
 
-            try {
-                NotificationManager::getInstance()->notifyLeaveRequested(
-                    $id,
+            $createdIds = [];
+            $summaryParts = [];
+            foreach ($segments as $segment) {
+                $segDays = br_leave_calendar_days($segment['start'], $segment['end']);
+                $stmt->execute([
                     $userId,
-                    (string)$type['name'],
-                    $startDate,
-                    $endDate
-                );
-            } catch (Throwable $e) {
-                error_log('notifyLeaveRequested: ' . $e->getMessage());
+                    (int)$segment['type']['id'],
+                    $segment['start'],
+                    $segment['end'],
+                    $segDays,
+                    $reason !== '' ? $reason : null,
+                ]);
+                $segId = (int)$this->conn->lastInsertId();
+                $createdIds[] = $segId;
+                $segDaysLabel = rtrim(rtrim(number_format($segDays, 2, '.', ''), '0'), '.');
+                $summaryParts[] = "{$segDaysLabel} day" . ($segDays == 1.0 ? '' : 's') . " {$segment['type']['name']}";
+
+                try {
+                    NotificationManager::getInstance()->notifyLeaveRequested(
+                        $segId,
+                        $userId,
+                        (string)$segment['type']['name'],
+                        $segment['start'],
+                        $segment['end']
+                    );
+                } catch (Throwable $e) {
+                    error_log('notifyLeaveRequested: ' . $e->getMessage());
+                }
             }
 
-            $fetch = $this->conn->prepare($this->selectSql() . ' WHERE lr.id = ? LIMIT 1');
-            $fetch->execute([$id]);
-            $row = $fetch->fetch(PDO::FETCH_ASSOC);
-            $this->sendJsonResponse(201, 'Leave request submitted', $row ? $this->formatRequestRow($row) : ['id' => $id]);
+            $message = count($createdIds) > 1
+                ? 'Leave request submitted — split as ' . implode(' + ', $summaryParts) . ' (balance exceeded, extra days marked Unpaid Leave).'
+                : 'Leave request submitted';
+
+            $placeholders = implode(',', array_fill(0, count($createdIds), '?'));
+            $fetch = $this->conn->prepare($this->selectSql() . " WHERE lr.id IN ({$placeholders}) ORDER BY lr.start_date ASC");
+            $fetch->execute($createdIds);
+            $rows = $fetch->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            $formatted = array_map([$this, 'formatRequestRow'], $rows);
+            $primary = $formatted[0] ?? ['id' => $createdIds[0]];
+            $primary['requests'] = $formatted;
+            $this->sendJsonResponse(201, $message, $primary);
         } catch (Throwable $e) {
             error_log('LeaveController::request: ' . $e->getMessage());
             $this->sendJsonResponse(500, 'Failed to submit leave request: ' . $e->getMessage());
@@ -328,11 +390,11 @@ class LeaveController extends BaseAPI
                 $this->sendJsonResponse(409, 'Cannot approve: overlapping leave already exists for these dates.');
                 return;
             }
-            // Re-check balance
-            $typeStmt = $this->conn->prepare('SELECT id, name, monthly_quota FROM leave_types WHERE id = ? LIMIT 1');
+            // Re-check balance (Unpaid Leave is uncapped — it absorbs overflow from paid types)
+            $typeStmt = $this->conn->prepare('SELECT id, code, name, monthly_quota FROM leave_types WHERE id = ? LIMIT 1');
             $typeStmt->execute([(int)$row['leave_type_id']]);
             $type = $typeStmt->fetch(PDO::FETCH_ASSOC);
-            if ($type) {
+            if ($type && strtolower((string)($type['code'] ?? '')) !== 'unpaid') {
                 $tz = new DateTimeZone('Asia/Kolkata');
                 $cursor = DateTime::createFromFormat('Y-m-d', (string)$row['start_date'], $tz);
                 $endDt = DateTime::createFromFormat('Y-m-d', (string)$row['end_date'], $tz);
