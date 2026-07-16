@@ -36,6 +36,7 @@ try {
         $api->clearCache('project_members_' . $project_id);
         $api->clearCache('project_members_list_' . $project_id);
         $api->clearCache('user_projects_' . $user_id);
+        $api->clearCache('user_assigned_projects_' . $user_id);
         
         $api->sendJsonResponse(200, 'Member removed successfully from project');
     } else {

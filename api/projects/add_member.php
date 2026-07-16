@@ -52,6 +52,7 @@ try {
     $api->clearCache('project_members_' . $project_id);
     $api->clearCache('project_members_list_' . $project_id);
     $api->clearCache('user_projects_' . $user_id);
+    $api->clearCache('user_assigned_projects_' . $user_id);
 
     // Send response immediately for fast user experience
     $api->sendJsonResponse(200, 'Member added successfully to project');
