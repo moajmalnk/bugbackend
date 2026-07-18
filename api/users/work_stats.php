@@ -331,6 +331,9 @@ class UserWorkStatsController extends BaseAPI {
 
             $this->ensureWorkSubmissionOtApprovalColumns();
 
+            $wantFull = isset($_GET['full']) && in_array(strtolower((string)$_GET['full']), ['1', 'true', 'yes', 'all'], true);
+            $requestedMonths = isset($_GET['months']) ? (int)$_GET['months'] : 0;
+
             // Current calendar month (1st through last day)
             $istTimezone = new DateTimeZone('Asia/Kolkata');
             $currentPeriod = $this->getCalendarMonthPeriodAtOffset(0, $istTimezone);
@@ -338,6 +341,30 @@ class UserWorkStatsController extends BaseAPI {
             $periodEnd = $currentPeriod['end'];
             $periodName = $currentPeriod['name'];
             $periodRange = $currentPeriod['range'];
+
+            $joiningDate = br_user_joining_date($this->conn, (string)$userId);
+            $monthsFromJoin = 6;
+            if ($joiningDate) {
+                try {
+                    $joinAnchor = new DateTime(substr($joiningDate, 0, 7) . '-01', $istTimezone);
+                    $nowAnchor = new DateTime('now', $istTimezone);
+                    $nowAnchor->modify('first day of this month');
+                    $diff = $joinAnchor->diff($nowAnchor);
+                    $monthsFromJoin = max(1, ((int)$diff->y * 12) + (int)$diff->m + 1);
+                } catch (Throwable $e) {
+                    $monthsFromJoin = 6;
+                }
+            }
+            // Safety cap (5 years)
+            $monthsFromJoin = min(60, $monthsFromJoin);
+
+            if ($wantFull) {
+                $trendMonthCount = $monthsFromJoin;
+            } elseif ($requestedMonths > 0) {
+                $trendMonthCount = min(60, max(1, $requestedMonths));
+            } else {
+                $trendMonthCount = 6;
+            }
             
             // Get work submissions for the current custom period
             $stmt = $this->conn->prepare("
@@ -441,20 +468,25 @@ class UserWorkStatsController extends BaseAPI {
                 'upcoming' => $upcoming
             ];
             
-            // Last 6 calendar months for trend analysis
+            // Calendar months for trend analysis (default 6; full = from joining month)
             $trendData = [];
-            for ($i = 0; $i < 6; $i++) {
+            for ($i = 0; $i < $trendMonthCount; $i++) {
                 if ($i === 0) {
                     $periodStartStr = $periodStart;
                     $periodEndStr = $periodEnd;
-                    $periodName = $periodName;
+                    $trendPeriodName = $periodName;
                     $periodRangeLabel = $periodRange;
                 } else {
                     $monthPeriod = $this->getCalendarMonthPeriodAtOffset($i, $istTimezone);
                     $periodStartStr = $monthPeriod['start'];
                     $periodEndStr = $monthPeriod['end'];
-                    $periodName = $monthPeriod['name'];
+                    $trendPeriodName = $monthPeriod['name'];
                     $periodRangeLabel = $monthPeriod['range'];
+                }
+
+                // Skip months before joining date when showing full history
+                if ($joiningDate && $periodEndStr < $joiningDate) {
+                    continue;
                 }
                 
                 // Get work submission data for this period
@@ -565,7 +597,7 @@ class UserWorkStatsController extends BaseAPI {
                 
                 $trendData[] = [
                     'period' => $periodStartStr,
-                    'period_name' => $periodName,
+                    'period_name' => $trendPeriodName,
                     'period_range' => $periodRangeLabel,
                     'days' => (int)($periodData['days'] ?? 0),
                     'hours' => (float)($periodData['hours'] ?? 0),
@@ -586,11 +618,19 @@ class UserWorkStatsController extends BaseAPI {
             $stmt = $this->conn->prepare("SELECT username, role FROM users WHERE id = ?");
             $stmt->execute([$userId]);
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            $returnedMonths = count($trendData);
+            $hasMoreTrend = !$wantFull && $monthsFromJoin > $returnedMonths;
             
             $stats = [
                 'user_id' => $userId,
                 'username' => $user['username'] ?? 'Unknown',
                 'role' => $user['role'] ?? 'user',
+                'joining_date' => $joiningDate,
+                'trend_scope' => $wantFull ? 'full' : 'recent',
+                'trend_months' => $returnedMonths,
+                'available_trend_months' => $monthsFromJoin,
+                'has_more_trend' => $hasMoreTrend,
                 'current_period' => [
                     'period_start' => $periodStart,
                     'period_end' => $periodEnd,
