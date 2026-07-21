@@ -13,6 +13,7 @@ class BackupStatsController extends BaseAPI
 
         backup_require_settings_permission($this);
         backup_ensure_jobs_table($this->conn);
+        backup_reap_stale_jobs($this->conn);
 
         $tableCount = backup_count_tables($this->conn);
         $databaseBytes = backup_estimate_database_size($this->conn);
@@ -46,6 +47,7 @@ class BackupStatsController extends BaseAPI
         }
 
         $estimatedTotal = $databaseBytes + $uploadsBytes;
+        $etaSeconds = backup_estimate_eta_seconds($estimatedTotal);
 
         $this->sendJsonResponse(200, 'Backup stats loaded', [
             'database' => [
@@ -61,6 +63,8 @@ class BackupStatsController extends BaseAPI
             'estimate' => [
                 'total_bytes' => $estimatedTotal,
                 'total_label' => backup_format_bytes($estimatedTotal),
+                'eta_seconds' => $etaSeconds,
+                'eta_label' => backup_format_eta($etaSeconds),
             ],
             'jobs' => [
                 'active' => $activeJobs,

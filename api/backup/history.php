@@ -23,6 +23,7 @@ class BackupHistoryController extends BaseAPI
         }
 
         backup_ensure_jobs_table($this->conn);
+        backup_reap_stale_jobs($this->conn);
 
         $hasMailStatus = backup_job_has_mail_status($this->conn);
         $mailColumns = $hasMailStatus ? 'bj.mail_status, bj.mail_error,' : '';
@@ -56,7 +57,11 @@ class BackupHistoryController extends BaseAPI
         $items = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
         foreach ($items as &$item) {
-            $item['file_size_label'] = backup_format_bytes((int) ($item['file_size_bytes'] ?? 0));
+            $bytes = (int) ($item['file_size_bytes'] ?? 0);
+            $item['file_size_label'] =
+                $item['status'] === 'processing' || $item['status'] === 'queued'
+                    ? 'Preparing…'
+                    : backup_format_bytes($bytes);
             $item['include_database'] = (bool) $item['include_database'];
             $item['include_uploads'] = (bool) $item['include_uploads'];
             $item['include_config'] = (bool) $item['include_config'];
@@ -69,6 +74,17 @@ class BackupHistoryController extends BaseAPI
                 } else {
                     $item['mail_status'] = 'pending';
                 }
+            }
+
+            if (in_array($item['status'], ['queued', 'processing'], true)) {
+                $item['status_detail'] =
+                    'We are preparing your backup. The ZIP will be emailed to ' .
+                    ($item['email'] ?? 'your inbox') .
+                    ' when it is ready.';
+            } elseif (!empty($item['error_message'])) {
+                $item['status_detail'] = $item['error_message'];
+            } else {
+                $item['status_detail'] = null;
             }
         }
         unset($item);

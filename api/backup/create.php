@@ -176,14 +176,34 @@ class BackupController {
                 fastcgi_finish_request();
             }
             
-            // Run backup in a detached CLI worker (reliable on shared hosting / XAMPP)
+            // Run backup after the client already has the response.
+            // Prefer a detached CLI worker; if spawn fails or the worker dies
+            // immediately, finish the job inline (reliable on XAMPP/Apache).
             ignore_user_abort(true);
             set_time_limit(0);
 
             if ($this->jobId) {
-                $spawned = $this->spawnBackgroundJob($this->jobId);
-                if (!$spawned) {
-                    error_log("⚠️ Could not spawn backup worker; running inline for job {$this->jobId}");
+                $spawn = $this->spawnBackgroundJob($this->jobId);
+                $shouldRunInline = !$spawn['ok'];
+
+                if ($spawn['ok'] && $spawn['pid'] > 0) {
+                    usleep(900000); // ~0.9s — let worker start or crash
+                    if ($this->isJobStillProcessing($this->jobId)) {
+                        if (!$this->isProcessAlive($spawn['pid'])) {
+                            error_log(
+                                "⚠️ Backup worker pid {$spawn['pid']} exited early for job {$this->jobId}; running inline"
+                            );
+                            $shouldRunInline = true;
+                        } else {
+                            error_log(
+                                "✅ Backup worker pid {$spawn['pid']} still running for job {$this->jobId}"
+                            );
+                        }
+                    }
+                }
+
+                if ($shouldRunInline && $this->isJobStillProcessing($this->jobId)) {
+                    error_log("▶️ Running backup inline for job {$this->jobId}");
                     try {
                         $this->createBackup($email, [
                             'include_database' => $includeDatabase,
@@ -193,6 +213,15 @@ class BackupController {
                         ]);
                     } catch (Throwable $backupError) {
                         error_log("Backup process error: " . $backupError->getMessage());
+                        try {
+                            $this->updateJobStatus('failed', [
+                                'error_message' => mb_substr($backupError->getMessage(), 0, 1000),
+                                'mail_status' => 'failed',
+                                'mail_error' => mb_substr($backupError->getMessage(), 0, 1000),
+                            ]);
+                        } catch (Throwable $statusError) {
+                            error_log('Failed to mark backup job failed: ' . $statusError->getMessage());
+                        }
                         try {
                             $this->sendErrorEmail($email, $backupError->getMessage());
                         } catch (Exception $emailError) {
@@ -364,47 +393,98 @@ class BackupController {
         ]);
     }
 
-    private function spawnBackgroundJob(int $jobId): bool
+    private function spawnBackgroundJob(int $jobId): array
     {
         $worker = __DIR__ . '/run_backup_job.php';
         if (!is_file($worker)) {
             error_log("Backup worker script missing: $worker");
-            return false;
+            return ['ok' => false, 'pid' => 0];
         }
 
-        $phpBinary = PHP_BINARY;
-        if (!$phpBinary || !is_executable($phpBinary)) {
-            $candidates = [
-                '/Applications/XAMPP/xamppfiles/bin/php',
-                '/usr/local/bin/php',
-                '/usr/bin/php',
-                'php',
-            ];
-            foreach ($candidates as $candidate) {
-                if ($candidate === 'php' || (is_file($candidate) && is_executable($candidate))) {
-                    $phpBinary = $candidate;
-                    break;
-                }
+        $logDir = realpath(__DIR__ . '/../..') . '/logs';
+        if (!is_dir($logDir)) {
+            @mkdir($logDir, 0775, true);
+        }
+        $logFile = $logDir . '/backup_worker_' . $jobId . '.log';
+
+        // Prefer known CLI binaries — Apache's PHP_BINARY is often unusable for CLI workers.
+        $candidates = [
+            '/Applications/XAMPP/xamppfiles/bin/php',
+            '/opt/lampp/bin/php',
+            '/usr/local/bin/php',
+            '/usr/bin/php',
+        ];
+        if (defined('PHP_BINARY') && PHP_BINARY && is_file(PHP_BINARY)) {
+            array_unshift($candidates, PHP_BINARY);
+        }
+        $candidates[] = 'php';
+
+        $phpBinary = null;
+        foreach ($candidates as $candidate) {
+            if ($candidate === 'php') {
+                $phpBinary = 'php';
+                break;
             }
+            if (is_file($candidate) && is_executable($candidate)) {
+                $phpBinary = $candidate;
+                break;
+            }
+        }
+
+        if (!$phpBinary) {
+            error_log('No PHP CLI binary found for backup worker');
+            return ['ok' => false, 'pid' => 0];
         }
 
         $cmd = escapeshellarg($phpBinary) . ' ' . escapeshellarg($worker) . ' ' . (int) $jobId;
         if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
             pclose(popen('start /B ' . $cmd, 'r'));
-            error_log("🚀 Spawned backup worker for job $jobId (windows)");
-            return true;
-        } else {
-            $output = [];
-            $exitCode = 0;
-            exec($cmd . ' > /dev/null 2>&1 & echo $!', $output, $exitCode);
-            $pid = isset($output[0]) ? (int) $output[0] : 0;
-            if ($exitCode !== 0 || $pid <= 0) {
-                error_log("❌ Failed to spawn backup worker for job $jobId (exit=$exitCode, pid=$pid)");
-                return false;
-            }
-            error_log("🚀 Spawned backup worker for job $jobId with pid $pid");
+            error_log("🚀 Spawned backup worker for job $jobId (windows) via $phpBinary");
+            return ['ok' => true, 'pid' => 1];
+        }
+
+        $output = [];
+        $exitCode = 0;
+        $redirect = escapeshellarg($logFile);
+        exec($cmd . ' >> ' . $redirect . ' 2>&1 & echo $!', $output, $exitCode);
+        $pid = isset($output[0]) ? (int) $output[0] : 0;
+        if ($exitCode !== 0 || $pid <= 0) {
+            error_log("❌ Failed to spawn backup worker for job $jobId (exit=$exitCode, pid=$pid, php=$phpBinary)");
+            return ['ok' => false, 'pid' => 0];
+        }
+        error_log("🚀 Spawned backup worker for job $jobId with pid $pid via $phpBinary (log: $logFile)");
+        return ['ok' => true, 'pid' => $pid];
+    }
+
+    private function isJobStillProcessing(int $jobId): bool
+    {
+        try {
+            $stmt = $this->conn->prepare(
+                "SELECT status FROM backup_jobs WHERE id = ? LIMIT 1"
+            );
+            $stmt->execute([$jobId]);
+            $status = $stmt->fetchColumn();
+            return in_array($status, ['queued', 'processing'], true);
+        } catch (Throwable $e) {
+            error_log('isJobStillProcessing failed: ' . $e->getMessage());
             return true;
         }
+    }
+
+    private function isProcessAlive(int $pid): bool
+    {
+        if ($pid <= 0) {
+            return false;
+        }
+        if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
+            return true;
+        }
+        if (function_exists('posix_kill')) {
+            return @posix_kill($pid, 0);
+        }
+        $out = [];
+        exec('ps -p ' . (int) $pid . ' -o pid=', $out);
+        return !empty($out);
     }
     
     private function createBackup($email, array $options = []) {

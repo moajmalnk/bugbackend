@@ -139,3 +139,66 @@ function backup_job_has_mail_status(PDO $conn): bool
     $stmt = $conn->query("SHOW COLUMNS FROM backup_jobs LIKE 'mail_status'");
     return (bool) ($stmt && $stmt->fetch());
 }
+
+/**
+ * Mark abandoned processing jobs as failed (worker never finished).
+ * Default threshold: 45 minutes.
+ */
+function backup_reap_stale_jobs(PDO $conn, int $maxAgeMinutes = 45): int
+{
+    if (!backup_table_exists($conn, 'backup_jobs')) {
+        return 0;
+    }
+
+    backup_ensure_jobs_table($conn);
+    $hasMail = backup_job_has_mail_status($conn);
+    $message = 'Backup timed out — the worker did not finish. Please start a new backup.';
+
+    if ($hasMail) {
+        $stmt = $conn->prepare(
+            "UPDATE backup_jobs
+             SET status = 'failed',
+                 error_message = ?,
+                 mail_status = 'failed',
+                 mail_error = ?,
+                 completed_at = NOW()
+             WHERE status IN ('queued', 'processing')
+               AND created_at < (NOW() - INTERVAL ? MINUTE)"
+        );
+        $stmt->execute([$message, $message, $maxAgeMinutes]);
+    } else {
+        $stmt = $conn->prepare(
+            "UPDATE backup_jobs
+             SET status = 'failed',
+                 error_message = ?,
+                 completed_at = NOW()
+             WHERE status IN ('queued', 'processing')
+               AND created_at < (NOW() - INTERVAL ? MINUTE)"
+        );
+        $stmt->execute([$message, $maxAgeMinutes]);
+    }
+
+    return (int) $stmt->rowCount();
+}
+
+/**
+ * Rough ETA in seconds from estimated archive bytes.
+ */
+function backup_estimate_eta_seconds(int $totalBytes): int
+{
+    // ~800 KB/s effective for dump+zip+mail, with a floor/ceiling for UX.
+    $seconds = (int) ceil($totalBytes / (800 * 1024));
+    return max(90, min(900, $seconds > 0 ? $seconds : 180));
+}
+
+function backup_format_eta(int $seconds): string
+{
+    if ($seconds < 60) {
+        return 'about 1 minute';
+    }
+    $minutes = (int) ceil($seconds / 60);
+    if ($minutes === 1) {
+        return 'about 1 minute';
+    }
+    return "about {$minutes} minutes";
+}
