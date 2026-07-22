@@ -1819,15 +1819,15 @@ class UserController extends BaseAPI {
             if ($hasProjectStatus) $projectSelect .= ", p.status";
             if ($hasIsActive) $projectSelect .= ", p.is_active";
 
+            // Only assigned projects (same source as Assign Projects / get_user_projects.php)
             $projectsStmt = $this->conn->prepare(
-                "SELECT $projectSelect, pm.role AS member_role, pm.joined_at,
-                        CASE WHEN pm.user_id IS NOT NULL THEN 1 ELSE 0 END AS is_member
-                 FROM projects p
-                 LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
-                 WHERE pm.user_id = ? OR p.created_by = ?
-                 ORDER BY COALESCE(pm.joined_at, p.created_at) DESC, p.name ASC"
+                "SELECT $projectSelect, pm.role AS member_role, pm.joined_at
+                 FROM project_members pm
+                 INNER JOIN projects p ON p.id = pm.project_id
+                 WHERE pm.user_id = ?
+                 ORDER BY pm.joined_at DESC, p.name ASC"
             );
-            $projectsStmt->execute([$userId, $userId, $userId]);
+            $projectsStmt->execute([$userId]);
             $projectRows = $projectsStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
             $projectsById = [];
@@ -1836,15 +1836,14 @@ class UserController extends BaseAPI {
                 if (isset($projectsById[$pid])) {
                     continue;
                 }
-                $assignedAt = $row['joined_at'] ?: $row['project_created_at'];
                 $projectsById[$pid] = [
                     'id' => $pid,
                     'name' => $row['name'],
                     'status' => $row['status'] ?? (($hasIsActive && isset($row['is_active'])) ? ((int)$row['is_active'] === 1 ? 'active' : 'inactive') : null),
                     'is_active' => isset($row['is_active']) ? (int)$row['is_active'] : null,
-                    'member_role' => $row['member_role'] ?? ((string)($row['created_by'] ?? '') === (string)$userId ? 'creator' : null),
-                    'assigned_at' => $assignedAt,
-                    'is_member' => (int)($row['is_member'] ?? 0) === 1,
+                    'member_role' => $row['member_role'] ?? null,
+                    'assigned_at' => $row['joined_at'] ?? null,
+                    'is_member' => true,
                     'is_creator' => (string)($row['created_by'] ?? '') === (string)$userId,
                     'counts' => ['bugs' => 0, 'fixes' => 0, 'updates' => 0],
                     'bugs' => [],
@@ -1908,29 +1907,6 @@ class UserController extends BaseAPI {
             );
             $updStmt->execute([$userId]);
             $updateRows = $updStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
-
-            // Ensure orphan project buckets exist for work outside membership list
-            foreach (array_merge($bugRows, $updateRows) as $row) {
-                $pid = (string)($row['project_id'] ?? '');
-                if ($pid === '' || isset($projectsById[$pid])) {
-                    continue;
-                }
-                $projectsById[$pid] = [
-                    'id' => $pid,
-                    'name' => $row['project_name'] ?: 'Unknown project',
-                    'status' => null,
-                    'is_active' => null,
-                    'member_role' => null,
-                    'assigned_at' => null,
-                    'is_member' => false,
-                    'is_creator' => false,
-                    'counts' => ['bugs' => 0, 'fixes' => 0, 'updates' => 0],
-                    'bugs' => [],
-                    'fixes' => [],
-                    'updates' => [],
-                ];
-                $projectIds[] = $pid;
-            }
 
             // ---- Activities for timeline reconstruction ----
             $entityIds = [];
