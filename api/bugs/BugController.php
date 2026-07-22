@@ -828,6 +828,353 @@ class BugController extends BaseAPI {
             $this->handleError("Failed to retrieve bug details: " . $e->getMessage(), 500);
         }
     }
+
+    /**
+     * Status timeline + cycle metrics for a single bug detail view.
+     */
+    public function getLifecycle($id) {
+        try {
+            try {
+                $this->validateToken();
+            } catch (Exception $e) {
+                $this->handleError("Authentication failed", 401);
+                return;
+            }
+
+            if (!$this->conn) {
+                $this->handleError("Database connection failed", 500);
+                return;
+            }
+
+            $id = (string)$id;
+            if ($id === '') {
+                $this->handleError("Bug ID is required", 400);
+                return;
+            }
+
+            $formatDuration = function ($seconds) {
+                $seconds = max(0, (int)$seconds);
+                if ($seconds < 60) {
+                    return $seconds . 's';
+                }
+                $days = intdiv($seconds, 86400);
+                $hours = intdiv($seconds % 86400, 3600);
+                $mins = intdiv($seconds % 3600, 60);
+                $parts = [];
+                if ($days > 0) $parts[] = $days . 'd';
+                if ($hours > 0) $parts[] = $hours . 'h';
+                if ($mins > 0 || empty($parts)) $parts[] = $mins . 'm';
+                return implode(' ', $parts);
+            };
+
+            $parseTs = function ($value) {
+                if ($value === null || $value === '') {
+                    return null;
+                }
+                $ts = strtotime((string)$value);
+                return $ts === false ? null : $ts;
+            };
+
+            $bugCols = [];
+            $bugColRes = $this->conn->query("SHOW COLUMNS FROM bugs");
+            if ($bugColRes) {
+                while ($r = $bugColRes->fetch(PDO::FETCH_ASSOC)) {
+                    $bugCols[] = $r['Field'];
+                }
+            }
+            $hasFixedBy = in_array('fixed_by', $bugCols, true);
+            $hasBugLevel = in_array('bug_level', $bugCols, true);
+            $hasAlreadyRaised = in_array('already_raised', $bugCols, true);
+
+            $select = "b.id, b.title, b.status, b.priority, b.created_at, b.updated_at, b.project_id,
+                       b.reported_by, b.updated_by,
+                       p.name AS project_name,
+                       reporter.username AS reporter_name,
+                       updater.username AS updated_by_name";
+            if ($hasFixedBy) {
+                $select .= ", b.fixed_by, fixer.username AS fixed_by_name";
+            }
+            if ($hasBugLevel) $select .= ", b.bug_level";
+            if ($hasAlreadyRaised) $select .= ", b.already_raised";
+
+            $fixerJoin = $hasFixedBy
+                ? "LEFT JOIN users fixer ON b.fixed_by = fixer.id"
+                : "";
+
+            $stmt = $this->conn->prepare(
+                "SELECT $select
+                 FROM bugs b
+                 LEFT JOIN projects p ON p.id = b.project_id
+                 LEFT JOIN users reporter ON b.reported_by = reporter.id
+                 LEFT JOIN users updater ON b.updated_by = updater.id
+                 $fixerJoin
+                 WHERE b.id = ?
+                 LIMIT 1"
+            );
+            $stmt->execute([$id]);
+            $bug = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$bug) {
+                $this->handleError("Bug not found", 404);
+                return;
+            }
+
+            $actStmt = $this->conn->prepare(
+                "SELECT pa.activity_type, pa.metadata, pa.created_at, pa.user_id, u.username AS actor_name
+                 FROM project_activities pa
+                 LEFT JOIN users u ON u.id = pa.user_id
+                 WHERE CAST(pa.related_id AS CHAR) = CAST(? AS CHAR)
+                   AND pa.activity_type IN (
+                     'bug_created','bug_reported','bug_updated','bug_fixed','bug_status_changed','bug_assigned'
+                   )
+                 ORDER BY pa.created_at ASC
+                 LIMIT 500"
+            );
+            $actStmt->execute([$id]);
+            $activities = $actStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+            $status = (string)($bug['status'] ?? 'pending');
+            $raisedAt = $bug['created_at'] ?? null;
+            $updatedAt = $bug['updated_at'] ?? null;
+            $nowTs = time();
+
+            $events = [];
+            $seq = 0;
+            $raisedTs = $parseTs($raisedAt);
+            if ($raisedTs !== null) {
+                $events[] = [
+                    'status' => 'pending',
+                    'from_status' => null,
+                    'at' => $raisedAt,
+                    'at_ts' => $raisedTs,
+                    'seq' => $seq++,
+                    'source' => 'raised',
+                    'actor_name' => $bug['reporter_name'] ?? null,
+                ];
+            }
+
+            $lastStatus = 'pending';
+            foreach ($activities as $activity) {
+                $meta = [];
+                if (!empty($activity['metadata'])) {
+                    $decodedMeta = json_decode($activity['metadata'], true);
+                    if (is_array($decodedMeta)) {
+                        $meta = $decodedMeta;
+                    }
+                }
+
+                $type = (string)($activity['activity_type'] ?? '');
+                $at = $activity['created_at'] ?? null;
+                $atTs = $parseTs($at);
+                if ($atTs === null) {
+                    continue;
+                }
+
+                $toStatus = null;
+                $fromStatus = null;
+
+                if ($type === 'bug_status_changed' || !empty($meta['from']) || !empty($meta['to'])) {
+                    $fromStatus = isset($meta['from']) ? (string)$meta['from'] : null;
+                    $toStatus = isset($meta['to']) ? (string)$meta['to'] : null;
+                }
+
+                if (!$toStatus && isset($meta['status']) && is_string($meta['status'])) {
+                    $toStatus = (string)$meta['status'];
+                    $fromStatus = $lastStatus;
+                }
+
+                if ($type === 'bug_fixed') {
+                    $toStatus = 'fixed';
+                    $fromStatus = $fromStatus ?: $lastStatus;
+                }
+
+                if ($type === 'bug_created' || $type === 'bug_reported') {
+                    $toStatus = $toStatus ?: 'pending';
+                    $fromStatus = null;
+                }
+
+                if (!$toStatus || $toStatus === $lastStatus) {
+                    continue;
+                }
+
+                $events[] = [
+                    'status' => $toStatus,
+                    'from_status' => $fromStatus ?: $lastStatus,
+                    'at' => $at,
+                    'at_ts' => $atTs,
+                    'seq' => $seq++,
+                    'source' => $type ?: 'activity',
+                    'actor_name' => $activity['actor_name'] ?? null,
+                ];
+                $lastStatus = $toStatus;
+            }
+
+            if ($status && $status !== $lastStatus) {
+                $updatedTs = $parseTs($updatedAt) ?: $raisedTs;
+                if ($updatedTs !== null) {
+                    $events[] = [
+                        'status' => $status,
+                        'from_status' => $lastStatus,
+                        'at' => $updatedAt ?: $raisedAt,
+                        'at_ts' => $updatedTs,
+                        'seq' => $seq++,
+                        'source' => 'inferred',
+                        'actor_name' => $bug['updated_by_name'] ?? ($bug['fixed_by_name'] ?? null),
+                    ];
+                }
+            }
+
+            usort($events, function ($a, $b) {
+                $ta = $a['at_ts'] ?? 0;
+                $tb = $b['at_ts'] ?? 0;
+                if ($ta === $tb) {
+                    return ($a['seq'] ?? 0) <=> ($b['seq'] ?? 0);
+                }
+                return $ta <=> $tb;
+            });
+
+            $deduped = [];
+            foreach ($events as $event) {
+                $prev = end($deduped);
+                if ($prev && ($prev['status'] ?? null) === ($event['status'] ?? null)) {
+                    continue;
+                }
+                $deduped[] = $event;
+            }
+
+            $timeline = [];
+            $count = count($deduped);
+            for ($i = 0; $i < $count; $i++) {
+                $enteredAt = $deduped[$i]['at'] ?? null;
+                $enteredTs = $deduped[$i]['at_ts'] ?? null;
+                $stepStatus = $deduped[$i]['status'] ?? null;
+                if (!$stepStatus || $enteredTs === null) {
+                    continue;
+                }
+
+                $isCurrent = ($i === $count - 1);
+                $exitedAt = null;
+                $exitedTs = null;
+                if (!$isCurrent) {
+                    $exitedAt = $deduped[$i + 1]['at'] ?? null;
+                    $exitedTs = $deduped[$i + 1]['at_ts'] ?? null;
+                } else {
+                    $exitedTs = $nowTs;
+                }
+
+                $duration = ($exitedTs !== null && $enteredTs !== null)
+                    ? max(0, $exitedTs - $enteredTs)
+                    : null;
+
+                $timeline[] = [
+                    'status' => $stepStatus,
+                    'from_status' => $deduped[$i]['from_status'] ?? null,
+                    'entered_at' => $enteredAt,
+                    'exited_at' => $isCurrent ? null : $exitedAt,
+                    'duration_seconds' => $duration,
+                    'duration_label' => $duration !== null ? $formatDuration($duration) : null,
+                    'is_current' => $isCurrent,
+                    'source' => $deduped[$i]['source'] ?? 'activity',
+                    'actor_name' => $deduped[$i]['actor_name'] ?? null,
+                ];
+            }
+
+            if (empty($timeline)) {
+                $timeline[] = [
+                    'status' => $status,
+                    'from_status' => null,
+                    'entered_at' => $raisedAt,
+                    'exited_at' => null,
+                    'duration_seconds' => $raisedTs !== null ? max(0, $nowTs - $raisedTs) : null,
+                    'duration_label' => $raisedTs !== null ? $formatDuration($nowTs - $raisedTs) : null,
+                    'is_current' => true,
+                    'source' => 'current',
+                    'actor_name' => $bug['reporter_name'] ?? null,
+                ];
+            }
+
+            $closed = ['fixed', 'declined', 'rejected'];
+            $isOpen = !in_array(strtolower($status), $closed, true);
+
+            $resolvedAt = null;
+            $resolvedTs = null;
+            $inProgressTs = null;
+            foreach ($timeline as $step) {
+                $s = strtolower((string)($step['status'] ?? ''));
+                $enteredTs = $parseTs($step['entered_at'] ?? null);
+                if ($s === 'in_progress' && $inProgressTs === null) {
+                    $inProgressTs = $enteredTs;
+                }
+                if (in_array($s, $closed, true)) {
+                    $resolvedAt = $step['entered_at'] ?? null;
+                    $resolvedTs = $enteredTs;
+                }
+            }
+
+            $endTs = $resolvedTs ?: ($isOpen ? $nowTs : $parseTs($timeline[count($timeline) - 1]['entered_at'] ?? null));
+            $riseSeconds = ($raisedTs !== null && $endTs !== null) ? max(0, $endTs - $raisedTs) : null;
+            $fixSeconds = null;
+            if ($resolvedTs !== null && strtolower($status) === 'fixed') {
+                $startFix = $inProgressTs ?: $raisedTs;
+                if ($startFix !== null) {
+                    $fixSeconds = max(0, $resolvedTs - $startFix);
+                }
+            }
+
+            $waitSeconds = 0;
+            $activeSeconds = 0;
+            foreach ($timeline as $step) {
+                $s = strtolower((string)($step['status'] ?? ''));
+                $dur = (int)($step['duration_seconds'] ?? 0);
+                if (in_array($s, $closed, true) && !empty($step['is_current'])) {
+                    continue;
+                }
+                if ($s === 'pending') $waitSeconds += $dur;
+                if ($s === 'in_progress') $activeSeconds += $dur;
+            }
+
+            $waitShare = ($riseSeconds && $riseSeconds > 0) ? round(($waitSeconds / $riseSeconds) * 100, 1) : null;
+            $activeShare = ($riseSeconds && $riseSeconds > 0) ? round(($activeSeconds / $riseSeconds) * 100, 1) : null;
+            $fixToCycle = ($riseSeconds && $riseSeconds > 0 && $fixSeconds !== null)
+                ? round(($fixSeconds / $riseSeconds) * 100, 1)
+                : null;
+
+            $ageSeconds = $raisedTs !== null ? max(0, $nowTs - $raisedTs) : null;
+
+            $this->handleSuccess("Bug lifecycle retrieved successfully", [
+                'bug_id' => $bug['id'],
+                'title' => $bug['title'],
+                'status' => $status,
+                'priority' => $bug['priority'] ?? null,
+                'bug_level' => $bug['bug_level'] ?? null,
+                'already_raised' => isset($bug['already_raised']) ? (int)$bug['already_raised'] : null,
+                'project_id' => $bug['project_id'] ?? null,
+                'project_name' => $bug['project_name'] ?? null,
+                'raised_at' => $raisedAt,
+                'resolved_at' => $resolvedAt,
+                'updated_at' => $updatedAt,
+                'is_open' => $isOpen,
+                'rise_duration_seconds' => $riseSeconds,
+                'rise_duration_label' => $riseSeconds !== null ? $formatDuration($riseSeconds) : null,
+                'fix_duration_seconds' => $fixSeconds,
+                'fix_duration_label' => $fixSeconds !== null ? $formatDuration($fixSeconds) : null,
+                'age_seconds' => $ageSeconds,
+                'age_label' => $ageSeconds !== null ? $formatDuration($ageSeconds) : null,
+                'wait_share_percent' => $waitShare,
+                'active_share_percent' => $activeShare,
+                'fix_to_cycle_percent' => $fixToCycle,
+                'status_timeline' => $timeline,
+                'activity_count' => count($activities),
+                'actors' => [
+                    'reporter_name' => $bug['reporter_name'] ?? null,
+                    'updated_by_name' => $bug['updated_by_name'] ?? null,
+                    'fixed_by_name' => $bug['fixed_by_name'] ?? null,
+                ],
+            ]);
+        } catch (Exception $e) {
+            error_log("BugController::getLifecycle error: " . $e->getMessage());
+            $this->handleError("Failed to retrieve bug lifecycle: " . $e->getMessage(), 500);
+        }
+    }
     
     public function create() {
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
