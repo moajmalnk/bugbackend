@@ -1201,6 +1201,11 @@ class UserWorkStatsController extends BaseAPI {
 
             $lookbackMonths = isset($_GET['months']) ? max(1, min(12, (int)$_GET['months'])) : 3;
             $listLimit = isset($_GET['limit']) ? max(3, min(10, (int)$_GET['limit'])) : 5;
+            $activeOnlyRequested = isset($_GET['active_only']) && in_array(
+                strtolower((string)$_GET['active_only']),
+                ['1', 'true', 'yes'],
+                true
+            );
 
             $istTimezone = new DateTimeZone('Asia/Kolkata');
             $currentPeriod = $this->getCalendarMonthPeriodAtOffset(0, $istTimezone);
@@ -1242,6 +1247,14 @@ class UserWorkStatsController extends BaseAPI {
                 throw new Exception('Failed users analytics user query: ' . ((string)($err[2] ?? 'unknown error')));
             }
             $allUsers = $usersStmt->fetchAll(PDO::FETCH_ASSOC);
+            $totalUsersBeforeFilter = count($allUsers);
+            $activeOnlyApplied = false;
+            if ($activeOnlyRequested && $hasAccountActiveCol) {
+                $activeOnlyApplied = true;
+                $allUsers = array_values(array_filter($allUsers, function ($user) {
+                    return (int)($user['account_active'] ?? 1) !== 0;
+                }));
+            }
 
             $currentBuckets = [];
             $lookbackBuckets = [];
@@ -1396,6 +1409,12 @@ class UserWorkStatsController extends BaseAPI {
                 ],
                 'lookback_months' => $lookbackMonths,
                 'team_summary' => $this->summarizeRoleUsers($allRankedUsers),
+                'filters' => [
+                    'active_only_requested' => $activeOnlyRequested,
+                    'active_only_applied' => $activeOnlyApplied,
+                    'total_users_before_filter' => $totalUsersBeforeFilter,
+                    'total_users_after_filter' => count($allRankedUsers),
+                ],
                 'roles' => $rolesPayload,
                 'last_updated' => date('Y-m-d H:i:s'),
             ];
