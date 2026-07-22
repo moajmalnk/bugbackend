@@ -986,6 +986,394 @@ class UserWorkStatsController extends BaseAPI {
             $this->sendJsonResponse(500, 'Failed to retrieve team period details');
         }
     }
+
+    private function parseCheckInMinutes($value) {
+        if ($value === null || $value === '') {
+            return null;
+        }
+        $text = trim((string)$value);
+        if ($text === '') {
+            return null;
+        }
+        if (preg_match('/(\d{1,2}):(\d{2})(?::(\d{2}))?/', $text, $matches)) {
+            $h = (int)$matches[1];
+            $m = (int)$matches[2];
+            return ($h * 60) + $m;
+        }
+        try {
+            $dt = new DateTime($text);
+            return ((int)$dt->format('H') * 60) + (int)$dt->format('i');
+        } catch (Throwable $e) {
+            return null;
+        }
+    }
+
+    private function formatMinutesAsTime($minutes) {
+        if ($minutes === null) {
+            return null;
+        }
+        $minutes = max(0, (int)$minutes);
+        $h = intdiv($minutes, 60) % 24;
+        $m = $minutes % 60;
+        $ampm = $h >= 12 ? 'PM' : 'AM';
+        $displayHour = $h % 12;
+        if ($displayHour === 0) {
+            $displayHour = 12;
+        }
+        return sprintf('%d:%02d %s', $displayHour, $m, $ampm);
+    }
+
+    private function emptyUserAnalyticsRow(array $user) {
+        return [
+            'user_id' => (string)$user['id'],
+            'username' => (string)($user['username'] ?? ''),
+            'name' => (string)($user['name'] ?? $user['username'] ?? ''),
+            'role' => (string)($user['role'] ?? ''),
+            'current_period' => [
+                'days' => 0,
+                'hours' => 0.0,
+                'avg_hours_per_day' => 0.0,
+                'tasks_completed' => 0,
+                'tasks_pending' => 0,
+                'tasks_ongoing' => 0,
+                'overtime_hours' => 0.0,
+                'break_minutes' => 0,
+                'avg_check_in_minutes' => null,
+                'avg_check_in_label' => null,
+                'bugs_reported' => 0,
+                'bugs_fixed' => 0,
+            ],
+            'lookback' => [
+                'months' => 0,
+                'avg_hours_per_day' => 0.0,
+                'avg_days_per_month' => 0.0,
+                'avg_tasks_completed_per_month' => 0.0,
+                'avg_overtime_hours_per_month' => 0.0,
+            ],
+        ];
+    }
+
+    private function accumulateSubmissionMetrics(array &$bucket, array $submission, $includeCheckIn = true) {
+        $date = (string)($submission['submission_date'] ?? '');
+        if ($date !== '') {
+            $bucket['dates'][$date] = true;
+        }
+
+        $bucket['hours'] += (float)($submission['hours_today'] ?? 0);
+        $bucket['tasks_completed'] += count($this->splitTaskLines($submission['completed_tasks'] ?? ''));
+        $bucket['tasks_pending'] += count($this->splitTaskLines($submission['pending_tasks'] ?? ''));
+        $bucket['tasks_ongoing'] += count($this->splitTaskLines($submission['ongoing_tasks'] ?? ''));
+        $bucket['overtime_hours'] += br_effective_overtime_hours_for_stats($submission);
+
+        $breakEntries = $this->parseBreakEntries($submission['break_entries'] ?? null, $submission['notes'] ?? '');
+        $breakMinutes = (int)($submission['total_break_minutes'] ?? 0);
+        if ($breakMinutes <= 0) {
+            $breakMinutes = $this->getBreakMinutesFromEntries($breakEntries);
+        }
+        $bucket['break_minutes'] += $breakMinutes;
+
+        if ($includeCheckIn) {
+            $checkIn = $submission['check_in_time'] ?? $submission['start_time'] ?? null;
+            $minutes = $this->parseCheckInMinutes($checkIn);
+            if ($minutes !== null) {
+                $bucket['check_in_minutes'][] = $minutes;
+            }
+        }
+    }
+
+    private function finalizeAnalyticsBucket(array $bucket, $monthDivisor = 1) {
+        $days = count($bucket['dates'] ?? []);
+        $hours = round((float)($bucket['hours'] ?? 0), 2);
+        $avgHoursPerDay = $days > 0 ? round($hours / $days, 2) : 0.0;
+        $checkIns = $bucket['check_in_minutes'] ?? [];
+        $avgCheckIn = !empty($checkIns)
+            ? (int)round(array_sum($checkIns) / count($checkIns))
+            : null;
+
+        $months = max(1, (int)$monthDivisor);
+
+        return [
+            'days' => $days,
+            'hours' => $hours,
+            'avg_hours_per_day' => $avgHoursPerDay,
+            'tasks_completed' => (int)($bucket['tasks_completed'] ?? 0),
+            'tasks_pending' => (int)($bucket['tasks_pending'] ?? 0),
+            'tasks_ongoing' => (int)($bucket['tasks_ongoing'] ?? 0),
+            'overtime_hours' => round((float)($bucket['overtime_hours'] ?? 0), 2),
+            'break_minutes' => (int)($bucket['break_minutes'] ?? 0),
+            'avg_check_in_minutes' => $avgCheckIn,
+            'avg_check_in_label' => $this->formatMinutesAsTime($avgCheckIn),
+            'avg_days_per_month' => round($days / $months, 1),
+            'avg_tasks_completed_per_month' => round(((int)($bucket['tasks_completed'] ?? 0)) / $months, 1),
+            'avg_overtime_hours_per_month' => round(((float)($bucket['overtime_hours'] ?? 0)) / $months, 2),
+        ];
+    }
+
+    private function buildRoleHighLowLists(array $users, $limit = 5) {
+        $metrics = [
+            'avg_hours_per_day' => 'current_period.avg_hours_per_day',
+            'tasks_completed' => 'current_period.tasks_completed',
+            'work_days' => 'current_period.days',
+            'overtime_hours' => 'current_period.overtime_hours',
+        ];
+
+        $result = ['high' => [], 'low' => []];
+        foreach ($metrics as $key => $path) {
+            $parts = explode('.', $path);
+            $sorted = $users;
+            usort($sorted, function ($a, $b) use ($parts) {
+                $av = $a;
+                $bv = $b;
+                foreach ($parts as $part) {
+                    $av = $av[$part] ?? 0;
+                    $bv = $bv[$part] ?? 0;
+                }
+                if ($av === $bv) {
+                    return strcmp((string)($a['username'] ?? ''), (string)($b['username'] ?? ''));
+                }
+                return $bv <=> $av;
+            });
+
+            $active = array_values(array_filter($sorted, function ($row) use ($parts) {
+                $value = $row;
+                foreach ($parts as $part) {
+                    $value = $value[$part] ?? 0;
+                }
+                return (float)$value > 0;
+            }));
+
+            $result['high'][$key] = array_slice($active, 0, $limit);
+            $result['low'][$key] = array_slice(array_reverse($active), 0, $limit);
+        }
+
+        return $result;
+    }
+
+    private function summarizeRoleUsers(array $users) {
+        if (empty($users)) {
+            return [
+                'user_count' => 0,
+                'avg_hours_per_day' => 0.0,
+                'avg_work_days' => 0.0,
+                'avg_tasks_completed' => 0.0,
+                'avg_overtime_hours' => 0.0,
+                'total_hours' => 0.0,
+            ];
+        }
+
+        $count = count($users);
+        $sumHoursPerDay = 0.0;
+        $sumDays = 0.0;
+        $sumTasks = 0.0;
+        $sumOvertime = 0.0;
+        $sumHours = 0.0;
+
+        foreach ($users as $user) {
+            $current = $user['current_period'] ?? [];
+            $sumHoursPerDay += (float)($current['avg_hours_per_day'] ?? 0);
+            $sumDays += (float)($current['days'] ?? 0);
+            $sumTasks += (float)($current['tasks_completed'] ?? 0);
+            $sumOvertime += (float)($current['overtime_hours'] ?? 0);
+            $sumHours += (float)($current['hours'] ?? 0);
+        }
+
+        return [
+            'user_count' => $count,
+            'avg_hours_per_day' => round($sumHoursPerDay / $count, 2),
+            'avg_work_days' => round($sumDays / $count, 1),
+            'avg_tasks_completed' => round($sumTasks / $count, 1),
+            'avg_overtime_hours' => round($sumOvertime / $count, 2),
+            'total_hours' => round($sumHours, 2),
+        ];
+    }
+
+    public function getUsersAnalytics() {
+        try {
+            $decoded = $this->validateToken();
+            if (!$decoded || !isset($decoded->user_id)) {
+                $this->sendJsonResponse(401, 'Invalid token or user_id missing');
+                return;
+            }
+
+            $this->assertCanViewTeamPeriodDetails($decoded);
+            $this->ensureWorkSubmissionOtApprovalColumns();
+
+            $lookbackMonths = isset($_GET['months']) ? max(1, min(12, (int)$_GET['months'])) : 3;
+            $listLimit = isset($_GET['limit']) ? max(3, min(10, (int)$_GET['limit'])) : 5;
+
+            $istTimezone = new DateTimeZone('Asia/Kolkata');
+            $currentPeriod = $this->getCalendarMonthPeriodAtOffset(0, $istTimezone);
+            $periodStart = $currentPeriod['start'];
+            $periodEnd = $currentPeriod['end'];
+            $lookbackPeriod = $this->getCalendarMonthPeriodAtOffset($lookbackMonths - 1, $istTimezone);
+            $lookbackStart = $lookbackPeriod['start'];
+
+            $usersStmt = $this->conn->query("
+                SELECT id, username, COALESCE(NULLIF(name, ''), username) AS name, role
+                FROM users
+                ORDER BY username ASC
+            ");
+            $allUsers = $usersStmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $currentBuckets = [];
+            $lookbackBuckets = [];
+            foreach ($allUsers as $user) {
+                $uid = (string)$user['id'];
+                $emptyBucket = [
+                    'dates' => [],
+                    'hours' => 0.0,
+                    'tasks_completed' => 0,
+                    'tasks_pending' => 0,
+                    'tasks_ongoing' => 0,
+                    'overtime_hours' => 0.0,
+                    'break_minutes' => 0,
+                    'check_in_minutes' => [],
+                ];
+                $currentBuckets[$uid] = $emptyBucket;
+                $lookbackBuckets[$uid] = [
+                    'dates' => [],
+                    'hours' => 0.0,
+                    'tasks_completed' => 0,
+                    'tasks_pending' => 0,
+                    'tasks_ongoing' => 0,
+                    'overtime_hours' => 0.0,
+                    'break_minutes' => 0,
+                    'check_in_minutes' => [],
+                ];
+            }
+
+            $submissionStmt = $this->conn->prepare("
+                SELECT ws.*, u.id AS user_ref_id
+                FROM work_submissions ws
+                INNER JOIN users u ON u.id = ws.user_id
+                WHERE ws.submission_date >= ?
+                AND ws.submission_date <= ?
+            ");
+            $submissionStmt->execute([$lookbackStart, $periodEnd]);
+            $submissions = $submissionStmt->fetchAll(PDO::FETCH_ASSOC);
+
+            foreach ($submissions as $submission) {
+                $uid = (string)($submission['user_id'] ?? $submission['user_ref_id'] ?? '');
+                if ($uid === '' || !isset($lookbackBuckets[$uid])) {
+                    continue;
+                }
+
+                $date = (string)($submission['submission_date'] ?? '');
+                $this->accumulateSubmissionMetrics($lookbackBuckets[$uid], $submission, true);
+                if ($date >= $periodStart && $date <= $periodEnd) {
+                    $this->accumulateSubmissionMetrics($currentBuckets[$uid], $submission, true);
+                }
+            }
+
+            $bugsReported = [];
+            $bugsFixed = [];
+            try {
+                $bugStmt = $this->conn->prepare("
+                    SELECT reported_by AS user_id, COUNT(*) AS total
+                    FROM bugs
+                    WHERE DATE(created_at) >= ? AND DATE(created_at) <= ?
+                    GROUP BY reported_by
+                ");
+                $bugStmt->execute([$periodStart, $periodEnd]);
+                foreach ($bugStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                    $bugsReported[(string)$row['user_id']] = (int)$row['total'];
+                }
+
+                $fixStmt = $this->conn->prepare("
+                    SELECT updated_by AS user_id, COUNT(*) AS total
+                    FROM bugs
+                    WHERE status = 'fixed'
+                    AND DATE(updated_at) >= ? AND DATE(updated_at) <= ?
+                    GROUP BY updated_by
+                ");
+                $fixStmt->execute([$periodStart, $periodEnd]);
+                foreach ($fixStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                    $bugsFixed[(string)$row['user_id']] = (int)$row['total'];
+                }
+            } catch (Exception $e) {
+                error_log('UserWorkStatsController::getUsersAnalytics bug counts error: ' . $e->getMessage());
+            }
+
+            $roleGroups = [
+                'admin' => [],
+                'developer' => [],
+                'tester' => [],
+            ];
+
+            foreach ($allUsers as $user) {
+                $role = strtolower((string)($user['role'] ?? ''));
+                if (!isset($roleGroups[$role])) {
+                    continue;
+                }
+
+                $uid = (string)$user['id'];
+                $row = $this->emptyUserAnalyticsRow($user);
+                $current = $this->finalizeAnalyticsBucket($currentBuckets[$uid] ?? [], 1);
+                $lookback = $this->finalizeAnalyticsBucket($lookbackBuckets[$uid] ?? [], $lookbackMonths);
+
+                $row['current_period'] = [
+                    'days' => $current['days'],
+                    'hours' => $current['hours'],
+                    'avg_hours_per_day' => $current['avg_hours_per_day'],
+                    'tasks_completed' => $current['tasks_completed'],
+                    'tasks_pending' => $current['tasks_pending'],
+                    'tasks_ongoing' => $current['tasks_ongoing'],
+                    'overtime_hours' => $current['overtime_hours'],
+                    'break_minutes' => $current['break_minutes'],
+                    'avg_check_in_minutes' => $current['avg_check_in_minutes'],
+                    'avg_check_in_label' => $current['avg_check_in_label'],
+                    'bugs_reported' => (int)($bugsReported[$uid] ?? 0),
+                    'bugs_fixed' => (int)($bugsFixed[$uid] ?? 0),
+                ];
+                $row['lookback'] = [
+                    'months' => $lookbackMonths,
+                    'avg_hours_per_day' => $lookback['avg_hours_per_day'],
+                    'avg_days_per_month' => $lookback['avg_days_per_month'],
+                    'avg_tasks_completed_per_month' => $lookback['avg_tasks_completed_per_month'],
+                    'avg_overtime_hours_per_month' => $lookback['avg_overtime_hours_per_month'],
+                ];
+
+                $roleGroups[$role][] = $row;
+            }
+
+            $rolesPayload = [];
+            foreach ($roleGroups as $role => $users) {
+                usort($users, function ($a, $b) {
+                    $cmp = ($b['current_period']['avg_hours_per_day'] ?? 0) <=> ($a['current_period']['avg_hours_per_day'] ?? 0);
+                    if ($cmp !== 0) {
+                        return $cmp;
+                    }
+                    return strcmp((string)$a['username'], (string)$b['username']);
+                });
+
+                $rolesPayload[$role] = [
+                    'summary' => $this->summarizeRoleUsers($users),
+                    'users' => $users,
+                    'rankings' => $this->buildRoleHighLowLists($users, $listLimit),
+                ];
+            }
+
+            $allRankedUsers = array_merge($roleGroups['admin'], $roleGroups['developer'], $roleGroups['tester']);
+
+            $payload = [
+                'period' => [
+                    'start' => $periodStart,
+                    'end' => $periodEnd,
+                    'name' => $currentPeriod['name'],
+                    'range' => $currentPeriod['range'],
+                ],
+                'lookback_months' => $lookbackMonths,
+                'team_summary' => $this->summarizeRoleUsers($allRankedUsers),
+                'roles' => $rolesPayload,
+                'last_updated' => date('Y-m-d H:i:s'),
+            ];
+
+            $this->sendJsonResponse(200, 'User analytics retrieved successfully', $payload);
+        } catch (Exception $e) {
+            error_log('UserWorkStatsController::getUsersAnalytics error: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Failed to retrieve user analytics');
+        }
+    }
 }
 
 // Handle CORS preflight
@@ -1005,8 +1393,14 @@ $userId = $_GET['id'] ?? null;
 $periodStart = $_GET['period_start'] ?? null;
 $periodEnd = $_GET['period_end'] ?? null;
 $team = isset($_GET['team']) && in_array(strtolower((string)$_GET['team']), ['1', 'true', 'yes'], true);
+$analytics = isset($_GET['analytics']) && in_array(strtolower((string)$_GET['analytics']), ['1', 'true', 'yes'], true);
 
 $controller = new UserWorkStatsController();
+
+if ($analytics) {
+    $controller->getUsersAnalytics();
+    exit;
+}
 
 // If period_start and period_end are provided, get period details
 if ($periodStart && $periodEnd) {
