@@ -1208,11 +1208,34 @@ class UserWorkStatsController extends BaseAPI {
             $lookbackPeriod = $this->getCalendarMonthPeriodAtOffset($lookbackMonths - 1, $istTimezone);
             $lookbackStart = $lookbackPeriod['start'];
 
+            $userCols = [];
+            try {
+                $colsRes = $this->conn->query("SHOW COLUMNS FROM users");
+                if ($colsRes) {
+                    foreach ($colsRes->fetchAll(PDO::FETCH_ASSOC) as $colRow) {
+                        $field = (string)($colRow['Field'] ?? '');
+                        if ($field !== '') {
+                            $userCols[$field] = true;
+                        }
+                    }
+                }
+            } catch (Exception $e) {
+                // fallback handled below
+            }
+            $hasNameCol = isset($userCols['name']);
+            $nameExpr = $hasNameCol
+                ? "COALESCE(NULLIF(name, ''), username) AS name"
+                : "username AS name";
+
             $usersStmt = $this->conn->query("
-                SELECT id, username, COALESCE(NULLIF(name, ''), username) AS name, role
+                SELECT id, username, {$nameExpr}, role
                 FROM users
                 ORDER BY username ASC
             ");
+            if (!$usersStmt) {
+                $err = $this->conn->errorInfo();
+                throw new Exception('Failed users analytics user query: ' . ((string)($err[2] ?? 'unknown error')));
+            }
             $allUsers = $usersStmt->fetchAll(PDO::FETCH_ASSOC);
 
             $currentBuckets = [];
@@ -1249,6 +1272,10 @@ class UserWorkStatsController extends BaseAPI {
                 WHERE ws.submission_date >= ?
                 AND ws.submission_date <= ?
             ");
+            if (!$submissionStmt) {
+                $err = $this->conn->errorInfo();
+                throw new Exception('Failed users analytics submission query: ' . ((string)($err[2] ?? 'unknown error')));
+            }
             $submissionStmt->execute([$lookbackStart, $periodEnd]);
             $submissions = $submissionStmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -1369,7 +1396,7 @@ class UserWorkStatsController extends BaseAPI {
             ];
 
             $this->sendJsonResponse(200, 'User analytics retrieved successfully', $payload);
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             error_log('UserWorkStatsController::getUsersAnalytics error: ' . $e->getMessage());
             $this->sendJsonResponse(500, 'Failed to retrieve user analytics');
         }
