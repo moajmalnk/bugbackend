@@ -1213,6 +1213,12 @@ class UpdateController extends BaseAPI
                 return;
             }
             $userId = $decoded->user_id;
+            $userRole = strtolower(trim((string) ($decoded->role ?? '')));
+
+            if (!in_array($userRole, ['developer', 'tester'], true)) {
+                $this->sendJsonResponse(403, 'Only developers and testers can mark updates as completed');
+                return;
+            }
 
             if (empty($id)) {
                 $this->sendJsonResponse(400, "Update ID is required");
@@ -1265,7 +1271,10 @@ class UpdateController extends BaseAPI
             $testedBy = isset($data['completion_tested_by']) ? trim((string) $data['completion_tested_by']) : '';
             $testedBy = $testedBy === '' ? null : substr($testedBy, 0, 255);
             $notes = isset($data['completion_notes']) ? trim((string) $data['completion_notes']) : '';
-            $notes = $notes === '' ? null : $notes;
+            if ($notes === '') {
+                $this->sendJsonResponse(400, 'Completion notes are required');
+                return;
+            }
 
             // Auto-migrate: Add 'completed' to status ENUM if it doesn't exist
             try {
