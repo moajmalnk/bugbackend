@@ -1527,8 +1527,9 @@ class UserController extends BaseAPI {
     }
 
     /**
-     * Profile portfolio: assigned projects with bugs/fixes/updates and status-duration timelines.
-     * Accessible by the user themselves or by an admin.
+     * Profile portfolio: projects with bugs/fixes/updates and status-duration timelines.
+     * Developers/testers see assigned projects; admins see all non-archived projects.
+     * Accessible by the user themselves or by an admin viewer.
      */
     public function getProfilePortfolio($userId) {
         try {
@@ -1804,7 +1805,12 @@ class UserController extends BaseAPI {
                 ];
             };
 
-            // ---- Projects (membership + created-by) ----
+            // ---- Projects ----
+            // Developers/testers: assigned via project_members.
+            // Admins: implicit access to all projects (not stored in project_members).
+            $targetRole = strtolower((string)($user['role'] ?? ''));
+            $isTargetAdmin = $targetRole === 'admin';
+
             $projCols = [];
             $projColRes = $this->conn->query("SHOW COLUMNS FROM projects");
             if ($projColRes) {
@@ -1819,15 +1825,30 @@ class UserController extends BaseAPI {
             if ($hasProjectStatus) $projectSelect .= ", p.status";
             if ($hasIsActive) $projectSelect .= ", p.is_active";
 
-            // Only assigned projects (same source as Assign Projects / get_user_projects.php)
-            $projectsStmt = $this->conn->prepare(
-                "SELECT $projectSelect, pm.role AS member_role, pm.joined_at
-                 FROM project_members pm
-                 INNER JOIN projects p ON p.id = pm.project_id
-                 WHERE pm.user_id = ?
-                 ORDER BY pm.joined_at DESC, p.name ASC"
-            );
-            $projectsStmt->execute([$userId]);
+            if ($isTargetAdmin) {
+                $archivedWhere = $hasProjectStatus
+                    ? " WHERE (p.status IS NULL OR p.status != 'archived')"
+                    : "";
+                $projectsStmt = $this->conn->prepare(
+                    "SELECT $projectSelect, pm.role AS member_role, pm.joined_at
+                     FROM projects p
+                     LEFT JOIN project_members pm
+                       ON pm.project_id = p.id AND pm.user_id = ?
+                     $archivedWhere
+                     ORDER BY COALESCE(pm.joined_at, p.created_at) DESC, p.name ASC"
+                );
+                $projectsStmt->execute([$userId]);
+            } else {
+                // Assigned projects only (same source as Assign Projects / get_user_projects.php)
+                $projectsStmt = $this->conn->prepare(
+                    "SELECT $projectSelect, pm.role AS member_role, pm.joined_at
+                     FROM project_members pm
+                     INNER JOIN projects p ON p.id = pm.project_id
+                     WHERE pm.user_id = ?
+                     ORDER BY pm.joined_at DESC, p.name ASC"
+                );
+                $projectsStmt->execute([$userId]);
+            }
             $projectRows = $projectsStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
             $projectsById = [];
@@ -1836,14 +1857,15 @@ class UserController extends BaseAPI {
                 if (isset($projectsById[$pid])) {
                     continue;
                 }
+                $hasMembership = !empty($row['member_role']) || !empty($row['joined_at']);
                 $projectsById[$pid] = [
                     'id' => $pid,
                     'name' => $row['name'],
                     'status' => $row['status'] ?? (($hasIsActive && isset($row['is_active'])) ? ((int)$row['is_active'] === 1 ? 'active' : 'inactive') : null),
                     'is_active' => isset($row['is_active']) ? (int)$row['is_active'] : null,
-                    'member_role' => $row['member_role'] ?? null,
-                    'assigned_at' => $row['joined_at'] ?? null,
-                    'is_member' => true,
+                    'member_role' => $row['member_role'] ?? ($isTargetAdmin ? 'admin' : null),
+                    'assigned_at' => $row['joined_at'] ?? ($isTargetAdmin ? ($row['project_created_at'] ?? null) : null),
+                    'is_member' => $isTargetAdmin ? true : $hasMembership,
                     'is_creator' => (string)($row['created_by'] ?? '') === (string)$userId,
                     'counts' => ['bugs' => 0, 'fixes' => 0, 'updates' => 0],
                     'bugs' => [],
