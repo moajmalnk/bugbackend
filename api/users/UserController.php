@@ -2134,15 +2134,31 @@ class UserController extends BaseAPI {
                 $totalUpdates++;
             }
 
-            // Sort projects: assigned first, then by assigned_at desc
+            // Sort: most bugs first, then most activity, then newest assignment
             $projects = array_values($projectsById);
             usort($projects, function ($a, $b) {
+                $bugsA = (int)($a['counts']['bugs'] ?? 0);
+                $bugsB = (int)($b['counts']['bugs'] ?? 0);
+                if ($bugsA !== $bugsB) {
+                    return $bugsB <=> $bugsA;
+                }
+
+                $activityA = $bugsA
+                    + (int)($a['counts']['fixes'] ?? 0)
+                    + (int)($a['counts']['updates'] ?? 0);
+                $activityB = $bugsB
+                    + (int)($b['counts']['fixes'] ?? 0)
+                    + (int)($b['counts']['updates'] ?? 0);
+                if ($activityA !== $activityB) {
+                    return $activityB <=> $activityA;
+                }
+
                 $ta = !empty($a['assigned_at']) ? strtotime($a['assigned_at']) : 0;
                 $tb = !empty($b['assigned_at']) ? strtotime($b['assigned_at']) : 0;
-                if ($ta === $tb) {
-                    return strcasecmp($a['name'] ?? '', $b['name'] ?? '');
+                if ($ta !== $tb) {
+                    return $tb <=> $ta;
                 }
-                return $tb <=> $ta;
+                return strcasecmp($a['name'] ?? '', $b['name'] ?? '');
             });
 
             $this->sendJsonResponse(200, "Profile portfolio retrieved successfully", [
