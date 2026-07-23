@@ -195,6 +195,77 @@ class UserWorkStatsController extends BaseAPI {
         ];
     }
 
+    /** Calendar month for a YYYY-MM key. */
+    private function getCalendarMonthPeriodForKey(string $ym, DateTimeZone $istTimezone): array {
+        $periodStartDate = new DateTime($ym . '-01', $istTimezone);
+        $periodEndDate = clone $periodStartDate;
+        $periodEndDate->modify('last day of this month');
+
+        return [
+            'start' => $periodStartDate->format('Y-m-d'),
+            'end' => $periodEndDate->format('Y-m-d'),
+            'name' => $this->formatCalendarMonthName($periodStartDate, $periodEndDate),
+            'range' => $this->formatCalendarMonthRange($periodStartDate, $periodEndDate),
+        ];
+    }
+
+    /**
+     * Resolve analytics primary period + lookback from month / months query params.
+     * - month=YYYY-MM → that calendar month as primary
+     * - month=all → primary spans the full lookback window (default 12 months)
+     * - omitted → current calendar month (existing behavior)
+     */
+    private function resolveAnalyticsPeriods(DateTimeZone $istTimezone): array {
+        $monthParam = isset($_GET['month']) ? trim((string)$_GET['month']) : '';
+        $monthsRequested = isset($_GET['months']);
+        $lookbackMonths = $monthsRequested
+            ? max(1, min(12, (int)$_GET['months']))
+            : ($monthParam === 'all' ? 12 : 3);
+
+        if ($monthParam === 'all') {
+            $endPeriod = $this->getCalendarMonthPeriodAtOffset(0, $istTimezone);
+            $startPeriod = $this->getCalendarMonthPeriodAtOffset($lookbackMonths - 1, $istTimezone);
+            $startDate = new DateTime($startPeriod['start'], $istTimezone);
+            $endDate = new DateTime($endPeriod['end'], $istTimezone);
+            $currentPeriod = [
+                'start' => $startPeriod['start'],
+                'end' => $endPeriod['end'],
+                'name' => 'All months',
+                'range' => $this->formatCalendarMonthRange($startDate, $endDate),
+            ];
+            return [
+                'current' => $currentPeriod,
+                'lookback_months' => $lookbackMonths,
+                'lookback_start' => $startPeriod['start'],
+                'month' => 'all',
+            ];
+        }
+
+        if (preg_match('/^\d{4}-\d{2}$/', $monthParam)) {
+            $currentPeriod = $this->getCalendarMonthPeriodForKey($monthParam, $istTimezone);
+            $anchor = new DateTime($monthParam . '-01', $istTimezone);
+            $lookbackStartDate = clone $anchor;
+            if ($lookbackMonths > 1) {
+                $lookbackStartDate->modify('-' . ($lookbackMonths - 1) . ' months');
+            }
+            return [
+                'current' => $currentPeriod,
+                'lookback_months' => $lookbackMonths,
+                'lookback_start' => $lookbackStartDate->format('Y-m-d'),
+                'month' => $monthParam,
+            ];
+        }
+
+        $currentPeriod = $this->getCalendarMonthPeriodAtOffset(0, $istTimezone);
+        $lookbackPeriod = $this->getCalendarMonthPeriodAtOffset($lookbackMonths - 1, $istTimezone);
+        return [
+            'current' => $currentPeriod,
+            'lookback_months' => $lookbackMonths,
+            'lookback_start' => $lookbackPeriod['start'],
+            'month' => $currentPeriod['start'] ? substr($currentPeriod['start'], 0, 7) : '',
+        ];
+    }
+
     private function formatCalendarMonthName(DateTime $start, DateTime $end): string {
         if ($start->format('Y-m') === $end->format('Y-m')) {
             return $start->format('F Y');
@@ -1199,7 +1270,9 @@ class UserWorkStatsController extends BaseAPI {
             $this->assertCanViewTeamPeriodDetails($decoded);
             $this->ensureWorkSubmissionOtApprovalColumns();
 
-            $lookbackMonths = isset($_GET['months']) ? max(1, min(12, (int)$_GET['months'])) : 3;
+            $istTimezone = new DateTimeZone('Asia/Kolkata');
+            $resolved = $this->resolveAnalyticsPeriods($istTimezone);
+            $lookbackMonths = $resolved['lookback_months'];
             $listLimit = isset($_GET['limit']) ? max(3, min(10, (int)$_GET['limit'])) : 5;
             $activeOnlyRequested = isset($_GET['active_only']) && in_array(
                 strtolower((string)$_GET['active_only']),
@@ -1207,12 +1280,11 @@ class UserWorkStatsController extends BaseAPI {
                 true
             );
 
-            $istTimezone = new DateTimeZone('Asia/Kolkata');
-            $currentPeriod = $this->getCalendarMonthPeriodAtOffset(0, $istTimezone);
+            $currentPeriod = $resolved['current'];
             $periodStart = $currentPeriod['start'];
             $periodEnd = $currentPeriod['end'];
-            $lookbackPeriod = $this->getCalendarMonthPeriodAtOffset($lookbackMonths - 1, $istTimezone);
-            $lookbackStart = $lookbackPeriod['start'];
+            $lookbackStart = $resolved['lookback_start'];
+            $selectedMonth = $resolved['month'];
 
             $userCols = [];
             try {
@@ -1406,6 +1478,7 @@ class UserWorkStatsController extends BaseAPI {
                     'end' => $periodEnd,
                     'name' => $currentPeriod['name'],
                     'range' => $currentPeriod['range'],
+                    'month' => $selectedMonth,
                 ],
                 'lookback_months' => $lookbackMonths,
                 'team_summary' => $this->summarizeRoleUsers($allRankedUsers),
@@ -1414,6 +1487,7 @@ class UserWorkStatsController extends BaseAPI {
                     'active_only_applied' => $activeOnlyApplied,
                     'total_users_before_filter' => $totalUsersBeforeFilter,
                     'total_users_after_filter' => count($allRankedUsers),
+                    'month' => $selectedMonth,
                 ],
                 'roles' => $rolesPayload,
                 'last_updated' => date('Y-m-d H:i:s'),
