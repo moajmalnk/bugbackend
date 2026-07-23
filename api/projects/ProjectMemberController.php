@@ -63,11 +63,11 @@ class ProjectMemberController extends BaseAPI {
             }
             
             // Check if user is a member of the project
-            $query = "SELECT 1 FROM project_members WHERE user_id = ? AND project_id = ?";
+            $query = "SELECT 1 FROM project_members WHERE user_id = ? AND project_id = ? LIMIT 1";
             $stmt = $this->conn->prepare($query);
             $stmt->execute([$userId, $projectId]);
             
-            return $stmt->rowCount() > 0;
+            return (bool) $stmt->fetch(PDO::FETCH_ASSOC);
         } catch (Exception $e) {
             error_log("Error checking project access: " . $e->getMessage());
             return false;

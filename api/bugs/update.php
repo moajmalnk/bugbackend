@@ -228,19 +228,23 @@ try {
     // Developers can update status and fix_description together (common in FixBug page)
     $allowedDeveloperFields = ['status', 'fix_description', 'fixed_by'];
     $allowedTesterRetestFields = ['tester_retested', 'tester_issue_fixed', 'bug_level', 'tester_verification_notes'];
-    $hasStatusChange = in_array('status', $fieldsBeingChanged);
+    $hasStatusChange = in_array('status', $fieldsBeingChanged, true);
     
     // Check if all changed fields are in the allowed list for developers
     // array_diff returns fields in $fieldsBeingChanged that are NOT in $allowedDeveloperFields
-    // If empty, it means all fields are allowed
+    // If empty, it means all fields are allowed (including no-op / empty change set)
     $hasOnlyAllowedFields = empty(array_diff($fieldsBeingChanged, $allowedDeveloperFields));
     $hasOnlyTesterRetestFields = empty(array_diff($fieldsBeingChanged, $allowedTesterRetestFields));
     
-    // Check if only status-related fields are being changed
-    $isStatusUpdate = $hasStatusChange && 
-                      $hasOnlyAllowedFields && // All changed fields are in allowed list
-                      empty($_FILES) && 
-                      (!isset($data['attachments_to_delete']) || empty($data['attachments_to_delete']));
+    // Developer status/fix updates: do NOT require status to change (fix notes / fixed_by alone OK).
+    // Attachments are allowed for fix evidence — empty($_FILES) used to incorrectly block those.
+    $isStatusUpdate = $hasOnlyAllowedFields &&
+                      (
+                          $hasStatusChange
+                          || !empty(array_intersect($fieldsBeingChanged, ['fix_description', 'fixed_by']))
+                          || empty($fieldsBeingChanged)
+                      ) &&
+                      (!isset($data['attachments_to_delete']) || $data['attachments_to_delete'] === '' || $data['attachments_to_delete'] === '[]');
 
     $isTester = $user_role_lower === 'tester';
     $hasVerificationIntent = array_key_exists('tester_retested', $data)
@@ -253,7 +257,7 @@ try {
     
     // Check if user is admin or the bug creator (using reported_by from bug array)
     // In impersonation mode, check if the impersonated user is the creator
-    $isCreator = $bug['reported_by'] === $userId;
+    $isCreator = (string)($bug['reported_by'] ?? '') === (string)$userId;
     
     // Check if developer is a member of the project
     // In impersonation mode, if admin is impersonating, they should have admin privileges
@@ -275,7 +279,7 @@ try {
     // Permission logic:
     // 1. Admins can edit everything (including when impersonating)
     // 2. Bug creators can edit everything
-    // 3. Developers can edit status only if they are members of the project
+    // 3. Developers can edit status/fix fields if they are members of the project
     // 4. Testers/admins can save retest verification on fixed bugs
     $canEdit = false;
     $errorMessage = 'You do not have permission to edit this bug.';
@@ -386,7 +390,37 @@ try {
     $notificationData = $result['_notification_data'] ?? null;
     unset($result['_notification_data']);
 
-    // Send notifications before the response — Hostinger often aborts PHP after fastcgi_finish_request()
+    // Respond to the client FIRST so Fix Bug UI is not stuck on "Updating..."
+    // while FCM / email / WhatsApp run. Then finish notifications after flush.
+    ignore_user_abort(true);
+    if (function_exists('session_write_close')) {
+        @session_write_close();
+    }
+
+    http_response_code(200);
+    $response = [
+        'success' => true,
+        'message' => 'Bug updated successfully',
+        'data' => $result
+    ];
+    
+    // Add debug info in local development
+    if (!empty($debugInfo)) {
+        $response['_debug'] = $debugInfo;
+    }
+    
+    echo json_encode($response);
+
+    // Flush response to client before slow notification side-effects
+    if (function_exists('fastcgi_finish_request')) {
+        fastcgi_finish_request();
+    } else {
+        if (ob_get_level()) {
+            @ob_end_flush();
+        }
+        @flush();
+    }
+
     if ($notificationData && ($notificationData['status'] ?? '') === 'fixed') {
         try {
             error_log("BUG UPDATE: Sending notifications for bug ID: " . $notificationData['bug_id']);
@@ -406,31 +440,6 @@ try {
         } catch (Exception $e) {
             error_log("BUG UPDATE: Failed to send notifications: " . $e->getMessage());
         }
-    }
-    
-    // Send success response
-    http_response_code(200);
-    $response = [
-        'success' => true,
-        'message' => 'Bug updated successfully',
-        'data' => $result
-    ];
-    
-    // Add debug info in local development
-    if (!empty($debugInfo)) {
-        $response['_debug'] = $debugInfo;
-    }
-    
-    echo json_encode($response);
-    
-    // Flush response to client (no post-response work — notifications already sent above)
-    if (function_exists('fastcgi_finish_request')) {
-        fastcgi_finish_request();
-    } else {
-        if (ob_get_level()) {
-            ob_end_flush();
-        }
-        flush();
     }
 
 } catch (Exception $e) {
