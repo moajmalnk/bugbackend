@@ -334,7 +334,10 @@ class BugController extends BaseAPI {
     private function syncBugTypes(string $bugId, array $typeIds): array
     {
         try {
-            $delete = $this->conn->prepare("DELETE FROM bug_bug_types WHERE bug_id = ?");
+            $delete = $this->conn->prepare(
+                "DELETE FROM bug_bug_types
+                 WHERE bug_id COLLATE utf8mb4_unicode_ci = CAST(? AS CHAR) COLLATE utf8mb4_unicode_ci"
+            );
             $delete->execute([$bugId]);
         } catch (Exception $e) {
             error_log("syncBugTypes: delete failed for bug {$bugId}: " . $e->getMessage());
@@ -348,13 +351,25 @@ class BugController extends BaseAPI {
         try {
             $placeholders = implode(',', array_fill(0, count($typeIds), '?'));
             $validStmt = $this->conn->prepare(
-                "SELECT id, name, slug FROM bug_types WHERE id IN ($placeholders)"
+                "SELECT id, name, slug FROM bug_types
+                 WHERE id COLLATE utf8mb4_unicode_ci IN ($placeholders)"
             );
-            $validStmt->execute($typeIds);
+            // Bind with explicit collation-safe string values
+            $validStmt->execute(array_map('strval', $typeIds));
             $valid = $validStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
         } catch (Exception $e) {
-            error_log("syncBugTypes: select failed for bug {$bugId}: " . $e->getMessage());
-            return [];
+            // Fallback without COLLATE for hosts that reject it on IN lists
+            try {
+                $placeholders = implode(',', array_fill(0, count($typeIds), '?'));
+                $validStmt = $this->conn->prepare(
+                    "SELECT id, name, slug FROM bug_types WHERE id IN ($placeholders)"
+                );
+                $validStmt->execute(array_map('strval', $typeIds));
+                $valid = $validStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            } catch (Exception $e2) {
+                error_log("syncBugTypes: select failed for bug {$bugId}: " . $e2->getMessage());
+                return [];
+            }
         }
 
         if (empty($valid)) {
@@ -399,8 +414,9 @@ class BugController extends BaseAPI {
             $stmt = $this->conn->prepare(
                 "SELECT t.id, t.name, t.slug
                  FROM bug_bug_types j
-                 INNER JOIN bug_types t ON t.id = j.bug_type_id
-                 WHERE CAST(j.bug_id AS CHAR) = CAST(? AS CHAR)
+                 INNER JOIN bug_types t
+                   ON t.id COLLATE utf8mb4_unicode_ci = j.bug_type_id COLLATE utf8mb4_unicode_ci
+                 WHERE j.bug_id COLLATE utf8mb4_unicode_ci = CAST(? AS CHAR) COLLATE utf8mb4_unicode_ci
                  ORDER BY t.sort_order ASC, t.name ASC"
             );
             $stmt->execute([$bugId]);
@@ -454,8 +470,9 @@ class BugController extends BaseAPI {
             $stmt = $this->conn->prepare(
                 "SELECT j.bug_id, t.id, t.name, t.slug, t.sort_order
                  FROM bug_bug_types j
-                 INNER JOIN bug_types t ON t.id = j.bug_type_id
-                 WHERE j.bug_id IN ($placeholders)
+                 INNER JOIN bug_types t
+                   ON t.id COLLATE utf8mb4_unicode_ci = j.bug_type_id COLLATE utf8mb4_unicode_ci
+                 WHERE j.bug_id COLLATE utf8mb4_unicode_ci IN ($placeholders)
                  ORDER BY t.sort_order ASC, t.name ASC"
             );
             $stmt->execute($bugIds);

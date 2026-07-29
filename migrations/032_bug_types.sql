@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS bug_types (
   PRIMARY KEY (id),
   UNIQUE KEY uq_bug_types_slug (slug),
   KEY idx_bug_types_active_sort (is_active, sort_order)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS bug_bug_types (
   bug_id VARCHAR(36) NOT NULL,
@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS bug_bug_types (
   PRIMARY KEY (bug_id, bug_type_id),
   KEY idx_bug_bug_types_type (bug_type_id),
   KEY idx_bug_bug_types_bug (bug_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO bug_types (id, name, slug, is_active, sort_order)
 VALUES
