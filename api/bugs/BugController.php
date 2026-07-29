@@ -193,6 +193,217 @@ class BugController extends BaseAPI {
         return in_array($normalized, $allowed, true) ? $normalized : 'normal';
     }
 
+    private function bugTypesTablesExist(): bool
+    {
+        static $cached = null;
+        if ($cached !== null) {
+            return $cached;
+        }
+        try {
+            $types = $this->conn->query("SHOW TABLES LIKE 'bug_types'");
+            $junction = $this->conn->query("SHOW TABLES LIKE 'bug_bug_types'");
+            $cached = $types && $types->rowCount() > 0
+                && $junction && $junction->rowCount() > 0;
+        } catch (Exception $e) {
+            $cached = false;
+        }
+        return $cached;
+    }
+
+    /**
+     * Normalize bug_type_ids from FormData / JSON into a unique list of string IDs.
+     * @return string[]
+     */
+    private function parseBugTypeIds($data): array
+    {
+        if (!is_array($data)) {
+            return [];
+        }
+
+        $raw = null;
+        if (array_key_exists('bug_type_ids', $data)) {
+            $raw = $data['bug_type_ids'];
+        } elseif (array_key_exists('bug_type_ids[]', $data)) {
+            $raw = $data['bug_type_ids[]'];
+        } elseif (array_key_exists('bug_types', $data) && is_string($data['bug_types'])) {
+            $decoded = json_decode($data['bug_types'], true);
+            $raw = is_array($decoded) ? $decoded : null;
+        }
+
+        if ($raw === null) {
+            return [];
+        }
+        if (is_string($raw)) {
+            $trimmed = trim($raw);
+            if ($trimmed === '') {
+                return [];
+            }
+            if ($trimmed[0] === '[') {
+                $decoded = json_decode($trimmed, true);
+                $raw = is_array($decoded) ? $decoded : [$trimmed];
+            } else {
+                $raw = [$trimmed];
+            }
+        }
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        $ids = [];
+        foreach ($raw as $value) {
+            if (is_array($value) && isset($value['id'])) {
+                $value = $value['id'];
+            }
+            $id = trim((string) $value);
+            if ($id !== '') {
+                $ids[$id] = true;
+            }
+        }
+        return array_keys($ids);
+    }
+
+    private function requestHasBugTypeIds($data): bool
+    {
+        if (!is_array($data)) {
+            return false;
+        }
+        return array_key_exists('bug_type_ids', $data)
+            || array_key_exists('bug_type_ids[]', $data)
+            || array_key_exists('bug_types', $data);
+    }
+
+    /**
+     * Replace junction rows for a bug. Only keeps IDs that exist in bug_types.
+     * @param string[] $typeIds
+     * @return array<int, array{id:string,name:string,slug:string}>
+     */
+    private function syncBugTypes(string $bugId, array $typeIds): array
+    {
+        if (!$this->bugTypesTablesExist()) {
+            return [];
+        }
+
+        $delete = $this->conn->prepare("DELETE FROM bug_bug_types WHERE bug_id = ?");
+        $delete->execute([$bugId]);
+
+        if (empty($typeIds)) {
+            return [];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($typeIds), '?'));
+        $validStmt = $this->conn->prepare(
+            "SELECT id, name, slug FROM bug_types WHERE id IN ($placeholders)"
+        );
+        $validStmt->execute($typeIds);
+        $valid = $validStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        if (empty($valid)) {
+            return [];
+        }
+
+        $insert = $this->conn->prepare(
+            "INSERT INTO bug_bug_types (bug_id, bug_type_id) VALUES (?, ?)"
+        );
+        foreach ($valid as $row) {
+            $insert->execute([$bugId, $row['id']]);
+        }
+
+        return array_map(static function ($row) {
+            return [
+                'id' => (string) $row['id'],
+                'name' => (string) $row['name'],
+                'slug' => (string) $row['slug'],
+            ];
+        }, $valid);
+    }
+
+    /**
+     * @return array<int, array{id:string,name:string,slug:string}>
+     */
+    private function getBugTypesForBug(string $bugId): array
+    {
+        if (!$this->bugTypesTablesExist()) {
+            return [];
+        }
+        try {
+            $stmt = $this->conn->prepare(
+                "SELECT t.id, t.name, t.slug
+                 FROM bug_bug_types j
+                 INNER JOIN bug_types t ON t.id = j.bug_type_id
+                 WHERE j.bug_id = ?
+                 ORDER BY t.sort_order ASC, t.name ASC"
+            );
+            $stmt->execute([$bugId]);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            return array_map(static function ($row) {
+                return [
+                    'id' => (string) $row['id'],
+                    'name' => (string) $row['name'],
+                    'slug' => (string) $row['slug'],
+                ];
+            }, $rows);
+        } catch (Exception $e) {
+            return [];
+        }
+    }
+
+    /**
+     * Attach bug_types onto a list of bug rows (single query).
+     * @param array<int, array<string, mixed>> $bugs
+     */
+    private function attachBugTypesToBugs(array &$bugs): void
+    {
+        if (empty($bugs) || !$this->bugTypesTablesExist()) {
+            foreach ($bugs as &$bug) {
+                $bug['bug_types'] = $bug['bug_types'] ?? [];
+            }
+            unset($bug);
+            return;
+        }
+
+        $bugIds = array_values(array_filter(array_map(static function ($b) {
+            return isset($b['id']) ? (string) $b['id'] : '';
+        }, $bugs)));
+
+        if (empty($bugIds)) {
+            return;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($bugIds), '?'));
+        try {
+            $stmt = $this->conn->prepare(
+                "SELECT j.bug_id, t.id, t.name, t.slug, t.sort_order
+                 FROM bug_bug_types j
+                 INNER JOIN bug_types t ON t.id = j.bug_type_id
+                 WHERE j.bug_id IN ($placeholders)
+                 ORDER BY t.sort_order ASC, t.name ASC"
+            );
+            $stmt->execute($bugIds);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        } catch (Exception $e) {
+            foreach ($bugs as &$bug) {
+                $bug['bug_types'] = [];
+            }
+            unset($bug);
+            return;
+        }
+
+        $byBug = [];
+        foreach ($rows as $row) {
+            $bid = (string) $row['bug_id'];
+            $byBug[$bid][] = [
+                'id' => (string) $row['id'],
+                'name' => (string) $row['name'],
+                'slug' => (string) $row['slug'],
+            ];
+        }
+
+        foreach ($bugs as &$bug) {
+            $bid = (string) ($bug['id'] ?? '');
+            $bug['bug_types'] = $byBug[$bid] ?? [];
+        }
+        unset($bug);
+    }
+
     private function bugsTableHasTesterRetestColumns(): bool
     {
         try {
@@ -822,6 +1033,8 @@ class BugController extends BaseAPI {
                     'query_used' => 'CAST(bug_id AS CHAR) = CAST(? AS CHAR)'
                 ];
             }
+
+            $bug['bug_types'] = $this->getBugTypesForBug($id);
             
             $this->handleSuccess("Bug details retrieved successfully", $bug);
         } catch (Exception $e) {
@@ -1254,6 +1467,11 @@ class BugController extends BaseAPI {
             );
             $stmt->execute($values);
 
+            $syncedBugTypes = [];
+            if ($this->bugTypesTablesExist()) {
+                $syncedBugTypes = $this->syncBugTypes($id, $this->parseBugTypeIds($data));
+            }
+
             // Initialize array to collect all uploaded file paths
             $uploadedAttachments = [];
 
@@ -1476,6 +1694,7 @@ class BugController extends BaseAPI {
             if ($this->bugsTableHasBugLevelColumn()) {
                 $bug['bug_level'] = $bugLevel;
             }
+            $bug['bug_types'] = $syncedBugTypes;
             
             $this->spawnBugCreatedNotifications((string)$id);
 
@@ -1749,6 +1968,8 @@ class BugController extends BaseAPI {
                 foreach ($bugs as &$bug) {
                     $bug['attachments'] = $attachmentsByBug[$bug['id']] ?? [];
                 }
+                unset($bug);
+                $this->attachBugTypesToBugs($bugs);
             }
 
             $response = [
@@ -2044,23 +2265,32 @@ class BugController extends BaseAPI {
                 $params[] = $data['updated_by'];
             }
 
-            if (empty($updateFields)) {
+            $typesProvided = $this->requestHasBugTypeIds($data);
+            $syncedBugTypes = null;
+
+            if (empty($updateFields) && !$typesProvided) {
                 throw new Exception("No fields to update");
             }
 
-            // Add updated_at field
-            $updateFields[] = "updated_at = CURRENT_TIMESTAMP";
+            // Add updated_at field when updating bug columns
+            if (!empty($updateFields)) {
+                $updateFields[] = "updated_at = CURRENT_TIMESTAMP";
 
-            // Add bug ID to params
-            $params[] = $data['id'];
+                // Add bug ID to params
+                $params[] = $data['id'];
 
-            // Update bug
-            $query = "UPDATE bugs SET " . implode(", ", $updateFields) . " WHERE id = ?";
-            $stmt = $this->conn->prepare($query);
+                // Update bug
+                $query = "UPDATE bugs SET " . implode(", ", $updateFields) . " WHERE id = ?";
+                $stmt = $this->conn->prepare($query);
 
-            if (!$stmt->execute($params)) {
-                $error = $stmt->errorInfo();
-                throw new Exception("Failed to update bug: " . implode(", ", $error));
+                if (!$stmt->execute($params)) {
+                    $error = $stmt->errorInfo();
+                    throw new Exception("Failed to update bug: " . implode(", ", $error));
+                }
+            }
+
+            if ($typesProvided) {
+                $syncedBugTypes = $this->syncBugTypes((string) $data['id'], $this->parseBugTypeIds($data));
             }
 
             // Get updated bug data with updated_by_name
@@ -2111,6 +2341,10 @@ class BugController extends BaseAPI {
             if (!$updatedBug) {
                 throw new Exception("Failed to fetch updated bug data");
             }
+
+            $updatedBug['bug_types'] = $syncedBugTypes !== null
+                ? $syncedBugTypes
+                : $this->getBugTypesForBug((string) $data['id']);
 
             $this->conn->commit();
 
