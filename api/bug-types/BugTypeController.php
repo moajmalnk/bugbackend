@@ -9,8 +9,10 @@ class BugTypeController extends BaseAPI
 
     private function bugTypesTablesExist(): bool
     {
-        if ($this->tablesReady !== null) {
-            return $this->tablesReady;
+        // Do not cache false — PHP-FPM workers would skip types forever after a pre-migration miss.
+        static $cachedTrue = false;
+        if ($cachedTrue) {
+            return true;
         }
         try {
             $stmt = $this->conn->query(
@@ -20,17 +22,29 @@ class BugTypeController extends BaseAPI
                    AND table_name IN ('bug_types', 'bug_bug_types')"
             );
             $row = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : null;
-            $this->tablesReady = $row && (int) ($row['c'] ?? 0) >= 2;
-            if (!$this->tablesReady) {
+            $exists = $row && (int) ($row['c'] ?? 0) >= 2;
+            if (!$exists) {
                 $types = $this->conn->query("SHOW TABLES LIKE 'bug_types'");
                 $junction = $this->conn->query("SHOW TABLES LIKE 'bug_bug_types'");
-                $this->tablesReady = ($types && $types->fetch(PDO::FETCH_NUM))
+                $exists = ($types && $types->fetch(PDO::FETCH_NUM))
                     && ($junction && $junction->fetch(PDO::FETCH_NUM));
             }
+            if (!$exists) {
+                try {
+                    $probe = $this->conn->query("SELECT 1 FROM bug_types LIMIT 1");
+                    $probe2 = $this->conn->query("SELECT 1 FROM bug_bug_types LIMIT 1");
+                    $exists = $probe !== false && $probe2 !== false;
+                } catch (Exception $ignore) {
+                    $exists = false;
+                }
+            }
+            if ($exists) {
+                $cachedTrue = true;
+            }
+            return $exists;
         } catch (Exception $e) {
-            $this->tablesReady = false;
+            return false;
         }
-        return (bool) $this->tablesReady;
     }
 
     private function requireTables(): void

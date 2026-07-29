@@ -195,13 +195,13 @@ class BugController extends BaseAPI {
 
     private function bugTypesTablesExist(): bool
     {
-        static $cached = null;
-        if ($cached !== null) {
-            return $cached;
+        // Only cache positive results. Caching `false` in PHP-FPM workers stuck
+        // sync off forever if the first check ran before migrations existed.
+        static $cachedTrue = false;
+        if ($cachedTrue) {
+            return true;
         }
         try {
-            // Prefer INFORMATION_SCHEMA / fetch over rowCount() — PDO MySQL often
-            // reports rowCount()=0 for SHOW/SELECT, which skipped type sync entirely.
             $stmt = $this->conn->query(
                 "SELECT COUNT(*) AS c
                  FROM information_schema.tables
@@ -209,23 +209,36 @@ class BugController extends BaseAPI {
                    AND table_name IN ('bug_types', 'bug_bug_types')"
             );
             $row = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : null;
-            $cached = $row && (int) ($row['c'] ?? 0) >= 2;
-            if (!$cached) {
-                // Fallback for hosts that restrict information_schema
+            $exists = $row && (int) ($row['c'] ?? 0) >= 2;
+            if (!$exists) {
                 $types = $this->conn->query("SHOW TABLES LIKE 'bug_types'");
                 $junction = $this->conn->query("SHOW TABLES LIKE 'bug_bug_types'");
-                $cached = ($types && $types->fetch(PDO::FETCH_NUM))
+                $exists = ($types && $types->fetch(PDO::FETCH_NUM))
                     && ($junction && $junction->fetch(PDO::FETCH_NUM));
             }
+            // Last resort: try selecting from the tables directly
+            if (!$exists) {
+                try {
+                    $probe = $this->conn->query("SELECT 1 FROM bug_types LIMIT 1");
+                    $probe2 = $this->conn->query("SELECT 1 FROM bug_bug_types LIMIT 1");
+                    $exists = $probe !== false && $probe2 !== false;
+                } catch (Exception $ignore) {
+                    $exists = false;
+                }
+            }
+            if ($exists) {
+                $cachedTrue = true;
+            }
+            return $exists;
         } catch (Exception $e) {
             error_log('bugTypesTablesExist: ' . $e->getMessage());
-            $cached = false;
+            return false;
         }
-        return (bool) $cached;
     }
 
     /**
      * Normalize bug_type_ids from FormData / JSON into a unique list of string IDs.
+     * Merges every known field so one missing key cannot drop the selection.
      * @return string[]
      */
     private function parseBugTypeIds($data): array
@@ -234,67 +247,60 @@ class BugController extends BaseAPI {
             return [];
         }
 
-        $raw = null;
-        if (array_key_exists('bug_type_ids', $data)) {
-            $raw = $data['bug_type_ids'];
-        } elseif (array_key_exists('bug_type_ids[]', $data)) {
-            $raw = $data['bug_type_ids[]'];
-        } elseif (array_key_exists('bug_types', $data)) {
-            $bt = $data['bug_types'];
-            if (is_string($bt)) {
-                $decoded = json_decode($bt, true);
-                $raw = is_array($decoded) ? $decoded : null;
-            } elseif (is_array($bt)) {
-                $raw = $bt;
+        $chunks = [];
+
+        foreach (['bug_type_ids', 'bug_type_ids[]', 'bug_types'] as $key) {
+            if (!array_key_exists($key, $data)) {
+                continue;
+            }
+            $value = $data[$key];
+            if (is_string($value)) {
+                $trimmed = trim($value);
+                if ($trimmed === '') {
+                    continue;
+                }
+                if ($trimmed[0] === '[') {
+                    $decoded = json_decode($trimmed, true);
+                    if (is_array($decoded)) {
+                        $chunks[] = $decoded;
+                    } else {
+                        $chunks[] = [$trimmed];
+                    }
+                } else {
+                    $chunks[] = [$trimmed];
+                }
+            } elseif (is_array($value)) {
+                $chunks[] = $value;
             }
         }
 
-        // Some PHP/CGI setups keep indexed keys like bug_type_ids[0]
-        if ($raw === null) {
-            $indexed = [];
-            foreach ($data as $key => $value) {
-                if (preg_match('/^bug_type_ids(\[\d*\])?$/', (string) $key)) {
-                    if (is_array($value)) {
-                        foreach ($value as $v) {
-                            $indexed[] = $v;
-                        }
-                    } else {
-                        $indexed[] = $value;
+        // Indexed keys like bug_type_ids[0]
+        $indexed = [];
+        foreach ($data as $key => $value) {
+            if (preg_match('/^bug_type_ids\[\d*\]$/', (string) $key)) {
+                if (is_array($value)) {
+                    foreach ($value as $v) {
+                        $indexed[] = $v;
                     }
+                } else {
+                    $indexed[] = $value;
                 }
             }
-            if (!empty($indexed)) {
-                $raw = $indexed;
-            }
         }
-
-        if ($raw === null) {
-            return [];
-        }
-        if (is_string($raw)) {
-            $trimmed = trim($raw);
-            if ($trimmed === '') {
-                return [];
-            }
-            if ($trimmed[0] === '[') {
-                $decoded = json_decode($trimmed, true);
-                $raw = is_array($decoded) ? $decoded : [$trimmed];
-            } else {
-                $raw = [$trimmed];
-            }
-        }
-        if (!is_array($raw)) {
-            return [];
+        if (!empty($indexed)) {
+            $chunks[] = $indexed;
         }
 
         $ids = [];
-        foreach ($raw as $value) {
-            if (is_array($value) && isset($value['id'])) {
-                $value = $value['id'];
-            }
-            $id = trim((string) $value);
-            if ($id !== '') {
-                $ids[$id] = true;
+        foreach ($chunks as $chunk) {
+            foreach ($chunk as $value) {
+                if (is_array($value) && isset($value['id'])) {
+                    $value = $value['id'];
+                }
+                $id = trim((string) $value);
+                if ($id !== '') {
+                    $ids[$id] = true;
+                }
             }
         }
         return array_keys($ids);
@@ -327,24 +333,30 @@ class BugController extends BaseAPI {
      */
     private function syncBugTypes(string $bugId, array $typeIds): array
     {
-        if (!$this->bugTypesTablesExist()) {
-            error_log("syncBugTypes: tables missing, skipping for bug {$bugId}");
+        try {
+            $delete = $this->conn->prepare("DELETE FROM bug_bug_types WHERE bug_id = ?");
+            $delete->execute([$bugId]);
+        } catch (Exception $e) {
+            error_log("syncBugTypes: delete failed for bug {$bugId}: " . $e->getMessage());
             return [];
         }
-
-        $delete = $this->conn->prepare("DELETE FROM bug_bug_types WHERE bug_id = ?");
-        $delete->execute([$bugId]);
 
         if (empty($typeIds)) {
             return [];
         }
 
-        $placeholders = implode(',', array_fill(0, count($typeIds), '?'));
-        $validStmt = $this->conn->prepare(
-            "SELECT id, name, slug FROM bug_types WHERE id IN ($placeholders)"
-        );
-        $validStmt->execute($typeIds);
-        $valid = $validStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        try {
+            $placeholders = implode(',', array_fill(0, count($typeIds), '?'));
+            $validStmt = $this->conn->prepare(
+                "SELECT id, name, slug FROM bug_types WHERE id IN ($placeholders)"
+            );
+            $validStmt->execute($typeIds);
+            $valid = $validStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        } catch (Exception $e) {
+            error_log("syncBugTypes: select failed for bug {$bugId}: " . $e->getMessage());
+            return [];
+        }
+
         if (empty($valid)) {
             error_log(
                 "syncBugTypes: no matching bug_types for bug {$bugId}; requested=" .
@@ -353,11 +365,16 @@ class BugController extends BaseAPI {
             return [];
         }
 
-        $insert = $this->conn->prepare(
-            "INSERT INTO bug_bug_types (bug_id, bug_type_id) VALUES (?, ?)"
-        );
-        foreach ($valid as $row) {
-            $insert->execute([$bugId, $row['id']]);
+        try {
+            $insert = $this->conn->prepare(
+                "INSERT INTO bug_bug_types (bug_id, bug_type_id) VALUES (?, ?)"
+            );
+            foreach ($valid as $row) {
+                $insert->execute([$bugId, $row['id']]);
+            }
+        } catch (Exception $e) {
+            error_log("syncBugTypes: insert failed for bug {$bugId}: " . $e->getMessage());
+            return [];
         }
 
         error_log(
@@ -378,15 +395,12 @@ class BugController extends BaseAPI {
      */
     private function getBugTypesForBug(string $bugId): array
     {
-        if (!$this->bugTypesTablesExist()) {
-            return [];
-        }
         try {
             $stmt = $this->conn->prepare(
                 "SELECT t.id, t.name, t.slug
                  FROM bug_bug_types j
                  INNER JOIN bug_types t ON t.id = j.bug_type_id
-                 WHERE j.bug_id = ?
+                 WHERE CAST(j.bug_id AS CHAR) = CAST(? AS CHAR)
                  ORDER BY t.sort_order ASC, t.name ASC"
             );
             $stmt->execute([$bugId]);
@@ -399,6 +413,7 @@ class BugController extends BaseAPI {
                 ];
             }, $rows);
         } catch (Exception $e) {
+            error_log("getBugTypesForBug({$bugId}): " . $e->getMessage());
             return [];
         }
     }
@@ -1537,13 +1552,12 @@ class BugController extends BaseAPI {
             $parsedTypeIds = $this->parseBugTypeIds($data);
             error_log(
                 "BugController::create - bug_type_ids parsed=" . json_encode($parsedTypeIds) .
-                " post_keys=" . json_encode(array_keys(is_array($data) ? $data : []))
+                " post_keys=" . json_encode(array_keys(is_array($data) ? $data : [])) .
+                " raw_bug_types=" . json_encode($data['bug_types'] ?? null)
             );
-            if ($this->bugTypesTablesExist()) {
-                $syncedBugTypes = $this->syncBugTypes($id, $parsedTypeIds);
-            } else {
-                error_log("BugController::create - bug type tables not available");
-            }
+            $syncedBugTypes = $this->syncBugTypes($id, $parsedTypeIds);
+            // Re-read from DB so response matches what details view will load
+            $syncedBugTypes = $this->getBugTypesForBug($id);
 
             // Initialize array to collect all uploaded file paths
             $uploadedAttachments = [];
