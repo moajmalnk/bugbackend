@@ -2377,7 +2377,14 @@ class BugController extends BaseAPI {
             }
 
             if ($typesProvided) {
-                $syncedBugTypes = $this->syncBugTypes((string) $data['id'], $this->parseBugTypeIds($data));
+                $parsedTypeIds = $this->parseBugTypeIds($data);
+                error_log(
+                    "BugController::updateBug - bug {$data['id']} typesProvided=1 parsed=" .
+                    json_encode($parsedTypeIds) .
+                    " keys=" . json_encode(array_keys($data))
+                );
+                $syncedBugTypes = $this->syncBugTypes((string) $data['id'], $parsedTypeIds);
+                $syncedBugTypes = $this->getBugTypesForBug((string) $data['id']);
             }
 
             // Get updated bug data with updated_by_name

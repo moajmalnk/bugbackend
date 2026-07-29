@@ -401,7 +401,20 @@ try {
     $response = [
         'success' => true,
         'message' => 'Bug updated successfully',
-        'data' => $result
+        'data' => $result,
+        '_bug_types_debug' => [
+            'marker' => 'bug-types-sync-v3-20260729',
+            'request_has_types' => array_key_exists('bug_types', $data)
+                || array_key_exists('bug_type_ids', $data)
+                || array_key_exists('bug_type_ids[]', $data),
+            'post_keys' => array_keys($data),
+            'bug_types_field' => $data['bug_types'] ?? null,
+            'bug_type_ids_field' => $data['bug_type_ids'] ?? ($data['bug_type_ids[]'] ?? null),
+            'returned_bug_types' => $result['bug_types'] ?? null,
+            'returned_bug_types_count' => is_array($result['bug_types'] ?? null)
+                ? count($result['bug_types'])
+                : 0,
+        ],
     ];
     
     // Add debug info in local development
