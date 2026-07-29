@@ -1133,6 +1133,7 @@ class BugController extends BaseAPI {
             }
 
             $bug['bug_types'] = $this->getBugTypesForBug($id);
+            $bug['_bug_types_count'] = is_array($bug['bug_types']) ? count($bug['bug_types']) : 0;
             
             $this->handleSuccess("Bug details retrieved successfully", $bug);
         } catch (Exception $e) {
