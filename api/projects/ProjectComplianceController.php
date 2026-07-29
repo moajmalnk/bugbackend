@@ -47,7 +47,7 @@ class ProjectComplianceController extends BaseAPI
         'dev_rule_17' => 'Custom Picker Normalization',
         'dev_rule_18' => 'Strict Data Sorting',
         'dev_rule_19' => 'Skeleton Shimmer Loaders',
-        'dev_rule_20' => 'The 1.5-Second Threshold',
+        'dev_rule_20' => '1.5-Second Threshold',
         'dev_rule_21' => 'Database Indexing',
         'dev_rule_22' => 'High-Volume Scale',
         'dev_rule_23' => 'Console Scrubbing',
