@@ -69,7 +69,32 @@ function attachProjectListStats(PDO $conn, array &$projects): void
         ];
     }
 
+    $updateStatsByProject = [];
+    try {
+        $updateStmt = $conn->prepare(
+            "SELECT project_id,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN status IN ('pending', 'approved') THEN 1 ELSE 0 END) AS open_count,
+                    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_count
+             FROM updates
+             WHERE project_id IN ($placeholders)
+             GROUP BY project_id"
+        );
+        $updateStmt->execute($projectIds);
+        foreach ($updateStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $pid = (string) $row['project_id'];
+            $updateStatsByProject[$pid] = [
+                'total' => (int) $row['total'],
+                'open' => (int) $row['open_count'],
+                'completed' => (int) $row['completed_count'],
+            ];
+        }
+    } catch (Throwable $e) {
+        error_log('attachProjectListStats update_stats: ' . $e->getMessage());
+    }
+
     $defaultBug = ['total' => 0, 'open' => 0, 'fixed' => 0];
+    $defaultUpdate = ['total' => 0, 'open' => 0, 'completed' => 0];
     $defaultMember = ['total' => 0, 'developers' => 0, 'testers' => 0];
 
     foreach ($projects as &$project) {
@@ -77,6 +102,7 @@ function attachProjectListStats(PDO $conn, array &$projects): void
         $project['members'] = $membersByProject[$pid] ?? [];
         $project['members_detail'] = $membersDetailByProject[$pid] ?? [];
         $project['bug_stats'] = $bugStatsByProject[$pid] ?? $defaultBug;
+        $project['update_stats'] = $updateStatsByProject[$pid] ?? $defaultUpdate;
         $project['member_stats'] = $memberStatsByProject[$pid] ?? $defaultMember;
     }
     unset($project);

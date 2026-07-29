@@ -1,26 +1,4 @@
--- Bug types: admin-managed lookup + many-to-many on bugs (multi-select).
--- No foreign keys: Hostinger/MariaDB often rejects FKs when bugs.id collation differs.
-
-CREATE TABLE IF NOT EXISTS bug_types (
-  id VARCHAR(36) NOT NULL,
-  name VARCHAR(100) NOT NULL,
-  slug VARCHAR(64) NOT NULL,
-  is_active TINYINT(1) NOT NULL DEFAULT 1,
-  sort_order INT NOT NULL DEFAULT 0,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (id),
-  UNIQUE KEY uq_bug_types_slug (slug),
-  KEY idx_bug_types_active_sort (is_active, sort_order)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
-
-CREATE TABLE IF NOT EXISTS bug_bug_types (
-  bug_id VARCHAR(36) NOT NULL,
-  bug_type_id VARCHAR(36) NOT NULL,
-  PRIMARY KEY (bug_id, bug_type_id),
-  KEY idx_bug_bug_types_type (bug_type_id),
-  KEY idx_bug_bug_types_bug (bug_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+-- Extra bug type seeds (safe to re-run). Tables must already exist (032_bug_types.sql).
 
 INSERT INTO bug_types (id, name, slug, is_active, sort_order)
 VALUES
