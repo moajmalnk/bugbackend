@@ -188,7 +188,10 @@ try {
         foreach ($bugs as &$bug) {
             $bug['attachments'] = $attachmentsByBug[$bug['id']] ?? [];
         }
+        unset($bug);
     }
+
+    $controller->enrichBugsWithTypes($bugs);
     
     $pendingCountQuery = "SELECT COUNT(*) as pending FROM bugs WHERE status IN ('pending', 'in_progress')";
     $pendingCount = $api->fetchSingleCached($pendingCountQuery, [], 'pending_bugs_count', 300)['pending'];

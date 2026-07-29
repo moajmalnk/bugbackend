@@ -404,6 +404,15 @@ class BugController extends BaseAPI {
     }
 
     /**
+     * Public wrapper so list endpoints can attach bug_types after custom queries.
+     * @param array<int, array<string, mixed>> $bugs
+     */
+    public function enrichBugsWithTypes(array &$bugs): void
+    {
+        $this->attachBugTypesToBugs($bugs);
+    }
+
+    /**
      * Attach bug_types onto a list of bug rows (single query).
      * @param array<int, array<string, mixed>> $bugs
      */
