@@ -200,14 +200,28 @@ class BugController extends BaseAPI {
             return $cached;
         }
         try {
-            $types = $this->conn->query("SHOW TABLES LIKE 'bug_types'");
-            $junction = $this->conn->query("SHOW TABLES LIKE 'bug_bug_types'");
-            $cached = $types && $types->rowCount() > 0
-                && $junction && $junction->rowCount() > 0;
+            // Prefer INFORMATION_SCHEMA / fetch over rowCount() — PDO MySQL often
+            // reports rowCount()=0 for SHOW/SELECT, which skipped type sync entirely.
+            $stmt = $this->conn->query(
+                "SELECT COUNT(*) AS c
+                 FROM information_schema.tables
+                 WHERE table_schema = DATABASE()
+                   AND table_name IN ('bug_types', 'bug_bug_types')"
+            );
+            $row = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : null;
+            $cached = $row && (int) ($row['c'] ?? 0) >= 2;
+            if (!$cached) {
+                // Fallback for hosts that restrict information_schema
+                $types = $this->conn->query("SHOW TABLES LIKE 'bug_types'");
+                $junction = $this->conn->query("SHOW TABLES LIKE 'bug_bug_types'");
+                $cached = ($types && $types->fetch(PDO::FETCH_NUM))
+                    && ($junction && $junction->fetch(PDO::FETCH_NUM));
+            }
         } catch (Exception $e) {
+            error_log('bugTypesTablesExist: ' . $e->getMessage());
             $cached = false;
         }
-        return $cached;
+        return (bool) $cached;
     }
 
     /**
@@ -225,9 +239,33 @@ class BugController extends BaseAPI {
             $raw = $data['bug_type_ids'];
         } elseif (array_key_exists('bug_type_ids[]', $data)) {
             $raw = $data['bug_type_ids[]'];
-        } elseif (array_key_exists('bug_types', $data) && is_string($data['bug_types'])) {
-            $decoded = json_decode($data['bug_types'], true);
-            $raw = is_array($decoded) ? $decoded : null;
+        } elseif (array_key_exists('bug_types', $data)) {
+            $bt = $data['bug_types'];
+            if (is_string($bt)) {
+                $decoded = json_decode($bt, true);
+                $raw = is_array($decoded) ? $decoded : null;
+            } elseif (is_array($bt)) {
+                $raw = $bt;
+            }
+        }
+
+        // Some PHP/CGI setups keep indexed keys like bug_type_ids[0]
+        if ($raw === null) {
+            $indexed = [];
+            foreach ($data as $key => $value) {
+                if (preg_match('/^bug_type_ids(\[\d*\])?$/', (string) $key)) {
+                    if (is_array($value)) {
+                        foreach ($value as $v) {
+                            $indexed[] = $v;
+                        }
+                    } else {
+                        $indexed[] = $value;
+                    }
+                }
+            }
+            if (!empty($indexed)) {
+                $raw = $indexed;
+            }
         }
 
         if ($raw === null) {
@@ -267,9 +305,19 @@ class BugController extends BaseAPI {
         if (!is_array($data)) {
             return false;
         }
-        return array_key_exists('bug_type_ids', $data)
+        if (
+            array_key_exists('bug_type_ids', $data)
             || array_key_exists('bug_type_ids[]', $data)
-            || array_key_exists('bug_types', $data);
+            || array_key_exists('bug_types', $data)
+        ) {
+            return true;
+        }
+        foreach (array_keys($data) as $key) {
+            if (preg_match('/^bug_type_ids(\[\d*\])?$/', (string) $key)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -280,6 +328,7 @@ class BugController extends BaseAPI {
     private function syncBugTypes(string $bugId, array $typeIds): array
     {
         if (!$this->bugTypesTablesExist()) {
+            error_log("syncBugTypes: tables missing, skipping for bug {$bugId}");
             return [];
         }
 
@@ -297,6 +346,10 @@ class BugController extends BaseAPI {
         $validStmt->execute($typeIds);
         $valid = $validStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
         if (empty($valid)) {
+            error_log(
+                "syncBugTypes: no matching bug_types for bug {$bugId}; requested=" .
+                json_encode($typeIds)
+            );
             return [];
         }
 
@@ -306,6 +359,10 @@ class BugController extends BaseAPI {
         foreach ($valid as $row) {
             $insert->execute([$bugId, $row['id']]);
         }
+
+        error_log(
+            "syncBugTypes: bug {$bugId} synced " . count($valid) . " types"
+        );
 
         return array_map(static function ($row) {
             return [
@@ -1468,8 +1525,15 @@ class BugController extends BaseAPI {
             $stmt->execute($values);
 
             $syncedBugTypes = [];
+            $parsedTypeIds = $this->parseBugTypeIds($data);
+            error_log(
+                "BugController::create - bug_type_ids parsed=" . json_encode($parsedTypeIds) .
+                " post_keys=" . json_encode(array_keys(is_array($data) ? $data : []))
+            );
             if ($this->bugTypesTablesExist()) {
-                $syncedBugTypes = $this->syncBugTypes($id, $this->parseBugTypeIds($data));
+                $syncedBugTypes = $this->syncBugTypes($id, $parsedTypeIds);
+            } else {
+                error_log("BugController::create - bug type tables not available");
             }
 
             // Initialize array to collect all uploaded file paths
@@ -2478,6 +2542,14 @@ class BugController extends BaseAPI {
                 }
             }
 
+            $syncedBugTypes = null;
+            if ($this->requestHasBugTypeIds($data)) {
+                $syncedBugTypes = $this->syncBugTypes(
+                    (string) $data['id'],
+                    $this->parseBugTypeIds($data)
+                );
+            }
+
             // Handle attachment deletions
             if (isset($data['attachments_to_delete']) && !empty($data['attachments_to_delete'])) {
                 $attachmentsToDelete = json_decode($data['attachments_to_delete'], true);
@@ -2722,6 +2794,12 @@ class BugController extends BaseAPI {
             // Commit if we started the transaction
             if ($startedTransaction) {
                 $this->conn->commit();
+            }
+
+            if ($syncedBugTypes !== null) {
+                $updatedBug['bug_types'] = $syncedBugTypes;
+            } else {
+                $updatedBug['bug_types'] = $this->getBugTypesForBug((string) $data['id']);
             }
 
             // Log activity (non-blocking, but synchronous for now)

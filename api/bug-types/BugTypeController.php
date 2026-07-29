@@ -13,14 +13,24 @@ class BugTypeController extends BaseAPI
             return $this->tablesReady;
         }
         try {
-            $types = $this->conn->query("SHOW TABLES LIKE 'bug_types'");
-            $junction = $this->conn->query("SHOW TABLES LIKE 'bug_bug_types'");
-            $this->tablesReady = $types && $types->rowCount() > 0
-                && $junction && $junction->rowCount() > 0;
+            $stmt = $this->conn->query(
+                "SELECT COUNT(*) AS c
+                 FROM information_schema.tables
+                 WHERE table_schema = DATABASE()
+                   AND table_name IN ('bug_types', 'bug_bug_types')"
+            );
+            $row = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : null;
+            $this->tablesReady = $row && (int) ($row['c'] ?? 0) >= 2;
+            if (!$this->tablesReady) {
+                $types = $this->conn->query("SHOW TABLES LIKE 'bug_types'");
+                $junction = $this->conn->query("SHOW TABLES LIKE 'bug_bug_types'");
+                $this->tablesReady = ($types && $types->fetch(PDO::FETCH_NUM))
+                    && ($junction && $junction->fetch(PDO::FETCH_NUM));
+            }
         } catch (Exception $e) {
             $this->tablesReady = false;
         }
-        return $this->tablesReady;
+        return (bool) $this->tablesReady;
     }
 
     private function requireTables(): void
