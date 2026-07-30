@@ -267,6 +267,102 @@ class UserController extends BaseAPI {
         }
     }
 
+    /**
+     * Best-effort cleanup of every known user FK before DELETE FROM users.
+     * Missing tables/columns are ignored so force-delete works across schema versions.
+     */
+    private function forceDetachUserReferences(string $userId): void
+    {
+        $exec = function (string $sql) use ($userId): void {
+            try {
+                $stmt = $this->conn->prepare($sql);
+                $paramCount = substr_count($sql, '?');
+                $stmt->execute(array_fill(0, max(1, $paramCount), $userId));
+            } catch (Throwable $e) {
+                // Table/column may not exist on this host — continue
+                error_log('forceDetachUserReferences skip: ' . $e->getMessage());
+            }
+        };
+
+        // 1) Nullify ownership first (RESTRICT FKs that allow NULL)
+        foreach ([
+            'UPDATE bugs SET reported_by = NULL WHERE reported_by = ?',
+            'UPDATE bugs SET updated_by = NULL WHERE updated_by = ?',
+            'UPDATE bugs SET fixed_by = NULL WHERE fixed_by = ?',
+            'UPDATE bugs SET tester_verified_by = NULL WHERE tester_verified_by = ?',
+            'UPDATE projects SET created_by = NULL WHERE created_by = ?',
+            'UPDATE chat_groups SET created_by = NULL WHERE created_by = ?',
+            'UPDATE chat_messages SET pinned_by = NULL WHERE pinned_by = ?',
+            'UPDATE project_compliance_checks SET verified_by = NULL WHERE verified_by = ?',
+            'UPDATE project_compliance SET developer_completed_by = NULL WHERE developer_completed_by = ?',
+            'UPDATE project_compliance SET tester_completed_by = NULL WHERE tester_completed_by = ?',
+            'UPDATE project_compliance SET emergency_bypass_by = NULL WHERE emergency_bypass_by = ?',
+            'UPDATE shared_tasks SET approved_by = NULL WHERE approved_by = ?',
+            'UPDATE shared_tasks SET completed_by = NULL WHERE completed_by = ?',
+            'UPDATE clients SET created_by = NULL WHERE created_by = ?',
+            'UPDATE client_attachments SET uploaded_by = NULL WHERE uploaded_by = ?',
+            'UPDATE codo_common_rules SET created_by = NULL WHERE created_by = ?',
+            'UPDATE codo_common_rules SET updated_by = NULL WHERE updated_by = ?',
+            'UPDATE project_compliance_custom_rules SET created_by = NULL WHERE created_by = ?',
+            'UPDATE disappearing_messages_settings SET enabled_by = NULL WHERE enabled_by = ?',
+            'UPDATE leave_requests SET approved_by = NULL WHERE approved_by = ?',
+            'UPDATE user_notifications SET actor_id = NULL WHERE actor_id = ?',
+        ] as $sql) {
+            $exec($sql);
+        }
+
+        // 2) Delete dependent rows (order matters for nested FKs)
+        foreach ([
+            // Memberships / uploads
+            'DELETE FROM project_members WHERE user_id = ?',
+            'DELETE FROM bug_attachments WHERE uploaded_by = ?',
+            'DELETE FROM project_attachments WHERE uploaded_by = ?',
+            'DELETE FROM update_attachments WHERE uploaded_by = ?',
+            // Attachments on updates this user authored (may be uploaded by others)
+            'DELETE ua FROM update_attachments ua INNER JOIN updates u ON ua.update_id = u.id WHERE u.created_by = ?',
+            'DELETE FROM updates WHERE created_by = ?',
+            // Activity / tokens / notifications
+            'DELETE FROM activity_log WHERE user_id = ?',
+            'DELETE FROM activities WHERE user_id = ?',
+            'DELETE FROM user_fcm_tokens WHERE user_id = ?',
+            'DELETE FROM user_notifications WHERE user_id = ?',
+            'DELETE FROM codo_rule_acknowledgements WHERE user_id = ?',
+            'DELETE FROM password_resets WHERE user_id = ?',
+            'DELETE FROM leave_requests WHERE user_id = ?',
+            'DELETE FROM work_sessions WHERE user_id = ?',
+            'DELETE FROM activity_sessions WHERE user_id = ?',
+            'DELETE FROM user_status WHERE user_id = ?',
+            'DELETE FROM typing_indicators WHERE user_id = ?',
+            // Chat graph for this user
+            'DELETE FROM message_reactions WHERE user_id = ?',
+            'DELETE FROM message_read_status WHERE user_id = ?',
+            'DELETE FROM message_delivery_status WHERE user_id = ?',
+            'DELETE FROM message_mentions WHERE mentioned_user_id = ?',
+            'DELETE FROM message_voice_played WHERE user_id = ?',
+            'DELETE FROM starred_messages WHERE user_id = ?',
+            'DELETE FROM poll_votes WHERE user_id = ?',
+            'DELETE pv FROM poll_votes pv INNER JOIN message_polls mp ON pv.poll_id = mp.id WHERE mp.created_by = ?',
+            'DELETE FROM message_polls WHERE created_by = ?',
+            'DELETE FROM chat_group_members WHERE user_id = ?',
+            'DELETE FROM group_admins WHERE user_id = ? OR granted_by = ?',
+            'DELETE FROM blocked_users WHERE blocker_id = ? OR blocked_id = ?',
+            'DELETE FROM broadcast_recipients WHERE user_id = ?',
+            'DELETE FROM status_views WHERE viewer_id = ?',
+            'DELETE FROM call_participants WHERE user_id = ?',
+            'DELETE FROM call_logs WHERE caller_id = ?',
+            'DELETE FROM voice_notes WHERE sent_by = ?',
+            'DELETE FROM chat_messages WHERE sender_id = ?',
+            'DELETE FROM shorts WHERE created_by = ?',
+            'DELETE FROM shared_tasks WHERE created_by = ? OR assigned_to = ?',
+            'DELETE FROM broadcast_lists WHERE created_by = ?',
+            'DELETE FROM project_activities WHERE user_id = ?',
+            'DELETE FROM project_statuses WHERE created_by = ?',
+            'DELETE FROM bug_types WHERE created_by = ?',
+        ] as $sql) {
+            $exec($sql);
+        }
+    }
+
     public function delete($userId, $force = false) {
         try {
             if (!$this->conn) {
@@ -301,7 +397,7 @@ class UserController extends BaseAPI {
                 // Check projects created by this user
                 $projectStmt = $this->conn->prepare("SELECT COUNT(*) as count FROM projects WHERE created_by = ?");
                 $projectStmt->execute([$userId]);
-                $projectCount = $projectStmt->fetch(PDO::FETCH_ASSOC)['count'];
+                $projectCount = (int)$projectStmt->fetch(PDO::FETCH_ASSOC)['count'];
                 if ($projectCount > 0) {
                     $dependencies[] = "$projectCount projects";
                 }
@@ -309,7 +405,7 @@ class UserController extends BaseAPI {
                 // Check bugs reported by this user
                 $bugStmt = $this->conn->prepare("SELECT COUNT(*) as count FROM bugs WHERE reported_by = ?");
                 $bugStmt->execute([$userId]);
-                $bugCount = $bugStmt->fetch(PDO::FETCH_ASSOC)['count'];
+                $bugCount = (int)$bugStmt->fetch(PDO::FETCH_ASSOC)['count'];
                 if ($bugCount > 0) {
                     $dependencies[] = "$bugCount bugs";
                 }
@@ -317,7 +413,7 @@ class UserController extends BaseAPI {
                 // Check project memberships
                 $memberStmt = $this->conn->prepare("SELECT COUNT(*) as count FROM project_members WHERE user_id = ?");
                 $memberStmt->execute([$userId]);
-                $memberCount = $memberStmt->fetch(PDO::FETCH_ASSOC)['count'];
+                $memberCount = (int)$memberStmt->fetch(PDO::FETCH_ASSOC)['count'];
                 if ($memberCount > 0) {
                     $dependencies[] = "$memberCount project memberships";
                 }
@@ -325,9 +421,21 @@ class UserController extends BaseAPI {
                 // Check bug attachments
                 $attachmentStmt = $this->conn->prepare("SELECT COUNT(*) as count FROM bug_attachments WHERE uploaded_by = ?");
                 $attachmentStmt->execute([$userId]);
-                $attachmentCount = $attachmentStmt->fetch(PDO::FETCH_ASSOC)['count'];
+                $attachmentCount = (int)$attachmentStmt->fetch(PDO::FETCH_ASSOC)['count'];
                 if ($attachmentCount > 0) {
                     $dependencies[] = "$attachmentCount file uploads";
+                }
+
+                // Updates (common force-delete blocker)
+                try {
+                    $updateStmt = $this->conn->prepare("SELECT COUNT(*) as count FROM updates WHERE created_by = ?");
+                    $updateStmt->execute([$userId]);
+                    $updateCount = (int)$updateStmt->fetch(PDO::FETCH_ASSOC)['count'];
+                    if ($updateCount > 0) {
+                        $dependencies[] = "$updateCount updates";
+                    }
+                } catch (Throwable $e) {
+                    /* updates table optional */
                 }
 
                 // If there are dependencies and force is not enabled, provide options
@@ -338,72 +446,41 @@ class UserController extends BaseAPI {
                     return;
                 }
 
-                // If force delete is enabled, handle dependencies
-                if ($force && !empty($dependencies)) {
-                    // Remove project memberships first (no foreign key dependency)
-                    if ($memberCount > 0) {
-                        $deleteMembersStmt = $this->conn->prepare("DELETE FROM project_members WHERE user_id = ?");
-                        $deleteMembersStmt->execute([$userId]);
-                    }
-
-                    // Handle bug attachments - delete files and records
-                    if ($attachmentCount > 0) {
-                        // Get attachment file paths for cleanup
-                        $getAttachmentsStmt = $this->conn->prepare("SELECT file_path FROM bug_attachments WHERE uploaded_by = ?");
-                        $getAttachmentsStmt->execute([$userId]);
-                        $attachments = $getAttachmentsStmt->fetchAll(PDO::FETCH_ASSOC);
-                        
-                        // Delete attachment records
-                        $deleteAttachmentsStmt = $this->conn->prepare("DELETE FROM bug_attachments WHERE uploaded_by = ?");
-                        $deleteAttachmentsStmt->execute([$userId]);
-                        
-                        // Note: You may want to delete actual files from filesystem here
-                        // foreach ($attachments as $attachment) {
-                        //     if (file_exists($attachment['file_path'])) {
-                        //         unlink($attachment['file_path']);
-                        //     }
-                        // }
-                    }
-
-                    // Handle bugs - set reported_by to NULL or delete
-                    if ($bugCount > 0) {
-                        // Option 1: Set reported_by to NULL (recommended for data integrity)
-                        $updateBugsStmt = $this->conn->prepare("UPDATE bugs SET reported_by = NULL WHERE reported_by = ?");
-                        $updateBugsStmt->execute([$userId]);
-                        
-                        // Option 2: Delete bugs entirely (uncomment if preferred)
-                        // $deleteBugsStmt = $this->conn->prepare("DELETE FROM bugs WHERE reported_by = ?");
-                        // $deleteBugsStmt->execute([$userId]);
-                    }
-
-                    // Handle projects - set created_by to NULL or delete  
-                    if ($projectCount > 0) {
-                        // Option 1: Set created_by to NULL (recommended for data integrity)
-                        $updateProjectsStmt = $this->conn->prepare("UPDATE projects SET created_by = NULL WHERE created_by = ?");
-                        $updateProjectsStmt->execute([$userId]);
-                        
-                        // Option 2: Delete projects entirely (uncomment if preferred) 
-                        // $deleteProjectsStmt = $this->conn->prepare("DELETE FROM projects WHERE created_by = ?");
-                        // $deleteProjectsStmt->execute([$userId]);
-                    }
-
-                    // Handle activity logs
-                    $deleteActivityStmt = $this->conn->prepare("DELETE FROM activity_log WHERE user_id = ?");
-                    $deleteActivityStmt->execute([$userId]);
-
-                    // Handle activities table if it exists
-                    $deleteActivitiesStmt = $this->conn->prepare("DELETE FROM activities WHERE user_id = ?");
-                    $deleteActivitiesStmt->execute([$userId]);
+                // Always clear FK refs on force — even when the quick dependency list is empty
+                // (chat, FCM, compliance, etc. are not all listed above).
+                if ($force) {
+                    $this->forceDetachUserReferences($userId);
                 }
 
-                // Now safe to delete the user
-                $deleteStmt = $this->conn->prepare("DELETE FROM users WHERE id = ?");
-                $result = $deleteStmt->execute([$userId]);
-                
+                // Now safe to delete the user. On force, briefly disable FK checks so any
+                // leftover RESTRICT refs from newer/unknown tables cannot block deletion.
+                $fkChecksDisabled = false;
+                if ($force) {
+                    try {
+                        $this->conn->exec('SET FOREIGN_KEY_CHECKS=0');
+                        $fkChecksDisabled = true;
+                    } catch (Throwable $e) {
+                        error_log('Could not disable FOREIGN_KEY_CHECKS: ' . $e->getMessage());
+                    }
+                }
+
+                try {
+                    $deleteStmt = $this->conn->prepare("DELETE FROM users WHERE id = ?");
+                    $result = $deleteStmt->execute([$userId]);
+                } finally {
+                    if ($fkChecksDisabled) {
+                        try {
+                            $this->conn->exec('SET FOREIGN_KEY_CHECKS=1');
+                        } catch (Throwable $e) {
+                            error_log('Could not re-enable FOREIGN_KEY_CHECKS: ' . $e->getMessage());
+                        }
+                    }
+                }
+
                 if ($result && $deleteStmt->rowCount() > 0) {
                     $this->conn->commit();
-                    $message = $force && !empty($dependencies) 
-                        ? "User '{$user['username']}' and all associated data deleted successfully" 
+                    $message = $force
+                        ? "User '{$user['username']}' and associated data deleted successfully"
                         : "User '{$user['username']}' deleted successfully";
                     $this->sendJsonResponse(200, $message);
                 } else {
@@ -426,7 +503,13 @@ class UserController extends BaseAPI {
                 strpos($e->getMessage(), 'FOREIGN KEY') !== false ||
                 $e->getCode() == '23000') {
                 error_log("Foreign key constraint error in delete(): " . $e->getMessage());
-                $this->sendJsonResponse(409, "Cannot delete user. User has associated data that must be removed first.");
+                $this->sendJsonResponse(
+                    409,
+                    $force
+                        ? ("Cannot force-delete user. Remaining linked data: " . $e->getMessage())
+                        : "Cannot delete user. User has associated data that must be removed first.",
+                    ['canForceDelete' => !$force]
+                );
             } else {
                 error_log("Database error in delete(): " . $e->getMessage());
                 $this->sendJsonResponse(500, "Database error occurred");
