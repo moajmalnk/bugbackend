@@ -6,8 +6,8 @@ require_once __DIR__ . '/../../utils/email.php';
 
 class ProjectComplianceController extends BaseAPI
 {
-    private const DEV_RULE_COUNT = 25;
-    private const QA_RULE_COUNT = 7;
+    private const DEV_RULE_COUNT = 32;
+    private const QA_RULE_COUNT = 13;
 
     private static $DEV_RULE_KEYS = [
         'dev_rule_1', 'dev_rule_2', 'dev_rule_3', 'dev_rule_4', 'dev_rule_5',
@@ -15,6 +15,8 @@ class ProjectComplianceController extends BaseAPI
         'dev_rule_11', 'dev_rule_12', 'dev_rule_13', 'dev_rule_14', 'dev_rule_15',
         'dev_rule_16', 'dev_rule_17', 'dev_rule_18', 'dev_rule_19', 'dev_rule_20',
         'dev_rule_21', 'dev_rule_22', 'dev_rule_23', 'dev_rule_24', 'dev_rule_25',
+        'dev_rule_26', 'dev_rule_27', 'dev_rule_28', 'dev_rule_29', 'dev_rule_30',
+        'dev_rule_31', 'dev_rule_32',
     ];
 
     private static $QA_RULE_KEYS = [
@@ -25,6 +27,12 @@ class ProjectComplianceController extends BaseAPI
         'qa_empty_array',
         'qa_boundary_expansion',
         'qa_network_break',
+        'qa_console_zero',
+        'qa_high_volume',
+        'qa_script_injection',
+        'qa_modal_scope',
+        'qa_rtl_stress',
+        'qa_browser_back',
     ];
 
     private static $BUILTIN_RULE_TITLES = [
@@ -53,6 +61,13 @@ class ProjectComplianceController extends BaseAPI
         'dev_rule_23' => 'Console Scrubbing',
         'dev_rule_24' => 'Secret Variable Isolation',
         'dev_rule_25' => 'Documentation Mandate',
+        'dev_rule_26' => 'SPA Router History Sync',
+        'dev_rule_27' => 'Strict Test-Data Clearance',
+        'dev_rule_28' => 'Layout Alignment Containment',
+        'dev_rule_29' => 'Dynamic Status Feedback Toast',
+        'dev_rule_30' => 'RTL Typography Safeguards',
+        'dev_rule_31' => 'Native Scrollbar Preservation',
+        'dev_rule_32' => 'Immutable Array Sorting',
         'qa_apple_sandbox' => 'The Apple Ecosystem Sandbox',
         'qa_click_attack' => 'The Click Attack Safeguard',
         'qa_theme_interruption' => 'The Theme Interruption Matrix',
@@ -60,6 +75,12 @@ class ProjectComplianceController extends BaseAPI
         'qa_empty_array' => 'The Empty Array Fallback',
         'qa_boundary_expansion' => 'The Boundary Expansion Constraint',
         'qa_network_break' => 'The Network Break Strategy',
+        'qa_console_zero' => 'Console Zero-Tolerance',
+        'qa_high_volume' => 'High-Volume Scale Audit',
+        'qa_script_injection' => 'Script Injection Test',
+        'qa_modal_scope' => 'Modal Overlay Scope',
+        'qa_rtl_stress' => 'RTL Language Stress Test',
+        'qa_browser_back' => 'Browser Back Button Drill',
     ];
 
     private static $CLOSED_STATUSES = ['completed', 'release_ready', 'archived'];
