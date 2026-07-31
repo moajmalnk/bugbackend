@@ -318,30 +318,33 @@ try {
         error_log("BUG UPDATE PERMISSION - Denied: " . $errorMessage);
     }
     
-    if (!$canEdit) {
-        http_response_code(403);
-        echo json_encode([
-            'success' => false,
-            'message' => $errorMessage
-        ]);
-        exit();
-    }
-
-    // When moving bug to another project, user must have access to the target project
+    // When moving bug to another project, admin / developer / tester with access may convert
     if (
         isset($data['project_id']) &&
         $data['project_id'] !== '' &&
         (string) $data['project_id'] !== (string) ($bug['project_id'] ?? '')
     ) {
-        if (!$isAdmin && !$isCreator) {
+        $canConvertRole = $isAdmin || $isCreator || $isDeveloper || $isTester;
+        if (!$canConvertRole) {
             http_response_code(403);
             echo json_encode([
                 'success' => false,
-                'message' => 'Only admins and the bug reporter can change the project.',
+                'message' => 'Only admins, developers, and testers can change the project.',
             ]);
             exit();
         }
         $projectMemberController = new ProjectMemberController();
+        if (
+            !$isAdmin &&
+            !$projectMemberController->hasProjectAccess($userId, $bug['project_id'] ?? '')
+        ) {
+            http_response_code(403);
+            echo json_encode([
+                'success' => false,
+                'message' => 'You do not have access to the bug\'s current project.',
+            ]);
+            exit();
+        }
         if (!$projectMemberController->hasProjectAccess($userId, $data['project_id'])) {
             http_response_code(403);
             echo json_encode([
@@ -350,6 +353,29 @@ try {
             ]);
             exit();
         }
+        // Allow project-only convert for developer/tester (not only status updates)
+        if (($isDeveloper || $isTester) && !$isAdmin && !$isCreator) {
+            $onlyProjectChange = empty(array_diff($fieldsBeingChanged, ['project_id']));
+            if ($onlyProjectChange && in_array('project_id', $fieldsBeingChanged, true)) {
+                $canEdit = true;
+            } elseif (in_array('project_id', $fieldsBeingChanged, true) && !$canEdit) {
+                http_response_code(403);
+                echo json_encode([
+                    'success' => false,
+                    'message' => 'Project convert must be done alone. Use Convert to move the bug, then edit other fields.',
+                ]);
+                exit();
+            }
+        }
+    }
+
+    if (!$canEdit) {
+        http_response_code(403);
+        echo json_encode([
+            'success' => false,
+            'message' => $errorMessage
+        ]);
+        exit();
     }
 
     // Add user ID from token as updated_by
