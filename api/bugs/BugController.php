@@ -1244,6 +1244,47 @@ class BugController extends BaseAPI {
             $actStmt->execute([$id]);
             $activities = $actStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
+            $convStmt = $this->conn->prepare(
+                "SELECT pa.metadata, pa.description, pa.created_at, pa.user_id, u.username AS actor_name
+                 FROM project_activities pa
+                 LEFT JOIN users u ON u.id = pa.user_id
+                 WHERE CAST(pa.related_id AS CHAR) = CAST(? AS CHAR)
+                   AND pa.activity_type = 'bug_converted'
+                 ORDER BY pa.created_at ASC
+                 LIMIT 200"
+            );
+            $convStmt->execute([$id]);
+            $conversionRows = $convStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            $conversionHistory = [];
+            $seenConversions = [];
+            foreach ($conversionRows as $row) {
+                $meta = [];
+                if (!empty($row['metadata'])) {
+                    $decodedMeta = json_decode($row['metadata'], true);
+                    if (is_array($decodedMeta)) {
+                        $meta = $decodedMeta;
+                    }
+                }
+                $fromId = (string)($meta['from_project_id'] ?? '');
+                $toId = (string)($meta['to_project_id'] ?? '');
+                $at = (string)($row['created_at'] ?? '');
+                // Dedupe twin logs written before convert.php logged once
+                $dedupeKey = $fromId . '|' . $toId . '|' . substr($at, 0, 16) . '|' . (string)($row['user_id'] ?? '');
+                if (isset($seenConversions[$dedupeKey])) {
+                    continue;
+                }
+                $seenConversions[$dedupeKey] = true;
+                $conversionHistory[] = [
+                    'from_project_id' => $fromId !== '' ? $fromId : null,
+                    'from_project_name' => $meta['from_project_name'] ?? null,
+                    'to_project_id' => $toId !== '' ? $toId : null,
+                    'to_project_name' => $meta['to_project_name'] ?? null,
+                    'actor_name' => $row['actor_name'] ?? null,
+                    'created_at' => $row['created_at'] ?? null,
+                    'description' => $row['description'] ?? null,
+                ];
+            }
+
             $status = (string)($bug['status'] ?? 'pending');
             $raisedAt = $bug['created_at'] ?? null;
             $updatedAt = $bug['updated_at'] ?? null;
@@ -1475,6 +1516,7 @@ class BugController extends BaseAPI {
                 'active_share_percent' => $activeShare,
                 'fix_to_cycle_percent' => $fixToCycle,
                 'status_timeline' => $timeline,
+                'conversion_history' => $conversionHistory,
                 'activity_count' => count($activities),
                 'actors' => [
                     'reporter_name' => $bug['reporter_name'] ?? null,

@@ -132,19 +132,12 @@ try {
             'to_project_id' => $targetProjectId,
             'to_project_name' => $toName,
         ];
-        $logger->logActivity(
-            $userId,
-            $sourceProjectId,
-            'bug_converted',
-            "Bug converted from \"{$fromName}\" to \"{$toName}\": {$bugTitle}",
-            $bugId,
-            $meta
-        );
+        // Single log keyed by bug related_id (avoids duplicate history rows)
         $logger->logActivity(
             $userId,
             $targetProjectId,
             'bug_converted',
-            "Bug converted into this project from \"{$fromName}\": {$bugTitle}",
+            "Bug converted from \"{$fromName}\" to \"{$toName}\": {$bugTitle}",
             $bugId,
             $meta
         );
