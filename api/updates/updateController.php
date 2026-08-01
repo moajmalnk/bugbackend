@@ -655,6 +655,7 @@ class UpdateController extends BaseAPI
                 'completion_dev_started_at' => $update['completion_dev_started_at'] ?? null,
                 'completion_dev_ended_at' => $update['completion_dev_ended_at'] ?? null,
                 'completion_tested_by' => $update['completion_tested_by'] ?? null,
+                'completion_developed_by' => $update['completion_developed_by'] ?? null,
                 'completion_notes' => $update['completion_notes'] ?? null,
                 'attachments' => $processedAttachments,
                 'screenshots' => $screenshots,
@@ -1270,6 +1271,8 @@ class UpdateController extends BaseAPI
             $devEnded = $normDt($data['completion_dev_ended_at'] ?? null);
             $testedBy = isset($data['completion_tested_by']) ? trim((string) $data['completion_tested_by']) : '';
             $testedBy = $testedBy === '' ? null : substr($testedBy, 0, 255);
+            $developedBy = isset($data['completion_developed_by']) ? trim((string) $data['completion_developed_by']) : '';
+            $developedBy = $developedBy === '' ? null : substr($developedBy, 0, 255);
             $notes = isset($data['completion_notes']) ? trim((string) $data['completion_notes']) : '';
             if ($notes === '') {
                 $this->sendJsonResponse(400, 'Completion notes are required');
@@ -1288,6 +1291,18 @@ class UpdateController extends BaseAPI
                 }
             } catch (Exception $e) {
                 error_log("UpdateController::complete - ENUM check: " . $e->getMessage());
+            }
+
+            // Auto-migrate: completion_developed_by
+            try {
+                $colCheck = $this->conn->query("SHOW COLUMNS FROM updates LIKE 'completion_developed_by'");
+                if ($colCheck && $colCheck->rowCount() === 0) {
+                    $this->conn->exec(
+                        "ALTER TABLE updates ADD COLUMN completion_developed_by VARCHAR(255) NULL DEFAULT NULL AFTER completion_tested_by"
+                    );
+                }
+            } catch (Exception $e) {
+                error_log("UpdateController::complete - developed_by column: " . $e->getMessage());
             }
 
             $stmt = $this->conn->prepare("SELECT * FROM updates WHERE id = ?");
@@ -1313,7 +1328,7 @@ class UpdateController extends BaseAPI
             $columnsCheck = $this->conn->query("SHOW COLUMNS FROM updates LIKE 'updated_at'");
             $hasUpdatedAt = $columnsCheck->rowCount() > 0;
 
-            $sql = "UPDATE updates SET status = 'completed', completed_at = NOW(), completion_tested = ?, completion_dev_hours = ?, completion_dev_started_at = ?, completion_dev_ended_at = ?, completion_tested_by = ?, completion_notes = ?";
+            $sql = "UPDATE updates SET status = 'completed', completed_at = NOW(), completion_tested = ?, completion_dev_hours = ?, completion_dev_started_at = ?, completion_dev_ended_at = ?, completion_tested_by = ?, completion_developed_by = ?, completion_notes = ?";
             if ($hasUpdatedAt) {
                 $sql .= ", updated_at = NOW()";
             }
@@ -1326,6 +1341,7 @@ class UpdateController extends BaseAPI
                 $devStarted,
                 $devEnded,
                 $testedBy,
+                $developedBy,
                 $notes,
                 $id,
             ]);

@@ -37,14 +37,22 @@ try {
 
     // Get project members using optimized query
     $members = $api->fetchCached(
-        "SELECT u.id, u.username, u.email, pm.role 
+        "SELECT u.id, u.username, u.email, u.role AS user_role, pm.role AS member_role
          FROM project_members pm 
          JOIN users u ON pm.user_id = u.id 
          WHERE pm.project_id = ?",
         [$project_id],
-        'project_members_list_' . $project_id,
+        'project_members_list_v2_' . $project_id,
         300 // Cache for 5 minutes
     );
+
+    // Back-compat: keep `role` as project membership role
+    foreach ($members as &$m) {
+        if (!isset($m['role']) && isset($m['member_role'])) {
+            $m['role'] = $m['member_role'];
+        }
+    }
+    unset($m);
 
     $result = [
         'admins' => $admins,
