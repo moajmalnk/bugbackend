@@ -19,7 +19,7 @@ try {
     }
 
     // Create cache key for this project's members
-    $cacheKey = 'project_members_' . $project_id;
+    $cacheKey = 'project_members_v2_' . $project_id;
     $cachedResult = $api->getCache($cacheKey);
     
     if ($cachedResult !== null) {
