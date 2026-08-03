@@ -155,7 +155,8 @@ class AttendanceExceptionController extends BaseAPI
                         e.created_by, e.created_at, e.updated_at,
                         u.username, u.role
                  FROM attendance_day_exceptions e
-                 LEFT JOIN users u ON u.id = e.user_id
+                 LEFT JOIN users u
+                   ON u.id COLLATE utf8mb4_unicode_ci = e.user_id COLLATE utf8mb4_unicode_ci
                  WHERE e.exception_date >= ?
                  ORDER BY e.exception_date DESC, u.username ASC
                  LIMIT 500'
@@ -188,7 +189,8 @@ class AttendanceExceptionController extends BaseAPI
                 'SELECT ws.id, ws.user_id, ws.submission_date, ws.check_in_time, ws.is_late,
                         ws.late_strike_consumed, ws.work_mode, u.username, u.role
                  FROM work_submissions ws
-                 LEFT JOIN users u ON u.id = ws.user_id
+                 LEFT JOIN users u
+                   ON u.id COLLATE utf8mb4_unicode_ci = ws.user_id COLLATE utf8mb4_unicode_ci
                  WHERE ws.is_late = 1
                    AND ws.submission_date >= ?
                  ORDER BY ws.submission_date DESC, u.username ASC

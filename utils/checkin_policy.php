@@ -326,6 +326,20 @@ function br_ensure_checkin_policy_schema(PDO $conn): void
                 KEY idx_user_flags (user_id, allow_wfh, forgive_late)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
         );
+
+        // Why: users / work_submissions are often utf8mb4_general_ci; JOINs fail without a shared collation.
+        try {
+            $conn->exec(
+                'ALTER TABLE attendance_day_exceptions CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
+            );
+        } catch (Throwable $ignored) {
+        }
+        try {
+            $conn->exec(
+                'ALTER TABLE attendance_office_restrictions CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
+            );
+        } catch (Throwable $ignored) {
+        }
     } catch (Throwable $e) {
         error_log('br_ensure_checkin_policy_schema: ' . $e->getMessage());
     }
