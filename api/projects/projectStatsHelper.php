@@ -75,6 +75,7 @@ function attachProjectListStats(PDO $conn, array &$projects): void
             "SELECT project_id,
                     COUNT(*) AS total,
                     SUM(CASE WHEN status IN ('pending', 'approved') THEN 1 ELSE 0 END) AS open_count,
+                    SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS approved_count,
                     SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_count
              FROM updates
              WHERE project_id IN ($placeholders)
@@ -86,6 +87,7 @@ function attachProjectListStats(PDO $conn, array &$projects): void
             $updateStatsByProject[$pid] = [
                 'total' => (int) $row['total'],
                 'open' => (int) $row['open_count'],
+                'approved' => (int) $row['approved_count'],
                 'completed' => (int) $row['completed_count'],
             ];
         }
@@ -94,7 +96,7 @@ function attachProjectListStats(PDO $conn, array &$projects): void
     }
 
     $defaultBug = ['total' => 0, 'open' => 0, 'fixed' => 0];
-    $defaultUpdate = ['total' => 0, 'open' => 0, 'completed' => 0];
+    $defaultUpdate = ['total' => 0, 'open' => 0, 'approved' => 0, 'completed' => 0];
     $defaultMember = ['total' => 0, 'developers' => 0, 'testers' => 0];
 
     foreach ($projects as &$project) {
