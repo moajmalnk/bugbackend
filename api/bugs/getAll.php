@@ -64,165 +64,57 @@ try {
     $user_role_lower = strtolower(trim($user_role));
     $isAdmin = ($user_role_lower === 'admin' && !$is_impersonated) || ($is_impersonated && $admin_role === 'admin');
     
-    $projectId = isset($_GET['project_id']) ? $_GET['project_id'] : null;
+    $projectId = isset($_GET['project_id']) && $_GET['project_id'] !== '' && $_GET['project_id'] !== 'all'
+        ? $_GET['project_id']
+        : null;
     $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
     $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 10;
     $status = isset($_GET['status']) && $_GET['status'] !== '' ? $_GET['status'] : null;
     $userId = isset($_GET['user_id']) && $_GET['user_id'] !== '' ? $_GET['user_id'] : null;
-    
-    // Create cache key for this request (v2 includes fixer/updater display names)
-    $cacheKey = 'user_bugs_v2_' . $user_id . '_' . ($projectId ?? 'all') . '_' . $page . '_' . $limit . '_' . ($status ?? 'all') . '_' . ($userId ?? 'all');
-    $cachedResult = $api->getCache($cacheKey);
-    
-    if ($cachedResult !== null) {
-        http_response_code(200);
-        echo json_encode([
-            'success' => true,
-            'message' => 'Bugs retrieved successfully (cached)',
-            'data' => $cachedResult
-        ]);
-        exit;
-    }
-    
-    $controller = new BugController();
-    
-    // Admin users can see all bugs (real admins or admins impersonating)
-    if ($isAdmin) {
-        $result = $controller->getAllBugs($projectId, $page, $limit, $status, $userId);
-        $api->setCache($cacheKey, $result, 300); // Cache for 5 minutes
-        http_response_code(200);
-        echo json_encode([
-            'success' => true,
-            'message' => 'Bugs retrieved successfully',
-            'data' => $result
-        ]);
-        exit;
-    }
-    
-    // For non-admin users, use optimized single query approach
-    if ($projectId) {
-        // Check project access with cached query
-        $accessQuery = "SELECT 1 FROM project_members WHERE user_id = ? AND project_id = ? 
-                       UNION SELECT 1 FROM projects WHERE created_by = ? AND id = ?";
-        $hasAccess = $api->fetchSingleCached($accessQuery, [$user_id, $projectId, $user_id, $projectId], 
-                                           'user_project_access_' . $user_id . '_' . $projectId, 600);
-        
-        if (!$hasAccess) {
-            http_response_code(403);
-            echo json_encode(['success' => false, 'message' => 'You do not have access to this project']);
-            exit;
+    $search = isset($_GET['search']) ? trim((string)$_GET['search']) : '';
+    $priority = isset($_GET['priority']) && $_GET['priority'] !== '' && $_GET['priority'] !== 'all'
+        ? trim((string)$_GET['priority'])
+        : '';
+    $fixedBy = isset($_GET['fixed_by']) && $_GET['fixed_by'] !== '' && $_GET['fixed_by'] !== 'all'
+        ? trim((string)$_GET['fixed_by'])
+        : '';
+    $bugTypeId = isset($_GET['bug_type_id']) && $_GET['bug_type_id'] !== '' && $_GET['bug_type_id'] !== 'all'
+        ? trim((string)$_GET['bug_type_id'])
+        : '';
+
+    $filters = [
+        'search' => $search,
+        'priority' => $priority,
+        'fixed_by' => $fixedBy,
+        'bug_type_id' => $bugTypeId,
+        'facet_user_id' => $user_id,
+    ];
+
+    // Non-admins only see bugs from projects they belong to
+    if (!$isAdmin) {
+        $filters['access_user_id'] = $user_id;
+
+        if ($projectId) {
+            $accessQuery = "SELECT 1 FROM project_members WHERE user_id = ? AND project_id = ? 
+                           UNION SELECT 1 FROM projects WHERE created_by = ? AND id = ?";
+            $hasAccess = $api->fetchSingleCached(
+                $accessQuery,
+                [$user_id, $projectId, $user_id, $projectId],
+                'user_project_access_' . $user_id . '_' . $projectId,
+                600
+            );
+
+            if (!$hasAccess) {
+                http_response_code(403);
+                echo json_encode(['success' => false, 'message' => 'You do not have access to this project']);
+                exit;
+            }
         }
-        
-        // User has access to this specific project
-        $result = $controller->getAllBugs($projectId, $page, $limit);
-        $api->setCache($cacheKey, $result, 300);
-        http_response_code(200);
-        echo json_encode([
-            'success' => true,
-            'message' => 'Bugs retrieved successfully',
-            'data' => $result
-        ]);
-        exit;
-    }
-    
-    // No specific project requested - get bugs from all accessible projects in one optimized query
-    $offset = ($page - 1) * $limit;
-    
-    // Single optimized query to get bugs with project access check
-    $bugsQuery = "
-        SELECT DISTINCT b.*, 
-               u.username as reporter_name,
-               p.name as project_name,
-               updater.username as updated_by_name,
-               fixer.username as fixed_by_name
-        FROM bugs b
-        LEFT JOIN users u ON b.reported_by = u.id
-        LEFT JOIN projects p ON b.project_id = p.id
-        LEFT JOIN users updater ON b.updated_by = updater.id
-        LEFT JOIN users fixer ON b.fixed_by = fixer.id
-        WHERE b.project_id IN (
-            SELECT DISTINCT project_id FROM project_members WHERE user_id = ?
-            UNION
-            SELECT DISTINCT id FROM projects WHERE created_by = ?
-        )
-        ORDER BY b.created_at DESC
-        LIMIT ? OFFSET ?
-    ";
-    
-    // Count query for pagination
-    $countQuery = "
-        SELECT COUNT(DISTINCT b.id) as total
-        FROM bugs b
-        WHERE b.project_id IN (
-            SELECT DISTINCT project_id FROM project_members WHERE user_id = ?
-            UNION
-            SELECT DISTINCT id FROM projects WHERE created_by = ?
-        )
-    ";
-    
-    // Execute queries with prepared statements
-    $stmt = $api->prepare($bugsQuery);
-    $stmt->execute([$user_id, $user_id, $limit, $offset]);
-    $bugs = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    
-    $totalBugs = $api->fetchSingleCached($countQuery, [$user_id, $user_id], 
-                                       'user_total_bugs_' . $user_id, 600)['total'];
-    
-    // Get attachments for all bugs in one query if there are bugs
-    if (!empty($bugs)) {
-        $bugIds = array_column($bugs, 'id');
-        $placeholders = str_repeat('?,', count($bugIds) - 1) . '?';
-        
-        // Prefer duration when migration 042 has been applied
-        $hasDuration = false;
-        try {
-            $colStmt = $api->query("SHOW COLUMNS FROM bug_attachments LIKE 'duration'");
-            $hasDuration = (bool) ($colStmt && $colStmt->rowCount() > 0);
-        } catch (Throwable $e) {
-            $hasDuration = false;
-        }
-        $durationSelect = $hasDuration ? ', duration' : '';
-        $attachmentQuery = "SELECT bug_id, id, file_name, file_path, file_type{$durationSelect}
-                          FROM bug_attachments 
-                          WHERE bug_id IN ($placeholders)
-                          ORDER BY bug_id, id";
-        
-        $attachmentStmt = $api->prepare($attachmentQuery);
-        $attachmentStmt->execute($bugIds);
-        $allAttachments = $attachmentStmt->fetchAll(PDO::FETCH_ASSOC);
-        
-        // Group attachments by bug_id
-        $attachmentsByBug = [];
-        foreach ($allAttachments as $attachment) {
-            $attachmentsByBug[$attachment['bug_id']][] = $attachment;
-        }
-        
-        // Assign attachments to bugs
-        foreach ($bugs as &$bug) {
-            $bug['attachments'] = $attachmentsByBug[$bug['id']] ?? [];
-        }
-        unset($bug);
     }
 
-    $controller->enrichBugsWithTypes($bugs);
-    
-    $pendingCountQuery = "SELECT COUNT(*) as pending FROM bugs WHERE status IN ('pending', 'in_progress')";
-    $pendingCount = $api->fetchSingleCached($pendingCountQuery, [], 'pending_bugs_count', 300)['pending'];
-    
-    $result = [
-        'bugs' => $bugs,
-        'pagination' => [
-            'currentPage' => $page,
-            'totalPages' => ceil($totalBugs / $limit),
-            'totalBugs' => (int)$totalBugs,
-            'limit' => $limit,
-            'pendingBugsCount' => (int)$pendingCount
-        ]
-    ];
-    
-    // Cache the result for 5 minutes
-    $api->setCache($cacheKey, $result, 300);
-    
+    $controller = new BugController();
+    $result = $controller->getAllBugs($projectId, $page, $limit, $status, $userId, $filters);
+
     http_response_code(200);
     echo json_encode([
         'success' => true,
@@ -233,4 +125,4 @@ try {
 } catch (Exception $e) {
     http_response_code(500);
     echo json_encode(['success' => false, 'message' => 'Server error: ' . $e->getMessage()]);
-} 
+}

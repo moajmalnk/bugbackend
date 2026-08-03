@@ -2090,25 +2090,54 @@ class BugController extends BaseAPI {
         }
     }
 
-    public function getAllBugs($projectId = null, $page = 1, $limit = 10, $status = null, $userId = null) {
+    /**
+     * Why: List bugs with server-side filters + accurate COUNT totals so Bugs/Fixes
+     * badges and pagination match full DB counts (not a 1,000-row client sample).
+     *
+     * @param string|null $status Single status or CSV (e.g. pending,in_progress)
+     * @param array $filters Optional: search, priority, fixed_by, bug_type_id,
+     *                       access_user_id (non-admin scope), facet_user_id (tab badges)
+     */
+    public function getAllBugs($projectId = null, $page = 1, $limit = 10, $status = null, $userId = null, array $filters = []) {
         try {
-            // Validate token
             $this->validateToken();
 
-            // Validate connection
             if (!$this->conn) {
                 throw new Exception("Database connection failed");
             }
 
-            // Create cache key for this query (v2 includes fixer/updater display names)
-            $cacheKey = 'bugs_v2_' . ($projectId ?? 'all') . '_' . $page . '_' . $limit . '_' . ($status ?? 'all') . '_' . ($userId ?? 'all');
+            $page = max(1, (int) $page);
+            $limit = max(1, min(1000, (int) $limit));
+
+            $search = isset($filters['search']) ? trim((string) $filters['search']) : '';
+            $priority = isset($filters['priority']) ? trim((string) $filters['priority']) : '';
+            $fixedBy = isset($filters['fixed_by']) ? trim((string) $filters['fixed_by']) : '';
+            $bugTypeId = isset($filters['bug_type_id']) ? trim((string) $filters['bug_type_id']) : '';
+            $accessUserId = isset($filters['access_user_id']) ? $filters['access_user_id'] : null;
+            $facetUserId = isset($filters['facet_user_id']) ? $filters['facet_user_id'] : null;
+
+            $allowedStatuses = ['pending', 'in_progress', 'fixed', 'declined', 'rejected'];
+            $statusList = [];
+            if ($status !== null && $status !== '') {
+                foreach (explode(',', (string) $status) as $part) {
+                    $part = strtolower(trim($part));
+                    if (in_array($part, $allowedStatuses, true)) {
+                        $statusList[] = $part;
+                    }
+                }
+                $statusList = array_values(array_unique($statusList));
+            }
+            $statusKey = !empty($statusList) ? implode(',', $statusList) : 'all';
+
+            $cacheKey = 'bugs_v3_' . md5(json_encode([
+                $projectId, $page, $limit, $statusKey, $userId,
+                $search, $priority, $fixedBy, $bugTypeId, $accessUserId, $facetUserId,
+            ]));
             $cachedResult = $this->getCache($cacheKey);
-            
             if ($cachedResult !== null) {
                 return $cachedResult;
             }
 
-            // Optimized query using JOINs to get everything in fewer queries
             $query = "SELECT b.*, 
                      u.username as reporter_name,
                      p.name as project_name,
@@ -2119,31 +2148,82 @@ class BugController extends BaseAPI {
                      LEFT JOIN projects p ON b.project_id = p.id
                      LEFT JOIN users updater ON b.updated_by = updater.id
                      LEFT JOIN users fixer ON b.fixed_by = fixer.id";
-            
+
             $countQuery = "SELECT COUNT(*) as total FROM bugs b";
             $where = [];
             $params = [];
             $countParams = [];
 
-            // Add project filter if specified
+            // Scope to projects the non-admin user can access
+            if ($accessUserId) {
+                $accessSql = "b.project_id IN (
+                    SELECT DISTINCT project_id FROM project_members WHERE user_id = ?
+                    UNION
+                    SELECT DISTINCT id FROM projects WHERE created_by = ?
+                )";
+                $where[] = $accessSql;
+                $params[] = $accessUserId;
+                $params[] = $accessUserId;
+                $countParams[] = $accessUserId;
+                $countParams[] = $accessUserId;
+            }
+
             if ($projectId) {
                 $where[] = "b.project_id = ?";
                 $params[] = $projectId;
                 $countParams[] = $projectId;
             }
 
-            // Add status filter if specified
-            if ($status) {
+            if (count($statusList) === 1) {
                 $where[] = "b.status = ?";
-                $params[] = $status;
-                $countParams[] = $status;
+                $params[] = $statusList[0];
+                $countParams[] = $statusList[0];
+            } elseif (count($statusList) > 1) {
+                $placeholders = implode(',', array_fill(0, count($statusList), '?'));
+                $where[] = "b.status IN ($placeholders)";
+                foreach ($statusList as $s) {
+                    $params[] = $s;
+                    $countParams[] = $s;
+                }
             }
 
-            // Add user filter if specified
             if ($userId) {
                 $where[] = "b.reported_by = ?";
                 $params[] = $userId;
                 $countParams[] = $userId;
+            }
+
+            if ($fixedBy !== '') {
+                // Match UI fixer identity: prefer fixed_by, fall back to updated_by
+                $where[] = "COALESCE(NULLIF(TRIM(b.fixed_by), ''), b.updated_by) = ?";
+                $params[] = $fixedBy;
+                $countParams[] = $fixedBy;
+            }
+
+            if ($priority !== '' && in_array($priority, ['high', 'medium', 'low'], true)) {
+                $where[] = "b.priority = ?";
+                $params[] = $priority;
+                $countParams[] = $priority;
+            }
+
+            if ($search !== '') {
+                $where[] = "(b.title LIKE ? OR b.description LIKE ? OR CAST(b.id AS CHAR) LIKE ?)";
+                $like = '%' . $search . '%';
+                $params[] = $like;
+                $params[] = $like;
+                $params[] = $like;
+                $countParams[] = $like;
+                $countParams[] = $like;
+                $countParams[] = $like;
+            }
+
+            if ($bugTypeId !== '' && $this->bugTypesTablesExist()) {
+                $where[] = "EXISTS (
+                    SELECT 1 FROM bug_bug_types j
+                    WHERE j.bug_id = b.id AND j.bug_type_id = ?
+                )";
+                $params[] = $bugTypeId;
+                $countParams[] = $bugTypeId;
             }
 
             if (!empty($where)) {
@@ -2152,52 +2232,41 @@ class BugController extends BaseAPI {
                 $countQuery .= $whereSql;
             }
 
-            // Add sorting
             $query .= " ORDER BY b.created_at DESC";
 
-            // Add pagination
             $offset = ($page - 1) * $limit;
             $query .= " LIMIT ? OFFSET ?";
-            $params[] = (int)$limit;
-            $params[] = (int)$offset;
+            $params[] = (int) $limit;
+            $params[] = (int) $offset;
 
-            // Execute both queries using prepared statements with caching
-            $totalRow = $this->fetchSingleCached(
-                $countQuery,
-                $countParams,
-                'bug_count_' . ($projectId ?? 'all') . '_' . ($status ?? 'all') . '_' . ($userId ?? 'all'),
-                600
-            );
-            $totalBugs = (int)($totalRow['total'] ?? 0);
+            $countStmt = $this->conn->prepare($countQuery);
+            $countStmt->execute($countParams);
+            $totalBugs = (int) ($countStmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
 
-            // Execute main query
             $stmt = $this->conn->prepare($query);
             $stmt->execute($params);
             $bugs = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-            // Optimized attachment fetching - get all attachments in one query
             if (!empty($bugs)) {
                 $bugIds = array_column($bugs, 'id');
                 $placeholders = str_repeat('?,', count($bugIds) - 1) . '?';
-                
+
                 $this->ensureTesterRetestColumns();
                 $durationSelect = $this->bugAttachmentsHasDurationColumn() ? ', duration' : '';
                 $attachmentQuery = "SELECT bug_id, id, file_name, file_path, file_type{$durationSelect}
                                   FROM bug_attachments 
                                   WHERE bug_id IN ($placeholders)
                                   ORDER BY bug_id, id";
-                
+
                 $attachmentStmt = $this->conn->prepare($attachmentQuery);
                 $attachmentStmt->execute($bugIds);
                 $allAttachments = $attachmentStmt->fetchAll(PDO::FETCH_ASSOC);
-                
-                // Group attachments by bug_id
+
                 $attachmentsByBug = [];
                 foreach ($allAttachments as $attachment) {
                     $attachmentsByBug[$attachment['bug_id']][] = $attachment;
                 }
-                
-                // Assign attachments to bugs
+
                 foreach ($bugs as &$bug) {
                     $bug['attachments'] = $attachmentsByBug[$bug['id']] ?? [];
                 }
@@ -2205,21 +2274,85 @@ class BugController extends BaseAPI {
                 $this->attachBugTypesToBugs($bugs);
             }
 
+            // Facet totals for badges (same project/access scope; not narrowed by list filters)
+            $facetWhere = [];
+            $facetParams = [];
+            if ($accessUserId) {
+                $facetWhere[] = "b.project_id IN (
+                    SELECT DISTINCT project_id FROM project_members WHERE user_id = ?
+                    UNION
+                    SELECT DISTINCT id FROM projects WHERE created_by = ?
+                )";
+                $facetParams[] = $accessUserId;
+                $facetParams[] = $accessUserId;
+            }
+            if ($projectId) {
+                $facetWhere[] = "b.project_id = ?";
+                $facetParams[] = $projectId;
+            }
+            $facetSql = !empty($facetWhere) ? (" WHERE " . implode(" AND ", $facetWhere)) : "";
+
+            $openRow = $this->conn->prepare(
+                "SELECT COUNT(*) as total FROM bugs b{$facetSql}" .
+                (!empty($facetWhere) ? " AND " : " WHERE ") .
+                "b.status IN ('pending', 'in_progress')"
+            );
+            $openParams = $facetParams;
+            $openRow->execute($openParams);
+            $openCount = (int) ($openRow->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
+
+            $resolvedRow = $this->conn->prepare(
+                "SELECT COUNT(*) as total FROM bugs b{$facetSql}" .
+                (!empty($facetWhere) ? " AND " : " WHERE ") .
+                "b.status IN ('fixed', 'rejected')"
+            );
+            $resolvedRow->execute($facetParams);
+            $resolvedCount = (int) ($resolvedRow->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
+
+            $myOpenCount = 0;
+            $myResolvedCount = 0;
+            if ($facetUserId) {
+                $myOpenStmt = $this->conn->prepare(
+                    "SELECT COUNT(*) as total FROM bugs b{$facetSql}" .
+                    (!empty($facetWhere) ? " AND " : " WHERE ") .
+                    "b.status IN ('pending', 'in_progress') AND b.reported_by = ?"
+                );
+                $myOpenParams = array_merge($facetParams, [$facetUserId]);
+                $myOpenStmt->execute($myOpenParams);
+                $myOpenCount = (int) ($myOpenStmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
+
+                $myResolvedStmt = $this->conn->prepare(
+                    "SELECT COUNT(*) as total FROM bugs b{$facetSql}" .
+                    (!empty($facetWhere) ? " AND " : " WHERE ") .
+                    "b.status IN ('fixed', 'rejected')
+                     AND COALESCE(NULLIF(TRIM(b.fixed_by), ''), b.updated_by) = ?"
+                );
+                $myResolvedParams = array_merge($facetParams, [$facetUserId]);
+                $myResolvedStmt->execute($myResolvedParams);
+                $myResolvedCount = (int) ($myResolvedStmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
+            }
+
             $response = [
                 'bugs' => $bugs,
                 'pagination' => [
                     'currentPage' => $page,
-                    'totalPages' => ceil($totalBugs / $limit),
+                    'totalPages' => $limit > 0 ? (int) ceil($totalBugs / $limit) : 1,
                     'totalBugs' => $totalBugs,
-                    'limit' => $limit
-                ]
+                    'limit' => $limit,
+                    'pendingBugsCount' => $openCount,
+                    'counts' => [
+                        'open' => $openCount,
+                        'resolved' => $resolvedCount,
+                        'myOpen' => $myOpenCount,
+                        'myResolved' => $myResolvedCount,
+                    ],
+                ],
             ];
 
-            // Cache the result for 5 minutes
-            $this->setCache($cacheKey, $response, 300);
+            $this->setCache($cacheKey, $response, 120);
 
             return $response;
-            
+
         } catch (PDOException $e) {
             error_log('getAllBugs PDO error: ' . $e->getMessage());
             throw new Exception("Failed to retrieve bugs: " . $e->getMessage());
