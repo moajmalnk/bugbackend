@@ -1682,18 +1682,33 @@ function formatCheckInNotificationForWhatsApp(
     $date,
     $plannedProjects = null,
     $plannedWork = null,
-    $yesterdaySummary = null
+    $yesterdaySummary = null,
+    $attendanceMeta = null
 ) {
+    require_once __DIR__ . '/attendance_messages.php';
+
     $todayLabel = date('D, M j, Y', strtotime($date));
     $checkInLabel = br_format_whatsapp_time($checkInTime);
     $projectNames = br_normalize_planned_project_names($plannedProjects);
+    $meta = is_array($attendanceMeta) ? $attendanceMeta : [];
 
-    $message = "✅ *CHECK-IN*\n";
+    $modeShort = br_attendance_work_mode_short($meta['work_mode'] ?? null);
+    $isLate = !empty($meta['is_late']);
+    $headline = $isLate ? 'LATE CHECK-IN' : 'CHECK-IN';
+
+    $message = "✅ *" . $headline . "*\n";
     $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
-    $message .= "*" . $username . "* has checked in for the work day.\n\n";
+    $message .= "*" . $username . "* started the work day.\n\n";
 
     $message .= "📅 *Today* — " . $todayLabel . "\n";
     $message .= "🕘 Check-in: *" . $checkInLabel . "*\n";
+
+    $metaBlock = br_attendance_whatsapp_meta_block($meta);
+    if ($metaBlock !== '') {
+        $message .= $metaBlock . "\n";
+    } elseif ($modeShort !== '—') {
+        $message .= "📍 Location: *" . $modeShort . "*\n";
+    }
 
     if (!empty($projectNames) || (!empty($plannedWork) && trim((string)$plannedWork) !== '')) {
         $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
@@ -1729,19 +1744,23 @@ function formatCheckInNotificationForWhatsApp(
         $yOut = br_format_whatsapp_time($yesterdaySummary['check_out_time'] ?? null);
         $yHours = br_format_whatsapp_hours($yesterdaySummary['hours_today'] ?? 0);
         $yOt = br_format_whatsapp_hours($yesterdaySummary['overtime_hours'] ?? 0);
+        $yMode = br_attendance_work_mode_short($yesterdaySummary['work_mode'] ?? null);
 
         $message .= " — " . $yDateLabel . "\n";
         $message .= "🕘 In: *" . $yIn . "*\n";
         $message .= "🕕 Out: *" . $yOut . "*\n";
+        if ($yMode !== '—') {
+            $message .= "📍 Location: *" . $yMode . "*\n";
+        }
         $message .= "⏱ Hours worked: *" . $yHours . "*\n";
-        $message .= "⚡ Overtime (OT): *" . $yOt . "*\n";
+        $message .= "⚡ Overtime: *" . $yOt . "*\n";
     } else {
         $message .= "\n";
         $message .= "_No attendance record for yesterday._\n";
     }
 
     $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
-    $message .= "🐞 _BugRicer · Automated Attendance_";
+    $message .= "🐞 _BugRicer · Attendance · Asia/Kolkata_";
 
     return $message;
 }
@@ -1765,7 +1784,8 @@ function sendCheckInNotificationWhatsApp(
     $date,
     $plannedProjects = null,
     $plannedWork = null,
-    $yesterdaySummary = null
+    $yesterdaySummary = null,
+    $attendanceMeta = null
 ) {
     try {
         error_log("📱 sendCheckInNotificationWhatsApp called for user: $username");
@@ -1781,7 +1801,8 @@ function sendCheckInNotificationWhatsApp(
             $date,
             $plannedProjects,
             $plannedWork,
-            $yesterdaySummary
+            $yesterdaySummary,
+            $attendanceMeta
         );
 
         error_log("📱 Sending check-in notification WhatsApp to admin: $adminPhone");
