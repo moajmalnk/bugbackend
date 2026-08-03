@@ -1406,6 +1406,8 @@ class BugController extends BaseAPI {
                     'seq' => $seq++,
                     'source' => 'raised',
                     'actor_name' => $bug['reporter_name'] ?? null,
+                    'event_label' => 'raised',
+                    'reason' => null,
                 ];
             }
 
@@ -1453,6 +1455,20 @@ class BugController extends BaseAPI {
                     continue;
                 }
 
+                $eventLabel = 'status_changed';
+                $fromNorm = strtolower((string) ($fromStatus ?: $lastStatus));
+                $toNorm = strtolower($toStatus);
+                $closedStatuses = ['fixed', 'declined', 'rejected'];
+                if (in_array($fromNorm, $closedStatuses, true) && in_array($toNorm, ['pending', 'in_progress'], true)) {
+                    $eventLabel = 'reopened';
+                } elseif ($toNorm === 'fixed') {
+                    $eventLabel = 'fixed';
+                } elseif ($type === 'bug_created' || $type === 'bug_reported' || $fromStatus === null) {
+                    $eventLabel = 'raised';
+                } elseif (!empty($meta['event']) && $meta['event'] === 'reopened') {
+                    $eventLabel = 'reopened';
+                }
+
                 $events[] = [
                     'status' => $toStatus,
                     'from_status' => $fromStatus ?: $lastStatus,
@@ -1461,6 +1477,8 @@ class BugController extends BaseAPI {
                     'seq' => $seq++,
                     'source' => $type ?: 'activity',
                     'actor_name' => $activity['actor_name'] ?? null,
+                    'event_label' => $eventLabel,
+                    'reason' => $meta['reason'] ?? null,
                 ];
                 $lastStatus = $toStatus;
             }
@@ -1468,6 +1486,15 @@ class BugController extends BaseAPI {
             if ($status && $status !== $lastStatus) {
                 $updatedTs = $parseTs($updatedAt) ?: $raisedTs;
                 if ($updatedTs !== null) {
+                    $fromNorm = strtolower($lastStatus);
+                    $toNorm = strtolower($status);
+                    $closedStatuses = ['fixed', 'declined', 'rejected'];
+                    $inferredLabel = 'status_changed';
+                    if (in_array($fromNorm, $closedStatuses, true) && in_array($toNorm, ['pending', 'in_progress'], true)) {
+                        $inferredLabel = 'reopened';
+                    } elseif ($toNorm === 'fixed') {
+                        $inferredLabel = 'fixed';
+                    }
                     $events[] = [
                         'status' => $status,
                         'from_status' => $lastStatus,
@@ -1476,6 +1503,8 @@ class BugController extends BaseAPI {
                         'seq' => $seq++,
                         'source' => 'inferred',
                         'actor_name' => $bug['updated_by_name'] ?? ($bug['fixed_by_name'] ?? null),
+                        'event_label' => $inferredLabel,
+                        'reason' => null,
                     ];
                 }
             }
@@ -1532,6 +1561,8 @@ class BugController extends BaseAPI {
                     'is_current' => $isCurrent,
                     'source' => $deduped[$i]['source'] ?? 'activity',
                     'actor_name' => $deduped[$i]['actor_name'] ?? null,
+                    'event_label' => $deduped[$i]['event_label'] ?? null,
+                    'reason' => $deduped[$i]['reason'] ?? null,
                 ];
             }
 
@@ -1546,6 +1577,8 @@ class BugController extends BaseAPI {
                     'is_current' => true,
                     'source' => 'current',
                     'actor_name' => $bug['reporter_name'] ?? null,
+                    'event_label' => 'raised',
+                    'reason' => null,
                 ];
             }
 
@@ -2852,26 +2885,55 @@ class BugController extends BaseAPI {
 
             $this->conn->commit();
 
+            $newStatus = (string) ($updatedBug['status'] ?? '');
+            $actorForLog = (string) ($data['updated_by'] ?? '');
+
             // Log activity (non-blocking, but synchronous for now)
             try {
                 $logger = ActivityLogger::getInstance();
                 $logger->logBugUpdated(
-                    $data['updated_by'],
+                    $actorForLog,
                     $data['project_id'] ?? $updatedBug['project_id'],
                     $data['id'],
                     $updatedBug['title'],
                     [
                         'priority' => $data['priority'] ?? $updatedBug['priority'],
-                        'status' => $data['status'] ?? $updatedBug['status'],
+                        'status' => $newStatus !== '' ? $newStatus : ($data['status'] ?? $updatedBug['status']),
                         'updated_fields' => array_keys($data)
                     ]
                 );
+
+                // Explicit status history for lifecycle timeline (fixed → reopen → fixed …)
+                if ($previousStatus !== '' && $newStatus !== '' && $previousStatus !== $newStatus) {
+                    $statusMeta = [];
+                    if (!empty($reopenedAfterFailedVerification)) {
+                        $statusMeta['reason'] = 'tester_verification_failed';
+                        $statusMeta['event'] = 'reopened';
+                    }
+                    if ($newStatus === 'fixed') {
+                        $logger->logBugFixed(
+                            $actorForLog,
+                            $updatedBug['project_id'],
+                            $data['id'],
+                            $updatedBug['title'],
+                            $statusMeta
+                        );
+                    }
+                    $logger->logBugStatusChanged(
+                        $actorForLog,
+                        $updatedBug['project_id'],
+                        $data['id'],
+                        $updatedBug['title'],
+                        $previousStatus,
+                        $newStatus,
+                        $statusMeta
+                    );
+                }
             } catch (Exception $e) {
                 error_log("Failed to log bug update activity: " . $e->getMessage());
             }
 
             // Store notification data when status transitions to fixed
-            $newStatus = (string) ($data['status'] ?? $updatedBug['status'] ?? '');
             if ($newStatus === 'fixed' && $previousStatus !== 'fixed') {
                 $updatedBug['_notification_data'] = [
                     'status' => 'fixed',
@@ -3258,22 +3320,53 @@ class BugController extends BaseAPI {
             // Log activity (non-blocking, but synchronous for now)
             try {
                 $logger = ActivityLogger::getInstance();
+                $actorForLog = (string) ($data['updated_by'] ?? $userId ?? '');
+                $newStatus = (string) ($updatedBug['status'] ?? ($data['status'] ?? ''));
+                $projectIdForLog = $updatedBug['project_id'] ?? ($data['project_id'] ?? null);
+                $titleForLog = $updatedBug['title'] ?? ($data['title'] ?? 'Bug');
+
                 $logger->logBugUpdated(
-                    $data['updated_by'] ?? $userId,
-                    $data['project_id'],
+                    $actorForLog,
+                    $projectIdForLog,
                     $data['id'],
-                    $data['title'] ?? $updatedBug['title'] ?? 'Bug',
+                    $titleForLog,
                     [
-                        'priority' => $data['priority'] ?? null,
-                        'status' => $data['status'] ?? null,
+                        'priority' => $data['priority'] ?? ($updatedBug['priority'] ?? null),
+                        'status' => $newStatus !== '' ? $newStatus : null,
                     ]
                 );
+
+                if ($previousStatus !== '' && $newStatus !== '' && $previousStatus !== $newStatus) {
+                    $statusMeta = [];
+                    if (!empty($reopenedAfterFailedVerification)) {
+                        $statusMeta['reason'] = 'tester_verification_failed';
+                        $statusMeta['event'] = 'reopened';
+                    }
+                    if ($newStatus === 'fixed') {
+                        $logger->logBugFixed(
+                            $actorForLog,
+                            $projectIdForLog,
+                            $data['id'],
+                            $titleForLog,
+                            $statusMeta
+                        );
+                    }
+                    $logger->logBugStatusChanged(
+                        $actorForLog,
+                        $projectIdForLog,
+                        $data['id'],
+                        $titleForLog,
+                        $previousStatus,
+                        $newStatus,
+                        $statusMeta
+                    );
+                }
             } catch (Exception $e) {
                 error_log("Failed to log bug update activity: " . $e->getMessage());
             }
 
             // Store notification data when status transitions to fixed
-            $newStatus = (string) ($data['status'] ?? $updatedBug['status'] ?? '');
+            $newStatus = (string) ($updatedBug['status'] ?? ($data['status'] ?? ''));
             if ($newStatus === 'fixed' && $previousStatus !== 'fixed') {
                 $updatedBug['_notification_data'] = [
                     'status' => 'fixed',
