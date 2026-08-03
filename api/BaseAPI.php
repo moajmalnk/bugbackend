@@ -159,6 +159,40 @@ class BaseAPI {
         }
     }
 
+    /**
+     * Reject JWTs whose auth_epoch no longer matches users.auth_token_epoch
+     * (used by "Logout all devices").
+     */
+    protected function ensureAuthTokenStillValid($decoded) {
+        if (!$decoded || !isset($decoded->user_id)) {
+            return;
+        }
+        // Impersonation / dashboard-access tokens are short-lived admin tools — skip epoch.
+        if (isset($decoded->purpose) && $decoded->purpose === 'dashboard_access') {
+            return;
+        }
+        if (!$this->dbColumnExists('users', 'auth_token_epoch')) {
+            return;
+        }
+        $stmt = $this->conn->prepare("SELECT auth_token_epoch FROM users WHERE id = ? LIMIT 1");
+        $stmt->execute([$decoded->user_id]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            $this->sendJsonResponse(403, "Account no longer available.", null, false, 'ACCOUNT_REVOKED');
+        }
+        $dbEpoch = (int) ($row['auth_token_epoch'] ?? 0);
+        $tokenEpoch = isset($decoded->auth_epoch) ? (int) $decoded->auth_epoch : 0;
+        if ($tokenEpoch !== $dbEpoch) {
+            $this->sendJsonResponse(
+                401,
+                "Session ended on all devices. Please sign in again.",
+                null,
+                false,
+                'SESSION_REVOKED'
+            );
+        }
+    }
+
     protected function dbTableExists($tableName) {
         $stmt = $this->conn->prepare("
             SELECT COUNT(*)
@@ -248,6 +282,7 @@ class BaseAPI {
             if ($cachedResult !== null) {
                 if (isset($cachedResult->user_id)) {
                     $this->ensureUserAccountAllowed($cachedResult->user_id);
+                    $this->ensureAuthTokenStillValid($cachedResult);
                 }
                 return $cachedResult;
             }
@@ -317,6 +352,7 @@ class BaseAPI {
         
             if ($result && isset($result->user_id)) {
                 $this->ensureUserAccountAllowed($result->user_id);
+                $this->ensureAuthTokenStillValid($result);
             }
 
             // Cache valid tokens for 5 minutes (keyed by token + impersonation)

@@ -70,8 +70,8 @@ try {
     $status = isset($_GET['status']) && $_GET['status'] !== '' ? $_GET['status'] : null;
     $userId = isset($_GET['user_id']) && $_GET['user_id'] !== '' ? $_GET['user_id'] : null;
     
-    // Create cache key for this request
-    $cacheKey = 'user_bugs_' . $user_id . '_' . ($projectId ?? 'all') . '_' . $page . '_' . $limit . '_' . ($status ?? 'all') . '_' . ($userId ?? 'all');
+    // Create cache key for this request (v2 includes fixer/updater display names)
+    $cacheKey = 'user_bugs_v2_' . $user_id . '_' . ($projectId ?? 'all') . '_' . $page . '_' . $limit . '_' . ($status ?? 'all') . '_' . ($userId ?? 'all');
     $cachedResult = $api->getCache($cacheKey);
     
     if ($cachedResult !== null) {
@@ -132,10 +132,14 @@ try {
     $bugsQuery = "
         SELECT DISTINCT b.*, 
                u.username as reporter_name,
-               p.name as project_name
+               p.name as project_name,
+               updater.username as updated_by_name,
+               fixer.username as fixed_by_name
         FROM bugs b
         LEFT JOIN users u ON b.reported_by = u.id
         LEFT JOIN projects p ON b.project_id = p.id
+        LEFT JOIN users updater ON b.updated_by = updater.id
+        LEFT JOIN users fixer ON b.fixed_by = fixer.id
         WHERE b.project_id IN (
             SELECT DISTINCT project_id FROM project_members WHERE user_id = ?
             UNION

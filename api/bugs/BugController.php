@@ -980,11 +980,13 @@ class BugController extends BaseAPI {
             $query = "SELECT b.*, 
                             p.name as project_name,
                             reporter.username as reporter_name,
-                            updater.username as updated_by_name
+                            updater.username as updated_by_name,
+                            fixer.username as fixed_by_name
                      FROM bugs b
                      LEFT JOIN projects p ON b.project_id = p.id
                      LEFT JOIN users reporter ON b.reported_by = reporter.id
-                     LEFT JOIN users updater ON b.updated_by = updater.id";
+                     LEFT JOIN users updater ON b.updated_by = updater.id
+                     LEFT JOIN users fixer ON b.fixed_by = fixer.id";
                      
             if ($projectId) {
                 $query .= " WHERE b.project_id = ?";
@@ -2020,8 +2022,8 @@ class BugController extends BaseAPI {
                 throw new Exception("Database connection failed");
             }
 
-            // Create cache key for this query
-            $cacheKey = 'bugs_' . ($projectId ?? 'all') . '_' . $page . '_' . $limit . '_' . ($status ?? 'all') . '_' . ($userId ?? 'all');
+            // Create cache key for this query (v2 includes fixer/updater display names)
+            $cacheKey = 'bugs_v2_' . ($projectId ?? 'all') . '_' . $page . '_' . $limit . '_' . ($status ?? 'all') . '_' . ($userId ?? 'all');
             $cachedResult = $this->getCache($cacheKey);
             
             if ($cachedResult !== null) {
@@ -2031,10 +2033,14 @@ class BugController extends BaseAPI {
             // Optimized query using JOINs to get everything in fewer queries
             $query = "SELECT b.*, 
                      u.username as reporter_name,
-                     p.name as project_name
+                     p.name as project_name,
+                     updater.username as updated_by_name,
+                     fixer.username as fixed_by_name
                      FROM bugs b
                      LEFT JOIN users u ON b.reported_by = u.id
-                     LEFT JOIN projects p ON b.project_id = p.id";
+                     LEFT JOIN projects p ON b.project_id = p.id
+                     LEFT JOIN users updater ON b.updated_by = updater.id
+                     LEFT JOIN users fixer ON b.fixed_by = fixer.id";
             
             $countQuery = "SELECT COUNT(*) as total FROM bugs b";
             $where = [];

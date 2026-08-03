@@ -72,23 +72,67 @@ class Utils {
         return (int) $user['account_active'] === 1;
     }
     
-    public static function generateJWT($user_id, $username, $role) {
+    public static function generateJWT($user_id, $username, $role, $auth_epoch = null) {
         $issued_at = time();
         if ($role === 'admin') {
             $expiration = $issued_at + (14 * 24 * 60 * 60); // 14 days
         } else {
             $expiration = $issued_at + (14 * 24 * 60 * 60); // 14 days
         }
+        if ($auth_epoch === null) {
+            $auth_epoch = self::getUserAuthTokenEpoch($user_id);
+        }
         $payload = array(
             "iat" => $issued_at,
             "exp" => $expiration,
             "user_id" => $user_id,
             "username" => $username,
-            "role" => $role
+            "role" => $role,
+            "auth_epoch" => (int) $auth_epoch,
         );
         $secret = self::getJwtSecret();
         error_log("Generating JWT for user: " . $username . " in environment: " . (self::isLocalEnvironment() ? "Local" : "Production") . ", role: " . $role . ", exp: " . date('c', $expiration));
         return JWT::encode($payload, $secret, 'HS256');
+    }
+
+    /**
+     * Current auth_token_epoch for a user (0 if column/user missing).
+     */
+    public static function getUserAuthTokenEpoch($user_id) {
+        try {
+            require_once __DIR__ . '/database.php';
+            $conn = Database::getInstance()->getConnection();
+            $colCheck = $conn->query("SHOW COLUMNS FROM users LIKE 'auth_token_epoch'");
+            if (!$colCheck || $colCheck->rowCount() === 0) {
+                return 0;
+            }
+            $stmt = $conn->prepare("SELECT auth_token_epoch FROM users WHERE id = ? LIMIT 1");
+            $stmt->execute([$user_id]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            return $row ? (int) ($row['auth_token_epoch'] ?? 0) : 0;
+        } catch (Exception $e) {
+            error_log("getUserAuthTokenEpoch: " . $e->getMessage());
+            return 0;
+        }
+    }
+
+    /**
+     * Ensure users.auth_token_epoch exists (portable, safe to re-run).
+     */
+    public static function ensureAuthTokenEpochColumn(PDO $conn) {
+        try {
+            $colCheck = $conn->query("SHOW COLUMNS FROM users LIKE 'auth_token_epoch'");
+            if ($colCheck && $colCheck->rowCount() > 0) {
+                return true;
+            }
+            $conn->exec(
+                "ALTER TABLE `users` ADD COLUMN `auth_token_epoch` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Incremented to revoke all JWT sessions'"
+            );
+            return true;
+        } catch (Exception $e) {
+            error_log("ensureAuthTokenEpochColumn: " . $e->getMessage());
+            return false;
+        }
     }
     
     public static function validateJWT($token) {
