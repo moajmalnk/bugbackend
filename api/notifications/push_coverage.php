@@ -81,6 +81,51 @@ try {
     $activeWhereBare = $hasIsActiveColumn ? 'is_active = 1' : '1=1';
     $pwaWhereT = $hasPwaInstalledColumn ? 'COALESCE(t.pwa_installed, 0) = 1' : '1=0';
 
+    // FCM rotates tokens often; old hashes stay as separate active rows.
+    // Keep one active token per user + browser + OS before counting.
+    if ($hasTokenTable && $hasIsActiveColumn) {
+        try {
+            $conn->exec(
+                "UPDATE user_fcm_tokens t
+                 INNER JOIN (
+                     SELECT id
+                     FROM (
+                         SELECT id,
+                                ROW_NUMBER() OVER (
+                                    PARTITION BY user_id,
+                                                 COALESCE(browser_name, ''),
+                                                 COALESCE(os_name, '')
+                                    ORDER BY last_used DESC, id DESC
+                                ) AS rn
+                         FROM user_fcm_tokens
+                         WHERE is_active = 1
+                     ) ranked
+                     WHERE rn > 1
+                 ) dup ON dup.id = t.id
+                 SET t.is_active = 0"
+            );
+        } catch (Throwable $dedupeErr) {
+            try {
+                $conn->exec(
+                    "UPDATE user_fcm_tokens t
+                     INNER JOIN user_fcm_tokens newer
+                       ON newer.user_id = t.user_id
+                      AND COALESCE(newer.browser_name, '') = COALESCE(t.browser_name, '')
+                      AND COALESCE(newer.os_name, '') = COALESCE(t.os_name, '')
+                      AND newer.is_active = 1
+                      AND t.is_active = 1
+                      AND (
+                        newer.last_used > t.last_used
+                        OR (newer.last_used = t.last_used AND newer.id > t.id)
+                      )
+                     SET t.is_active = 0"
+                );
+            } catch (Throwable $fallbackErr) {
+                error_log('push_coverage token dedupe: ' . $fallbackErr->getMessage());
+            }
+        }
+    }
+
     if ($hasTokenTable) {
         $summarySql = "
             SELECT
@@ -244,6 +289,9 @@ try {
         }
         unset($deviceRow);
 
+        // Count logical devices (browser + OS), not every rotated FCM token row.
+        $deviceCountExpr = "COUNT(DISTINCT CONCAT(COALESCE(t.browser_name, ''), '|', COALESCE(t.os_name, ''), '|', COALESCE(t.device_type, '')))";
+
         if ($hasPwaInstalledColumn) {
             $pwaInstalledUsersSql = "
                 SELECT
@@ -251,7 +299,7 @@ try {
                     u.username,
                     u.email,
                     {$pushSelect},
-                    COUNT(*) AS device_count,
+                    {$deviceCountExpr} AS device_count,
                     MAX(t.last_used) AS last_used
                 FROM user_fcm_tokens t
                 INNER JOIN users u ON u.id = t.user_id
@@ -266,6 +314,7 @@ try {
             $pwaInstalledUsers = $pwaInstalledUsersStmt ? $pwaInstalledUsersStmt->fetchAll(PDO::FETCH_ASSOC) : [];
             foreach ($pwaInstalledUsers as &$pu) {
                 $pu['push_notifications_enabled'] = (int) ($pu['push_notifications_enabled'] ?? 1) === 1;
+                $pu['device_count'] = (int) ($pu['device_count'] ?? 0);
             }
             unset($pu);
         }
@@ -277,7 +326,8 @@ try {
                 u.email,
                 {$pushSelect},
                 (
-                    SELECT COUNT(*) FROM user_fcm_tokens t
+                    SELECT {$deviceCountExpr}
+                    FROM user_fcm_tokens t
                     WHERE t.user_id = u.id AND {$activeWhereBare}
                 ) AS device_count,
                 (
@@ -297,7 +347,7 @@ try {
                     u.username,
                     u.email,
                     1 AS push_notifications_enabled,
-                    COUNT(*) AS device_count,
+                    {$deviceCountExpr} AS device_count,
                     MAX(t.last_used) AS last_used
                 FROM user_fcm_tokens t
                 INNER JOIN users u ON u.id = t.user_id

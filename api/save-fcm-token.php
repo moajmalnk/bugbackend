@@ -233,6 +233,30 @@ try {
             $upsertStmt = $conn->prepare($sql);
             $upsertStmt->execute($values);
             $savedToTable = true;
+
+            // FCM issues a new token hash on refresh; keep only the latest
+            // active token per user + browser + OS so device counts stay accurate.
+            if (tableHasColumn($conn, 'user_fcm_tokens', 'is_active')) {
+                try {
+                    $deactivate = $conn->prepare(
+                        "UPDATE user_fcm_tokens
+                         SET is_active = 0
+                         WHERE user_id = ?
+                           AND is_active = 1
+                           AND token_hash <> ?
+                           AND COALESCE(browser_name, '') = ?
+                           AND COALESCE(os_name, '') = ?"
+                    );
+                    $deactivate->execute([
+                        $userId,
+                        $tokenHash,
+                        (string) $browserName,
+                        (string) $osName,
+                    ]);
+                } catch (Throwable $deactivateError) {
+                    error_log('save-fcm-token: could not deactivate superseded tokens: ' . $deactivateError->getMessage());
+                }
+            }
         } catch (Throwable $upsertError) {
             error_log("save-fcm-token: user_fcm_tokens upsert failed, continuing with users.fcm_token update: " . $upsertError->getMessage());
         }
