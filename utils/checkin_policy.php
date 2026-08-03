@@ -1,12 +1,26 @@
 <?php
 /**
  * Why: Company check-in policy — 10:00 AM IST cutoff (Mon–Sat), Sunday holiday
- * (anytime, never late), Office/WFH mode, and rolling late strikes that force
- * Office-only for the next calendar week after 3 unconsumed lates.
+ * (anytime, never late), Office/WFH mode, rolling late strikes that force
+ * Office-only for the next calendar week after 3 unconsumed lates, and
+ * Office geofence at Wired In Coworks (500 m).
  */
 
 if (!defined('BR_CHECKIN_LATE_LIMIT')) {
     define('BR_CHECKIN_LATE_LIMIT', 3);
+}
+
+if (!defined('BR_OFFICE_LAT')) {
+    define('BR_OFFICE_LAT', 10.98738553867724);
+}
+if (!defined('BR_OFFICE_LNG')) {
+    define('BR_OFFICE_LNG', 75.97612159776808);
+}
+if (!defined('BR_OFFICE_RADIUS_M')) {
+    define('BR_OFFICE_RADIUS_M', 500);
+}
+if (!defined('BR_OFFICE_LABEL')) {
+    define('BR_OFFICE_LABEL', 'Wired In Coworks, Kottakkal');
 }
 
 function br_checkin_cutoff_time(): string
@@ -20,7 +34,93 @@ function br_checkin_late_limit(): int
 }
 
 /**
- * Ensure late/WFH columns and restrictions table exist (safe to call repeatedly).
+ * @return array{lat:float,lng:float}
+ */
+function br_office_coords(): array
+{
+    return [
+        'lat' => (float)BR_OFFICE_LAT,
+        'lng' => (float)BR_OFFICE_LNG,
+    ];
+}
+
+function br_office_radius_m(): int
+{
+    return (int)BR_OFFICE_RADIUS_M;
+}
+
+function br_office_label(): string
+{
+    return (string)BR_OFFICE_LABEL;
+}
+
+/**
+ * Great-circle distance in meters (Haversine).
+ */
+function br_haversine_meters(float $lat1, float $lng1, float $lat2, float $lng2): float
+{
+    $earth = 6371000.0;
+    $phi1 = deg2rad($lat1);
+    $phi2 = deg2rad($lat2);
+    $dPhi = deg2rad($lat2 - $lat1);
+    $dLambda = deg2rad($lng2 - $lng1);
+    $a = sin($dPhi / 2) ** 2
+        + cos($phi1) * cos($phi2) * sin($dLambda / 2) ** 2;
+    $c = 2 * atan2(sqrt($a), sqrt(max(0.0, 1 - $a)));
+    return $earth * $c;
+}
+
+/**
+ * Why: Server must re-check Office GPS so clients cannot spoof location.
+ *
+ * @return array{ok:bool,distance_m:?float,message:?string}
+ */
+function br_validate_office_location($lat, $lng): array
+{
+    if (!is_numeric($lat) || !is_numeric($lng)) {
+        return [
+            'ok' => false,
+            'distance_m' => null,
+            'message' => 'Office check-in requires a valid location. Enable GPS and try again.',
+        ];
+    }
+
+    $latF = (float)$lat;
+    $lngF = (float)$lng;
+    if ($latF < -90 || $latF > 90 || $lngF < -180 || $lngF > 180) {
+        return [
+            'ok' => false,
+            'distance_m' => null,
+            'message' => 'Invalid GPS coordinates for Office check-in.',
+        ];
+    }
+
+    $office = br_office_coords();
+    $distance = br_haversine_meters($latF, $lngF, $office['lat'], $office['lng']);
+    $radius = br_office_radius_m();
+
+    if ($distance > $radius) {
+        return [
+            'ok' => false,
+            'distance_m' => round($distance, 1),
+            'message' => sprintf(
+                'You are about %.0f m away. Move closer to %s (within %d m) to check in as Office.',
+                $distance,
+                br_office_label(),
+                $radius
+            ),
+        ];
+    }
+
+    return [
+        'ok' => true,
+        'distance_m' => round($distance, 1),
+        'message' => null,
+    ];
+}
+
+/**
+ * Ensure late/WFH/geo columns and restrictions table exist (safe to call repeatedly).
  */
 function br_ensure_checkin_policy_schema(PDO $conn): void
 {
@@ -40,12 +140,30 @@ function br_ensure_checkin_policy_schema(PDO $conn): void
 
         if (!in_array('work_mode', $cols, true)) {
             $conn->exec("ALTER TABLE work_submissions ADD COLUMN work_mode ENUM('office','wfh') NULL DEFAULT NULL AFTER check_in_time");
+            $cols[] = 'work_mode';
         }
         if (!in_array('is_late', $cols, true)) {
             $conn->exec('ALTER TABLE work_submissions ADD COLUMN is_late TINYINT(1) NOT NULL DEFAULT 0 AFTER work_mode');
+            $cols[] = 'is_late';
         }
         if (!in_array('late_strike_consumed', $cols, true)) {
             $conn->exec('ALTER TABLE work_submissions ADD COLUMN late_strike_consumed TINYINT(1) NOT NULL DEFAULT 0 AFTER is_late');
+            $cols[] = 'late_strike_consumed';
+        }
+        if (!in_array('check_in_lat', $cols, true)) {
+            $conn->exec('ALTER TABLE work_submissions ADD COLUMN check_in_lat DECIMAL(10,7) NULL DEFAULT NULL AFTER late_strike_consumed');
+            $cols[] = 'check_in_lat';
+        }
+        if (!in_array('check_in_lng', $cols, true)) {
+            $conn->exec('ALTER TABLE work_submissions ADD COLUMN check_in_lng DECIMAL(10,7) NULL DEFAULT NULL AFTER check_in_lat');
+            $cols[] = 'check_in_lng';
+        }
+        if (!in_array('check_in_accuracy_m', $cols, true)) {
+            $conn->exec('ALTER TABLE work_submissions ADD COLUMN check_in_accuracy_m DECIMAL(8,2) NULL DEFAULT NULL AFTER check_in_lng');
+            $cols[] = 'check_in_accuracy_m';
+        }
+        if (!in_array('check_in_distance_m', $cols, true)) {
+            $conn->exec('ALTER TABLE work_submissions ADD COLUMN check_in_distance_m DECIMAL(8,2) NULL DEFAULT NULL AFTER check_in_accuracy_m');
         }
 
         $conn->exec(
@@ -319,5 +437,9 @@ function br_checkin_policy_status(PDO $conn, $userId, string $date): array
         'office_only_week_end' => $restriction['week_end'] ?? null,
         'upcoming_office_only_week' => $upcoming,
         'work_mode_locked_to' => $officeOnly ? 'office' : null,
+        'office_lat' => br_office_coords()['lat'],
+        'office_lng' => br_office_coords()['lng'],
+        'office_radius_m' => br_office_radius_m(),
+        'office_label' => br_office_label(),
     ];
 }

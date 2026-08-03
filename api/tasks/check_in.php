@@ -106,6 +106,38 @@ class CheckInController extends BaseAPI {
             if ($officeRestriction) {
                 $workMode = 'office';
             }
+
+            // Office geofence — require GPS within 500 m of Wired In Coworks
+            $checkInLat = null;
+            $checkInLng = null;
+            $checkInAccuracy = null;
+            $checkInDistance = null;
+            if ($workMode === 'office') {
+                $latRaw = $input['latitude'] ?? $input['lat'] ?? null;
+                $lngRaw = $input['longitude'] ?? $input['lng'] ?? null;
+                $accuracyRaw = $input['accuracy'] ?? $input['accuracy_m'] ?? null;
+                $geo = br_validate_office_location($latRaw, $lngRaw);
+                if (empty($geo['ok'])) {
+                    $this->sendJsonResponse(
+                        403,
+                        $geo['message'] ?? 'Office check-in requires location at Wired In Coworks.',
+                        [
+                            'office_label' => br_office_label(),
+                            'office_radius_m' => br_office_radius_m(),
+                            'distance_m' => $geo['distance_m'] ?? null,
+                            'office_lat' => br_office_coords()['lat'],
+                            'office_lng' => br_office_coords()['lng'],
+                        ]
+                    );
+                    return;
+                }
+                $checkInLat = round((float)$latRaw, 7);
+                $checkInLng = round((float)$lngRaw, 7);
+                $checkInDistance = $geo['distance_m'];
+                if (is_numeric($accuracyRaw) && (float)$accuracyRaw >= 0) {
+                    $checkInAccuracy = round((float)$accuracyRaw, 2);
+                }
+            }
             
             error_log("🔍 CheckInController - User ID: $userId, Submission Date: $submissionDate");
             error_log("🔍 CheckInController - Planned Projects: " . json_encode($plannedProjects));
@@ -201,7 +233,8 @@ class CheckInController extends BaseAPI {
             // Use check-then-update/insert pattern for better compatibility
             error_log("🔍 CheckInController - Checking for existing record...");
             $checkStmt = $this->conn->prepare(
-                'SELECT id, check_in_time, work_mode, is_late FROM work_submissions WHERE user_id = ? AND submission_date = ?'
+                'SELECT id, check_in_time, work_mode, is_late, check_in_lat, check_in_lng, check_in_accuracy_m, check_in_distance_m
+                 FROM work_submissions WHERE user_id = ? AND submission_date = ?'
             );
             if (!$checkStmt) {
                 throw new Exception("Failed to prepare check statement: " . implode(", ", $this->conn->errorInfo()));
@@ -216,7 +249,7 @@ class CheckInController extends BaseAPI {
             $hadPriorCheckIn = $existing && !empty($existing['check_in_time']);
 
             if ($existing) {
-                // Re-check-in: keep first is_late / work_mode; update planned fields + check_in_time only
+                // Re-check-in: keep first is_late / work_mode / geo; update planned fields + check_in_time only
                 $persistedLate = $hadPriorCheckIn
                     ? (int)($existing['is_late'] ?? 0)
                     : $computedLate;
@@ -238,12 +271,26 @@ class CheckInController extends BaseAPI {
                 $isLate = $persistedLate;
                 $workMode = $persistedMode;
 
+                // Keep first geo proof if already checked in as Office
+                if ($hadPriorCheckIn && $existing['check_in_lat'] !== null && $existing['check_in_lng'] !== null) {
+                    $checkInLat = $existing['check_in_lat'] !== null ? (float)$existing['check_in_lat'] : null;
+                    $checkInLng = $existing['check_in_lng'] !== null ? (float)$existing['check_in_lng'] : null;
+                    $checkInAccuracy = $existing['check_in_accuracy_m'] !== null ? (float)$existing['check_in_accuracy_m'] : null;
+                    $checkInDistance = $existing['check_in_distance_m'] !== null ? (float)$existing['check_in_distance_m'] : null;
+                } elseif ($workMode !== 'office') {
+                    $checkInLat = null;
+                    $checkInLng = null;
+                    $checkInAccuracy = null;
+                    $checkInDistance = null;
+                }
+
                 error_log("🔍 CheckInController - Updating existing record (ID: " . $existing['id'] . ")");
 
                 $updateStmt = $this->conn->prepare(
                     'UPDATE work_submissions
                      SET check_in_time = ?, planned_projects = ?, planned_work = ?, planned_work_status = ?,
-                         work_mode = ?, is_late = ?
+                         work_mode = ?, is_late = ?,
+                         check_in_lat = ?, check_in_lng = ?, check_in_accuracy_m = ?, check_in_distance_m = ?
                      WHERE user_id = ? AND submission_date = ?'
                 );
                 if (!$updateStmt) {
@@ -256,6 +303,10 @@ class CheckInController extends BaseAPI {
                     $plannedWorkStatus,
                     $workMode,
                     $isLate,
+                    $checkInLat,
+                    $checkInLng,
+                    $checkInAccuracy,
+                    $checkInDistance,
                     $userId,
                     $submissionDate,
                 ]);
@@ -276,8 +327,9 @@ class CheckInController extends BaseAPI {
                 $insertStmt = $this->conn->prepare(
                     'INSERT INTO work_submissions
                         (user_id, submission_date, check_in_time, planned_projects, planned_work, planned_work_status,
-                         work_mode, is_late, late_strike_consumed, hours_today)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0)'
+                         work_mode, is_late, late_strike_consumed, hours_today,
+                         check_in_lat, check_in_lng, check_in_accuracy_m, check_in_distance_m)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)'
                 );
                 if (!$insertStmt) {
                     throw new Exception("Failed to prepare insert statement: " . implode(", ", $this->conn->errorInfo()));
@@ -291,6 +343,10 @@ class CheckInController extends BaseAPI {
                     $plannedWorkStatus,
                     $workMode,
                     $isLate,
+                    $checkInLat,
+                    $checkInLng,
+                    $checkInAccuracy,
+                    $checkInDistance,
                 ]);
 
                 if (!$insertResult) {
@@ -368,6 +424,11 @@ class CheckInController extends BaseAPI {
                     ?? ($strikeResult['office_only_week'] ?? null),
                 'warning' => $strikeResult['warning'] ?? null,
                 'restriction_created' => !empty($strikeResult['restriction_created']),
+                'check_in_lat' => $checkInLat,
+                'check_in_lng' => $checkInLng,
+                'check_in_distance_m' => $checkInDistance,
+                'office_label' => br_office_label(),
+                'office_radius_m' => br_office_radius_m(),
             ];
 
             // Notifications before response — sendJsonResponse() exits and skips code below it
