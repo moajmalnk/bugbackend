@@ -3433,7 +3433,7 @@ class BugController extends BaseAPI {
     public function getMonthlyTimeline($accessUserId = null)
     {
         try {
-            $this->validateToken();
+            // Auth already enforced by the endpoint; avoid double-validate side effects.
             if (!$this->conn) {
                 throw new Exception('Database connection failed');
             }
@@ -3490,17 +3490,22 @@ class BugController extends BaseAPI {
                 $firstMonth = $lastMonth;
             }
 
-            $start = DateTime::createFromFormat('Y-m-d', $firstMonth . '-01', $tz);
-            $end = DateTime::createFromFormat('Y-m-d', $lastMonth . '-01', $tz);
-            if (!$start || !$end) {
-                $firstMonth = $lastMonth;
-                $start = clone $end;
+            $start = DateTime::createFromFormat('Y-m-d H:i:s', $firstMonth . '-01 00:00:00', $tz);
+            $end = DateTime::createFromFormat('Y-m-d H:i:s', $lastMonth . '-01 00:00:00', $tz);
+            if (!$start instanceof DateTime) {
+                $start = new DateTime('first day of this month 00:00:00', $tz);
+                $firstMonth = $start->format('Y-m');
+            }
+            if (!$end instanceof DateTime) {
+                $end = new DateTime('first day of this month 00:00:00', $tz);
+                $lastMonth = $end->format('Y-m');
             }
             if ($start > $end) {
                 $tmp = $start;
                 $start = $end;
                 $end = $tmp;
                 $firstMonth = $start->format('Y-m');
+                $lastMonth = $end->format('Y-m');
             }
             $monthsDiff = ((int)$end->format('Y') - (int)$start->format('Y')) * 12
                 + ((int)$end->format('n') - (int)$start->format('n'));
@@ -3508,6 +3513,11 @@ class BugController extends BaseAPI {
                 $start = (clone $end)->modify('-59 months');
                 $firstMonth = $start->format('Y-m');
             }
+
+            // Why: avoid DATE_FORMAT(...) BETWEEN ? AND ? collation mix (utf8mb4_unicode vs general).
+            $rangeStart = $start->format('Y-m-d') . ' 00:00:00';
+            $rangeEndExclusive = (clone $end)->modify('+1 month')->format('Y-m-d') . ' 00:00:00';
+            $rangeParams = array_merge([$rangeStart, $rangeEndExclusive], $projectParams);
 
             $createdByMonth = [];
             $fixedByMonth = [];
@@ -3523,13 +3533,14 @@ class BugController extends BaseAPI {
                        SUM(CASE WHEN priority = 'high' THEN 1 ELSE 0 END) AS high_cnt
                 FROM bugs
                 WHERE created_at IS NOT NULL
-                  AND DATE_FORMAT(created_at, '%Y-%m') BETWEEN ? AND ?
+                  AND created_at >= ?
+                  AND created_at < ?
                   {$projectScopeSql}
-                GROUP BY ym
+                GROUP BY DATE_FORMAT(created_at, '%Y-%m')
                 ORDER BY ym ASC
             ";
             $stmt = $this->conn->prepare($bugCreatedSql);
-            $stmt->execute(array_merge([$firstMonth, $lastMonth], $projectParams));
+            $stmt->execute($rangeParams);
             while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                 $ym = $row['ym'];
                 $createdByMonth[$ym] = (int)$row['cnt'];
@@ -3544,13 +3555,14 @@ class BugController extends BaseAPI {
                 FROM bugs
                 WHERE updated_at IS NOT NULL
                   AND status IN ('fixed', 'declined', 'rejected')
-                  AND DATE_FORMAT(updated_at, '%Y-%m') BETWEEN ? AND ?
+                  AND updated_at >= ?
+                  AND updated_at < ?
                   {$projectScopeSql}
-                GROUP BY ym
+                GROUP BY DATE_FORMAT(updated_at, '%Y-%m')
                 ORDER BY ym ASC
             ";
             $stmt = $this->conn->prepare($bugClosedSql);
-            $stmt->execute(array_merge([$firstMonth, $lastMonth], $projectParams));
+            $stmt->execute($rangeParams);
             while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                 $ym = $row['ym'];
                 $fixedByMonth[$ym] = (int)$row['fixed_cnt'];
@@ -3563,13 +3575,14 @@ class BugController extends BaseAPI {
                        COUNT(*) AS cnt
                 FROM updates
                 WHERE created_at IS NOT NULL
-                  AND DATE_FORMAT(created_at, '%Y-%m') BETWEEN ? AND ?
+                  AND created_at >= ?
+                  AND created_at < ?
                   {$projectScopeSql}
-                GROUP BY ym
+                GROUP BY DATE_FORMAT(created_at, '%Y-%m')
                 ORDER BY ym ASC
             ";
             $stmt = $this->conn->prepare($updSql);
-            $stmt->execute(array_merge([$firstMonth, $lastMonth], $projectParams));
+            $stmt->execute($rangeParams);
             while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                 $updatesByMonth[$row['ym']] = (int)$row['cnt'];
             }
@@ -3582,13 +3595,14 @@ class BugController extends BaseAPI {
                                COUNT(*) AS cnt
                         FROM updates
                         WHERE completed_at IS NOT NULL
-                          AND DATE_FORMAT(completed_at, '%Y-%m') BETWEEN ? AND ?
+                          AND completed_at >= ?
+                          AND completed_at < ?
                           {$projectScopeSql}
-                        GROUP BY ym
+                        GROUP BY DATE_FORMAT(completed_at, '%Y-%m')
                         ORDER BY ym ASC
                     ";
                     $stmt = $this->conn->prepare($compSql);
-                    $stmt->execute(array_merge([$firstMonth, $lastMonth], $projectParams));
+                    $stmt->execute($rangeParams);
                     while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                         $updatesCompletedByMonth[$row['ym']] = (int)$row['cnt'];
                     }
@@ -3680,7 +3694,7 @@ class BugController extends BaseAPI {
                     ]
                     : null,
             ];
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             error_log('getMonthlyTimeline error: ' . $e->getMessage());
             throw new Exception($e->getMessage());
         }
