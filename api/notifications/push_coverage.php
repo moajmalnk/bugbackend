@@ -45,6 +45,22 @@ try {
         throw new Exception('Database connection failed');
     }
 
+    // Ensure admin push preference column exists
+    if (!tableHasColumn($conn, 'users', 'push_notifications_enabled')) {
+        try {
+            $after = tableHasColumn($conn, 'users', 'account_active') ? ' AFTER account_active' : '';
+            $conn->exec(
+                "ALTER TABLE users ADD COLUMN push_notifications_enabled TINYINT(1) NOT NULL DEFAULT 1{$after}"
+            );
+        } catch (Throwable $e) {
+            error_log('push_coverage ensure column: ' . $e->getMessage());
+        }
+    }
+    $hasPushFlag = tableHasColumn($conn, 'users', 'push_notifications_enabled');
+    $pushSelect = $hasPushFlag
+        ? 'COALESCE(u.push_notifications_enabled, 1) AS push_notifications_enabled'
+        : '1 AS push_notifications_enabled';
+
     $summary = [
         'active_users' => 0,
         'users_with_tokens' => 0,
@@ -144,8 +160,24 @@ try {
             $summary['stale_tokens_30d'] = (int) ($row['stale_tokens_30d'] ?? 0);
             $summary['legacy_recovered_tokens'] = (int) ($row['legacy_recovered_tokens'] ?? 0);
             $summary['users_without_tokens'] = max(0, $summary['active_users'] - $summary['users_with_tokens']);
-            $summary['notification_enabled_users'] = $summary['users_with_tokens'];
-            $summary['notification_disabled_users'] = $summary['users_without_tokens'];
+            if ($hasPushFlag) {
+                try {
+                    $en = $conn->query(
+                        "SELECT COUNT(*) FROM users WHERE account_active = 1 AND COALESCE(push_notifications_enabled, 1) = 1"
+                    );
+                    $dis = $conn->query(
+                        "SELECT COUNT(*) FROM users WHERE account_active = 1 AND COALESCE(push_notifications_enabled, 1) = 0"
+                    );
+                    $summary['notification_enabled_users'] = $en ? (int) $en->fetchColumn() : $summary['users_with_tokens'];
+                    $summary['notification_disabled_users'] = $dis ? (int) $dis->fetchColumn() : 0;
+                } catch (Throwable $e) {
+                    $summary['notification_enabled_users'] = $summary['users_with_tokens'];
+                    $summary['notification_disabled_users'] = $summary['users_without_tokens'];
+                }
+            } else {
+                $summary['notification_enabled_users'] = $summary['users_with_tokens'];
+                $summary['notification_disabled_users'] = $summary['users_without_tokens'];
+            }
         }
     }
 
@@ -157,7 +189,7 @@ try {
 
     if ($hasTokenTable) {
         $missingUsersSql = "
-            SELECT u.id, u.username, u.email
+            SELECT u.id, u.username, u.email, {$pushSelect}
             FROM users u
             LEFT JOIN (
                 SELECT DISTINCT user_id
@@ -172,6 +204,10 @@ try {
         ";
         $missingUsersStmt = $conn->query($missingUsersSql);
         $missingUsers = $missingUsersStmt ? $missingUsersStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+        foreach ($missingUsers as &$mu) {
+            $mu['push_notifications_enabled'] = (int) ($mu['push_notifications_enabled'] ?? 1) === 1;
+        }
+        unset($mu);
 
         $deviceBreakdownSql = "
             SELECT
@@ -182,6 +218,7 @@ try {
                 t.device_label,
                 t.platform,
                 t.last_used,
+                {$pushSelect},
                 CASE
                     WHEN (t.device_label LIKE '%Recovered%' OR t.device_label LIKE '%recovered%'
                        OR t.platform LIKE '%legacy%' OR t.platform LIKE '%migration%'
@@ -193,6 +230,7 @@ try {
                     ELSE 0
                 END AS is_stale
             FROM user_fcm_tokens t
+            INNER JOIN users u ON u.id = t.user_id
             WHERE {$activeWhereT}
             ORDER BY t.last_used DESC
             LIMIT 200
@@ -202,6 +240,7 @@ try {
         foreach ($devices as &$deviceRow) {
             $deviceRow['is_legacy'] = (int) ($deviceRow['is_legacy'] ?? 0);
             $deviceRow['is_stale'] = (int) ($deviceRow['is_stale'] ?? 0);
+            $deviceRow['push_notifications_enabled'] = (int) ($deviceRow['push_notifications_enabled'] ?? 1) === 1;
         }
         unset($deviceRow);
 
@@ -211,6 +250,7 @@ try {
                     u.id,
                     u.username,
                     u.email,
+                    {$pushSelect},
                     COUNT(*) AS device_count,
                     MAX(t.last_used) AS last_used
                 FROM user_fcm_tokens t
@@ -224,6 +264,10 @@ try {
             ";
             $pwaInstalledUsersStmt = $conn->query($pwaInstalledUsersSql);
             $pwaInstalledUsers = $pwaInstalledUsersStmt ? $pwaInstalledUsersStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+            foreach ($pwaInstalledUsers as &$pu) {
+                $pu['push_notifications_enabled'] = (int) ($pu['push_notifications_enabled'] ?? 1) === 1;
+            }
+            unset($pu);
         }
 
         $notificationEnabledUsersSql = "
@@ -231,23 +275,59 @@ try {
                 u.id,
                 u.username,
                 u.email,
-                COUNT(*) AS device_count,
-                MAX(t.last_used) AS last_used
-            FROM user_fcm_tokens t
-            INNER JOIN users u ON u.id = t.user_id
+                {$pushSelect},
+                (
+                    SELECT COUNT(*) FROM user_fcm_tokens t
+                    WHERE t.user_id = u.id AND {$activeWhereBare}
+                ) AS device_count,
+                (
+                    SELECT MAX(t.last_used) FROM user_fcm_tokens t
+                    WHERE t.user_id = u.id AND {$activeWhereBare}
+                ) AS last_used
+            FROM users u
             WHERE u.account_active = 1
-              AND {$activeWhereT}
-            GROUP BY u.id, u.username, u.email
-            ORDER BY last_used DESC
+              AND COALESCE(u.push_notifications_enabled, 1) = 1
+            ORDER BY u.username ASC
             LIMIT 200
         ";
+        if (!$hasPushFlag) {
+            $notificationEnabledUsersSql = "
+                SELECT
+                    u.id,
+                    u.username,
+                    u.email,
+                    1 AS push_notifications_enabled,
+                    COUNT(*) AS device_count,
+                    MAX(t.last_used) AS last_used
+                FROM user_fcm_tokens t
+                INNER JOIN users u ON u.id = t.user_id
+                WHERE u.account_active = 1
+                  AND {$activeWhereT}
+                GROUP BY u.id, u.username, u.email
+                ORDER BY last_used DESC
+                LIMIT 200
+            ";
+        }
         $notificationEnabledUsersStmt = $conn->query($notificationEnabledUsersSql);
         $notificationEnabledUsers = $notificationEnabledUsersStmt
             ? $notificationEnabledUsersStmt->fetchAll(PDO::FETCH_ASSOC)
             : [];
+        foreach ($notificationEnabledUsers as &$eu) {
+            $eu['push_notifications_enabled'] = (int) ($eu['push_notifications_enabled'] ?? 1) === 1;
+        }
+        unset($eu);
 
-        $notificationDisabledUsersSql = "
-            SELECT u.id, u.username, u.email
+        $notificationDisabledUsersSql = $hasPushFlag
+            ? "
+            SELECT u.id, u.username, u.email, {$pushSelect}
+            FROM users u
+            WHERE u.account_active = 1
+              AND COALESCE(u.push_notifications_enabled, 1) = 0
+            ORDER BY u.username
+            LIMIT 200
+            "
+            : "
+            SELECT u.id, u.username, u.email, 0 AS push_notifications_enabled
             FROM users u
             LEFT JOIN (
                 SELECT DISTINCT user_id
@@ -259,14 +339,18 @@ try {
               AND covered.user_id IS NULL
             ORDER BY u.username
             LIMIT 200
-        ";
+            ";
         $notificationDisabledUsersStmt = $conn->query($notificationDisabledUsersSql);
         $notificationDisabledUsers = $notificationDisabledUsersStmt
             ? $notificationDisabledUsersStmt->fetchAll(PDO::FETCH_ASSOC)
             : [];
+        foreach ($notificationDisabledUsers as &$du) {
+            $du['push_notifications_enabled'] = (int) ($du['push_notifications_enabled'] ?? 0) === 1;
+        }
+        unset($du);
     } else {
         $legacySql = "
-            SELECT u.id, u.username, u.email
+            SELECT u.id, u.username, u.email, {$pushSelect}
             FROM users u
             WHERE u.account_active = 1
               AND (u.fcm_token IS NULL OR TRIM(u.fcm_token) = '')
@@ -275,6 +359,10 @@ try {
         ";
         $legacyStmt = $conn->query($legacySql);
         $missingUsers = $legacyStmt ? $legacyStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+        foreach ($missingUsers as &$mu) {
+            $mu['push_notifications_enabled'] = (int) ($mu['push_notifications_enabled'] ?? 1) === 1;
+        }
+        unset($mu);
         $notificationDisabledUsers = $missingUsers;
     }
 

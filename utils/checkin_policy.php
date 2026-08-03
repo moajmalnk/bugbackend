@@ -327,6 +327,25 @@ function br_ensure_checkin_policy_schema(PDO $conn): void
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
         );
 
+        $conn->exec(
+            "CREATE TABLE IF NOT EXISTS attendance_wfh_requests (
+                id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                user_id VARCHAR(64) NOT NULL,
+                request_date DATE NOT NULL,
+                status ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
+                user_note VARCHAR(255) NULL DEFAULT NULL,
+                admin_note VARCHAR(255) NULL DEFAULT NULL,
+                reviewed_by VARCHAR(64) NULL DEFAULT NULL,
+                reviewed_at DATETIME NULL DEFAULT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                PRIMARY KEY (id),
+                UNIQUE KEY uniq_user_request_date (user_id, request_date),
+                KEY idx_status_date (status, request_date),
+                KEY idx_request_date (request_date)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+        );
+
         // Why: users / work_submissions are often utf8mb4_general_ci; JOINs fail without a shared collation.
         try {
             $conn->exec(
@@ -337,6 +356,12 @@ function br_ensure_checkin_policy_schema(PDO $conn): void
         try {
             $conn->exec(
                 'ALTER TABLE attendance_office_restrictions CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
+            );
+        } catch (Throwable $ignored) {
+        }
+        try {
+            $conn->exec(
+                'ALTER TABLE attendance_wfh_requests CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
             );
         } catch (Throwable $ignored) {
         }
@@ -817,6 +842,246 @@ function br_forgive_late_day(PDO $conn, $userId, $dateOrDates, $adminId, ?string
 }
 
 /**
+ * @return array{id:int,user_id:string,request_date:string,status:string,user_note:?string,admin_note:?string,reviewed_by:?string,reviewed_at:?string,created_at:?string,updated_at:?string}|null
+ */
+function br_wfh_request_for_day(PDO $conn, $userId, string $date): ?array
+{
+    br_ensure_checkin_policy_schema($conn);
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+        return null;
+    }
+    try {
+        $stmt = $conn->prepare(
+            'SELECT id, user_id, request_date, status, user_note, admin_note,
+                    reviewed_by, reviewed_at, created_at, updated_at
+             FROM attendance_wfh_requests
+             WHERE user_id = ? AND request_date = ?
+             LIMIT 1'
+        );
+        $stmt->execute([(string)$userId, $date]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            return null;
+        }
+        return [
+            'id' => (int)$row['id'],
+            'user_id' => (string)$row['user_id'],
+            'request_date' => (string)$row['request_date'],
+            'status' => (string)$row['status'],
+            'user_note' => $row['user_note'] !== null ? (string)$row['user_note'] : null,
+            'admin_note' => $row['admin_note'] !== null ? (string)$row['admin_note'] : null,
+            'reviewed_by' => $row['reviewed_by'] !== null ? (string)$row['reviewed_by'] : null,
+            'reviewed_at' => $row['reviewed_at'] !== null ? (string)$row['reviewed_at'] : null,
+            'created_at' => $row['created_at'] !== null ? (string)$row['created_at'] : null,
+            'updated_at' => $row['updated_at'] !== null ? (string)$row['updated_at'] : null,
+        ];
+    } catch (Throwable $e) {
+        error_log('br_wfh_request_for_day: ' . $e->getMessage());
+        return null;
+    }
+}
+
+/**
+ * Create or refresh a pending WFH request for the day.
+ *
+ * @return array{ok:bool,message:?string,request:?array}
+ */
+function br_upsert_wfh_request(PDO $conn, $userId, string $date, ?string $userNote = null): array
+{
+    br_ensure_checkin_policy_schema($conn);
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+        return ['ok' => false, 'message' => 'Invalid date.', 'request' => null];
+    }
+
+    $existing = br_wfh_request_for_day($conn, $userId, $date);
+    if ($existing && ($existing['status'] ?? '') === 'approved') {
+        return [
+            'ok' => false,
+            'message' => 'WFH is already approved for this day. You can check in as WFH.',
+            'request' => $existing,
+        ];
+    }
+
+    $exception = br_day_exception($conn, $userId, $date);
+    if (!empty($exception['allow_wfh'])) {
+        return [
+            'ok' => false,
+            'message' => 'WFH is already allowed for this day. You can check in as WFH.',
+            'request' => $existing,
+        ];
+    }
+
+    $note = $userNote !== null ? mb_substr(trim($userNote), 0, 255) : ($existing['user_note'] ?? null);
+
+    try {
+        $stmt = $conn->prepare(
+            'INSERT INTO attendance_wfh_requests
+                (user_id, request_date, status, user_note, admin_note, reviewed_by, reviewed_at)
+             VALUES (?, ?, \'pending\', ?, NULL, NULL, NULL)
+             ON DUPLICATE KEY UPDATE
+                status = \'pending\',
+                user_note = VALUES(user_note),
+                admin_note = NULL,
+                reviewed_by = NULL,
+                reviewed_at = NULL'
+        );
+        $stmt->execute([
+            (string)$userId,
+            $date,
+            $note !== '' ? $note : null,
+        ]);
+    } catch (Throwable $e) {
+        error_log('br_upsert_wfh_request: ' . $e->getMessage());
+        return ['ok' => false, 'message' => 'Failed to save WFH request.', 'request' => null];
+    }
+
+    return [
+        'ok' => true,
+        'message' => 'WFH request submitted. Waiting for admin approval.',
+        'request' => br_wfh_request_for_day($conn, $userId, $date),
+    ];
+}
+
+/**
+ * Admin approve/reject a WFH request. Approve also grants allow_wfh for the day.
+ *
+ * @return array{ok:bool,message:?string,request:?array,exception:?array}
+ */
+function br_review_wfh_request(
+    PDO $conn,
+    $userId,
+    string $date,
+    string $decision,
+    $adminId,
+    ?string $adminNote = null
+): array {
+    br_ensure_checkin_policy_schema($conn);
+    $decision = strtolower(trim($decision));
+    if (!in_array($decision, ['approve', 'approved', 'reject', 'rejected'], true)) {
+        return ['ok' => false, 'message' => 'Invalid decision.', 'request' => null, 'exception' => null];
+    }
+    $status = in_array($decision, ['approve', 'approved'], true) ? 'approved' : 'rejected';
+
+    $existing = br_wfh_request_for_day($conn, $userId, $date);
+    if (!$existing) {
+        return ['ok' => false, 'message' => 'No WFH request found for this day.', 'request' => null, 'exception' => null];
+    }
+    if (($existing['status'] ?? '') !== 'pending') {
+        return [
+            'ok' => false,
+            'message' => 'This WFH request was already ' . $existing['status'] . '.',
+            'request' => $existing,
+            'exception' => br_day_exception($conn, $userId, $date),
+        ];
+    }
+
+    $note = $adminNote !== null ? mb_substr(trim($adminNote), 0, 255) : null;
+    $now = (new DateTime('now', new DateTimeZone('Asia/Kolkata')))->format('Y-m-d H:i:s');
+
+    try {
+        $stmt = $conn->prepare(
+            'UPDATE attendance_wfh_requests
+             SET status = ?, admin_note = ?, reviewed_by = ?, reviewed_at = ?
+             WHERE user_id = ? AND request_date = ? AND status = \'pending\''
+        );
+        $stmt->execute([
+            $status,
+            $note !== '' ? $note : null,
+            $adminId !== null ? (string)$adminId : null,
+            $now,
+            (string)$userId,
+            $date,
+        ]);
+        if ($stmt->rowCount() < 1) {
+            return [
+                'ok' => false,
+                'message' => 'Could not update WFH request (already reviewed).',
+                'request' => br_wfh_request_for_day($conn, $userId, $date),
+                'exception' => br_day_exception($conn, $userId, $date),
+            ];
+        }
+    } catch (Throwable $e) {
+        error_log('br_review_wfh_request: ' . $e->getMessage());
+        return ['ok' => false, 'message' => 'Failed to review WFH request.', 'request' => null, 'exception' => null];
+    }
+
+    $exception = null;
+    if ($status === 'approved') {
+        $upsert = br_upsert_day_exception(
+            $conn,
+            $userId,
+            $date,
+            true,
+            null,
+            $adminId,
+            $note !== '' ? $note : 'Approved WFH request'
+        );
+        if (!$upsert['ok']) {
+            return [
+                'ok' => false,
+                'message' => $upsert['message'] ?? 'Approved request but failed to grant WFH exception.',
+                'request' => br_wfh_request_for_day($conn, $userId, $date),
+                'exception' => null,
+            ];
+        }
+        $exception = $upsert['exception'];
+    }
+
+    return [
+        'ok' => true,
+        'message' => $status === 'approved'
+            ? 'WFH request approved. User can check in as WFH today.'
+            : 'WFH request rejected.',
+        'request' => br_wfh_request_for_day($conn, $userId, $date),
+        'exception' => $exception,
+    ];
+}
+
+/**
+ * @return list<array<string,mixed>>
+ */
+function br_list_pending_wfh_requests(PDO $conn, int $limit = 100): array
+{
+    br_ensure_checkin_policy_schema($conn);
+    $limit = max(1, min(200, $limit));
+    $rows = [];
+    try {
+        $sql = "SELECT r.id, r.user_id, r.request_date, r.status, r.user_note, r.admin_note,
+                       r.reviewed_by, r.reviewed_at, r.created_at, r.updated_at,
+                       COALESCE(NULLIF(TRIM(u.username), ''), CONCAT('user #', r.user_id)) AS username,
+                       COALESCE(u.role, '') AS role
+                FROM attendance_wfh_requests r
+                LEFT JOIN users u ON u.id COLLATE utf8mb4_unicode_ci = r.user_id COLLATE utf8mb4_unicode_ci
+                WHERE r.status = 'pending'
+                ORDER BY r.request_date DESC, r.created_at DESC
+                LIMIT {$limit}";
+        $stmt = $conn->query($sql);
+        if (!$stmt) {
+            return [];
+        }
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $rows[] = [
+                'id' => (int)$row['id'],
+                'user_id' => (string)$row['user_id'],
+                'username' => (string)$row['username'],
+                'role' => (string)$row['role'],
+                'request_date' => (string)$row['request_date'],
+                'status' => (string)$row['status'],
+                'user_note' => $row['user_note'] !== null ? (string)$row['user_note'] : null,
+                'admin_note' => $row['admin_note'] !== null ? (string)$row['admin_note'] : null,
+                'reviewed_by' => $row['reviewed_by'] !== null ? (string)$row['reviewed_by'] : null,
+                'reviewed_at' => $row['reviewed_at'] !== null ? (string)$row['reviewed_at'] : null,
+                'created_at' => $row['created_at'] !== null ? (string)$row['created_at'] : null,
+                'updated_at' => $row['updated_at'] !== null ? (string)$row['updated_at'] : null,
+            ];
+        }
+    } catch (Throwable $e) {
+        error_log('br_list_pending_wfh_requests: ' . $e->getMessage());
+    }
+    return $rows;
+}
+
+/**
  * Policy snapshot for attendance_status / check-in UI.
  *
  * @return array<string,mixed>
@@ -831,6 +1096,16 @@ function br_checkin_policy_status(PDO $conn, $userId, string $date): array
     $allowWfhToday = !empty($exception['allow_wfh']);
     $forgiveLateToday = !empty($exception['forgive_late']);
     $officeOnly = $restriction !== null && !$allowWfhToday;
+    $wfhRequest = br_wfh_request_for_day($conn, $userId, $date);
+    $wfhRequestStatus = $wfhRequest['status'] ?? 'none';
+    if ($wfhRequestStatus === '' || $wfhRequestStatus === null) {
+        $wfhRequestStatus = 'none';
+    }
+    // Why: Request only when WFH is locked and not already granted/approved.
+    $canRequestWfh = $officeOnly
+        && !$allowWfhToday
+        && $wfhRequestStatus !== 'pending'
+        && $wfhRequestStatus !== 'approved';
 
     // Upcoming restriction (next week) for banner preview when not currently restricted
     $upcoming = null;
@@ -870,6 +1145,9 @@ function br_checkin_policy_status(PDO $conn, $userId, string $date): array
         'allow_wfh_today' => $allowWfhToday,
         'forgive_late_today' => $forgiveLateToday,
         'day_exception' => $exception,
+        'wfh_request_status' => $wfhRequest ? $wfhRequestStatus : 'none',
+        'wfh_request' => $wfhRequest,
+        'can_request_wfh' => $canRequestWfh,
         'office_lat' => br_office_coords($conn)['lat'],
         'office_lng' => br_office_coords($conn)['lng'],
         'office_radius_m' => br_office_radius_m($conn),

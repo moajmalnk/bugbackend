@@ -125,8 +125,32 @@ class FirebaseMessagingService {
         return '';
     }
 
+    private function usersHavePushFlagColumn(): bool
+    {
+        static $cached = null;
+        if ($cached !== null) {
+            return $cached;
+        }
+        try {
+            $stmt = $this->conn->prepare(
+                "SELECT COUNT(*) FROM information_schema.columns
+                 WHERE table_schema = DATABASE()
+                   AND table_name = 'users'
+                   AND column_name = 'push_notifications_enabled'"
+            );
+            $stmt->execute();
+            $cached = (int) $stmt->fetchColumn() > 0;
+        } catch (Throwable $e) {
+            $cached = false;
+        }
+        return $cached;
+    }
+
     public function sendToAllUsers($title, $body, array $data = []) {
         $activeWhere = $this->activeTokenSqlCondition('t');
+        $pushFlag = $this->usersHavePushFlagColumn()
+            ? ' AND COALESCE(u.push_notifications_enabled, 1) = 1'
+            : '';
         $tokenRows = $this->conn
             ->query("
                 SELECT DISTINCT t.token
@@ -136,9 +160,13 @@ class FirebaseMessagingService {
                   AND t.token IS NOT NULL
                   AND TRIM(t.token) <> ''
                   {$activeWhere}
+                  {$pushFlag}
             ")
             ->fetchAll(PDO::FETCH_COLUMN);
 
+        $legacyPush = $this->usersHavePushFlagColumn()
+            ? ' AND COALESCE(push_notifications_enabled, 1) = 1'
+            : '';
         $legacyRows = $this->conn
             ->query("
                 SELECT DISTINCT fcm_token
@@ -146,6 +174,7 @@ class FirebaseMessagingService {
                 WHERE account_active = 1
                   AND fcm_token IS NOT NULL
                   AND TRIM(fcm_token) <> ''
+                  {$legacyPush}
             ")
             ->fetchAll(PDO::FETCH_COLUMN);
 
@@ -176,6 +205,9 @@ class FirebaseMessagingService {
 
         $placeholders = implode(',', array_fill(0, count($userIds), '?'));
         $activeWhere = $this->activeTokenSqlCondition('t');
+        $pushFlag = $this->usersHavePushFlagColumn()
+            ? ' AND COALESCE(u.push_notifications_enabled, 1) = 1'
+            : '';
 
         $stmt = $this->conn->prepare(
             "SELECT DISTINCT t.token
@@ -184,16 +216,21 @@ class FirebaseMessagingService {
              WHERE u.account_active = 1
                AND t.user_id IN ($placeholders)
                AND t.token IS NOT NULL AND TRIM(t.token) <> ''
-               {$activeWhere}"
+               {$activeWhere}
+               {$pushFlag}"
         );
         $stmt->execute($userIds);
         $tokenRows = $stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
 
+        $legacyPush = $this->usersHavePushFlagColumn()
+            ? ' AND COALESCE(push_notifications_enabled, 1) = 1'
+            : '';
         $legacyStmt = $this->conn->prepare(
             "SELECT DISTINCT fcm_token FROM users
              WHERE id IN ($placeholders)
                AND account_active = 1
-               AND fcm_token IS NOT NULL AND TRIM(fcm_token) <> ''"
+               AND fcm_token IS NOT NULL AND TRIM(fcm_token) <> ''
+               {$legacyPush}"
         );
         $legacyStmt->execute($userIds);
         $legacyRows = $legacyStmt->fetchAll(PDO::FETCH_COLUMN) ?: [];

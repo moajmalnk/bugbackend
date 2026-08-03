@@ -1197,4 +1197,71 @@ The BugRicer Team
 
     return sendEmail($adminEmail, $subject, $html_body, $text_body);
 }
+
+/**
+ * Why: Alert admins when a teammate requests same-day WFH approval.
+ */
+function sendWfhRequestNotificationEmail($adminEmail, $username, $date, $userNote = null)
+{
+    $dateFormatted = date('D, M j, Y', strtotime($date));
+    $subject = "WFH request · {$username} · {$dateFormatted}";
+    $noteHtml = $userNote
+        ? '<p style="margin:12px 0 0;"><strong>Note:</strong> ' . htmlspecialchars((string)$userNote, ENT_QUOTES, 'UTF-8') . '</p>'
+        : '';
+    $noteText = $userNote ? "\nNote: {$userNote}\n" : '';
+
+    $html_body = "
+    <div style=\"font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto;\">
+      <div style=\"background: linear-gradient(135deg,#0ea5e9,#10b981); padding: 20px; border-radius: 12px 12px 0 0;\">
+        <h2 style=\"margin:0;color:#fff;\">WFH request</h2>
+      </div>
+      <div style=\"border:1px solid #e5e7eb;border-top:0;padding:20px;border-radius:0 0 12px 12px;\">
+        <p><strong>" . htmlspecialchars((string)$username, ENT_QUOTES, 'UTF-8') . "</strong> requested work-from-home for <strong>{$dateFormatted}</strong>.</p>
+        {$noteHtml}
+        <p style=\"margin-top:16px;color:#64748b;font-size:13px;\">Open Attendance exceptions in BugRicer to approve or reject.</p>
+      </div>
+    </div>";
+
+    $text_body = "WFH request — BugRicer\n\n{$username} requested WFH for {$dateFormatted}.{$noteText}\nOpen Attendance exceptions to approve or reject.\n";
+
+    return sendEmail($adminEmail, $subject, $html_body, $text_body);
+}
+
+/**
+ * Why: Tell the requester when their WFH request was approved or rejected.
+ */
+function sendWfhRequestDecisionEmail($userEmail, $username, $date, $status, $adminNote = null)
+{
+    $dateFormatted = date('D, M j, Y', strtotime($date));
+    $approved = strtolower((string)$status) === 'approved';
+    $subject = ($approved ? 'WFH approved' : 'WFH rejected') . " · {$dateFormatted}";
+    $headline = $approved
+        ? 'Your WFH request was approved'
+        : 'Your WFH request was rejected';
+    $bodyLine = $approved
+        ? 'You can check in as WFH for this day on BugUpdate.'
+        : 'Office check-in still applies unless an admin grants an exception.';
+    $noteHtml = $adminNote
+        ? '<p style="margin:12px 0 0;"><strong>Admin note:</strong> ' . htmlspecialchars((string)$adminNote, ENT_QUOTES, 'UTF-8') . '</p>'
+        : '';
+    $noteText = $adminNote ? "\nAdmin note: {$adminNote}\n" : '';
+    $color = $approved ? '#10b981' : '#f43f5e';
+
+    $html_body = "
+    <div style=\"font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto;\">
+      <div style=\"background: {$color}; padding: 20px; border-radius: 12px 12px 0 0;\">
+        <h2 style=\"margin:0;color:#fff;\">{$headline}</h2>
+      </div>
+      <div style=\"border:1px solid #e5e7eb;border-top:0;padding:20px;border-radius:0 0 12px 12px;\">
+        <p>Hi " . htmlspecialchars((string)$username, ENT_QUOTES, 'UTF-8') . ",</p>
+        <p>Date: <strong>{$dateFormatted}</strong></p>
+        <p>{$bodyLine}</p>
+        {$noteHtml}
+      </div>
+    </div>";
+
+    $text_body = "{$headline} — BugRicer\n\nDate: {$dateFormatted}\n{$bodyLine}{$noteText}\n";
+
+    return sendEmail($userEmail, $subject, $html_body, $text_body);
+}
 ?>

@@ -1126,6 +1126,79 @@ class NotificationManager extends BaseAPI {
     }
 
     /**
+     * Why: Alert admins when a teammate requests same-day WFH approval.
+     */
+    public function notifyWfhRequest($userId, $requestDate, $userNote = null)
+    {
+        $userId = (string)$userId;
+        $userName = $this->getUserName($userId);
+        $dateLabel = date('D, M j', strtotime((string)$requestDate));
+        $notificationType = $this->getValidNotificationType('wfh_request', 'new_update');
+        $userIds = $this->resolveAdminRecipients($userId);
+
+        $message = "{$userName} requested WFH for {$dateLabel}";
+        if ($userNote) {
+            $snippet = mb_substr(trim((string)$userNote), 0, 120);
+            if ($snippet !== '') {
+                $message .= " — {$snippet}";
+            }
+        }
+
+        return $this->createNotification(
+            $notificationType,
+            "WFH request: {$userName}",
+            $message,
+            $userIds,
+            [
+                'entity_type' => 'wfh_request',
+                'entity_id' => $userId . ':' . $requestDate,
+                'created_by' => $userName,
+                'request_date' => (string)$requestDate,
+                'url' => '/admin/attendance-exceptions',
+            ]
+        );
+    }
+
+    /**
+     * Why: Tell the requester when their WFH request was approved or rejected.
+     */
+    public function notifyWfhRequestDecision($userId, $requestDate, $status, $adminNote = null)
+    {
+        $userId = (string)$userId;
+        $approved = strtolower((string)$status) === 'approved';
+        $dateLabel = date('D, M j', strtotime((string)$requestDate));
+        $notificationType = $this->getValidNotificationType(
+            $approved ? 'wfh_request_approved' : 'wfh_request_rejected',
+            'status_change'
+        );
+
+        $title = $approved ? 'WFH approved' : 'WFH rejected';
+        $message = $approved
+            ? "Your WFH request for {$dateLabel} was approved. You can check in as WFH."
+            : "Your WFH request for {$dateLabel} was rejected.";
+        if ($adminNote) {
+            $snippet = mb_substr(trim((string)$adminNote), 0, 120);
+            if ($snippet !== '') {
+                $message .= " — {$snippet}";
+            }
+        }
+
+        return $this->createNotification(
+            $notificationType,
+            $title,
+            $message,
+            [$userId],
+            [
+                'entity_type' => $approved ? 'wfh_request_approved' : 'wfh_request_rejected',
+                'entity_id' => $userId . ':' . $requestDate,
+                'request_date' => (string)$requestDate,
+                'status' => (string)$status,
+                'url' => '/daily-update',
+            ]
+        );
+    }
+
+    /**
      * Get user role by user ID.
      */
     private function getUserRole($userId) {

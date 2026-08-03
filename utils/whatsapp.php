@@ -2039,5 +2039,35 @@ function sendProjectDeadlineReminderWhatsApp(
 
     return $sent;
 }
+
+/**
+ * Why: Alert admins on WhatsApp when someone requests same-day WFH.
+ */
+function sendWfhRequestNotificationWhatsApp($adminPhone, $username, $date, $userNote = null)
+{
+    $dateFormatted = date('D, M j', strtotime($date));
+    $note = $userNote ? "\nNote: " . trim((string)$userNote) : '';
+    $message = "🏠 *WFH request*\n\n"
+        . "*{$username}* requested work-from-home for *{$dateFormatted}*."
+        . $note
+        . "\n\nOpen Attendance exceptions in BugRicer to approve or reject.";
+    return sendWhatsAppMessage($adminPhone, $message);
+}
+
+/**
+ * Why: Notify the requester on WhatsApp after approve/reject.
+ */
+function sendWfhRequestDecisionWhatsApp($userPhone, $username, $date, $status, $adminNote = null)
+{
+    $dateFormatted = date('D, M j', strtotime($date));
+    $approved = strtolower((string)$status) === 'approved';
+    $headline = $approved ? '✅ *WFH approved*' : '❌ *WFH rejected*';
+    $body = $approved
+        ? 'You can check in as WFH for this day on BugUpdate.'
+        : 'Office check-in still applies unless an admin grants an exception.';
+    $note = $adminNote ? "\nAdmin note: " . trim((string)$adminNote) : '';
+    $message = "{$headline}\n\nHi {$username},\nDate: *{$dateFormatted}*\n{$body}{$note}";
+    return sendWhatsAppMessage($userPhone, $message);
+}
 ?>
 
