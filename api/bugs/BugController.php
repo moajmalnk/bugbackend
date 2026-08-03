@@ -3424,6 +3424,269 @@ class BugController extends BaseAPI {
     }
 
     /**
+     * Why: Overview needs a continuous month series from the first bug to now
+     * with created/fixed/updates counts and ratios — not LIMIT samples.
+     *
+     * @param string|null $accessUserId Non-admin project membership scope
+     * @return array{first_month:?string,last_month:string,months:list<array>}
+     */
+    public function getMonthlyTimeline($accessUserId = null)
+    {
+        try {
+            $this->validateToken();
+            if (!$this->conn) {
+                throw new Exception('Database connection failed');
+            }
+
+            $tz = new DateTimeZone('Asia/Kolkata');
+            $now = new DateTime('now', $tz);
+            $lastMonth = $now->format('Y-m');
+
+            $projectScopeSql = '';
+            $projectParams = [];
+            if ($accessUserId) {
+                $projectScopeSql = " AND project_id IN (
+                    SELECT DISTINCT project_id FROM project_members WHERE user_id = ?
+                    UNION
+                    SELECT DISTINCT id FROM projects WHERE created_by = ?
+                )";
+                $projectParams = [(string)$accessUserId, (string)$accessUserId];
+            }
+
+            $firstMonth = null;
+            try {
+                $stmt = $this->conn->prepare(
+                    "SELECT DATE_FORMAT(MIN(created_at), '%Y-%m') AS first_month
+                     FROM bugs
+                     WHERE created_at IS NOT NULL {$projectScopeSql}"
+                );
+                $stmt->execute($projectParams);
+                $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                if (!empty($row['first_month']) && preg_match('/^\d{4}-\d{2}$/', $row['first_month'])) {
+                    $firstMonth = $row['first_month'];
+                }
+            } catch (Throwable $e) {
+                error_log('getMonthlyTimeline first bug: ' . $e->getMessage());
+            }
+
+            if ($firstMonth === null) {
+                try {
+                    $stmt = $this->conn->prepare(
+                        "SELECT DATE_FORMAT(MIN(created_at), '%Y-%m') AS first_month
+                         FROM updates
+                         WHERE created_at IS NOT NULL {$projectScopeSql}"
+                    );
+                    $stmt->execute($projectParams);
+                    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                    if (!empty($row['first_month']) && preg_match('/^\d{4}-\d{2}$/', $row['first_month'])) {
+                        $firstMonth = $row['first_month'];
+                    }
+                } catch (Throwable $e) {
+                    error_log('getMonthlyTimeline first update: ' . $e->getMessage());
+                }
+            }
+
+            if ($firstMonth === null) {
+                $firstMonth = $lastMonth;
+            }
+
+            $start = DateTime::createFromFormat('Y-m-d', $firstMonth . '-01', $tz);
+            $end = DateTime::createFromFormat('Y-m-d', $lastMonth . '-01', $tz);
+            if (!$start || !$end) {
+                $firstMonth = $lastMonth;
+                $start = clone $end;
+            }
+            if ($start > $end) {
+                $tmp = $start;
+                $start = $end;
+                $end = $tmp;
+                $firstMonth = $start->format('Y-m');
+            }
+            $monthsDiff = ((int)$end->format('Y') - (int)$start->format('Y')) * 12
+                + ((int)$end->format('n') - (int)$start->format('n'));
+            if ($monthsDiff > 59) {
+                $start = (clone $end)->modify('-59 months');
+                $firstMonth = $start->format('Y-m');
+            }
+
+            $createdByMonth = [];
+            $fixedByMonth = [];
+            $declinedByMonth = [];
+            $rejectedByMonth = [];
+            $highCreatedByMonth = [];
+            $updatesByMonth = [];
+            $updatesCompletedByMonth = [];
+
+            $bugCreatedSql = "
+                SELECT DATE_FORMAT(created_at, '%Y-%m') AS ym,
+                       COUNT(*) AS cnt,
+                       SUM(CASE WHEN priority = 'high' THEN 1 ELSE 0 END) AS high_cnt
+                FROM bugs
+                WHERE created_at IS NOT NULL
+                  AND DATE_FORMAT(created_at, '%Y-%m') BETWEEN ? AND ?
+                  {$projectScopeSql}
+                GROUP BY ym
+                ORDER BY ym ASC
+            ";
+            $stmt = $this->conn->prepare($bugCreatedSql);
+            $stmt->execute(array_merge([$firstMonth, $lastMonth], $projectParams));
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $ym = $row['ym'];
+                $createdByMonth[$ym] = (int)$row['cnt'];
+                $highCreatedByMonth[$ym] = (int)$row['high_cnt'];
+            }
+
+            $bugClosedSql = "
+                SELECT DATE_FORMAT(updated_at, '%Y-%m') AS ym,
+                       SUM(CASE WHEN status = 'fixed' THEN 1 ELSE 0 END) AS fixed_cnt,
+                       SUM(CASE WHEN status = 'declined' THEN 1 ELSE 0 END) AS declined_cnt,
+                       SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected_cnt
+                FROM bugs
+                WHERE updated_at IS NOT NULL
+                  AND status IN ('fixed', 'declined', 'rejected')
+                  AND DATE_FORMAT(updated_at, '%Y-%m') BETWEEN ? AND ?
+                  {$projectScopeSql}
+                GROUP BY ym
+                ORDER BY ym ASC
+            ";
+            $stmt = $this->conn->prepare($bugClosedSql);
+            $stmt->execute(array_merge([$firstMonth, $lastMonth], $projectParams));
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $ym = $row['ym'];
+                $fixedByMonth[$ym] = (int)$row['fixed_cnt'];
+                $declinedByMonth[$ym] = (int)$row['declined_cnt'];
+                $rejectedByMonth[$ym] = (int)$row['rejected_cnt'];
+            }
+
+            $updSql = "
+                SELECT DATE_FORMAT(created_at, '%Y-%m') AS ym,
+                       COUNT(*) AS cnt
+                FROM updates
+                WHERE created_at IS NOT NULL
+                  AND DATE_FORMAT(created_at, '%Y-%m') BETWEEN ? AND ?
+                  {$projectScopeSql}
+                GROUP BY ym
+                ORDER BY ym ASC
+            ";
+            $stmt = $this->conn->prepare($updSql);
+            $stmt->execute(array_merge([$firstMonth, $lastMonth], $projectParams));
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $updatesByMonth[$row['ym']] = (int)$row['cnt'];
+            }
+
+            try {
+                $colCheck = $this->conn->query("SHOW COLUMNS FROM updates LIKE 'completed_at'");
+                if ($colCheck && $colCheck->fetch(PDO::FETCH_ASSOC)) {
+                    $compSql = "
+                        SELECT DATE_FORMAT(completed_at, '%Y-%m') AS ym,
+                               COUNT(*) AS cnt
+                        FROM updates
+                        WHERE completed_at IS NOT NULL
+                          AND DATE_FORMAT(completed_at, '%Y-%m') BETWEEN ? AND ?
+                          {$projectScopeSql}
+                        GROUP BY ym
+                        ORDER BY ym ASC
+                    ";
+                    $stmt = $this->conn->prepare($compSql);
+                    $stmt->execute(array_merge([$firstMonth, $lastMonth], $projectParams));
+                    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                        $updatesCompletedByMonth[$row['ym']] = (int)$row['cnt'];
+                    }
+                }
+            } catch (Throwable $e) {
+                // completed_at optional
+            }
+
+            $months = [];
+            $cursor = clone $start;
+            $guard = 0;
+            while ($cursor <= $end && $guard < 72) {
+                $ym = $cursor->format('Y-m');
+                $created = $createdByMonth[$ym] ?? 0;
+                $fixed = $fixedByMonth[$ym] ?? 0;
+                $declined = $declinedByMonth[$ym] ?? 0;
+                $rejected = $rejectedByMonth[$ym] ?? 0;
+                $updates = $updatesByMonth[$ym] ?? 0;
+                $updatesCompleted = $updatesCompletedByMonth[$ym] ?? 0;
+                $high = $highCreatedByMonth[$ym] ?? 0;
+                $closed = $fixed + $declined + $rejected;
+                $activity = $created + $fixed + $updates;
+
+                $fixRate = $created > 0 ? round(($fixed / $created) * 100, 1) : null;
+                $closeRate = $created > 0 ? round(($closed / $created) * 100, 1) : null;
+                $updateRatio = $created > 0 ? round($updates / $created, 2) : ($updates > 0 ? null : 0.0);
+
+                $label = $cursor->format('M Y');
+                $months[] = [
+                    'month' => $ym,
+                    'label' => $label,
+                    'bugs_created' => $created,
+                    'bugs_fixed' => $fixed,
+                    'bugs_declined' => $declined,
+                    'bugs_rejected' => $rejected,
+                    'bugs_closed' => $closed,
+                    'bugs_high_created' => $high,
+                    'updates_created' => $updates,
+                    'updates_completed' => $updatesCompleted,
+                    'activity' => $activity,
+                    'fix_rate' => $fixRate,
+                    'close_rate' => $closeRate,
+                    'update_to_bug_ratio' => $updateRatio,
+                ];
+                $cursor->modify('+1 month');
+                $guard++;
+            }
+
+            $totals = [
+                'bugs_created' => 0,
+                'bugs_fixed' => 0,
+                'bugs_declined' => 0,
+                'bugs_rejected' => 0,
+                'updates_created' => 0,
+                'updates_completed' => 0,
+                'bugs_high_created' => 0,
+            ];
+            $peak = null;
+            foreach ($months as $m) {
+                $totals['bugs_created'] += $m['bugs_created'];
+                $totals['bugs_fixed'] += $m['bugs_fixed'];
+                $totals['bugs_declined'] += $m['bugs_declined'];
+                $totals['bugs_rejected'] += $m['bugs_rejected'];
+                $totals['updates_created'] += $m['updates_created'];
+                $totals['updates_completed'] += $m['updates_completed'];
+                $totals['bugs_high_created'] += $m['bugs_high_created'];
+                if ($peak === null || $m['activity'] > $peak['activity']) {
+                    $peak = $m;
+                }
+            }
+
+            $avgFixRate = null;
+            if ($totals['bugs_created'] > 0) {
+                $avgFixRate = round(($totals['bugs_fixed'] / $totals['bugs_created']) * 100, 1);
+            }
+
+            return [
+                'first_month' => $firstMonth,
+                'last_month' => $lastMonth,
+                'month_count' => count($months),
+                'months' => $months,
+                'totals' => $totals,
+                'avg_fix_rate' => $avgFixRate,
+                'peak_month' => $peak
+                    ? [
+                        'month' => $peak['month'],
+                        'label' => $peak['label'],
+                        'activity' => $peak['activity'],
+                    ]
+                    : null,
+            ];
+        } catch (Exception $e) {
+            error_log('getMonthlyTimeline error: ' . $e->getMessage());
+            throw new Exception($e->getMessage());
+        }
+    }
+
+    /**
      * Get basic bug information
      * 
      * @param string $id Bug ID
