@@ -100,6 +100,14 @@ class UserController extends BaseAPI {
                     if ($hasTotalBreakMinutes) {
                         $selectFields[] = 'total_break_minutes';
                     }
+                    $hasWorkMode = in_array('work_mode', $wsColumns, true);
+                    $hasIsLate = in_array('is_late', $wsColumns, true);
+                    if ($hasWorkMode) {
+                        $selectFields[] = 'work_mode';
+                    }
+                    if ($hasIsLate) {
+                        $selectFields[] = 'is_late';
+                    }
 
                     $checkInStmt = $this->conn->query(
                         'SELECT ' . implode(', ', $selectFields) . '
@@ -129,6 +137,8 @@ class UserController extends BaseAPI {
                                 'hours_today' => (float)($row['hours_today'] ?? 0),
                                 'break_minutes' => $hasTotalBreakMinutes ? (int)($row['total_break_minutes'] ?? 0) : 0,
                                 'checkout_time' => $checkoutTime,
+                                'work_mode' => $hasWorkMode ? ($row['work_mode'] ?? null) : null,
+                                'is_late' => $hasIsLate ? (int)($row['is_late'] ?? 0) === 1 : false,
                             ];
                         }
                     }
@@ -149,6 +159,8 @@ class UserController extends BaseAPI {
                 $user['today_hours_worked'] = $todayWork['hours_today'] ?? 0;
                 $user['today_break_minutes'] = $todayWork['break_minutes'] ?? 0;
                 $user['checkout_time'] = $todayWork['checkout_time'] ?? null;
+                $user['work_mode'] = $todayWork['work_mode'] ?? null;
+                $user['is_late'] = !empty($todayWork['is_late']);
             }
             unset($user);
 

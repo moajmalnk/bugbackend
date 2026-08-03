@@ -13,6 +13,7 @@ error_log("🚀 check_in.php - Script started");
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../utils/work_period.php';
 require_once __DIR__ . '/../../utils/leave_attendance.php';
+require_once __DIR__ . '/../../utils/checkin_policy.php';
 
 error_log("🚀 check_in.php - BaseAPI.php loaded");
 
@@ -55,6 +56,12 @@ class CheckInController extends BaseAPI {
             $plannedProjects = $input['planned_projects'] ?? [];
             $plannedWork = $input['planned_work'] ?? '';
             $plannedWorkStatus = $input['planned_work_status'] ?? 'not_started';
+            $workMode = br_normalize_work_mode($input['work_mode'] ?? null);
+
+            if ($workMode === null) {
+                $this->sendJsonResponse(400, 'Please select Office or WFH before checking in.');
+                return;
+            }
 
             $isAdmin = strtolower((string)($decoded->role ?? '')) === 'admin';
             $attendanceValidation = br_validate_attendance_date(
@@ -74,6 +81,30 @@ class CheckInController extends BaseAPI {
             if (empty($leaveGate['ok'])) {
                 $this->sendJsonResponse(400, $leaveGate['message'] ?? 'Check-in not allowed for this date.');
                 return;
+            }
+
+            br_ensure_checkin_policy_schema($this->conn);
+
+            $officeRestriction = br_active_office_restriction($this->conn, $userId, $submissionDate);
+            if ($officeRestriction && $workMode === 'wfh') {
+                $this->sendJsonResponse(
+                    403,
+                    sprintf(
+                        'Office only this week (%s – %s). WFH is not allowed after 3 late check-ins.',
+                        $officeRestriction['week_start'],
+                        $officeRestriction['week_end']
+                    ),
+                    [
+                        'office_only' => true,
+                        'office_only_week_start' => $officeRestriction['week_start'],
+                        'office_only_week_end' => $officeRestriction['week_end'],
+                        'work_mode_locked_to' => 'office',
+                    ]
+                );
+                return;
+            }
+            if ($officeRestriction) {
+                $workMode = 'office';
             }
             
             error_log("🔍 CheckInController - User ID: $userId, Submission Date: $submissionDate");
@@ -161,96 +192,122 @@ class CheckInController extends BaseAPI {
             }
 
             $checkInTime = date('Y-m-d H:i:s');
-            
+            $tz = new DateTimeZone('Asia/Kolkata');
+            $nowIst = new DateTime('now', $tz);
+            $computedLate = br_is_late_checkin($nowIst, $submissionDate) ? 1 : 0;
+            $isSunday = br_is_sunday($submissionDate);
+            $justMarkedLate = false;
+
             // Use check-then-update/insert pattern for better compatibility
             error_log("🔍 CheckInController - Checking for existing record...");
-            $checkStmt = $this->conn->prepare("SELECT id FROM work_submissions WHERE user_id = ? AND submission_date = ?");
+            $checkStmt = $this->conn->prepare(
+                'SELECT id, check_in_time, work_mode, is_late FROM work_submissions WHERE user_id = ? AND submission_date = ?'
+            );
             if (!$checkStmt) {
                 throw new Exception("Failed to prepare check statement: " . implode(", ", $this->conn->errorInfo()));
             }
-            
+
             $checkResult = $checkStmt->execute([$userId, $submissionDate]);
             if (!$checkResult) {
                 throw new Exception("Failed to execute check statement: " . implode(", ", $checkStmt->errorInfo()));
             }
-            
+
             $existing = $checkStmt->fetch(PDO::FETCH_ASSOC);
-            
+            $hadPriorCheckIn = $existing && !empty($existing['check_in_time']);
+
             if ($existing) {
-                // Update existing record
-                error_log("🔍 CheckInController - Updating existing record (ID: " . $existing['id'] . ")");
-                
-                // Check if planned_projects, planned_work, and planned_work_status columns exist
-                $columnsCheck = $this->conn->query("SHOW COLUMNS FROM work_submissions");
-                $columns = $columnsCheck->fetchAll(PDO::FETCH_COLUMN);
-                $hasPlannedProjects = in_array('planned_projects', $columns);
-                $hasPlannedWork = in_array('planned_work', $columns);
-                $hasPlannedWorkStatus = in_array('planned_work_status', $columns);
-                
-                if ($hasPlannedProjects && $hasPlannedWork && $hasPlannedWorkStatus) {
-                    $updateStmt = $this->conn->prepare("UPDATE work_submissions SET check_in_time = ?, planned_projects = ?, planned_work = ?, planned_work_status = ? WHERE user_id = ? AND submission_date = ?");
-                    if (!$updateStmt) {
-                        throw new Exception("Failed to prepare update statement: " . implode(", ", $this->conn->errorInfo()));
-                    }
-                    $updateResult = $updateStmt->execute([$checkInTime, $plannedProjectsJson, $plannedWork, $plannedWorkStatus, $userId, $submissionDate]);
-                } elseif ($hasPlannedProjects && $hasPlannedWork) {
-                    $updateStmt = $this->conn->prepare("UPDATE work_submissions SET check_in_time = ?, planned_projects = ?, planned_work = ? WHERE user_id = ? AND submission_date = ?");
-                    if (!$updateStmt) {
-                        throw new Exception("Failed to prepare update statement: " . implode(", ", $this->conn->errorInfo()));
-                    }
-                    $updateResult = $updateStmt->execute([$checkInTime, $plannedProjectsJson, $plannedWork, $userId, $submissionDate]);
-                } else {
-                    // Fallback if columns don't exist yet
-                    $updateStmt = $this->conn->prepare("UPDATE work_submissions SET check_in_time = ? WHERE user_id = ? AND submission_date = ?");
-                    if (!$updateStmt) {
-                        throw new Exception("Failed to prepare update statement: " . implode(", ", $this->conn->errorInfo()));
-                    }
-                    $updateResult = $updateStmt->execute([$checkInTime, $userId, $submissionDate]);
+                // Re-check-in: keep first is_late / work_mode; update planned fields + check_in_time only
+                $persistedLate = $hadPriorCheckIn
+                    ? (int)($existing['is_late'] ?? 0)
+                    : $computedLate;
+                $persistedMode = $hadPriorCheckIn && !empty($existing['work_mode'])
+                    ? br_normalize_work_mode($existing['work_mode'])
+                    : $workMode;
+                if ($persistedMode === null) {
+                    $persistedMode = $workMode;
                 }
-                
+                if ($officeRestriction) {
+                    $persistedMode = 'office';
+                }
+
+                // First check-in on an existing empty row counts as a new late strike
+                if (!$hadPriorCheckIn && $computedLate === 1) {
+                    $justMarkedLate = true;
+                }
+
+                $isLate = $persistedLate;
+                $workMode = $persistedMode;
+
+                error_log("🔍 CheckInController - Updating existing record (ID: " . $existing['id'] . ")");
+
+                $updateStmt = $this->conn->prepare(
+                    'UPDATE work_submissions
+                     SET check_in_time = ?, planned_projects = ?, planned_work = ?, planned_work_status = ?,
+                         work_mode = ?, is_late = ?
+                     WHERE user_id = ? AND submission_date = ?'
+                );
+                if (!$updateStmt) {
+                    throw new Exception("Failed to prepare update statement: " . implode(", ", $this->conn->errorInfo()));
+                }
+                $updateResult = $updateStmt->execute([
+                    $checkInTime,
+                    $plannedProjectsJson,
+                    $plannedWork,
+                    $plannedWorkStatus,
+                    $workMode,
+                    $isLate,
+                    $userId,
+                    $submissionDate,
+                ]);
+
                 if (!$updateResult) {
                     throw new Exception("Failed to update: " . implode(", ", $updateStmt->errorInfo()));
                 }
                 error_log("✅ CheckInController - Successfully updated check_in_time and planned data");
             } else {
-                // Insert new record
-                error_log("🔍 CheckInController - Inserting new record");
-                
-                // Check if planned_projects, planned_work, and planned_work_status columns exist
-                $columnsCheck = $this->conn->query("SHOW COLUMNS FROM work_submissions");
-                $columns = $columnsCheck->fetchAll(PDO::FETCH_COLUMN);
-                $hasPlannedProjects = in_array('planned_projects', $columns);
-                $hasPlannedWork = in_array('planned_work', $columns);
-                $hasPlannedWorkStatus = in_array('planned_work_status', $columns);
-                
-                if ($hasPlannedProjects && $hasPlannedWork && $hasPlannedWorkStatus) {
-                    $insertStmt = $this->conn->prepare("INSERT INTO work_submissions (user_id, submission_date, check_in_time, planned_projects, planned_work, planned_work_status, hours_today) VALUES (?, ?, ?, ?, ?, ?, 0)");
-                    if (!$insertStmt) {
-                        throw new Exception("Failed to prepare insert statement: " . implode(", ", $this->conn->errorInfo()));
-                    }
-                    $insertResult = $insertStmt->execute([$userId, $submissionDate, $checkInTime, $plannedProjectsJson, $plannedWork, $plannedWorkStatus]);
-                } elseif ($hasPlannedProjects && $hasPlannedWork) {
-                    $insertStmt = $this->conn->prepare("INSERT INTO work_submissions (user_id, submission_date, check_in_time, planned_projects, planned_work, hours_today) VALUES (?, ?, ?, ?, ?, 0)");
-                    if (!$insertStmt) {
-                        throw new Exception("Failed to prepare insert statement: " . implode(", ", $this->conn->errorInfo()));
-                    }
-                    $insertResult = $insertStmt->execute([$userId, $submissionDate, $checkInTime, $plannedProjectsJson, $plannedWork]);
-                } else {
-                    // Fallback if columns don't exist yet
-                    $insertStmt = $this->conn->prepare("INSERT INTO work_submissions (user_id, submission_date, check_in_time, hours_today) VALUES (?, ?, ?, 0)");
-                    if (!$insertStmt) {
-                        throw new Exception("Failed to prepare insert statement: " . implode(", ", $this->conn->errorInfo()));
-                    }
-                    $insertResult = $insertStmt->execute([$userId, $submissionDate, $checkInTime]);
+                $isLate = $computedLate;
+                if ($isLate === 1) {
+                    $justMarkedLate = true;
                 }
-                
+
+                error_log("🔍 CheckInController - Inserting new record");
+
+                // hours_today always starts at 0 (Sunday included — never auto-add 8h)
+                $insertStmt = $this->conn->prepare(
+                    'INSERT INTO work_submissions
+                        (user_id, submission_date, check_in_time, planned_projects, planned_work, planned_work_status,
+                         work_mode, is_late, late_strike_consumed, hours_today)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0)'
+                );
+                if (!$insertStmt) {
+                    throw new Exception("Failed to prepare insert statement: " . implode(", ", $this->conn->errorInfo()));
+                }
+                $insertResult = $insertStmt->execute([
+                    $userId,
+                    $submissionDate,
+                    $checkInTime,
+                    $plannedProjectsJson,
+                    $plannedWork,
+                    $plannedWorkStatus,
+                    $workMode,
+                    $isLate,
+                ]);
+
                 if (!$insertResult) {
                     throw new Exception("Failed to insert: " . implode(", ", $insertStmt->errorInfo()));
                 }
                 error_log("✅ CheckInController - Successfully inserted new record with planned data");
             }
 
-            error_log("✅ Check-in recorded for user: $userId on date: $submissionDate at time: $checkInTime");
+            $strikeResult = br_apply_late_strike_and_maybe_restrict(
+                $this->conn,
+                $userId,
+                $submissionDate,
+                $justMarkedLate
+            );
+            $policyStatus = br_checkin_policy_status($this->conn, $userId, $submissionDate);
+
+            error_log("✅ Check-in recorded for user: $userId on date: $submissionDate at time: $checkInTime mode=$workMode late=$isLate");
 
             // Send email and WhatsApp notifications to admin
             try {
@@ -298,7 +355,19 @@ class CheckInController extends BaseAPI {
                 'submission_date' => $submissionDate,
                 'planned_projects' => $plannedProjects,
                 'planned_work' => $plannedWork,
-                'planned_work_status' => $plannedWorkStatus
+                'planned_work_status' => $plannedWorkStatus,
+                'work_mode' => $workMode,
+                'is_late' => (bool)$isLate,
+                'is_sunday' => $isSunday,
+                'late_count' => (int)($strikeResult['late_count'] ?? $policyStatus['late_count'] ?? 0),
+                'late_limit' => (int)($strikeResult['late_limit'] ?? br_checkin_late_limit()),
+                'office_only' => !empty($policyStatus['office_only']),
+                'office_only_week_start' => $policyStatus['office_only_week_start'] ?? null,
+                'office_only_week_end' => $policyStatus['office_only_week_end'] ?? null,
+                'upcoming_office_only_week' => $policyStatus['upcoming_office_only_week']
+                    ?? ($strikeResult['office_only_week'] ?? null),
+                'warning' => $strikeResult['warning'] ?? null,
+                'restriction_created' => !empty($strikeResult['restriction_created']),
             ];
 
             // Notifications before response — sendJsonResponse() exits and skips code below it
@@ -403,7 +472,18 @@ class CheckInController extends BaseAPI {
                 try {
                     require_once __DIR__ . '/../NotificationManager.php';
                     $nm = NotificationManager::getInstance();
-                    $nm->notifyWorkCheckIn($userId, $checkInTime, $submissionDate, $plannedSummary);
+                    $modeLabel = $workMode === 'wfh' ? 'WFH' : 'Office';
+                    $latePrefix = $isLate ? 'LATE · ' : '';
+                    $plannedWithMode = trim($latePrefix . $modeLabel . ($plannedSummary ? ' — ' . $plannedSummary : ''));
+                    $nm->notifyWorkCheckIn($userId, $checkInTime, $submissionDate, $plannedWithMode);
+
+                    if (!empty($strikeResult['restriction_created']) && !empty($strikeResult['office_only_week'])) {
+                        $nm->notifyOfficeOnlyWeek(
+                            $userId,
+                            $strikeResult['office_only_week']['week_start'],
+                            $strikeResult['office_only_week']['week_end']
+                        );
+                    }
                 } catch (Exception $e) {
                     error_log("⚠️ Failed in-app/push check-in notification: " . $e->getMessage());
                 }

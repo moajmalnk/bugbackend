@@ -1099,6 +1099,33 @@ class NotificationManager extends BaseAPI {
     }
 
     /**
+     * Why: After 3 late check-ins, warn the user (and admins) that next week is Office-only.
+     */
+    public function notifyOfficeOnlyWeek($userId, $weekStart, $weekEnd) {
+        $userId = (string) $userId;
+        $userName = $this->getUserName($userId);
+        $notificationType = $this->getValidNotificationType('work_check_in', 'new_update');
+        $message = "After 3 late check-ins, {$weekStart} – {$weekEnd} is Office only. WFH will not be allowed that week.";
+
+        $adminIds = $this->resolveAdminRecipients(null);
+        $recipients = array_values(array_unique(array_filter(array_merge([$userId], $adminIds))));
+
+        return $this->createNotification(
+            $notificationType,
+            'Office-only week scheduled',
+            $message,
+            $recipients,
+            [
+                'entity_type' => 'work_check_in',
+                'entity_id' => $userId . ':office_only:' . $weekStart,
+                'created_by' => $userName,
+                'week_start' => $weekStart,
+                'week_end' => $weekEnd,
+            ]
+        );
+    }
+
+    /**
      * Get user role by user ID.
      */
     private function getUserRole($userId) {

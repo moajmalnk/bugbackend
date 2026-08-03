@@ -470,7 +470,10 @@ class LeaveController extends BaseAPI
         $leave = br_approved_leave_on_date($this->conn, $userId, $date);
         $gate = br_assert_attendance_allowed($this->conn, $userId, $date, 'attendance');
 
-        $this->sendJsonResponse(200, 'OK', [
+        require_once __DIR__ . '/../../utils/checkin_policy.php';
+        $policy = br_checkin_policy_status($this->conn, $userId, $date);
+
+        $this->sendJsonResponse(200, 'OK', array_merge([
             'user_id' => $userId,
             'date' => $date,
             'joining_date' => $joining,
@@ -480,6 +483,6 @@ class LeaveController extends BaseAPI
             'on_leave' => $leave ? true : false,
             'leave' => $leave,
             'before_joining' => ($joining !== null && $date < $joining),
-        ]);
+        ], $policy));
     }
 }
