@@ -40,6 +40,7 @@ class AttendanceExceptionController extends BaseAPI
 
     /**
      * GET — list exceptions + recent late days for a user.
+     * Omit user_id (or pass scope=all) for the admin overview across everyone.
      */
     public function listForUser()
     {
@@ -49,8 +50,10 @@ class AttendanceExceptionController extends BaseAPI
         }
 
         $userId = isset($_GET['user_id']) ? trim((string)$_GET['user_id']) : '';
-        if ($userId === '') {
-            $this->sendJsonResponse(400, 'user_id is required');
+        $scope = isset($_GET['scope']) ? strtolower(trim((string)$_GET['scope'])) : '';
+
+        if ($userId === '' || $scope === 'all') {
+            $this->listAll();
             return;
         }
 
@@ -125,6 +128,86 @@ class AttendanceExceptionController extends BaseAPI
             'active_restriction' => $restriction,
             'allow_wfh_today' => !empty($policy['allow_wfh_today']),
             'forgive_late_today' => !empty($policy['forgive_late_today']),
+        ]);
+    }
+
+    /**
+     * Why: Admin sidebar page needs every user's exceptions / late days in one view.
+     */
+    public function listAll()
+    {
+        br_ensure_checkin_policy_schema($this->conn);
+        $today = br_server_today();
+
+        $exceptions = [];
+        try {
+            $stmt = $this->conn->prepare(
+                'SELECT e.id, e.user_id, e.exception_date, e.allow_wfh, e.forgive_late, e.admin_note,
+                        e.created_by, e.created_at, e.updated_at,
+                        u.username, u.role
+                 FROM attendance_day_exceptions e
+                 LEFT JOIN users u ON u.id = e.user_id
+                 WHERE e.exception_date >= DATE_SUB(?, INTERVAL 60 DAY)
+                 ORDER BY e.exception_date DESC, u.username ASC
+                 LIMIT 300'
+            );
+            $stmt->execute([$today]);
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $exceptions[] = [
+                    'id' => (int)$row['id'],
+                    'user_id' => (string)$row['user_id'],
+                    'username' => $row['username'] ?? 'Unknown',
+                    'role' => $row['role'] ?? null,
+                    'exception_date' => $row['exception_date'],
+                    'allow_wfh' => (int)$row['allow_wfh'] === 1,
+                    'forgive_late' => (int)$row['forgive_late'] === 1,
+                    'admin_note' => $row['admin_note'],
+                    'created_by' => $row['created_by'],
+                    'created_at' => $row['created_at'],
+                    'updated_at' => $row['updated_at'],
+                ];
+            }
+        } catch (Throwable $e) {
+            error_log('AttendanceExceptionController::listAll exceptions: ' . $e->getMessage());
+        }
+
+        $lateDays = [];
+        try {
+            $stmt = $this->conn->prepare(
+                'SELECT ws.id, ws.user_id, ws.submission_date, ws.check_in_time, ws.is_late,
+                        ws.late_strike_consumed, ws.work_mode, u.username, u.role
+                 FROM work_submissions ws
+                 LEFT JOIN users u ON u.id = ws.user_id
+                 WHERE ws.is_late = 1
+                   AND ws.submission_date >= DATE_SUB(?, INTERVAL 60 DAY)
+                 ORDER BY ws.submission_date DESC, u.username ASC
+                 LIMIT 200'
+            );
+            $stmt->execute([$today]);
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $lateDays[] = [
+                    'id' => (int)$row['id'],
+                    'user_id' => (string)$row['user_id'],
+                    'username' => $row['username'] ?? 'Unknown',
+                    'role' => $row['role'] ?? null,
+                    'submission_date' => $row['submission_date'],
+                    'check_in_time' => $row['check_in_time'],
+                    'is_late' => true,
+                    'late_strike_consumed' => (int)($row['late_strike_consumed'] ?? 0) === 1,
+                    'work_mode' => $row['work_mode'] ?? null,
+                ];
+            }
+        } catch (Throwable $e) {
+            error_log('AttendanceExceptionController::listAll lates: ' . $e->getMessage());
+        }
+
+        $this->sendJsonResponse(200, 'OK', [
+            'today' => $today,
+            'exceptions' => $exceptions,
+            'late_days' => $lateDays,
+            'exception_count' => count($exceptions),
+            'late_count' => count($lateDays),
+            'late_limit' => br_checkin_late_limit(),
         ]);
     }
 
