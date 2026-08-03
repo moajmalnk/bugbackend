@@ -107,17 +107,67 @@ try {
         ])
     ]);
     
-    // Generate the dashboard URL - construct frontend URL based on current environment
-    $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
-    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-    
-    // Determine if we're in development or production
-    if (strpos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false) {
-        // Development - use localhost with role-based routing
-        $frontendUrl = 'http://localhost:8080';
-    } else {
-        // Production - use the bug tracker domain
-        $frontendUrl = 'https://bugs.bugricer.com';
+    // Prefer the admin's current frontend origin (local vs production).
+    // Why: local Vite often proxies /api to production, so HTTP_HOST is the API host
+    // and must not force bugs.bugricer.com when the admin is on localhost.
+    $frontendUrl = null;
+    $requestedOrigin = trim((string)($data['frontend_origin'] ?? $data['frontend_base'] ?? ''));
+    if ($requestedOrigin !== '') {
+        $parsed = parse_url($requestedOrigin);
+        $scheme = strtolower((string)($parsed['scheme'] ?? ''));
+        $host = strtolower((string)($parsed['host'] ?? ''));
+        $port = isset($parsed['port']) ? (int)$parsed['port'] : null;
+        $allowedLocal = in_array($host, ['localhost', '127.0.0.1', '::1'], true);
+        $allowedProd =
+            $host === 'bugs.bugricer.com'
+            || $host === 'www.bugs.bugricer.com'
+            || (strlen($host) > 12 && substr($host, -12) === '.bugricer.com')
+            || (strlen($host) > 10 && substr($host, -10) === '.vercel.app');
+        if (
+            in_array($scheme, ['http', 'https'], true)
+            && $host !== ''
+            && ($allowedLocal || $allowedProd)
+        ) {
+            $frontendUrl = $scheme . '://' . $host;
+            if ($port && !in_array($port, [80, 443], true)) {
+                $frontendUrl .= ':' . $port;
+            }
+        }
+    }
+
+    if ($frontendUrl === null) {
+        $originHeader = trim((string)($_SERVER['HTTP_ORIGIN'] ?? ''));
+        if ($originHeader !== '') {
+            $parsed = parse_url($originHeader);
+            $scheme = strtolower((string)($parsed['scheme'] ?? ''));
+            $host = strtolower((string)($parsed['host'] ?? ''));
+            $port = isset($parsed['port']) ? (int)$parsed['port'] : null;
+            $allowedLocal = in_array($host, ['localhost', '127.0.0.1', '::1'], true);
+            $allowedProd =
+                $host === 'bugs.bugricer.com'
+                || $host === 'www.bugs.bugricer.com'
+                || (strlen($host) > 12 && substr($host, -12) === '.bugricer.com')
+                || (strlen($host) > 10 && substr($host, -10) === '.vercel.app');
+            if (
+                in_array($scheme, ['http', 'https'], true)
+                && $host !== ''
+                && ($allowedLocal || $allowedProd)
+            ) {
+                $frontendUrl = $scheme . '://' . $host;
+                if ($port && !in_array($port, [80, 443], true)) {
+                    $frontendUrl .= ':' . $port;
+                }
+            }
+        }
+    }
+
+    if ($frontendUrl === null) {
+        $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+        if (strpos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false) {
+            $frontendUrl = 'http://localhost:8080';
+        } else {
+            $frontendUrl = 'https://bugs.bugricer.com';
+        }
     }
     
     // Generate role-based dashboard URL
