@@ -2784,6 +2784,10 @@ class BugController extends BaseAPI {
                 ];
             }
 
+            if (!empty($reopenedAfterFailedVerification)) {
+                $updatedBug['_reopened_after_failed_verification'] = true;
+            }
+
             return $updatedBug;
 
         } catch (Exception $e) {
@@ -2815,6 +2819,7 @@ class BugController extends BaseAPI {
                 throw new Exception("Bug not found");
             }
             $previousStatus = (string) ($existingBug['status'] ?? '');
+            $reopenedAfterFailedVerification = $this->applyFailedVerificationReopen($data, $previousStatus);
 
             // Build update query for bug fields only
             $updateFields = [];
@@ -3179,6 +3184,10 @@ class BugController extends BaseAPI {
                     'bug_level' => $updatedBug['bug_level'] ?? $existingBug['bug_level'] ?? 'normal',
                     'already_raised' => $updatedBug['already_raised'] ?? $existingBug['already_raised'] ?? 0,
                 ];
+            }
+
+            if (!empty($reopenedAfterFailedVerification)) {
+                $updatedBug['_reopened_after_failed_verification'] = true;
             }
 
             return $updatedBug;

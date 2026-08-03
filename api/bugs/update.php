@@ -227,7 +227,14 @@ try {
     // Allow: status, status + fix_description, status + fixed_by, status + fix_description + fixed_by
     // Developers can update status and fix_description together (common in FixBug page)
     $allowedDeveloperFields = ['status', 'fix_description', 'fixed_by'];
-    $allowedTesterRetestFields = ['tester_retested', 'tester_issue_fixed', 'bug_level', 'tester_verification_notes'];
+    $allowedTesterRetestFields = [
+        'tester_retested',
+        'tester_issue_fixed',
+        'bug_level',
+        'tester_verification_notes',
+        'status',
+        'already_raised',
+    ];
     $hasStatusChange = in_array('status', $fieldsBeingChanged, true);
     
     // Check if all changed fields are in the allowed list for developers
@@ -251,9 +258,10 @@ try {
         || array_key_exists('tester_issue_fixed', $data)
         || array_key_exists('tester_verification_notes', $data)
         || (!empty($data['verification_upload']) || ($data['upload_context'] ?? '') === 'verification');
+    $currentBugStatus = (string) ($bug['status'] ?? '');
     $isRetestUpdate = $hasVerificationIntent
         && $hasOnlyTesterRetestFields
-        && (($bug['status'] ?? '') === 'fixed' || ($data['status'] ?? '') === 'fixed');
+        && in_array($currentBugStatus, ['fixed', 'rejected'], true);
     
     // Check if user is admin or the bug creator (using reported_by from bug array)
     // In impersonation mode, check if the impersonated user is the creator
