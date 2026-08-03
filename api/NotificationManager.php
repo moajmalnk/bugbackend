@@ -915,6 +915,7 @@ class NotificationManager extends BaseAPI {
      * @param string $milestoneLabel e.g. Deadline Date
      * @param string $milestoneDate Y-m-d
      * @param int $reminderOffset Days relative to milestone (7,3,1,0,-1)
+     * @param array|null $explicitUserIds Optional pre-resolved recipient IDs (members + admins)
      * @return int|false
      */
     public function notifyProjectDeadlineReminder(
@@ -923,10 +924,20 @@ class NotificationManager extends BaseAPI {
         $milestoneKey,
         $milestoneLabel,
         $milestoneDate,
-        $reminderOffset
+        $reminderOffset,
+        $explicitUserIds = null
     ) {
         $projectId = (string) $projectId;
-        $userIds = $this->resolveProjectRecipients($projectId, null);
+
+        if (is_array($explicitUserIds) && !empty($explicitUserIds)) {
+            $userIds = $this->filterActiveUserIds($explicitUserIds);
+        } else {
+            // All project members + all admins (aligned with email/WhatsApp recipients)
+            $members = $this->getProjectMembersByRole($projectId, null);
+            $admins = $this->getAllAdmins();
+            $userIds = $this->filterActiveUserIds(array_merge($members, $admins));
+        }
+
         if (empty($userIds)) {
             error_log('NotificationManager::notifyProjectDeadlineReminder - No recipients for project ' . $projectId);
             return false;
@@ -949,7 +960,7 @@ class NotificationManager extends BaseAPI {
             $message = "{$projectLabel}: {$label} was due {$dateLabel} ({$overdueDays} day" . ($overdueDays === 1 ? '' : 's') . ' overdue)';
         }
 
-        $notificationType = $this->getValidNotificationType('meeting_reminder', 'project_created');
+        $notificationType = $this->getValidNotificationType('project_deadline_reminder', 'meeting_reminder');
 
         return $this->createNotification(
             $notificationType,

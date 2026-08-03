@@ -1856,5 +1856,113 @@ function sendCodoRuleStatusWhatsAppToAdmins(
         return false;
     }
 }
+
+/**
+ * Format a professional project timeline / deadline reminder for WhatsApp.
+ *
+ * @param string $projectName
+ * @param string $milestoneLabel
+ * @param string $milestoneDate Y-m-d
+ * @param int $reminderOffset Days relative to milestone (7,3,1,0,-1)
+ * @param string|null $projectLink
+ * @return string
+ */
+function formatProjectDeadlineReminderForWhatsApp(
+    $projectName,
+    $milestoneLabel,
+    $milestoneDate,
+    $reminderOffset,
+    $projectLink = null
+) {
+    $offset = (int) $reminderOffset;
+    $dateTs = strtotime((string) $milestoneDate);
+    $dateLabel = $dateTs ? date('d M Y (D)', $dateTs) : (string) $milestoneDate;
+
+    if ($offset > 0) {
+        $headline = $offset === 1 ? 'Milestone Tomorrow' : "Milestone in {$offset} Days";
+        $urgency = $offset === 1
+            ? 'This milestone is tomorrow — please confirm the team is on track.'
+            : "This milestone is coming up in {$offset} days.";
+    } elseif ($offset === 0) {
+        $headline = 'Milestone Due Today';
+        $urgency = 'This milestone is due today. Please review progress and next steps.';
+    } else {
+        $overdueDays = abs($offset);
+        $headline = 'Milestone Overdue';
+        $urgency = 'This milestone is ' . $overdueDays . ' day' . ($overdueDays === 1 ? '' : 's') . ' overdue.';
+    }
+
+    $message = "*{$headline}*\n";
+    $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
+    $message .= $urgency . "\n\n";
+    $message .= "Project: *" . $projectName . "*\n";
+    $message .= "Milestone: *" . $milestoneLabel . "*\n";
+    $message .= "Date: " . $dateLabel . "\n";
+    $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
+
+    if ($projectLink) {
+        $message .= "Open project:\n" . $projectLink . "\n\n";
+    }
+
+    $message .= "_BugRicer timeline reminder_";
+
+    return $message;
+}
+
+/**
+ * Send deadline reminder WhatsApp to recipients that have a phone number.
+ *
+ * @param array<int, array{id?: string, phone?: string|null}> $recipients
+ * @param string $projectName
+ * @param string $milestoneLabel
+ * @param string $milestoneDate
+ * @param int $reminderOffset
+ * @param string|null $projectLink Role-neutral project URL
+ * @return int Number of successfully delivered messages
+ */
+function sendProjectDeadlineReminderWhatsApp(
+    $recipients,
+    $projectName,
+    $milestoneLabel,
+    $milestoneDate,
+    $reminderOffset,
+    $projectLink = null
+) {
+    if (empty($recipients) || !is_array($recipients)) {
+        return 0;
+    }
+
+    $message = formatProjectDeadlineReminderForWhatsApp(
+        $projectName,
+        $milestoneLabel,
+        $milestoneDate,
+        $reminderOffset,
+        $projectLink
+    );
+
+    $sent = 0;
+    $seenPhones = [];
+    foreach ($recipients as $row) {
+        $phone = trim((string) ($row['phone'] ?? ''));
+        if ($phone === '') {
+            continue;
+        }
+        $digits = preg_replace('/\D/', '', $phone);
+        if ($digits === '' || isset($seenPhones[$digits])) {
+            continue;
+        }
+        $seenPhones[$digits] = true;
+
+        $ok = sendWhatsAppMessage($phone, $message);
+        if ($ok) {
+            $sent++;
+        }
+        if (count($seenPhones) > 1) {
+            usleep(350000);
+        }
+    }
+
+    return $sent;
+}
 ?>
 
