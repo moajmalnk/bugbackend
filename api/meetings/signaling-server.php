@@ -39,7 +39,11 @@ class SignalingServer implements MessageComponentInterface {
                 'peerId' => $from->resourceId,
                 'user' => $userInfo
             ], $from);
-            $from->send(json_encode(['type' => 'peers', 'peers' => array_keys($this->rooms[$code]) ]));
+            $from->send(json_encode([
+                'type' => 'peers',
+                'peers' => array_keys($this->rooms[$code]),
+                'selfId' => $from->resourceId,
+            ]));
             return;
         }
         if ($type === 'signal' && $code) {
