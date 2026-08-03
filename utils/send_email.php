@@ -71,9 +71,25 @@ function sendBugNotification($to, $subject, $body, $attachments = []) {
         
         // Send email
         $mail->send();
+        require_once __DIR__ . '/notification_delivery_log.php';
+        $recipients = is_array($to) ? $to : [$to];
+        foreach ($recipients as $recipient) {
+            if (trim((string)$recipient) === '') {
+                continue;
+            }
+            br_log_notification_delivery('email', 'sent', (string)$recipient, null, (string)$subject);
+        }
         return true;
     } catch (Exception $e) {
         error_log("Mail error: " . $e->getMessage());
+        require_once __DIR__ . '/notification_delivery_log.php';
+        $recipients = is_array($to) ? $to : [$to];
+        foreach ($recipients as $recipient) {
+            if (trim((string)$recipient) === '') {
+                continue;
+            }
+            br_log_notification_delivery('email', 'failed', (string)$recipient, $e->getMessage(), (string)$subject);
+        }
         return false;
     }
 }

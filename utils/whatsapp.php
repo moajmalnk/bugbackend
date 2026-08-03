@@ -146,20 +146,33 @@ function sendWhatsAppMessageSingle($mobile, $message) {
  * @return bool Success status
  */
 function sendWhatsAppMessage($mobile, $message) {
+    require_once __DIR__ . '/notification_delivery_log.php';
+
     // Get all possible formats for this phone number
     $formats = getPhoneFormatsForWhatsApp($mobile);
     
     error_log("📱 sendWhatsAppMessage called - Original: $mobile, Will try " . count($formats) . " format(s)");
     
     // Try each format until one succeeds
+    $lastError = 'All formats failed';
     foreach ($formats as $format) {
         $result = sendWhatsAppMessageSingle($format, $message);
         
         if ($result['success']) {
             error_log("✅ WhatsApp message sent successfully using format: $format");
+            br_log_notification_delivery(
+                'whatsapp',
+                'sent',
+                (string)$mobile,
+                null,
+                null,
+                null,
+                ['format' => $format, 'httpCode' => $result['httpCode'] ?? null]
+            );
             return true;
         } else {
-            error_log("❌ Format '$format' failed (HTTP {$result['httpCode']}): " . substr($result['response'], 0, 200));
+            $lastError = substr((string)($result['response'] ?? 'failed'), 0, 200);
+            error_log("❌ Format '$format' failed (HTTP {$result['httpCode']}): " . $lastError);
         }
         
         // Small delay between attempts
@@ -170,6 +183,7 @@ function sendWhatsAppMessage($mobile, $message) {
     
     // If we get here, all formats failed
     error_log("❌ All formats failed for phone number: $mobile");
+    br_log_notification_delivery('whatsapp', 'failed', (string)$mobile, $lastError);
     return false;
 }
 

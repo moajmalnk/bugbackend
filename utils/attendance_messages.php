@@ -206,3 +206,40 @@ function br_attendance_email_meta_text(array $meta): string
     }
     return implode("\n", $lines) . "\n";
 }
+
+/**
+ * Shared subject/body snippets for same-day WFH request notifications.
+ */
+function br_wfh_request_copy(string $username, string $date, ?string $userNote = null): array
+{
+    $dateFormatted = date('D, M j, Y', strtotime($date));
+    $note = $userNote !== null ? trim((string)$userNote) : '';
+    return [
+        'subject' => "WFH request · {$username} · {$dateFormatted}",
+        'headline' => 'WFH request',
+        'summary' => "{$username} requested work-from-home for {$dateFormatted}.",
+        'note' => $note !== '' ? $note : null,
+        'cta' => 'Open Attendance exceptions in BugRicer to approve or reject.',
+    ];
+}
+
+/**
+ * Shared copy when a WFH request is approved or rejected.
+ */
+function br_wfh_request_decision_copy(string $username, string $date, string $status, ?string $adminNote = null): array
+{
+    $dateFormatted = date('D, M j, Y', strtotime($date));
+    $approved = strtolower((string)$status) === 'approved';
+    $note = $adminNote !== null ? trim((string)$adminNote) : '';
+    return [
+        'subject' => ($approved ? 'WFH approved' : 'WFH rejected') . " · {$dateFormatted}",
+        'headline' => $approved ? 'Your WFH request was approved' : 'Your WFH request was rejected',
+        'summary' => $approved
+            ? 'You can check in as WFH for this day on BugUpdate.'
+            : 'Office check-in still applies unless an admin grants an exception.',
+        'note' => $note !== '' ? $note : null,
+        'username' => $username,
+        'date_label' => $dateFormatted,
+        'approved' => $approved,
+    ];
+}

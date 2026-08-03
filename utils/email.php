@@ -86,6 +86,8 @@ The BugRicer Team
 }
 
 function sendEmail($to, $subject, $html_body, $text_body = '') {
+    require_once __DIR__ . '/notification_delivery_log.php';
+
     try {
         error_log("📧 sendEmail called - To: $to, Subject: $subject");
 
@@ -93,6 +95,7 @@ function sendEmail($to, $subject, $html_body, $text_body = '') {
         $smtpPass = Environment::get('SMTP_PASS');
         if ($smtpUser === null || $smtpUser === '' || $smtpPass === null || $smtpPass === '') {
             error_log('❌ SMTP not configured: set SMTP_USER and SMTP_PASS in backend/.env (see .env.example)');
+            br_log_notification_delivery('email', 'failed', (string)$to, 'SMTP not configured', (string)$subject);
             return false;
         }
 
@@ -138,11 +141,14 @@ function sendEmail($to, $subject, $html_body, $text_body = '') {
         // Send email
         $mail->send();
         error_log("✅ Email sent successfully to: $to (Subject: $subject)");
+        br_log_notification_delivery('email', 'sent', (string)$to, null, (string)$subject);
         return true;
         
     } catch (Exception $e) {
         error_log("❌ Email error for $to: " . $e->getMessage());
         error_log("PHPMailer ErrorInfo: " . (isset($mail) ? $mail->ErrorInfo : 'N/A'));
+        $err = isset($mail) && $mail->ErrorInfo ? $mail->ErrorInfo : $e->getMessage();
+        br_log_notification_delivery('email', 'failed', (string)$to, (string)$err, (string)$subject);
         return false;
     }
 }

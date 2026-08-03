@@ -366,6 +366,178 @@ try {
         $notificationDisabledUsers = $missingUsers;
     }
 
+    // --- Email & WhatsApp coverage (recipients + delivery errors) ---
+    require_once __DIR__ . '/../../utils/notification_delivery_log.php';
+    br_ensure_notification_delivery_log($conn);
+
+    $mailReadyUsers = [];
+    $mailMissingUsers = [];
+    $whatsappReadyUsers = [];
+    $whatsappMissingUsers = [];
+    $mailRecentSent = [];
+    $mailRecentErrors = [];
+    $whatsappRecentSent = [];
+    $whatsappRecentErrors = [];
+    $channelSummary = [
+        'mail_ready' => 0,
+        'mail_missing' => 0,
+        'whatsapp_ready' => 0,
+        'whatsapp_missing' => 0,
+        'mail_sent_7d' => 0,
+        'mail_failed_7d' => 0,
+        'whatsapp_sent_7d' => 0,
+        'whatsapp_failed_7d' => 0,
+    ];
+
+    try {
+        $mailReadyStmt = $conn->query(
+            "SELECT u.id, u.username, u.email, u.phone
+             FROM users u
+             WHERE u.account_active = 1
+               AND u.email IS NOT NULL
+               AND TRIM(u.email) <> ''
+               AND u.email LIKE '%@%.%'
+             ORDER BY u.username
+             LIMIT 200"
+        );
+        $mailReadyUsers = $mailReadyStmt ? $mailReadyStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+
+        $mailMissingStmt = $conn->query(
+            "SELECT u.id, u.username, u.email, u.phone
+             FROM users u
+             WHERE u.account_active = 1
+               AND (
+                 u.email IS NULL
+                 OR TRIM(u.email) = ''
+                 OR u.email NOT LIKE '%@%.%'
+               )
+             ORDER BY u.username
+             LIMIT 200"
+        );
+        $mailMissingUsers = $mailMissingStmt ? $mailMissingStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+
+        $waReadyStmt = $conn->query(
+            "SELECT u.id, u.username, u.email, u.phone
+             FROM users u
+             WHERE u.account_active = 1
+               AND u.phone IS NOT NULL
+               AND TRIM(u.phone) <> ''
+               AND LENGTH(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(u.phone,''), '+', ''), ' ', ''), '-', ''), '(', '')) >= 8
+             ORDER BY u.username
+             LIMIT 200"
+        );
+        $whatsappReadyUsers = $waReadyStmt ? $waReadyStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+
+        $waMissingStmt = $conn->query(
+            "SELECT u.id, u.username, u.email, u.phone
+             FROM users u
+             WHERE u.account_active = 1
+               AND (
+                 u.phone IS NULL
+                 OR TRIM(u.phone) = ''
+                 OR LENGTH(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(u.phone,''), '+', ''), ' ', ''), '-', ''), '(', '')) < 8
+               )
+             ORDER BY u.username
+             LIMIT 200"
+        );
+        $whatsappMissingUsers = $waMissingStmt ? $waMissingStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+
+        $channelSummary['mail_ready'] = count($mailReadyUsers);
+        $channelSummary['mail_missing'] = count($mailMissingUsers);
+        $channelSummary['whatsapp_ready'] = count($whatsappReadyUsers);
+        $channelSummary['whatsapp_missing'] = count($whatsappMissingUsers);
+
+        // Prefer exact counts (not limited lists)
+        $cMailReady = $conn->query(
+            "SELECT COUNT(*) FROM users
+             WHERE account_active = 1
+               AND email IS NOT NULL AND TRIM(email) <> '' AND email LIKE '%@%.%'"
+        );
+        $cMailMissing = $conn->query(
+            "SELECT COUNT(*) FROM users
+             WHERE account_active = 1
+               AND (email IS NULL OR TRIM(email) = '' OR email NOT LIKE '%@%.%')"
+        );
+        $cWaReady = $conn->query(
+            "SELECT COUNT(*) FROM users
+             WHERE account_active = 1
+               AND phone IS NOT NULL AND TRIM(phone) <> ''
+               AND LENGTH(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(phone,''), '+', ''), ' ', ''), '-', ''), '(', '')) >= 8"
+        );
+        $cWaMissing = $conn->query(
+            "SELECT COUNT(*) FROM users
+             WHERE account_active = 1
+               AND (
+                 phone IS NULL OR TRIM(phone) = ''
+                 OR LENGTH(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(phone,''), '+', ''), ' ', ''), '-', ''), '(', '')) < 8
+               )"
+        );
+        if ($cMailReady) $channelSummary['mail_ready'] = (int) $cMailReady->fetchColumn();
+        if ($cMailMissing) $channelSummary['mail_missing'] = (int) $cMailMissing->fetchColumn();
+        if ($cWaReady) $channelSummary['whatsapp_ready'] = (int) $cWaReady->fetchColumn();
+        if ($cWaMissing) $channelSummary['whatsapp_missing'] = (int) $cWaMissing->fetchColumn();
+
+        $stats7d = $conn->query(
+            "SELECT channel, status, COUNT(*) AS cnt
+             FROM notification_delivery_log
+             WHERE created_at >= NOW() - INTERVAL 7 DAY
+             GROUP BY channel, status"
+        );
+        if ($stats7d) {
+            while ($row = $stats7d->fetch(PDO::FETCH_ASSOC)) {
+                $ch = $row['channel'] ?? '';
+                $st = $row['status'] ?? '';
+                $cnt = (int) ($row['cnt'] ?? 0);
+                if ($ch === 'email' && $st === 'sent') $channelSummary['mail_sent_7d'] = $cnt;
+                if ($ch === 'email' && $st === 'failed') $channelSummary['mail_failed_7d'] = $cnt;
+                if ($ch === 'whatsapp' && $st === 'sent') $channelSummary['whatsapp_sent_7d'] = $cnt;
+                if ($ch === 'whatsapp' && $st === 'failed') $channelSummary['whatsapp_failed_7d'] = $cnt;
+            }
+        }
+
+        $fetchLog = static function (PDO $conn, string $channel, string $status) {
+            $stmt = $conn->prepare(
+                "SELECT l.id, l.channel, l.status, l.user_id, l.recipient, l.subject,
+                        l.error_message, l.created_at, u.username
+                 FROM notification_delivery_log l
+                 LEFT JOIN users u ON u.id COLLATE utf8mb4_unicode_ci = l.user_id COLLATE utf8mb4_unicode_ci
+                 WHERE l.channel = ? AND l.status = ?
+                 ORDER BY l.created_at DESC
+                 LIMIT 80"
+            );
+            $stmt->execute([$channel, $status]);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        };
+
+        // Collation-safe join fallback without COLLATE if it fails
+        try {
+            $mailRecentSent = $fetchLog($conn, 'email', 'sent');
+            $mailRecentErrors = $fetchLog($conn, 'email', 'failed');
+            $whatsappRecentSent = $fetchLog($conn, 'whatsapp', 'sent');
+            $whatsappRecentErrors = $fetchLog($conn, 'whatsapp', 'failed');
+        } catch (Throwable $joinErr) {
+            $fetchLogSimple = static function (PDO $conn, string $channel, string $status) {
+                $stmt = $conn->prepare(
+                    "SELECT id, channel, status, user_id, recipient, subject, error_message, created_at
+                     FROM notification_delivery_log
+                     WHERE channel = ? AND status = ?
+                     ORDER BY created_at DESC
+                     LIMIT 80"
+                );
+                $stmt->execute([$channel, $status]);
+                return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            };
+            $mailRecentSent = $fetchLogSimple($conn, 'email', 'sent');
+            $mailRecentErrors = $fetchLogSimple($conn, 'email', 'failed');
+            $whatsappRecentSent = $fetchLogSimple($conn, 'whatsapp', 'sent');
+            $whatsappRecentErrors = $fetchLogSimple($conn, 'whatsapp', 'failed');
+        }
+    } catch (Throwable $e) {
+        error_log('push_coverage channel coverage: ' . $e->getMessage());
+    }
+
+    $summary = array_merge($summary, $channelSummary);
+
     echo json_encode([
         'success' => true,
         'data' => [
@@ -376,6 +548,14 @@ try {
             'notification_enabled_users' => $notificationEnabledUsers,
             'notification_disabled_users' => $notificationDisabledUsers,
             'fcm_token_epoch' => FcmConfig::getTokenEpoch(),
+            'mail_ready_users' => $mailReadyUsers,
+            'mail_missing_users' => $mailMissingUsers,
+            'whatsapp_ready_users' => $whatsappReadyUsers,
+            'whatsapp_missing_users' => $whatsappMissingUsers,
+            'mail_recent_sent' => $mailRecentSent,
+            'mail_recent_errors' => $mailRecentErrors,
+            'whatsapp_recent_sent' => $whatsappRecentSent,
+            'whatsapp_recent_errors' => $whatsappRecentErrors,
         ],
     ]);
 } catch (Throwable $e) {
