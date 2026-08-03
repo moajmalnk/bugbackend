@@ -66,7 +66,12 @@ try {
         'message' => 'Monthly ops timeline retrieved',
         'data' => $timeline,
     ]);
-} catch (Exception $e) {
-    http_response_code(500);
-    echo json_encode(['success' => false, 'message' => 'Server error: ' . $e->getMessage()]);
+} catch (Throwable $e) {
+    $msg = $e->getMessage();
+    $isAuth = stripos($msg, 'token') !== false || stripos($msg, 'unauthorized') !== false || stripos($msg, 'authentication') !== false;
+    http_response_code($isAuth ? 401 : 500);
+    echo json_encode([
+        'success' => false,
+        'message' => ($isAuth ? $msg : ('Server error: ' . $msg)),
+    ]);
 }
