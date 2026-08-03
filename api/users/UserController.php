@@ -44,7 +44,19 @@ class UserController extends BaseAPI {
             } else {
                 $select[] = "'offline' as status";
             }
-            $query = "SELECT " . implode(', ', $select) . " FROM users ORDER BY created_at DESC";
+            $query = "SELECT " . implode(', ', $select) . " FROM users";
+            if ($hasAccountActive && $hasLastActive) {
+                $query .= " ORDER BY (CASE WHEN account_active = 0 THEN 1 ELSE 0 END) ASC,"
+                    . " (CASE WHEN last_active_at IS NULL THEN 2"
+                    . " WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 120 THEN 0"
+                    . " WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 900 THEN 1"
+                    . " ELSE 2 END) ASC,"
+                    . " username ASC";
+            } elseif ($hasAccountActive) {
+                $query .= " ORDER BY (CASE WHEN account_active = 0 THEN 1 ELSE 0 END) ASC, username ASC";
+            } else {
+                $query .= " ORDER BY username ASC";
+            }
             
             $stmt = $this->conn->prepare($query);
             
