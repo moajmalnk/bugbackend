@@ -112,6 +112,47 @@ class WfhRequestController extends BaseAPI
     }
 
     /**
+     * Why: Email/WhatsApp/FCM are slow — flush JSON to the client first, then notify.
+     */
+    private function respondThen(callable $afterResponse, int $statusCode, string $message, $data = null): void
+    {
+        ignore_user_abort(true);
+        if (function_exists('session_write_close')) {
+            @session_write_close();
+        }
+
+        if (!headers_sent()) {
+            http_response_code($statusCode);
+            header('Content-Type: application/json');
+        }
+
+        $response = [
+            'success' => $statusCode >= 200 && $statusCode < 300,
+            'message' => $message,
+        ];
+        if ($data !== null) {
+            $response['data'] = $data;
+        }
+
+        echo json_encode($response);
+
+        if (function_exists('fastcgi_finish_request')) {
+            fastcgi_finish_request();
+        } else {
+            if (ob_get_level() > 0) {
+                @ob_end_flush();
+            }
+            @flush();
+        }
+
+        try {
+            $afterResponse();
+        } catch (Throwable $e) {
+            error_log('WfhRequestController deferred work: ' . $e->getMessage());
+        }
+    }
+
+    /**
      * GET — admin: pending list; user: own request for ?date=
      */
     public function list()
@@ -191,17 +232,20 @@ class WfhRequestController extends BaseAPI
                 return;
             }
             $status = $result['request']['status'] ?? ($action === 'approve' ? 'approved' : 'rejected');
-            $this->notifyRequesterOfDecision(
-                $userId,
-                $date,
-                $status,
-                $result['request']['admin_note'] ?? $adminNote
-            );
-            $this->sendJsonResponse(200, $result['message'] ?? 'OK', [
+            $decisionNote = $result['request']['admin_note'] ?? $adminNote;
+            $payload = [
                 'request' => $result['request'],
                 'exception' => $result['exception'],
                 'policy' => br_checkin_policy_status($this->conn, $userId, $date),
-            ]);
+            ];
+            $this->respondThen(
+                function () use ($userId, $date, $status, $decisionNote) {
+                    $this->notifyRequesterOfDecision($userId, $date, $status, $decisionNote);
+                },
+                200,
+                $result['message'] ?? 'OK',
+                $payload
+            );
             return;
         }
 
@@ -229,11 +273,18 @@ class WfhRequestController extends BaseAPI
             return;
         }
 
-        $this->notifyAdminsOfRequest($userId, $date, $result['request']['user_note'] ?? $userNote);
-
-        $this->sendJsonResponse(200, $result['message'] ?? 'OK', [
+        $noteForNotify = $result['request']['user_note'] ?? $userNote;
+        $payload = [
             'request' => $result['request'],
             'policy' => br_checkin_policy_status($this->conn, $userId, $date),
-        ]);
+        ];
+        $this->respondThen(
+            function () use ($userId, $date, $noteForNotify) {
+                $this->notifyAdminsOfRequest($userId, $date, $noteForNotify);
+            },
+            200,
+            $result['message'] ?? 'OK',
+            $payload
+        );
     }
 }
