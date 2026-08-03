@@ -20,6 +20,7 @@ class ProjectController extends BaseAPI
         'platforms',
         'project_categories',
         'app_publisher_meta',
+        'category_asset_links',
         'app_url_ios',
         'app_url_android',
         'testflight_url',
@@ -65,6 +66,12 @@ class ProjectController extends BaseAPI
             if (!in_array('app_publisher_meta', $cols, true)) {
                 $this->conn->exec(
                     "ALTER TABLE projects ADD COLUMN app_publisher_meta TEXT DEFAULT NULL AFTER project_categories"
+                );
+                $cols[] = 'app_publisher_meta';
+            }
+            if (!in_array('category_asset_links', $cols, true)) {
+                $this->conn->exec(
+                    "ALTER TABLE projects ADD COLUMN category_asset_links TEXT DEFAULT NULL AFTER app_publisher_meta"
                 );
             }
 

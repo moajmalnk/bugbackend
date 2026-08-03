@@ -46,7 +46,8 @@ try {
     }
 
     $milestones = deadlineReminderMilestones();
-    if (!isset($milestones[$milestoneKey])) {
+    $allowedCols = array_keys($milestones);
+    if (!in_array($milestoneKey, $allowedCols, true)) {
         $api->sendJsonResponse(400, 'Invalid milestone_key');
         exit;
     }
@@ -54,7 +55,9 @@ try {
     $conn = $api->getConnection();
     ensureProjectTimelineColumns($conn);
 
-    $stmt = $conn->prepare('SELECT id, name, `' . $milestoneKey . '` AS milestone_raw FROM projects WHERE id = ? LIMIT 1');
+    $stmt = $conn->prepare(
+        "SELECT id, name, `{$milestoneKey}` AS milestone_raw FROM projects WHERE id = ? LIMIT 1"
+    );
     $stmt->execute([$projectId]);
     $project = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$project) {

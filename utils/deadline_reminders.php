@@ -249,8 +249,37 @@ function reminderAlreadySent(
 }
 
 /**
- * Catch-up without spam: among applicable unsent offsets (diffDays <= offset),
- * return the most urgent (smallest) offset, or null if none.
+ * Inclusive day window for an offset relative to sibling offsets.
+ * e.g. with [7,3,1,0,-1]: offset 7 → [4,7], offset 3 → [2,3], overdue -1 → [-1,-1].
+ *
+ * @param int[] $allOffsets
+ * @return array{0: int, 1: int} [lower, upper]
+ */
+function deadlineReminderOffsetWindow(int $offset, array $allOffsets): array
+{
+    $sorted = array_values(array_unique(array_map('intval', $allOffsets)));
+    rsort($sorted, SORT_NUMERIC);
+
+    $nextSmaller = null;
+    foreach ($sorted as $o) {
+        if ($o < $offset) {
+            $nextSmaller = $o;
+            break;
+        }
+    }
+
+    if ($offset < 0) {
+        // Overdue bucket: exact day only (one-shot); catch-up via pickDeadlineReminderOffset
+        return [$offset, $offset];
+    }
+
+    $lower = $nextSmaller !== null ? $nextSmaller + 1 : $offset;
+    return [$lower, $offset];
+}
+
+/**
+ * Catch-up without spam: among offsets whose day-window contains diffDays
+ * (or overdue catch-up for −1 when past due), return the most urgent unsent offset.
  */
 function pickDeadlineReminderOffset(
     PDO $conn,
@@ -261,16 +290,27 @@ function pickDeadlineReminderOffset(
 ): ?int {
     $offsets = deadlineReminderOffsetsForMilestone($milestoneKey);
     $candidates = [];
+
     foreach ($offsets as $offset) {
         $offset = (int) $offset;
-        if ($diffDays > $offset) {
-            continue;
-        }
         if (reminderAlreadySent($conn, $projectId, $milestoneKey, $offset, $milestoneDate)) {
             continue;
         }
-        $candidates[] = $offset;
+
+        if ($offset < 0) {
+            // Overdue: fire on exact day, or once as catch-up if already past and never sent
+            if ($diffDays === $offset || ($diffDays < $offset && $diffDays <= -1)) {
+                $candidates[] = $offset;
+            }
+            continue;
+        }
+
+        [$lower, $upper] = deadlineReminderOffsetWindow($offset, $offsets);
+        if ($diffDays >= $lower && $diffDays <= $upper) {
+            $candidates[] = $offset;
+        }
     }
+
     if (empty($candidates)) {
         return null;
     }

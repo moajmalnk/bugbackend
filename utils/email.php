@@ -1009,7 +1009,7 @@ function sendProjectDeadlineReminderEmail(
 
     $html_body = "
     <div style=\"font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;\">
-      <div style=\"max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">
+      <div style=\"max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.08);\">
         <div style=\"background-color: {$accent}; color: #ffffff; padding: 20px; text-align: center;\">
           <h1 style=\"margin: 0; font-size: 22px;\">" . htmlspecialchars($headline) . "</h1>
           <p style=\"margin: 6px 0 0 0; font-size: 14px; opacity: 0.95;\">Project timeline reminder</p>
@@ -1017,14 +1017,14 @@ function sendProjectDeadlineReminderEmail(
         <div style=\"padding: 24px;\">
           <p style=\"font-size: 15px; margin-top: 0;\">Hello {$safeName},</p>
           <p style=\"font-size: 14px;\">{$urgency}</p>
-          <div style=\"margin: 18px 0; padding: 14px; background-color: {$bg}; border-left: 4px solid {$accent}; border-radius: 4px;\">
+          <div style=\"margin: 18px 0; padding: 14px; background-color: {$bg}; border-left: 4px solid {$accent}; border-radius: 12px;\">
             <p style=\"margin: 0; font-size: 14px; color: {$text};\"><strong>Project:</strong> {$safeProject}</p>
             <p style=\"margin: 6px 0 0 0; font-size: 14px; color: {$text};\"><strong>Milestone:</strong> {$safeMilestone}</p>
             <p style=\"margin: 6px 0 0 0; font-size: 14px; color: {$text};\"><strong>Date:</strong> {$dateLabel}</p>
           </div>
           <p style=\"text-align: center; margin: 24px 0 8px 0;\">
             <a href=\"" . htmlspecialchars((string) $url) . "\"
-               style=\"display: inline-block; background-color: {$accent}; color: #ffffff; text-decoration: none; padding: 12px 22px; border-radius: 8px; font-weight: 600;\">
+               style=\"display: inline-block; background-color: {$accent}; color: #ffffff; text-decoration: none; padding: 12px 22px; border-radius: 12px; font-weight: 600;\">
               Open Project
             </a>
           </p>
