@@ -175,6 +175,33 @@ class WfhRequestController extends BaseAPI
             return;
         }
 
+        // Admin: full WFH request history for one user (includes rejected).
+        if (
+            $this->isAdmin($decoded)
+            && !empty($_GET['user_id'])
+            && (isset($_GET['history']) || ($_GET['scope'] ?? '') === 'history')
+        ) {
+            $userId = trim((string)$_GET['user_id']);
+            $statusFilter = isset($_GET['status']) ? trim((string)$_GET['status']) : null;
+            if ($statusFilter === '' || $statusFilter === 'all') {
+                $statusFilter = null;
+            }
+            $requests = br_list_wfh_requests_for_user($this->conn, $userId, $statusFilter, 100);
+            $rejected = array_values(array_filter(
+                $requests,
+                static fn($r) => ($r['status'] ?? '') === 'rejected'
+            ));
+            $this->sendJsonResponse(200, 'OK', [
+                'today' => br_server_today(),
+                'user_id' => $userId,
+                'requests' => $requests,
+                'rejected' => $rejected,
+                'request_count' => count($requests),
+                'rejected_count' => count($rejected),
+            ]);
+            return;
+        }
+
         $date = trim((string)($_GET['date'] ?? br_server_today()));
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
             $this->sendJsonResponse(400, 'Invalid date');

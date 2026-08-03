@@ -1082,6 +1082,65 @@ function br_list_pending_wfh_requests(PDO $conn, int $limit = 100): array
 }
 
 /**
+ * Why: Admin user detail needs rejected/approved/pending WFH request history, not only pending queue.
+ *
+ * @param string|null $statusFilter pending|approved|rejected or null for all
+ * @return list<array<string,mixed>>
+ */
+function br_list_wfh_requests_for_user(PDO $conn, $userId, ?string $statusFilter = null, int $limit = 100): array
+{
+    br_ensure_checkin_policy_schema($conn);
+    $limit = max(1, min(200, $limit));
+    $statusFilter = $statusFilter !== null ? strtolower(trim($statusFilter)) : null;
+    if ($statusFilter !== null && !in_array($statusFilter, ['pending', 'approved', 'rejected'], true)) {
+        $statusFilter = null;
+    }
+
+    $rows = [];
+    try {
+        $sql = "SELECT r.id, r.user_id, r.request_date, r.status, r.user_note, r.admin_note,
+                       r.reviewed_by, r.reviewed_at, r.created_at, r.updated_at,
+                       COALESCE(NULLIF(TRIM(u.username), ''), CONCAT('user #', r.user_id)) AS username,
+                       COALESCE(u.role, '') AS role,
+                       COALESCE(NULLIF(TRIM(rev.username), ''), NULL) AS reviewed_by_username
+                FROM attendance_wfh_requests r
+                LEFT JOIN users u ON u.id COLLATE utf8mb4_unicode_ci = r.user_id COLLATE utf8mb4_unicode_ci
+                LEFT JOIN users rev ON rev.id COLLATE utf8mb4_unicode_ci = r.reviewed_by COLLATE utf8mb4_unicode_ci
+                WHERE r.user_id = ?";
+        $params = [(string)$userId];
+        if ($statusFilter !== null) {
+            $sql .= ' AND r.status = ?';
+            $params[] = $statusFilter;
+        }
+        $sql .= " ORDER BY r.request_date DESC, r.updated_at DESC, r.created_at DESC LIMIT {$limit}";
+        $stmt = $conn->prepare($sql);
+        $stmt->execute($params);
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $rows[] = [
+                'id' => (int)$row['id'],
+                'user_id' => (string)$row['user_id'],
+                'username' => (string)$row['username'],
+                'role' => (string)$row['role'],
+                'request_date' => (string)$row['request_date'],
+                'status' => (string)$row['status'],
+                'user_note' => $row['user_note'] !== null ? (string)$row['user_note'] : null,
+                'admin_note' => $row['admin_note'] !== null ? (string)$row['admin_note'] : null,
+                'reviewed_by' => $row['reviewed_by'] !== null ? (string)$row['reviewed_by'] : null,
+                'reviewed_by_username' => $row['reviewed_by_username'] !== null
+                    ? (string)$row['reviewed_by_username']
+                    : null,
+                'reviewed_at' => $row['reviewed_at'] !== null ? (string)$row['reviewed_at'] : null,
+                'created_at' => $row['created_at'] !== null ? (string)$row['created_at'] : null,
+                'updated_at' => $row['updated_at'] !== null ? (string)$row['updated_at'] : null,
+            ];
+        }
+    } catch (Throwable $e) {
+        error_log('br_list_wfh_requests_for_user: ' . $e->getMessage());
+    }
+    return $rows;
+}
+
+/**
  * Policy snapshot for attendance_status / check-in UI.
  *
  * @return array<string,mixed>
