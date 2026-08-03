@@ -2119,6 +2119,108 @@ class BugController extends BaseAPI {
     }
 
     /**
+     * Why: Ops Dashboard KPIs need full DB COUNTs (optionally period-scoped).
+     * Sampling rows (e.g. LIMIT 500) falsely caps Fixed at 500.
+     *
+     * Period rule matches the dashboard UI: created_at OR updated_at falls in range.
+     *
+     * @param string|null $from Y-m-d inclusive
+     * @param string|null $to Y-m-d inclusive
+     * @param string|null $accessUserId Non-admin project membership scope
+     */
+    public function getDashboardStats($from = null, $to = null, $accessUserId = null) {
+        try {
+            $this->validateToken();
+            if (!$this->conn) {
+                throw new Exception("Database connection failed");
+            }
+
+            $from = is_string($from) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $from) ? $from : null;
+            $to = is_string($to) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $to) ? $to : null;
+            if ($from && $to && $from > $to) {
+                $tmp = $from;
+                $from = $to;
+                $to = $tmp;
+            }
+
+            $where = [];
+            $params = [];
+
+            if ($accessUserId) {
+                $where[] = "b.project_id IN (
+                    SELECT DISTINCT project_id FROM project_members WHERE user_id = ?
+                    UNION
+                    SELECT DISTINCT id FROM projects WHERE created_by = ?
+                )";
+                $params[] = $accessUserId;
+                $params[] = $accessUserId;
+            }
+
+            if ($from && $to) {
+                $where[] = "(
+                    DATE(b.created_at) BETWEEN ? AND ?
+                    OR DATE(b.updated_at) BETWEEN ? AND ?
+                )";
+                $params[] = $from;
+                $params[] = $to;
+                $params[] = $from;
+                $params[] = $to;
+            }
+
+            $whereSql = !empty($where) ? (' WHERE ' . implode(' AND ', $where)) : '';
+
+            $sql = "
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN b.status = 'pending' THEN 1 ELSE 0 END) AS pending,
+                    SUM(CASE WHEN b.status = 'in_progress' THEN 1 ELSE 0 END) AS in_progress,
+                    SUM(CASE WHEN b.status = 'fixed' THEN 1 ELSE 0 END) AS fixed,
+                    SUM(CASE WHEN b.status = 'declined' THEN 1 ELSE 0 END) AS declined,
+                    SUM(CASE WHEN b.status = 'rejected' THEN 1 ELSE 0 END) AS rejected,
+                    SUM(CASE WHEN b.status IN ('pending', 'in_progress') THEN 1 ELSE 0 END) AS open_count,
+                    SUM(CASE WHEN b.status IN ('fixed', 'rejected') THEN 1 ELSE 0 END) AS resolved,
+                    SUM(CASE WHEN b.status IN ('pending', 'in_progress') AND b.priority = 'high' THEN 1 ELSE 0 END) AS open_high,
+                    SUM(CASE WHEN b.status IN ('pending', 'in_progress') AND b.priority = 'medium' THEN 1 ELSE 0 END) AS open_medium,
+                    SUM(CASE WHEN b.status IN ('pending', 'in_progress') AND b.priority = 'low' THEN 1 ELSE 0 END) AS open_low
+                FROM bugs b
+                {$whereSql}
+            ";
+
+            $stmt = $this->conn->prepare($sql);
+            $stmt->execute($params);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+            $pending = (int) ($row['pending'] ?? 0);
+            $inProgress = (int) ($row['in_progress'] ?? 0);
+            $fixed = (int) ($row['fixed'] ?? 0);
+            $declined = (int) ($row['declined'] ?? 0);
+            $rejected = (int) ($row['rejected'] ?? 0);
+            $open = (int) ($row['open_count'] ?? ($pending + $inProgress));
+
+            return [
+                'from' => $from,
+                'to' => $to,
+                'pending' => $pending,
+                'in_progress' => $inProgress,
+                'fixed' => $fixed,
+                'declined' => $declined,
+                'rejected' => $rejected,
+                'open' => $open,
+                'resolved' => (int) ($row['resolved'] ?? ($fixed + $rejected)),
+                'total' => (int) ($row['total'] ?? ($pending + $inProgress + $fixed + $declined + $rejected)),
+                'open_priority' => [
+                    'high' => (int) ($row['open_high'] ?? 0),
+                    'medium' => (int) ($row['open_medium'] ?? 0),
+                    'low' => (int) ($row['open_low'] ?? 0),
+                ],
+            ];
+        } catch (Exception $e) {
+            error_log('getDashboardStats error: ' . $e->getMessage());
+            throw new Exception($e->getMessage());
+        }
+    }
+
+    /**
      * Why: List bugs with server-side filters + accurate COUNT totals so Bugs/Fixes
      * badges and pagination match full DB counts (not a 1,000-row client sample).
      *
