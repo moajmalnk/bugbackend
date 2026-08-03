@@ -18,6 +18,8 @@ class ProjectController extends BaseAPI
         'backend_domain',
         'vercel_domain',
         'platforms',
+        'project_categories',
+        'app_publisher_meta',
         'app_url_ios',
         'app_url_android',
         'testflight_url',
@@ -36,6 +38,56 @@ class ProjectController extends BaseAPI
     public function __construct()
     {
         parent::__construct();
+        $this->ensureProjectCategoryColumns();
+    }
+
+    private function ensureProjectCategoryColumns(): void
+    {
+        static $done = false;
+        if ($done || !$this->conn) {
+            return;
+        }
+        $done = true;
+        try {
+            $cols = [];
+            $res = $this->conn->query('SHOW COLUMNS FROM projects');
+            if ($res) {
+                while ($row = $res->fetch(PDO::FETCH_ASSOC)) {
+                    $cols[] = $row['Field'];
+                }
+            }
+            if (!in_array('project_categories', $cols, true)) {
+                $this->conn->exec(
+                    "ALTER TABLE projects ADD COLUMN project_categories VARCHAR(100) DEFAULT NULL AFTER platforms"
+                );
+                $cols[] = 'project_categories';
+            }
+            if (!in_array('app_publisher_meta', $cols, true)) {
+                $this->conn->exec(
+                    "ALTER TABLE projects ADD COLUMN app_publisher_meta TEXT DEFAULT NULL AFTER project_categories"
+                );
+            }
+
+            $attCols = [];
+            $attRes = $this->conn->query('SHOW COLUMNS FROM project_attachments');
+            if ($attRes) {
+                while ($row = $attRes->fetch(PDO::FETCH_ASSOC)) {
+                    $attCols[] = $row['Field'];
+                }
+            }
+            if (!in_array('category', $attCols, true)) {
+                $this->conn->exec(
+                    "ALTER TABLE project_attachments ADD COLUMN category VARCHAR(32) DEFAULT NULL AFTER file_type"
+                );
+            }
+            if (!in_array('folder', $attCols, true)) {
+                $this->conn->exec(
+                    "ALTER TABLE project_attachments ADD COLUMN folder VARCHAR(100) DEFAULT NULL AFTER category"
+                );
+            }
+        } catch (Exception $e) {
+            error_log('ensureProjectCategoryColumns: ' . $e->getMessage());
+        }
     }
 
     private function normalizeDateField($value)
@@ -81,11 +133,21 @@ class ProjectController extends BaseAPI
     private function getProjectAttachments($projectId)
     {
         $stmt = $this->conn->prepare(
-            "SELECT id, project_id, file_name, file_path, file_type, uploaded_by, created_at
+            "SELECT id, project_id, file_name, file_path, file_type, category, folder, uploaded_by, created_at
              FROM project_attachments WHERE project_id = ? ORDER BY created_at DESC"
         );
-        $stmt->execute([$projectId]);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        try {
+            $stmt->execute([$projectId]);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Exception $e) {
+            // Older schema without category/folder
+            $fallback = $this->conn->prepare(
+                "SELECT id, project_id, file_name, file_path, file_type, uploaded_by, created_at
+                 FROM project_attachments WHERE project_id = ? ORDER BY created_at DESC"
+            );
+            $fallback->execute([$projectId]);
+            return $fallback->fetchAll(PDO::FETCH_ASSOC);
+        }
     }
 
     private function attachClientToProject(array &$project): void

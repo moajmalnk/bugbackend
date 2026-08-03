@@ -18,11 +18,20 @@ try {
     }
 
     $stmt = $api->getConnection()->prepare(
-        "SELECT id, project_id, file_name, file_path, file_type, uploaded_by, created_at
+        "SELECT id, project_id, file_name, file_path, file_type, category, folder, uploaded_by, created_at
          FROM project_attachments WHERE project_id = ? ORDER BY created_at DESC"
     );
-    $stmt->execute([$projectId]);
-    $attachments = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    try {
+        $stmt->execute([$projectId]);
+        $attachments = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Exception $e) {
+        $fallback = $api->getConnection()->prepare(
+            "SELECT id, project_id, file_name, file_path, file_type, uploaded_by, created_at
+             FROM project_attachments WHERE project_id = ? ORDER BY created_at DESC"
+        );
+        $fallback->execute([$projectId]);
+        $attachments = $fallback->fetchAll(PDO::FETCH_ASSOC);
+    }
 
     $api->sendJsonResponse(200, 'Attachments retrieved successfully', $attachments);
 } catch (Exception $e) {
