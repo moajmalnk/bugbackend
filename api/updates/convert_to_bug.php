@@ -160,23 +160,18 @@ try {
     );
     $ins->execute([$newBugId, $title, $description, $targetProjectId, $userId, $priority, $userId]);
 
+    $uaColsStmt = $conn->query('SHOW COLUMNS FROM update_attachments');
+    $uaCols = $uaColsStmt ? array_column($uaColsStmt->fetchAll(PDO::FETCH_ASSOC), 'Field') : [];
+    $updateHasDuration = in_array('duration', $uaCols, true);
+    $durationSelect = $updateHasDuration ? ', duration' : '';
+
     $attStmt = $conn->prepare(
-        "SELECT file_name, file_path, file_type, uploaded_by, duration
+        "SELECT file_name, file_path, file_type, uploaded_by{$durationSelect}
          FROM update_attachments
          WHERE update_id = ?
          ORDER BY created_at ASC"
     );
-    try {
-        $attStmt->execute([$updateId]);
-    } catch (PDOException $e) {
-        $attStmt = $conn->prepare(
-            "SELECT file_name, file_path, file_type, uploaded_by
-             FROM update_attachments
-             WHERE update_id = ?
-             ORDER BY created_at ASC"
-        );
-        $attStmt->execute([$updateId]);
-    }
+    $attStmt->execute([$updateId]);
     $attachments = $attStmt->fetchAll(PDO::FETCH_ASSOC);
 
     $baColsStmt = $conn->query('SHOW COLUMNS FROM bug_attachments');

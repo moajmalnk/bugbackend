@@ -176,24 +176,18 @@ try {
     }
 
     // Copy attachments (reuse disk paths)
+    $baColsStmt = $conn->query('SHOW COLUMNS FROM bug_attachments');
+    $baCols = $baColsStmt ? array_column($baColsStmt->fetchAll(PDO::FETCH_ASSOC), 'Field') : [];
+    $bugHasDuration = in_array('duration', $baCols, true);
+    $durationSelect = $bugHasDuration ? ', duration' : '';
+
     $attStmt = $conn->prepare(
-        "SELECT file_name, file_path, file_type, uploaded_by, duration
+        "SELECT file_name, file_path, file_type, uploaded_by{$durationSelect}
          FROM bug_attachments
          WHERE CAST(bug_id AS CHAR) = CAST(? AS CHAR)
          ORDER BY created_at ASC"
     );
-    try {
-        $attStmt->execute([$bugId]);
-    } catch (PDOException $e) {
-        // duration column may not exist
-        $attStmt = $conn->prepare(
-            "SELECT file_name, file_path, file_type, uploaded_by
-             FROM bug_attachments
-             WHERE CAST(bug_id AS CHAR) = CAST(? AS CHAR)
-             ORDER BY created_at ASC"
-        );
-        $attStmt->execute([$bugId]);
-    }
+    $attStmt->execute([$bugId]);
     $attachments = $attStmt->fetchAll(PDO::FETCH_ASSOC);
 
     $uaColsStmt = $conn->query('SHOW COLUMNS FROM update_attachments');

@@ -10,6 +10,52 @@ class FeedbackController extends BaseAPI {
     }
     
     /**
+     * Ensure dismissed_at exists for 1-week "Maybe Later" snooze.
+     */
+    private function ensureFeedbackTrackingSchema(): void
+    {
+        static $done = false;
+        if ($done) {
+            return;
+        }
+        try {
+            $res = $this->conn->query("SHOW COLUMNS FROM user_feedback_tracking LIKE 'dismissed_at'");
+            if ($res && $res->rowCount() === 0) {
+                $this->conn->exec(
+                    "ALTER TABLE user_feedback_tracking ADD COLUMN dismissed_at DATETIME NULL DEFAULT NULL"
+                );
+            }
+        } catch (Throwable $e) {
+            error_log('ensureFeedbackTrackingSchema: ' . $e->getMessage());
+        }
+        $done = true;
+    }
+
+    /**
+     * Whether the prompt should appear (not submitted; dismiss snooze expired).
+     */
+    private function shouldShowFeedbackPrompt(?array $tracking): bool
+    {
+        if (!$tracking) {
+            return true;
+        }
+        if (!empty($tracking['has_submitted_feedback'])) {
+            return false;
+        }
+        $dismissedAt = $tracking['dismissed_at'] ?? null;
+        if ($dismissedAt === null || trim((string) $dismissedAt) === '') {
+            return true;
+        }
+        try {
+            $dismissed = new DateTime((string) $dismissedAt);
+            $cutoff = new DateTime('-7 days');
+            return $dismissed < $cutoff;
+        } catch (Throwable $e) {
+            return true;
+        }
+    }
+
+    /**
      * Submit user feedback
      */
     public function submitFeedback() {
@@ -22,6 +68,7 @@ class FeedbackController extends BaseAPI {
             // Validate authentication
             $tokenData = $this->validateToken();
             $userId = $tokenData->user_id;
+            $this->ensureFeedbackTrackingSchema();
             
             $data = $this->getRequestData();
             
@@ -51,18 +98,18 @@ class FeedbackController extends BaseAPI {
             if (!$tracking) {
                 // Create tracking record if it doesn't exist
                 $stmt = $this->conn->prepare("
-                    INSERT INTO user_feedback_tracking (user_id, has_submitted_feedback, first_submission_at)
-                    VALUES (?, TRUE, NOW())
+                    INSERT INTO user_feedback_tracking (user_id, has_submitted_feedback, first_submission_at, dismissed_at)
+                    VALUES (?, TRUE, NOW(), NULL)
                 ");
                 $stmt->execute([$userId]);
             } else if ($tracking['has_submitted_feedback']) {
                 $this->sendJsonResponse(409, "Feedback has already been submitted");
                 return;
             } else {
-                // Update tracking record
+                // Update tracking record — submitted forever; clear snooze
                 $stmt = $this->conn->prepare("
                     UPDATE user_feedback_tracking 
-                    SET has_submitted_feedback = TRUE, first_submission_at = NOW()
+                    SET has_submitted_feedback = TRUE, first_submission_at = NOW(), dismissed_at = NULL
                     WHERE user_id = ?
                 ");
                 $stmt->execute([$userId]);
@@ -126,9 +173,10 @@ class FeedbackController extends BaseAPI {
             // Validate authentication
             $tokenData = $this->validateToken();
             $userId = $tokenData->user_id;
+            $this->ensureFeedbackTrackingSchema();
             
             $stmt = $this->conn->prepare("
-                SELECT has_submitted_feedback, first_submission_at
+                SELECT has_submitted_feedback, first_submission_at, dismissed_at
                 FROM user_feedback_tracking 
                 WHERE user_id = ?
             ");
@@ -138,22 +186,24 @@ class FeedbackController extends BaseAPI {
             if (!$tracking) {
                 // User hasn't been tracked yet, create record
                 $stmt = $this->conn->prepare("
-                    INSERT INTO user_feedback_tracking (user_id, has_submitted_feedback, first_submission_at)
-                    VALUES (?, FALSE, NULL)
+                    INSERT INTO user_feedback_tracking (user_id, has_submitted_feedback, first_submission_at, dismissed_at)
+                    VALUES (?, FALSE, NULL, NULL)
                 ");
                 $stmt->execute([$userId]);
                 
                 $this->sendJsonResponse(200, "Feedback status retrieved", [
                     'has_submitted' => false,
-                    'should_show' => true
+                    'should_show' => true,
+                    'dismissed_at' => null,
                 ]);
                 return;
             }
             
             $this->sendJsonResponse(200, "Feedback status retrieved", [
                 'has_submitted' => (bool)$tracking['has_submitted_feedback'],
-                'should_show' => !(bool)$tracking['has_submitted_feedback'],
-                'first_submission_at' => $tracking['first_submission_at']
+                'should_show' => $this->shouldShowFeedbackPrompt($tracking),
+                'first_submission_at' => $tracking['first_submission_at'],
+                'dismissed_at' => $tracking['dismissed_at'] ?? null,
             ]);
             
         } catch (Exception $e) {
@@ -255,6 +305,7 @@ class FeedbackController extends BaseAPI {
             // Validate authentication
             $tokenData = $this->validateToken();
             $userId = $tokenData->user_id;
+            $this->ensureFeedbackTrackingSchema();
             
             // Check if user has already submitted or dismissed
             $stmt = $this->conn->prepare("
@@ -273,18 +324,23 @@ class FeedbackController extends BaseAPI {
             }
             
             if (!$tracking) {
-                // Create tracking record with dismissed status
+                // Create tracking record with dismissed snooze
                 $stmt = $this->conn->prepare("
-                    INSERT INTO user_feedback_tracking (user_id, has_submitted_feedback, first_submission_at)
-                    VALUES (?, FALSE, NULL)
+                    INSERT INTO user_feedback_tracking (user_id, has_submitted_feedback, first_submission_at, dismissed_at)
+                    VALUES (?, FALSE, NULL, NOW())
+                ");
+                $stmt->execute([$userId]);
+            } else {
+                // Snooze prompt for 1 week
+                $stmt = $this->conn->prepare("
+                    UPDATE user_feedback_tracking
+                    SET dismissed_at = NOW()
+                    WHERE user_id = ?
                 ");
                 $stmt->execute([$userId]);
             }
             
-            // Note: We don't mark as submitted, just ensure tracking exists
-            // This allows the user to submit feedback later if they want
-            
-            $this->sendJsonResponse(200, "Feedback prompt dismissed");
+            $this->sendJsonResponse(200, "Feedback prompt dismissed for 1 week");
             
         } catch (Exception $e) {
             error_log("Feedback dismiss error: " . $e->getMessage());
