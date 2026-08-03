@@ -3611,9 +3611,87 @@ class BugController extends BaseAPI {
                 // completed_at optional
             }
 
+            // Why: average time retention = created→fixed cycle time for growth/velocity tracking.
+            $formatDuration = static function ($seconds) {
+                $seconds = max(0, (int)$seconds);
+                if ($seconds < 60) {
+                    return $seconds . 's';
+                }
+                $days = intdiv($seconds, 86400);
+                $hours = intdiv($seconds % 86400, 3600);
+                $mins = intdiv($seconds % 3600, 60);
+                $parts = [];
+                if ($days > 0) {
+                    $parts[] = $days . 'd';
+                }
+                if ($hours > 0) {
+                    $parts[] = $hours . 'h';
+                }
+                if ($mins > 0 || empty($parts)) {
+                    $parts[] = $mins . 'm';
+                }
+                return implode(' ', $parts);
+            };
+
+            $avgFixSecsByMonth = [];
+            $fixSampleByMonth = [];
+            try {
+                $retentionSql = "
+                    SELECT DATE_FORMAT(updated_at, '%Y-%m') AS ym,
+                           AVG(TIMESTAMPDIFF(SECOND, created_at, updated_at)) AS avg_secs,
+                           COUNT(*) AS sample_cnt
+                    FROM bugs
+                    WHERE status = 'fixed'
+                      AND created_at IS NOT NULL
+                      AND updated_at IS NOT NULL
+                      AND updated_at >= created_at
+                      AND updated_at >= ?
+                      AND updated_at < ?
+                      {$projectScopeSql}
+                    GROUP BY DATE_FORMAT(updated_at, '%Y-%m')
+                    ORDER BY ym ASC
+                ";
+                $stmt = $this->conn->prepare($retentionSql);
+                $stmt->execute($rangeParams);
+                while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                    $ym = $row['ym'];
+                    $avgFixSecsByMonth[$ym] = (int)round((float)$row['avg_secs']);
+                    $fixSampleByMonth[$ym] = (int)$row['sample_cnt'];
+                }
+            } catch (Throwable $e) {
+                error_log('getMonthlyTimeline retention: ' . $e->getMessage());
+            }
+
+            $overallAvgFixSecs = null;
+            $overallFixSamples = 0;
+            try {
+                $overallSql = "
+                    SELECT AVG(TIMESTAMPDIFF(SECOND, created_at, updated_at)) AS avg_secs,
+                           COUNT(*) AS sample_cnt
+                    FROM bugs
+                    WHERE status = 'fixed'
+                      AND created_at IS NOT NULL
+                      AND updated_at IS NOT NULL
+                      AND updated_at >= created_at
+                      AND updated_at >= ?
+                      AND updated_at < ?
+                      {$projectScopeSql}
+                ";
+                $stmt = $this->conn->prepare($overallSql);
+                $stmt->execute($rangeParams);
+                $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                if ($row && (int)($row['sample_cnt'] ?? 0) > 0) {
+                    $overallAvgFixSecs = (int)round((float)$row['avg_secs']);
+                    $overallFixSamples = (int)$row['sample_cnt'];
+                }
+            } catch (Throwable $e) {
+                error_log('getMonthlyTimeline overall retention: ' . $e->getMessage());
+            }
+
             $months = [];
             $cursor = clone $start;
             $guard = 0;
+            $prevAvgSecs = null;
             while ($cursor <= $end && $guard < 72) {
                 $ym = $cursor->format('Y-m');
                 $created = $createdByMonth[$ym] ?? 0;
@@ -3629,6 +3707,26 @@ class BugController extends BaseAPI {
                 $fixRate = $created > 0 ? round(($fixed / $created) * 100, 1) : null;
                 $closeRate = $created > 0 ? round(($closed / $created) * 100, 1) : null;
                 $updateRatio = $created > 0 ? round($updates / $created, 2) : ($updates > 0 ? null : 0.0);
+
+                $avgFixSecs = $avgFixSecsByMonth[$ym] ?? null;
+                $fixSamples = $fixSampleByMonth[$ym] ?? 0;
+                $avgFixDays = $avgFixSecs !== null ? round($avgFixSecs / 86400, 2) : null;
+                $retentionDeltaDays = null;
+                $retentionTrend = null;
+                if ($avgFixSecs !== null && $prevAvgSecs !== null && $prevAvgSecs > 0) {
+                    $retentionDeltaDays = round(($avgFixSecs - $prevAvgSecs) / 86400, 2);
+                    // Faster (lower cycle time) = improving velocity / growth.
+                    if ($retentionDeltaDays <= -0.05) {
+                        $retentionTrend = 'improving';
+                    } elseif ($retentionDeltaDays >= 0.05) {
+                        $retentionTrend = 'slowing';
+                    } else {
+                        $retentionTrend = 'stable';
+                    }
+                }
+                if ($avgFixSecs !== null) {
+                    $prevAvgSecs = $avgFixSecs;
+                }
 
                 $label = $cursor->format('M Y');
                 $months[] = [
@@ -3646,6 +3744,12 @@ class BugController extends BaseAPI {
                     'fix_rate' => $fixRate,
                     'close_rate' => $closeRate,
                     'update_to_bug_ratio' => $updateRatio,
+                    'avg_fix_duration_seconds' => $avgFixSecs,
+                    'avg_fix_duration_label' => $avgFixSecs !== null ? $formatDuration($avgFixSecs) : null,
+                    'avg_fix_days' => $avgFixDays,
+                    'fix_sample_count' => $fixSamples,
+                    'retention_delta_days' => $retentionDeltaDays,
+                    'retention_trend' => $retentionTrend,
                 ];
                 $cursor->modify('+1 month');
                 $guard++;
@@ -3661,6 +3765,8 @@ class BugController extends BaseAPI {
                 'bugs_high_created' => 0,
             ];
             $peak = null;
+            $fastestMonth = null;
+            $slowestMonth = null;
             foreach ($months as $m) {
                 $totals['bugs_created'] += $m['bugs_created'];
                 $totals['bugs_fixed'] += $m['bugs_fixed'];
@@ -3672,11 +3778,50 @@ class BugController extends BaseAPI {
                 if ($peak === null || $m['activity'] > $peak['activity']) {
                     $peak = $m;
                 }
+                if ($m['avg_fix_duration_seconds'] !== null && ($m['fix_sample_count'] ?? 0) > 0) {
+                    if ($fastestMonth === null || $m['avg_fix_duration_seconds'] < $fastestMonth['avg_fix_duration_seconds']) {
+                        $fastestMonth = $m;
+                    }
+                    if ($slowestMonth === null || $m['avg_fix_duration_seconds'] > $slowestMonth['avg_fix_duration_seconds']) {
+                        $slowestMonth = $m;
+                    }
+                }
             }
 
             $avgFixRate = null;
             if ($totals['bugs_created'] > 0) {
                 $avgFixRate = round(($totals['bugs_fixed'] / $totals['bugs_created']) * 100, 1);
+            }
+
+            // Recent retention trend: compare last two months that have samples.
+            $retentionGrowth = null;
+            $withRetention = array_values(array_filter($months, static function ($m) {
+                return ($m['avg_fix_duration_seconds'] ?? null) !== null;
+            }));
+            $retCount = count($withRetention);
+            if ($retCount >= 2) {
+                $latest = $withRetention[$retCount - 1];
+                $prior = $withRetention[$retCount - 2];
+                $deltaSecs = (int)$latest['avg_fix_duration_seconds'] - (int)$prior['avg_fix_duration_seconds'];
+                $deltaDays = round($deltaSecs / 86400, 2);
+                $pctChange = ((int)$prior['avg_fix_duration_seconds'] > 0)
+                    ? round(($deltaSecs / (int)$prior['avg_fix_duration_seconds']) * 100, 1)
+                    : null;
+                $direction = 'stable';
+                if ($deltaDays <= -0.05) {
+                    $direction = 'improving';
+                } elseif ($deltaDays >= 0.05) {
+                    $direction = 'slowing';
+                }
+                $retentionGrowth = [
+                    'from_month' => $prior['month'],
+                    'from_label' => $prior['label'],
+                    'to_month' => $latest['month'],
+                    'to_label' => $latest['label'],
+                    'delta_days' => $deltaDays,
+                    'delta_percent' => $pctChange,
+                    'direction' => $direction,
+                ];
             }
 
             return [
@@ -3686,6 +3831,27 @@ class BugController extends BaseAPI {
                 'months' => $months,
                 'totals' => $totals,
                 'avg_fix_rate' => $avgFixRate,
+                'avg_fix_duration_seconds' => $overallAvgFixSecs,
+                'avg_fix_duration_label' => $overallAvgFixSecs !== null ? $formatDuration($overallAvgFixSecs) : null,
+                'avg_fix_days' => $overallAvgFixSecs !== null ? round($overallAvgFixSecs / 86400, 2) : null,
+                'fix_sample_count' => $overallFixSamples,
+                'retention_growth' => $retentionGrowth,
+                'fastest_month' => $fastestMonth
+                    ? [
+                        'month' => $fastestMonth['month'],
+                        'label' => $fastestMonth['label'],
+                        'avg_fix_duration_label' => $fastestMonth['avg_fix_duration_label'],
+                        'avg_fix_days' => $fastestMonth['avg_fix_days'],
+                    ]
+                    : null,
+                'slowest_month' => $slowestMonth
+                    ? [
+                        'month' => $slowestMonth['month'],
+                        'label' => $slowestMonth['label'],
+                        'avg_fix_duration_label' => $slowestMonth['avg_fix_duration_label'],
+                        'avg_fix_days' => $slowestMonth['avg_fix_days'],
+                    ]
+                    : null,
                 'peak_month' => $peak
                     ? [
                         'month' => $peak['month'],
