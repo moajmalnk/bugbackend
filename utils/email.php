@@ -346,10 +346,23 @@ The BugRicer Team
 }
 
 function sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $submissionData) {
+    require_once __DIR__ . '/attendance_messages.php';
+
     // Determine if this is an update or new submission
     $isUpdate = isset($submissionData['is_update']) && $submissionData['is_update'];
-    $actionText = $isUpdate ? 'Updated' : 'Submitted';
-    $subject = "Daily Work Update $actionText - BugRicer";
+    $actionText = $isUpdate ? 'Revised' : 'Checked out';
+    $modeShort = br_attendance_work_mode_short($submissionData['work_mode'] ?? null);
+    $hoursLabel = rtrim(rtrim(number_format((float)($submissionData['hours_today'] ?? 0), 2, '.', ''), '0'), '.');
+    $subject = "Checkout · {$userName}";
+    if ($hoursLabel !== '') {
+        $subject .= " · {$hoursLabel}h";
+    }
+    if ($modeShort !== '—') {
+        $subject .= " · {$modeShort}";
+    }
+    if ($isUpdate) {
+        $subject .= ' · Revised';
+    }
     
     error_log("📧 sendDailyWorkUpdateEmailToAdmins - Action: $actionText, User: $userName ($userEmail)");
     
@@ -378,6 +391,18 @@ function sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $
     $overtimeHours = number_format((float)($submissionData['overtime_hours'] ?? 0), 2);
     $regularHours = min((float)($submissionData['hours_today'] ?? 0), 8);
     $breakMinutes = (int)($submissionData['total_break_minutes'] ?? 0);
+
+    $attendanceMeta = [
+        'work_mode' => $submissionData['work_mode'] ?? null,
+        'is_late' => !empty($submissionData['is_late']),
+        'is_sunday' => !empty($submissionData['is_sunday']),
+        'late_count' => $submissionData['late_count'] ?? null,
+        'late_limit' => $submissionData['late_limit'] ?? null,
+        'check_in_distance_m' => $submissionData['check_in_distance_m'] ?? null,
+        'office_label' => $submissionData['office_label'] ?? null,
+    ];
+    $policyHtml = br_attendance_email_meta_html($attendanceMeta);
+    $policyText = br_attendance_email_meta_text($attendanceMeta);
     
     // Total working days and cumulative hours
     $totalWorkingDays = $submissionData['total_working_days'] ?? 0;
@@ -408,47 +433,40 @@ function sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $
     
     $html_body = "
     <div style=\"font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;\">
-      <div style=\"max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">
+      <div style=\"max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">
         
         <!-- Header -->
-        <div style=\"background-color: #2563eb; color: #ffffff; padding: 20px; text-align: center;\">
-           <h1 style=\"margin: 0; font-size: 24px; display: flex; align-items: center; justify-content: center;\">
-            <img src=\"https://fonts.gstatic.com/s/e/notoemoji/16.0/1f41e/32.png\" alt=\"BugRicer Logo\" style=\"width: 30px; height: 30px; margin-right: 10px; vertical-align: middle;\">
-            BugRicer Daily Update
-          </h1>
-          <p style=\"margin: 5px 0 0 0; font-size: 16px;\">Daily Work Update $actionText</p>
+        <div style=\"background-color: #ea580c; color: #ffffff; padding: 20px; text-align: center;\">
+           <h1 style=\"margin: 0; font-size: 22px;\">Daily Checkout</h1>
+          <p style=\"margin: 5px 0 0 0; font-size: 15px;\">$actionText · " . htmlspecialchars($userName) . "</p>
         </div>
         
         <!-- Body -->
         <div style=\"padding: 20px; border-bottom: 1px solid #e2e8f0;\">
-          <h3 style=\"margin-top: 0; color: #1e293b; font-size: 20px; font-weight: 700; margin-bottom: 20px;\">🧾 CODO Daily Work Update — $userName</h3>
+          <h3 style=\"margin-top: 0; color: #1e293b; font-size: 18px; font-weight: 700; margin-bottom: 16px;\">End-of-day attendance summary</h3>
           
-          <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0f9ff; border-left: 4px solid #0ea5e9; border-radius: 4px;\">
-            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;\"><strong>Attendance — $dateFormatted</strong></p>
-            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\"><strong>Check-in:</strong> $timeFormatted</p>
-            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\"><strong>Check-out:</strong> $checkOutFormatted</p>
-            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\"><strong>Hours worked:</strong> $hours</p>";
+          <div style=\"margin-bottom: 15px; padding: 12px; background-color: #fff7ed; border-left: 4px solid #ea580c; border-radius: 4px;\">
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #9a3412;\"><strong>Attendance — $dateFormatted</strong></p>
+            <p style=\"margin: 0; font-size: 14px; color: #9a3412;\"><strong>Check-in:</strong> $timeFormatted IST</p>
+            <p style=\"margin: 0; font-size: 14px; color: #9a3412;\"><strong>Check-out:</strong> $checkOutFormatted IST</p>
+            <p style=\"margin: 0; font-size: 14px; color: #9a3412;\"><strong>Hours logged:</strong> $hours</p>";
     
-    if ($overtimeHours > 0) {
-        $html_body .= "<p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\"><strong>Regular:</strong> $regularHours · <strong>OT:</strong> $overtimeHours</p>";
-    } else {
-        $html_body .= "<p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\"><strong>Overtime (OT):</strong> 0</p>";
+    if ((float)$overtimeHours > 0) {
+        $html_body .= "<p style=\"margin: 0; font-size: 14px; color: #9a3412;\"><strong>Regular:</strong> $regularHours · <strong>OT:</strong> $overtimeHours</p>";
     }
     if ($breakMinutes > 0) {
-        $html_body .= "<p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\"><strong>Breaks:</strong> {$breakMinutes} min</p>";
+        $html_body .= "<p style=\"margin: 0; font-size: 14px; color: #9a3412;\"><strong>Breaks:</strong> {$breakMinutes} min</p>";
     }
     
     $html_body .= "
           </div>
           
-          <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0f9ff; border-left: 4px solid #0ea5e9; border-radius: 4px;\">
-            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;\"><strong>📊 Total Working Days ($periodLabel):</strong></p>
-            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\">$totalWorkingDays Days</p>
-          </div>
+          " . $policyHtml . "
           
           <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0f9ff; border-left: 4px solid #0ea5e9; border-radius: 4px;\">
-            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;\"><strong>🧮 Total Hours Completed:</strong></p>
-            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\">$totalHoursCompleted hours</p>
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;\"><strong>Month totals ($periodLabel)</strong></p>
+            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\"><strong>Working days:</strong> $totalWorkingDays</p>
+            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\"><strong>Hours completed:</strong> $totalHoursCompleted</p>
           </div>";
     
     // Add Planning Details section if available
@@ -636,28 +654,26 @@ function sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $
         $workNotesText = "📝 Work Notes" . ($workNotesCount > 0 ? " ($workNotesCount)" : "") . ":\n" . $plannedWorkNotes . "\n\n";
     }
     
-    $planningSection = (!empty($plannedProjectsText) || !empty($plannedWorkText) || !empty($plannedWorkStatusText) || !empty($workNotesText)) ? "📋 Planning Details:\n" . $plannedProjectsText . $plannedWorkText . $plannedWorkStatusText . $workNotesText . "\n" : "";
+    $planningSection = (!empty($plannedProjectsText) || !empty($plannedWorkText) || !empty($plannedWorkStatusText) || !empty($workNotesText)) ? "Plan & projects:\n" . $plannedProjectsText . $plannedWorkText . $plannedWorkStatusText . $workNotesText . "\n" : "";
     
     $text_body = "
-🧾 CODO Daily Work Update — $userName
+Daily Checkout — $userName ($actionText)
 
-📅 Date: $dateFormatted
-🕘 Check-in Time: $timeFormatted
-⏱ Today's Working Hours: $hours Hours" . ($overtimeHours > 0 ? "
-📊 Regular Hours: $regularHours Hours
-⏰ Overtime Hours: $overtimeHours Hours" : "") . "
-📊 Total Working Days ($periodLabel): $totalWorkingDays Days
-🧮 Total Hours Completed: $totalHoursCompleted hours
+Date: $dateFormatted
+Check-in: $timeFormatted IST
+Check-out: $checkOutFormatted IST
+Hours logged: $hours" . ((float)$overtimeHours > 0 ? "
+Regular: $regularHours · OT: $overtimeHours" : "") . "
+" . $policyText . "
+Month totals ($periodLabel): $totalWorkingDays days · $totalHoursCompleted hours
 
-" . $planningSection . ($completedCount > 0 ? "✅ Completed ($completedCount):\n" . $completedTasks . "\n\n" : "") . 
-($pendingCount > 0 ? "⌛ Pending ($pendingCount):\n" . $pendingTasks . "\n\n" : "") .
-($ongoingCount > 0 ? "🔄 Ongoing ($ongoingCount):\n" . $ongoingTasks . "\n\n" : "") .
-($upcomingCount > 0 ? "🔥 Upcoming ($upcomingCount):\n" . $upcomingTasks . "\n\n" : "") . 
-($workNotesText ? $workNotesText : "") .
-($plannedWorkStatusText ? $plannedWorkStatusText : "") .
-"Submitted On: " . date('Y-m-d H:i:s') . "
+" . $planningSection . ($completedCount > 0 ? "Completed ($completedCount):\n" . $completedTasks . "\n\n" : "") . 
+($pendingCount > 0 ? "Pending ($pendingCount):\n" . $pendingTasks . "\n\n" : "") .
+($ongoingCount > 0 ? "Ongoing ($ongoingCount):\n" . $ongoingTasks . "\n\n" : "") .
+($upcomingCount > 0 ? "Upcoming ($upcomingCount):\n" . $upcomingTasks . "\n\n" : "") . 
+"Logged: " . date('Y-m-d H:i:s') . " IST
 
-© " . date('Y') . " BugRicer. All rights reserved.
+© " . date('Y') . " BugRicer · Attendance
     ";
     
     // Send to all admin emails
@@ -765,8 +781,29 @@ The BugRicer Team
     return sendEmail($email, $subject, $html_body, $text_body);
 }
 
-function sendCheckInNotificationEmail($adminEmail, $username, $checkInTime, $date, $plannedProjects = null, $plannedWork = null, $yesterdaySummary = null) {
-    $subject = "Check-in — " . $username;
+function sendCheckInNotificationEmail(
+    $adminEmail,
+    $username,
+    $checkInTime,
+    $date,
+    $plannedProjects = null,
+    $plannedWork = null,
+    $yesterdaySummary = null,
+    $attendanceMeta = null
+) {
+    require_once __DIR__ . '/attendance_messages.php';
+
+    $meta = is_array($attendanceMeta) ? $attendanceMeta : [];
+    $isLate = !empty($meta['is_late']);
+    $modeShort = br_attendance_work_mode_short($meta['work_mode'] ?? null);
+    $subjectBits = ['Check-in', $username];
+    if ($modeShort !== '—') {
+        $subjectBits[] = $modeShort;
+    }
+    if ($isLate) {
+        $subjectBits[] = 'Late';
+    }
+    $subject = implode(' · ', $subjectBits);
 
     $dateFormatted = date('D, M j, Y', strtotime($date));
     $timeFormatted = date('h:i A', strtotime($checkInTime));
@@ -811,49 +848,57 @@ function sendCheckInNotificationEmail($adminEmail, $username, $checkInTime, $dat
         $yOut = $formatTime($yesterdaySummary['check_out_time'] ?? null);
         $yHours = $formatHours($yesterdaySummary['hours_today'] ?? 0);
         $yOt = $formatHours($yesterdaySummary['overtime_hours'] ?? 0);
+        $yMode = br_attendance_work_mode_label($yesterdaySummary['work_mode'] ?? null);
 
         $yesterdayHtml = "
           <div style=\"margin-bottom: 15px; padding: 12px; background-color: #eef2ff; border-left: 4px solid #6366f1; border-radius: 4px;\">
-            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #3730a3;\"><strong>Yesterday's Summary — " . htmlspecialchars($yDateLabel) . "</strong></p>
+            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #3730a3;\"><strong>Yesterday — " . htmlspecialchars($yDateLabel) . "</strong></p>
             <p style=\"margin: 0; font-size: 14px; color: #3730a3;\"><strong>Check-in:</strong> " . htmlspecialchars($yIn) . "</p>
             <p style=\"margin: 0; font-size: 14px; color: #3730a3;\"><strong>Check-out:</strong> " . htmlspecialchars($yOut) . "</p>
-            <p style=\"margin: 0; font-size: 14px; color: #3730a3;\"><strong>Hours worked:</strong> " . htmlspecialchars($yHours) . "</p>
-            <p style=\"margin: 0; font-size: 14px; color: #3730a3;\"><strong>Overtime (OT):</strong> " . htmlspecialchars($yOt) . "</p>
+            <p style=\"margin: 0; font-size: 14px; color: #3730a3;\"><strong>Location:</strong> " . htmlspecialchars($yMode) . "</p>
+            <p style=\"margin: 0; font-size: 14px; color: #3730a3;\"><strong>Hours:</strong> " . htmlspecialchars($yHours) . " · <strong>OT:</strong> " . htmlspecialchars($yOt) . "</p>
           </div>";
 
         $yesterdayText = "
-Yesterday's Summary — " . $yDateLabel . "
+Yesterday — " . $yDateLabel . "
 Check-in: " . $yIn . "
 Check-out: " . $yOut . "
-Hours worked: " . $yHours . "
-Overtime (OT): " . $yOt . "
+Location: " . $yMode . "
+Hours: " . $yHours . " · OT: " . $yOt . "
 ";
     } else {
         $yesterdayHtml = "
           <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f8fafc; border-left: 4px solid #94a3b8; border-radius: 4px;\">
-            <p style=\"margin: 0; font-size: 14px; color: #475569;\"><strong>Yesterday's Summary:</strong> No attendance record found.</p>
+            <p style=\"margin: 0; font-size: 14px; color: #475569;\"><strong>Yesterday:</strong> No attendance record found.</p>
           </div>";
         $yesterdayText = "
-Yesterday's Summary: No attendance record found.
+Yesterday: No attendance record found.
 ";
     }
 
+    $headerBg = $isLate ? '#ea580c' : '#059669';
+    $headerSub = $isLate ? 'Late attendance alert' : 'Attendance alert';
+    $policyHtml = br_attendance_email_meta_html($meta);
+    $policyText = br_attendance_email_meta_text($meta);
+
     $html_body = "
     <div style=\"font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;\">
-      <div style=\"max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">
+      <div style=\"max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">
 
-        <div style=\"background-color: #059669; color: #ffffff; padding: 20px; text-align: center;\">
-           <h1 style=\"margin: 0; font-size: 22px;\">Check-in</h1>
-          <p style=\"margin: 6px 0 0 0; font-size: 14px; opacity: 0.95;\">Attendance alert</p>
+        <div style=\"background-color: {$headerBg}; color: #ffffff; padding: 20px; text-align: center;\">
+           <h1 style=\"margin: 0; font-size: 22px;\">Team Check-in</h1>
+          <p style=\"margin: 6px 0 0 0; font-size: 14px; opacity: 0.95;\">{$headerSub}</p>
         </div>
 
         <div style=\"padding: 20px; border-bottom: 1px solid #e2e8f0;\">
-          <p style=\"margin: 0 0 16px 0; font-size: 14px;\"><strong>" . htmlspecialchars($username) . "</strong> has checked in for the work day.</p>
+          <p style=\"margin: 0 0 16px 0; font-size: 14px;\"><strong>" . htmlspecialchars($username) . "</strong> has started the work day.</p>
 
           <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0fdf4; border-left: 4px solid #10b981; border-radius: 4px;\">
             <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #166534;\"><strong>Today — " . htmlspecialchars($dateFormatted) . "</strong></p>
-            <p style=\"margin: 0; font-size: 14px; color: #166534;\"><strong>Check-in:</strong> " . htmlspecialchars($timeFormatted) . "</p>
+            <p style=\"margin: 0; font-size: 14px; color: #166534;\"><strong>Check-in:</strong> " . htmlspecialchars($timeFormatted) . " IST</p>
           </div>
+
+          " . $policyHtml . "
 
           <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0f9ff; border-left: 4px solid #0ea5e9; border-radius: 4px;\">
             <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;\"><strong>Today's Plan</strong></p>
@@ -863,11 +908,11 @@ Yesterday's Summary: No attendance record found.
 
           " . $yesterdayHtml . "
 
-          <p style=\"font-size: 14px; margin-bottom: 0;\">Best regards,<br>The BugRicer Team</p>
+          <p style=\"font-size: 13px; color: #64748b; margin-bottom: 0;\">Policy reminder: Office check-in requires GPS within the office radius. WFH does not. Late after 10:00 AM IST (Mon–Sat) counts toward Office-only weeks.</p>
         </div>
 
         <div style=\"background-color: #f8fafc; color: #64748b; padding: 20px; text-align: center; font-size: 12px;\">
-          <p style=\"margin: 0;\">Automated attendance notification from BugRicer.</p>
+          <p style=\"margin: 0;\">Automated attendance notification from BugRicer · Asia/Kolkata</p>
           <p style=\"margin: 5px 0 0 0;\">&copy; " . date('Y') . " BugRicer. All rights reserved.</p>
         </div>
 
@@ -876,19 +921,18 @@ Yesterday's Summary: No attendance record found.
     ";
 
     $text_body = "
-Check-in — BugRicer
+Team Check-in — BugRicer
 
-" . $username . " has checked in for the work day.
+" . $username . " has started the work day.
 
 Today — " . $dateFormatted . "
-Check-in: " . $timeFormatted . "
-
+Check-in: " . $timeFormatted . " IST
+" . $policyText . "
 Today's Plan
 Projects: " . $projectsList . "
 Work focus: " . $workText . "
 " . $yesterdayText . "
-Best regards,
-The BugRicer Team
+Policy: Office check-in requires GPS within office radius. WFH does not. Late after 10:00 AM IST (Mon–Sat) counts toward Office-only weeks.
 
 © " . date('Y') . " BugRicer. All rights reserved.
     ";

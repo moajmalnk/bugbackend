@@ -333,6 +333,50 @@ class WorkSubmissionController extends BaseAPI {
                 }
             }
 
+            $attendanceExtras = [
+                'work_mode' => null,
+                'is_late' => false,
+                'is_sunday' => false,
+                'check_in_distance_m' => null,
+                'office_label' => null,
+            ];
+            try {
+                require_once __DIR__ . '/../../utils/checkin_policy.php';
+                br_ensure_checkin_policy_schema($this->conn);
+                $attCols = [];
+                $attColRes = $this->conn->query('SHOW COLUMNS FROM work_submissions');
+                if ($attColRes) {
+                    while ($c = $attColRes->fetch(PDO::FETCH_ASSOC)) {
+                        $attCols[] = $c['Field'];
+                    }
+                }
+                $selectAtt = ['id'];
+                foreach (['work_mode', 'is_late', 'check_in_distance_m'] as $col) {
+                    if (in_array($col, $attCols, true)) {
+                        $selectAtt[] = $col;
+                    }
+                }
+                $attStmt = $this->conn->prepare(
+                    'SELECT ' . implode(', ', $selectAtt) . '
+                     FROM work_submissions
+                     WHERE user_id = ? AND submission_date = ?
+                     LIMIT 1'
+                );
+                $attStmt->execute([$userId, $date]);
+                $attRow = $attStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+                if (!empty($attRow['work_mode'])) {
+                    $attendanceExtras['work_mode'] = $attRow['work_mode'];
+                }
+                $attendanceExtras['is_late'] = !empty($attRow['is_late']);
+                if (isset($attRow['check_in_distance_m']) && $attRow['check_in_distance_m'] !== null) {
+                    $attendanceExtras['check_in_distance_m'] = (float)$attRow['check_in_distance_m'];
+                }
+                $attendanceExtras['office_label'] = br_office_label($this->conn);
+                $attendanceExtras['is_sunday'] = ((int)(new DateTimeImmutable($date . ' 12:00:00', new DateTimeZone('Asia/Kolkata')))->format('N') === 7);
+            } catch (Throwable $e) {
+                error_log('⚠️ Could not load attendance extras for notice: ' . $e->getMessage());
+            }
+
             $submissionData = [
                 'submission_date' => $date,
                 'start_time' => $start,
@@ -354,6 +398,11 @@ class WorkSubmissionController extends BaseAPI {
                 'planned_work' => $plannedWorkData,
                 'planned_work_status' => $plannedWorkStatusData,
                 'planned_work_notes' => $plannedWorkNotesData,
+                'work_mode' => $attendanceExtras['work_mode'],
+                'is_late' => $attendanceExtras['is_late'],
+                'is_sunday' => $attendanceExtras['is_sunday'],
+                'check_in_distance_m' => $attendanceExtras['check_in_distance_m'],
+                'office_label' => $attendanceExtras['office_label'],
                 'is_update' => $isUpdate,
                 '_db_conn' => $this->conn // Pass connection for project name lookup
             ];

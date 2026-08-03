@@ -482,6 +482,8 @@ class CheckInController extends BaseAPI {
                         'ongoing_tasks',
                         'notes',
                         'total_break_minutes',
+                        'work_mode',
+                        'is_late',
                     ] as $optionalCol) {
                         if (in_array($optionalCol, $yCols, true)) {
                             $selectParts[] = $optionalCol;
@@ -523,6 +525,8 @@ class CheckInController extends BaseAPI {
                             'check_out_time' => $checkOutTime,
                             'hours_today' => $hoursToday,
                             'overtime_hours' => br_effective_overtime_hours_for_stats($yRow),
+                            'work_mode' => $yRow['work_mode'] ?? null,
+                            'is_late' => !empty($yRow['is_late']),
                         ];
                     }
                 } catch (Exception $e) {
@@ -564,6 +568,23 @@ class CheckInController extends BaseAPI {
                 $adminEmails = array_values(array_filter(array_column($adminRows, 'email')));
                 $adminPhones = array_values(array_filter(array_column($adminRows, 'phone')));
 
+                $attendanceMeta = [
+                    'work_mode' => $workMode,
+                    'is_late' => (bool)$isLate,
+                    'is_sunday' => (bool)$isSunday,
+                    'late_count' => (int)($strikeResult['late_count'] ?? $policyStatus['late_count'] ?? 0),
+                    'late_limit' => (int)($strikeResult['late_limit'] ?? br_checkin_late_limit()),
+                    'check_in_distance_m' => $checkInDistance,
+                    'office_label' => br_office_label($this->conn),
+                    'office_only' => !empty($policyStatus['office_only']),
+                    'office_only_week_start' => $policyStatus['office_only_week_start'] ?? null,
+                    'office_only_week_end' => $policyStatus['office_only_week_end'] ?? null,
+                    'upcoming_office_only_week' => $policyStatus['upcoming_office_only_week']
+                        ?? ($strikeResult['office_only_week'] ?? null),
+                    'restriction_created' => !empty($strikeResult['restriction_created']),
+                    'warning' => $strikeResult['warning'] ?? null,
+                ];
+
                 try {
                     require_once __DIR__ . '/../../utils/email.php';
                     foreach ($adminEmails as $adminEmail) {
@@ -574,7 +595,8 @@ class CheckInController extends BaseAPI {
                             $submissionDate,
                             !empty($projectNames) ? $projectNames : null,
                             $plannedWork,
-                            $yesterdaySummary
+                            $yesterdaySummary,
+                            $attendanceMeta
                         );
                     }
                 } catch (Exception $e) {
@@ -591,7 +613,8 @@ class CheckInController extends BaseAPI {
                             $submissionDate,
                             !empty($projectNames) ? $projectNames : null,
                             $plannedWork,
-                            $yesterdaySummary
+                            $yesterdaySummary,
+                            $attendanceMeta
                         );
                     }
                 } catch (Exception $e) {

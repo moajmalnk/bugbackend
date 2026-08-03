@@ -208,6 +208,8 @@ function br_format_whatsapp_task_block($text, $limit = 400): string {
  * @return string Formatted WhatsApp message
  */
 function formatWorkUpdateForWhatsApp($userName, $userEmail, $submissionData) {
+    require_once __DIR__ . '/attendance_messages.php';
+
     $date = $submissionData['submission_date'] ?? date('Y-m-d');
     $dateLabel = date('D, M j, Y', strtotime($date));
 
@@ -261,9 +263,19 @@ function formatWorkUpdateForWhatsApp($userName, $userEmail, $submissionData) {
     $upcomingCount = $countItems($upcomingTasks);
 
     $isUpdate = !empty($submissionData['is_update']);
-    $actionText = $isUpdate ? 'Updated' : 'Submitted';
+    $actionText = $isUpdate ? 'Revised checkout' : 'Checked out';
 
-    $message = "🧾 *WORK UPDATE*\n";
+    $attendanceMeta = [
+        'work_mode' => $submissionData['work_mode'] ?? null,
+        'is_late' => !empty($submissionData['is_late']),
+        'is_sunday' => !empty($submissionData['is_sunday']),
+        'late_count' => $submissionData['late_count'] ?? null,
+        'late_limit' => $submissionData['late_limit'] ?? null,
+        'check_in_distance_m' => $submissionData['check_in_distance_m'] ?? null,
+        'office_label' => $submissionData['office_label'] ?? null,
+    ];
+
+    $message = "🧾 *DAILY CHECKOUT*\n";
     $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
     $message .= "*" . $userName . "* · " . $actionText . "\n";
     if (!empty($userEmail)) {
@@ -273,17 +285,30 @@ function formatWorkUpdateForWhatsApp($userName, $userEmail, $submissionData) {
     $message .= "\n📅 *Work day* — " . $dateLabel . "\n";
     $message .= "🕘 Check-in: *" . $checkInLabel . "*\n";
     $message .= "🕕 Check-out: *" . $checkOutLabel . "*\n";
-    $message .= "⏱ Hours worked: *" . $hoursLabel . "*\n";
+    $message .= "⏱ Hours logged: *" . $hoursLabel . "*\n";
+
+    $metaBlock = br_attendance_whatsapp_meta_block($attendanceMeta);
+    if ($metaBlock !== '') {
+        $message .= $metaBlock . "\n";
+    }
 
     if ($otRaw > 0) {
         $message .= "📊 Regular: *" . $regularLabel . "*\n";
-        $message .= "⚡ Overtime (OT): *" . $otLabel . "*\n";
-    } else {
-        $message .= "⚡ Overtime (OT): *0*\n";
+        $message .= "⚡ Overtime: *" . $otLabel . "*\n";
     }
 
     if ($breakMinutes > 0) {
         $message .= "☕ Breaks: *" . $breakMinutes . " min*\n";
+    }
+
+    $requestedExtra = (float)($submissionData['requested_extra_hours'] ?? 0);
+    if ($requestedExtra > 0) {
+        $message .= "📝 OT approval requested: *" . br_format_whatsapp_hours($requestedExtra) . "*\n";
+        $reason = trim((string)($submissionData['approval_reason'] ?? ''));
+        if ($reason !== '') {
+            $preview = strlen($reason) > 200 ? substr($reason, 0, 197) . '...' : $reason;
+            $message .= "_Reason:_ " . $preview . "\n";
+        }
     }
 
     $projectNames = [];
@@ -342,6 +367,35 @@ function formatWorkUpdateForWhatsApp($userName, $userEmail, $submissionData) {
         }
     }
 
+    // Optional project progress updates from checkout
+    $projectUpdates = $submissionData['project_updates'] ?? null;
+    if (is_string($projectUpdates)) {
+        $decoded = json_decode($projectUpdates, true);
+        $projectUpdates = is_array($decoded) ? $decoded : null;
+    }
+    if (is_array($projectUpdates) && !empty($projectUpdates)) {
+        $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
+        $message .= "📈 *Project progress*\n";
+        $shown = 0;
+        foreach ($projectUpdates as $upd) {
+            if (!is_array($upd) || $shown >= 8) {
+                break;
+            }
+            $pname = trim((string)($upd['project_name'] ?? $upd['name'] ?? $upd['project_id'] ?? 'Project'));
+            $status = trim((string)($upd['status'] ?? ''));
+            $progress = isset($upd['progress_percentage']) ? (int)$upd['progress_percentage'] : null;
+            $line = '• ' . $pname;
+            if ($status !== '') {
+                $line .= ' · ' . str_replace('_', ' ', $status);
+            }
+            if ($progress !== null) {
+                $line .= ' · ' . $progress . '%';
+            }
+            $message .= $line . "\n";
+            $shown++;
+        }
+    }
+
     if ($completedCount + $pendingCount + $ongoingCount + $upcomingCount > 0) {
         $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
         $message .= "✅ *Tasks*\n";
@@ -368,7 +422,7 @@ function formatWorkUpdateForWhatsApp($userName, $userEmail, $submissionData) {
     $totalHours = (float)($submissionData['total_hours_cumulative'] ?? 0);
     if ($totalDays > 0 || $totalHours > 0) {
         $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
-        $message .= "📈 *Period totals*\n";
+        $message .= "📈 *Month totals*\n";
         if ($totalDays > 0) {
             $message .= "Working days: *" . $totalDays . "*\n";
         }
@@ -378,8 +432,8 @@ function formatWorkUpdateForWhatsApp($userName, $userEmail, $submissionData) {
     }
 
     $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
-    $message .= "_Submitted " . date('M j, Y · h:i A') . "_\n";
-    $message .= "🐞 _BugRicer · Automated Attendance_";
+    $message .= "_Logged " . date('M j, Y · h:i A') . " IST_\n";
+    $message .= "🐞 _BugRicer · Attendance_";
 
     return $message;
 }

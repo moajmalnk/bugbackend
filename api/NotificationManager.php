@@ -1105,7 +1105,7 @@ class NotificationManager extends BaseAPI {
         $userId = (string) $userId;
         $userName = $this->getUserName($userId);
         $notificationType = $this->getValidNotificationType('work_check_in', 'new_update');
-        $message = "After 3 late check-ins, {$weekStart} – {$weekEnd} is Office only. WFH will not be allowed that week.";
+        $message = "{$userName} reached 3 late check-ins. {$weekStart} – {$weekEnd} is Office only — WFH is disabled that week.";
 
         $adminIds = $this->resolveAdminRecipients(null);
         $recipients = array_values(array_unique(array_filter(array_merge([$userId], $adminIds))));
@@ -1190,8 +1190,8 @@ class NotificationManager extends BaseAPI {
         $notificationType = $this->getValidNotificationType('work_update', 'new_update');
         $dateLabel = $date ? " for {$date}" : '';
         $hoursLabel = $hoursToday !== null && $hoursToday !== '' ? " ({$hoursToday}h)" : '';
-        $title = $isUpdate ? 'Work Update Revised' : 'New Work Update';
-        $actionLabel = $isUpdate ? 'revised daily work' : 'submitted daily work';
+        $title = $isUpdate ? 'Checkout revised' : 'Daily checkout';
+        $actionLabel = $isUpdate ? 'revised checkout' : 'checked out';
 
         return $this->createNotification(
             $notificationType,
