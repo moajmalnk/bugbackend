@@ -1216,8 +1216,8 @@ class UpdateController extends BaseAPI
             $userId = $decoded->user_id;
             $userRole = strtolower(trim((string) ($decoded->role ?? '')));
 
-            if (!in_array($userRole, ['developer', 'tester'], true)) {
-                $this->sendJsonResponse(403, 'Only developers and testers can mark updates as completed');
+            if (!in_array($userRole, ['admin', 'developer', 'tester'], true)) {
+                $this->sendJsonResponse(403, 'Only admins, developers, and testers can mark updates as completed');
                 return;
             }
 
