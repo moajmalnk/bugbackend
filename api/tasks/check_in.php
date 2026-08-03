@@ -85,8 +85,12 @@ class CheckInController extends BaseAPI {
 
             br_ensure_checkin_policy_schema($this->conn);
 
+            $dayException = br_day_exception($this->conn, $userId, $submissionDate);
+            $allowWfhToday = !empty($dayException['allow_wfh']);
+            $forgiveLateToday = !empty($dayException['forgive_late']);
+
             $officeRestriction = br_active_office_restriction($this->conn, $userId, $submissionDate);
-            if ($officeRestriction && $workMode === 'wfh') {
+            if ($officeRestriction && $workMode === 'wfh' && !$allowWfhToday) {
                 $this->sendJsonResponse(
                     403,
                     sprintf(
@@ -103,7 +107,7 @@ class CheckInController extends BaseAPI {
                 );
                 return;
             }
-            if ($officeRestriction) {
+            if ($officeRestriction && !$allowWfhToday) {
                 $workMode = 'office';
             }
 
@@ -116,17 +120,17 @@ class CheckInController extends BaseAPI {
                 $latRaw = $input['latitude'] ?? $input['lat'] ?? null;
                 $lngRaw = $input['longitude'] ?? $input['lng'] ?? null;
                 $accuracyRaw = $input['accuracy'] ?? $input['accuracy_m'] ?? null;
-                $geo = br_validate_office_location($latRaw, $lngRaw);
+                $geo = br_validate_office_location($latRaw, $lngRaw, $this->conn);
                 if (empty($geo['ok'])) {
                     $this->sendJsonResponse(
                         403,
                         $geo['message'] ?? 'Office check-in requires location at Wired In Coworks.',
                         [
-                            'office_label' => br_office_label(),
-                            'office_radius_m' => br_office_radius_m(),
+                            'office_label' => br_office_label($this->conn),
+                            'office_radius_m' => br_office_radius_m($this->conn),
                             'distance_m' => $geo['distance_m'] ?? null,
-                            'office_lat' => br_office_coords()['lat'],
-                            'office_lng' => br_office_coords()['lng'],
+                            'office_lat' => br_office_coords($this->conn)['lat'],
+                            'office_lng' => br_office_coords($this->conn)['lng'],
                         ]
                     );
                     return;
@@ -227,6 +231,9 @@ class CheckInController extends BaseAPI {
             $tz = new DateTimeZone('Asia/Kolkata');
             $nowIst = new DateTime('now', $tz);
             $computedLate = br_is_late_checkin($nowIst, $submissionDate) ? 1 : 0;
+            if ($forgiveLateToday) {
+                $computedLate = 0;
+            }
             $isSunday = br_is_sunday($submissionDate);
             $justMarkedLate = false;
 
@@ -427,8 +434,8 @@ class CheckInController extends BaseAPI {
                 'check_in_lat' => $checkInLat,
                 'check_in_lng' => $checkInLng,
                 'check_in_distance_m' => $checkInDistance,
-                'office_label' => br_office_label(),
-                'office_radius_m' => br_office_radius_m(),
+                'office_label' => br_office_label($this->conn),
+                'office_radius_m' => br_office_radius_m($this->conn),
             ];
 
             // Notifications before response — sendJsonResponse() exits and skips code below it

@@ -36,22 +36,149 @@ function br_checkin_late_limit(): int
 /**
  * @return array{lat:float,lng:float}
  */
-function br_office_coords(): array
+function br_office_coords(?PDO $conn = null): array
 {
+    $cfg = br_office_config($conn);
     return [
-        'lat' => (float)BR_OFFICE_LAT,
-        'lng' => (float)BR_OFFICE_LNG,
+        'lat' => $cfg['lat'],
+        'lng' => $cfg['lng'],
     ];
 }
 
-function br_office_radius_m(): int
+function br_office_radius_m(?PDO $conn = null): int
 {
-    return (int)BR_OFFICE_RADIUS_M;
+    return br_office_config($conn)['radius_m'];
 }
 
-function br_office_label(): string
+function br_office_label(?PDO $conn = null): string
 {
-    return (string)BR_OFFICE_LABEL;
+    return br_office_config($conn)['label'];
+}
+
+/**
+ * Load key/value rows from settings (request-cached).
+ *
+ * @param list<string> $keys
+ * @return array<string,string>
+ */
+function br_load_setting_values(?PDO $conn, array $keys): array
+{
+    static $cache = [];
+    static $bustSeen = 0;
+    $bust = (int)($GLOBALS['br_settings_cache_bust'] ?? 0);
+    if ($bust !== $bustSeen) {
+        $cache = [];
+        $bustSeen = $bust;
+    }
+
+    if (!$conn || empty($keys)) {
+        return [];
+    }
+
+    $missing = [];
+    $out = [];
+    foreach ($keys as $key) {
+        if (array_key_exists($key, $cache)) {
+            $out[$key] = $cache[$key];
+        } else {
+            $missing[] = $key;
+        }
+    }
+    if (empty($missing)) {
+        return $out;
+    }
+
+    try {
+        $placeholders = implode(',', array_fill(0, count($missing), '?'));
+        $stmt = $conn->prepare(
+            "SELECT key_name, value FROM settings WHERE key_name IN ($placeholders)"
+        );
+        $stmt->execute($missing);
+        $found = [];
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $k = (string)($row['key_name'] ?? '');
+            $found[$k] = (string)($row['value'] ?? '');
+            $cache[$k] = $found[$k];
+            $out[$k] = $found[$k];
+        }
+        foreach ($missing as $key) {
+            if (!array_key_exists($key, $found)) {
+                $cache[$key] = '';
+            }
+        }
+    } catch (Throwable $e) {
+        error_log('br_load_setting_values: ' . $e->getMessage());
+    }
+
+    return $out;
+}
+
+/**
+ * Clear request-level settings cache (call after admin updates).
+ */
+function br_clear_setting_cache(): void
+{
+    $GLOBALS['br_settings_cache_bust'] = ($GLOBALS['br_settings_cache_bust'] ?? 0) + 1;
+}
+
+/**
+ * @return array{lat:float,lng:float,radius_m:int,label:string}
+ */
+function br_office_config(?PDO $conn = null): array
+{
+    $cfg = [
+        'lat' => (float)BR_OFFICE_LAT,
+        'lng' => (float)BR_OFFICE_LNG,
+        'radius_m' => (int)BR_OFFICE_RADIUS_M,
+        'label' => (string)BR_OFFICE_LABEL,
+    ];
+
+    if (!$conn) {
+        return $cfg;
+    }
+
+    $rows = br_load_setting_values($conn, [
+        'office_lat',
+        'office_lng',
+        'office_radius_m',
+        'office_label',
+    ]);
+
+    if (isset($rows['office_lat']) && $rows['office_lat'] !== '' && is_numeric($rows['office_lat'])) {
+        $lat = (float)$rows['office_lat'];
+        if ($lat >= -90 && $lat <= 90) {
+            $cfg['lat'] = $lat;
+        }
+    }
+    if (isset($rows['office_lng']) && $rows['office_lng'] !== '' && is_numeric($rows['office_lng'])) {
+        $lng = (float)$rows['office_lng'];
+        if ($lng >= -180 && $lng <= 180) {
+            $cfg['lng'] = $lng;
+        }
+    }
+    if (isset($rows['office_radius_m']) && $rows['office_radius_m'] !== '' && is_numeric($rows['office_radius_m'])) {
+        $radius = (int)round((float)$rows['office_radius_m']);
+        if ($radius >= 50 && $radius <= 5000) {
+            $cfg['radius_m'] = $radius;
+        }
+    }
+    if (isset($rows['office_label']) && trim($rows['office_label']) !== '') {
+        $cfg['label'] = mb_substr(trim($rows['office_label']), 0, 120);
+    }
+
+    return $cfg;
+}
+
+/**
+ * Upsert a settings key (admin).
+ */
+function br_upsert_setting(PDO $conn, string $key, string $value): void
+{
+    $stmt = $conn->prepare(
+        'INSERT INTO settings (key_name, value) VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE value = VALUES(value)'
+    );
+    $stmt->execute([$key, $value]);
 }
 
 /**
@@ -75,7 +202,7 @@ function br_haversine_meters(float $lat1, float $lng1, float $lat2, float $lng2)
  *
  * @return array{ok:bool,distance_m:?float,message:?string}
  */
-function br_validate_office_location($lat, $lng): array
+function br_validate_office_location($lat, $lng, ?PDO $conn = null): array
 {
     if (!is_numeric($lat) || !is_numeric($lng)) {
         return [
@@ -95,9 +222,10 @@ function br_validate_office_location($lat, $lng): array
         ];
     }
 
-    $office = br_office_coords();
+    $office = br_office_coords($conn);
     $distance = br_haversine_meters($latF, $lngF, $office['lat'], $office['lng']);
-    $radius = br_office_radius_m();
+    $radius = br_office_radius_m($conn);
+    $label = br_office_label($conn);
 
     if ($distance > $radius) {
         return [
@@ -106,7 +234,7 @@ function br_validate_office_location($lat, $lng): array
             'message' => sprintf(
                 'You are about %.0f m away. Move closer to %s (within %d m) to check in as Office.',
                 $distance,
-                br_office_label(),
+                $label,
                 $radius
             ),
         ];
@@ -178,6 +306,24 @@ function br_ensure_checkin_policy_schema(PDO $conn): void
                 PRIMARY KEY (id),
                 UNIQUE KEY uniq_user_week_start (user_id, week_start),
                 KEY idx_user_week_range (user_id, week_start, week_end)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+        );
+
+        $conn->exec(
+            "CREATE TABLE IF NOT EXISTS attendance_day_exceptions (
+                id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                user_id VARCHAR(64) NOT NULL,
+                exception_date DATE NOT NULL,
+                allow_wfh TINYINT(1) NOT NULL DEFAULT 0,
+                forgive_late TINYINT(1) NOT NULL DEFAULT 0,
+                admin_note VARCHAR(255) NULL DEFAULT NULL,
+                created_by VARCHAR(64) NULL DEFAULT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                PRIMARY KEY (id),
+                UNIQUE KEY uniq_user_exception_date (user_id, exception_date),
+                KEY idx_exception_date (exception_date),
+                KEY idx_user_flags (user_id, allow_wfh, forgive_late)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
         );
     } catch (Throwable $e) {
@@ -393,6 +539,203 @@ function br_apply_late_strike_and_maybe_restrict(PDO $conn, $userId, string $fro
 }
 
 /**
+ * @return array{id?:int,allow_wfh:bool,forgive_late:bool,admin_note:?string}|null
+ */
+function br_day_exception(PDO $conn, $userId, string $date): ?array
+{
+    br_ensure_checkin_policy_schema($conn);
+    try {
+        $stmt = $conn->prepare(
+            'SELECT id, allow_wfh, forgive_late, admin_note
+             FROM attendance_day_exceptions
+             WHERE user_id = ? AND exception_date = ?
+             LIMIT 1'
+        );
+        $stmt->execute([(string)$userId, $date]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            return null;
+        }
+        return [
+            'id' => (int)($row['id'] ?? 0),
+            'allow_wfh' => (int)($row['allow_wfh'] ?? 0) === 1,
+            'forgive_late' => (int)($row['forgive_late'] ?? 0) === 1,
+            'admin_note' => $row['admin_note'] ?? null,
+        ];
+    } catch (Throwable $e) {
+        error_log('br_day_exception: ' . $e->getMessage());
+        return null;
+    }
+}
+
+/**
+ * Upsert a day exception. Passing null for a flag keeps the existing value (or 0 on insert).
+ *
+ * @return array{ok:bool,message:?string,exception:?array}
+ */
+function br_upsert_day_exception(
+    PDO $conn,
+    $userId,
+    string $date,
+    $allowWfh,
+    $forgiveLate,
+    $adminId,
+    ?string $adminNote = null
+): array {
+    br_ensure_checkin_policy_schema($conn);
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+        return ['ok' => false, 'message' => 'Invalid date.', 'exception' => null];
+    }
+
+    $existing = br_day_exception($conn, $userId, $date);
+    $allow = $allowWfh === null
+        ? (int)($existing['allow_wfh'] ?? false)
+        : (!empty($allowWfh) ? 1 : 0);
+    $forgive = $forgiveLate === null
+        ? (int)($existing['forgive_late'] ?? false)
+        : (!empty($forgiveLate) ? 1 : 0);
+
+    if ($allow === 0 && $forgive === 0) {
+        // Nothing to keep — delete row if present
+        try {
+            $del = $conn->prepare(
+                'DELETE FROM attendance_day_exceptions WHERE user_id = ? AND exception_date = ?'
+            );
+            $del->execute([(string)$userId, $date]);
+        } catch (Throwable $e) {
+            // non-fatal
+        }
+        return [
+            'ok' => true,
+            'message' => 'Exception cleared.',
+            'exception' => null,
+        ];
+    }
+
+    $note = $adminNote !== null ? mb_substr(trim($adminNote), 0, 255) : ($existing['admin_note'] ?? null);
+
+    try {
+        $stmt = $conn->prepare(
+            'INSERT INTO attendance_day_exceptions
+                (user_id, exception_date, allow_wfh, forgive_late, admin_note, created_by)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+                allow_wfh = VALUES(allow_wfh),
+                forgive_late = VALUES(forgive_late),
+                admin_note = VALUES(admin_note),
+                created_by = VALUES(created_by)'
+        );
+        $stmt->execute([
+            (string)$userId,
+            $date,
+            $allow,
+            $forgive,
+            $note !== '' ? $note : null,
+            $adminId !== null ? (string)$adminId : null,
+        ]);
+    } catch (Throwable $e) {
+        error_log('br_upsert_day_exception: ' . $e->getMessage());
+        return ['ok' => false, 'message' => 'Failed to save exception.', 'exception' => null];
+    }
+
+    return [
+        'ok' => true,
+        'message' => 'Exception saved.',
+        'exception' => br_day_exception($conn, $userId, $date),
+    ];
+}
+
+/**
+ * Why: After forgiving a late day, rebuild strike pool and cancel/rebuild
+ * Office-only weeks so admin overrides stay consistent.
+ */
+function br_recalc_late_strikes(PDO $conn, $userId): array
+{
+    br_ensure_checkin_policy_schema($conn);
+    $userId = (string)$userId;
+    $today = (new DateTime('now', new DateTimeZone('Asia/Kolkata')))->format('Y-m-d');
+
+    try {
+        // Cancel current + future Office-only weeks; past weeks stay for history
+        $del = $conn->prepare(
+            'DELETE FROM attendance_office_restrictions
+             WHERE user_id = ? AND week_end >= ?'
+        );
+        $del->execute([$userId, $today]);
+
+        // Return all remaining late days to the unconsumed pool
+        $reset = $conn->prepare(
+            'UPDATE work_submissions
+             SET late_strike_consumed = 0
+             WHERE user_id = ? AND is_late = 1'
+        );
+        $reset->execute([$userId]);
+    } catch (Throwable $e) {
+        error_log('br_recalc_late_strikes reset: ' . $e->getMessage());
+    }
+
+    $lateCount = br_count_unconsumed_lates($conn, $userId);
+    $limit = br_checkin_late_limit();
+    $created = null;
+
+    if ($lateCount >= $limit) {
+        $result = br_apply_late_strike_and_maybe_restrict($conn, $userId, $today, true);
+        $created = $result['office_only_week'] ?? null;
+        $lateCount = (int)($result['late_count'] ?? br_count_unconsumed_lates($conn, $userId));
+    }
+
+    return [
+        'late_count' => $lateCount,
+        'late_limit' => $limit,
+        'office_only_week' => $created,
+    ];
+}
+
+/**
+ * Clear late flag for a day, record forgive exception, recalc strikes.
+ *
+ * @return array{ok:bool,message:string,recalc?:array}
+ */
+function br_forgive_late_day(PDO $conn, $userId, string $date, $adminId, ?string $adminNote = null): array
+{
+    br_ensure_checkin_policy_schema($conn);
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+        return ['ok' => false, 'message' => 'Invalid date.'];
+    }
+
+    try {
+        $upd = $conn->prepare(
+            'UPDATE work_submissions
+             SET is_late = 0, late_strike_consumed = 0
+             WHERE user_id = ? AND submission_date = ?'
+        );
+        $upd->execute([(string)$userId, $date]);
+    } catch (Throwable $e) {
+        error_log('br_forgive_late_day update: ' . $e->getMessage());
+        return ['ok' => false, 'message' => 'Failed to clear late flag.'];
+    }
+
+    $existing = br_day_exception($conn, $userId, $date);
+    br_upsert_day_exception(
+        $conn,
+        $userId,
+        $date,
+        $existing['allow_wfh'] ?? false,
+        true,
+        $adminId,
+        $adminNote
+    );
+
+    $recalc = br_recalc_late_strikes($conn, $userId);
+
+    return [
+        'ok' => true,
+        'message' => 'Late check-in unmarked for this day.',
+        'recalc' => $recalc,
+    ];
+}
+
+/**
  * Policy snapshot for attendance_status / check-in UI.
  *
  * @return array<string,mixed>
@@ -403,11 +746,14 @@ function br_checkin_policy_status(PDO $conn, $userId, string $date): array
     $isSunday = br_is_sunday($date);
     $restriction = br_active_office_restriction($conn, $userId, $date);
     $lateCount = br_count_unconsumed_lates($conn, $userId);
-    $officeOnly = $restriction !== null;
+    $exception = br_day_exception($conn, $userId, $date);
+    $allowWfhToday = !empty($exception['allow_wfh']);
+    $forgiveLateToday = !empty($exception['forgive_late']);
+    $officeOnly = $restriction !== null && !$allowWfhToday;
 
     // Upcoming restriction (next week) for banner preview when not currently restricted
     $upcoming = null;
-    if (!$officeOnly) {
+    if (!$officeOnly && $restriction === null) {
         try {
             $stmt = $conn->prepare(
                 'SELECT week_start, week_end FROM attendance_office_restrictions
@@ -425,6 +771,9 @@ function br_checkin_policy_status(PDO $conn, $userId, string $date): array
         } catch (Throwable $e) {
             // non-fatal
         }
+    } elseif ($restriction !== null && $allowWfhToday) {
+        // Still show that a restriction week exists, but WFH is allowed today
+        $upcoming = null;
     }
 
     return [
@@ -437,9 +786,12 @@ function br_checkin_policy_status(PDO $conn, $userId, string $date): array
         'office_only_week_end' => $restriction['week_end'] ?? null,
         'upcoming_office_only_week' => $upcoming,
         'work_mode_locked_to' => $officeOnly ? 'office' : null,
-        'office_lat' => br_office_coords()['lat'],
-        'office_lng' => br_office_coords()['lng'],
-        'office_radius_m' => br_office_radius_m(),
-        'office_label' => br_office_label(),
+        'allow_wfh_today' => $allowWfhToday,
+        'forgive_late_today' => $forgiveLateToday,
+        'day_exception' => $exception,
+        'office_lat' => br_office_coords($conn)['lat'],
+        'office_lng' => br_office_coords($conn)['lng'],
+        'office_radius_m' => br_office_radius_m($conn),
+        'office_label' => br_office_label($conn),
     ];
 }
