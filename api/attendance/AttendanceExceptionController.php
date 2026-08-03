@@ -59,21 +59,24 @@ class AttendanceExceptionController extends BaseAPI
 
         br_ensure_checkin_policy_schema($this->conn);
         $today = br_server_today();
+        $fromDate = (new DateTimeImmutable($today . ' 00:00:00'))
+            ->modify('-120 days')
+            ->format('Y-m-d');
 
         $exceptions = [];
         try {
             $stmt = $this->conn->prepare(
                 'SELECT id, user_id, exception_date, allow_wfh, forgive_late, admin_note, created_by, created_at, updated_at
                  FROM attendance_day_exceptions
-                 WHERE user_id = ? AND exception_date >= DATE_SUB(?, INTERVAL 14 DAY)
+                 WHERE user_id = ? AND exception_date >= ?
                  ORDER BY exception_date DESC
-                 LIMIT 60'
+                 LIMIT 120'
             );
-            $stmt->execute([$userId, $today]);
+            $stmt->execute([$userId, $fromDate]);
             while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                 $exceptions[] = [
                     'id' => (int)$row['id'],
-                    'user_id' => $row['user_id'],
+                    'user_id' => (string)$row['user_id'],
                     'exception_date' => $row['exception_date'],
                     'allow_wfh' => (int)$row['allow_wfh'] === 1,
                     'forgive_late' => (int)$row['forgive_late'] === 1,
@@ -93,13 +96,15 @@ class AttendanceExceptionController extends BaseAPI
                 'SELECT id, submission_date, check_in_time, is_late, late_strike_consumed, work_mode
                  FROM work_submissions
                  WHERE user_id = ? AND is_late = 1
+                   AND submission_date >= ?
                  ORDER BY submission_date DESC
-                 LIMIT 30'
+                 LIMIT 60'
             );
-            $stmt->execute([$userId]);
+            $stmt->execute([$userId, $fromDate]);
             while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                 $lateDays[] = [
                     'id' => (int)$row['id'],
+                    'user_id' => (string)$userId,
                     'submission_date' => $row['submission_date'],
                     'check_in_time' => $row['check_in_time'],
                     'is_late' => true,
