@@ -715,6 +715,34 @@ class BugController extends BaseAPI {
     }
 
     /**
+     * Why: When a tester marks a fixed bug as still broken, it must leave the
+     * Fixes queue and re-enter open Bugs (pending) so work is tracked correctly.
+     *
+     * @return bool True when status was forced back to pending
+     */
+    private function applyFailedVerificationReopen(array &$data, string $previousStatus): bool
+    {
+        if (!in_array($previousStatus, ['fixed', 'rejected'], true)) {
+            return false;
+        }
+        if (!array_key_exists('tester_retested', $data) || !array_key_exists('tester_issue_fixed', $data)) {
+            return false;
+        }
+
+        $retested = $this->parseNullableYesNo($data['tester_retested']);
+        $issueFixed = $this->parseNullableYesNo($data['tester_issue_fixed']);
+        if ($retested !== 1 || $issueFixed !== 0) {
+            return false;
+        }
+
+        $data['status'] = 'pending';
+        if ($this->bugsTableHasAlreadyRaisedColumn()) {
+            $data['already_raised'] = 1;
+        }
+        return true;
+    }
+
+    /**
      * Apply tester verification fields onto an UPDATE field/param list.
      */
     private function appendTesterRetestUpdateFields(array &$updateFields, array &$params, array $data, string $actorUserId): void
@@ -2566,6 +2594,7 @@ class BugController extends BaseAPI {
                 throw new Exception("Bug not found");
             }
             $previousStatus = (string) ($existingBug['status'] ?? '');
+            $reopenedAfterFailedVerification = $this->applyFailedVerificationReopen($data, $previousStatus);
 
             // Build update query
             $updateFields = [];
