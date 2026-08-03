@@ -532,6 +532,16 @@ class BugController extends BaseAPI {
         }
     }
 
+    private function bugAttachmentsHasDurationColumn(): bool
+    {
+        try {
+            $st = $this->conn->query("SHOW COLUMNS FROM bug_attachments LIKE 'duration'");
+            return (bool) ($st && $st->rowCount() > 0);
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+
     /**
      * Ensure tester retest columns exist (idempotent for hosts that skip migrations).
      */
@@ -568,10 +578,19 @@ class BugController extends BaseAPI {
                 error_log('ensureAttachmentUploadContext: ' . $e->getMessage());
             }
         }
+        if (!$this->bugAttachmentsHasDurationColumn()) {
+            try {
+                $this->conn->exec(
+                    "ALTER TABLE bug_attachments ADD COLUMN duration INT NULL DEFAULT NULL"
+                );
+            } catch (Throwable $e) {
+                error_log('ensureAttachmentDuration: ' . $e->getMessage());
+            }
+        }
     }
 
     /**
-     * Insert a bug attachment; tags upload_context when available.
+     * Insert a bug attachment; tags upload_context / duration when available.
      */
     private function insertBugAttachmentRow(
         string $bugId,
@@ -579,11 +598,31 @@ class BugController extends BaseAPI {
         string $relativePath,
         string $fileType,
         $uploadedBy,
-        ?string $uploadContext = null
+        ?string $uploadContext = null,
+        ?int $duration = null
     ): bool {
         $this->ensureTesterRetestColumns();
         $attachmentId = $this->generateUUID();
-        if ($this->bugAttachmentsHasUploadContextColumn()) {
+        $hasContext = $this->bugAttachmentsHasUploadContextColumn();
+        $hasDuration = $this->bugAttachmentsHasDurationColumn();
+
+        if ($hasContext && $hasDuration) {
+            $stmt = $this->conn->prepare(
+                "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by, upload_context, duration)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            );
+            return (bool) $stmt->execute([
+                $attachmentId,
+                $bugId,
+                $fileName,
+                $relativePath,
+                $fileType,
+                $uploadedBy,
+                $uploadContext,
+                $duration,
+            ]);
+        }
+        if ($hasContext) {
             $stmt = $this->conn->prepare(
                 "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by, upload_context)
                  VALUES (?, ?, ?, ?, ?, ?, ?)"
@@ -598,6 +637,21 @@ class BugController extends BaseAPI {
                 $uploadContext,
             ]);
         }
+        if ($hasDuration) {
+            $stmt = $this->conn->prepare(
+                "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by, duration)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)"
+            );
+            return (bool) $stmt->execute([
+                $attachmentId,
+                $bugId,
+                $fileName,
+                $relativePath,
+                $fileType,
+                $uploadedBy,
+                $duration,
+            ]);
+        }
         $stmt = $this->conn->prepare(
             "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by)
              VALUES (?, ?, ?, ?, ?, ?)"
@@ -610,6 +664,20 @@ class BugController extends BaseAPI {
             $fileType,
             $uploadedBy,
         ]);
+    }
+
+    /**
+     * Why: Voice note duration arrives as float seconds from the recorder clock;
+     * store whole seconds so the player can show length before WebM metadata loads.
+     */
+    private function parseVoiceNoteDurationFromRequest(array $data, $key): ?int
+    {
+        $raw = $data["voice_note_duration_$key"] ?? $_POST["voice_note_duration_$key"] ?? null;
+        if ($raw === null || $raw === '') {
+            return null;
+        }
+        $seconds = (int) round((float) $raw);
+        return $seconds > 0 ? $seconds : null;
     }
 
     private function resolveUploadContextFromRequest(array $data): ?string
@@ -1048,8 +1116,11 @@ class BugController extends BaseAPI {
             }
 
             // Get attachments - use CAST to handle type mismatches
+            $this->ensureTesterRetestColumns();
+            $durationSelect = $this->bugAttachmentsHasDurationColumn() ? ', duration' : '';
+            $contextSelect = $this->bugAttachmentsHasUploadContextColumn() ? ', upload_context' : '';
             $attachStmt = $this->conn->prepare("
-                SELECT id, file_name, file_path, file_type, uploaded_by, created_at
+                SELECT id, file_name, file_path, file_type, uploaded_by, created_at{$contextSelect}{$durationSelect}
                 FROM bug_attachments
                 WHERE CAST(bug_id AS CHAR) = CAST(? AS CHAR)
                 ORDER BY created_at ASC
@@ -1101,6 +1172,9 @@ class BugController extends BaseAPI {
                     'uploaded_by' => $attachment['uploaded_by'],
                     'created_at' => $attachment['created_at'],
                     'upload_context' => $attachment['upload_context'] ?? null,
+                    'duration' => isset($attachment['duration']) && $attachment['duration'] !== null
+                        ? (int) $attachment['duration']
+                        : null,
                 ];
                 
                 $bug['attachments'][] = $attachmentObj;
@@ -1770,23 +1844,20 @@ class BugController extends BaseAPI {
                     
                     if (move_uploaded_file($tmp_name, $filePath)) {
                         error_log("BugController::create - Saved voice note: $filePath");
-                        $attachmentId = Utils::generateUUID();
                         // Store path relative to the 'uploads' directory
                         $relativePath = str_replace(__DIR__ . '/../../uploads/', 'uploads/', $filePath);
-                        $stmt = $this->conn->prepare(
-                            "INSERT INTO bug_attachments (id, bug_id, file_name, file_path, file_type, uploaded_by) 
-                             VALUES (?, ?, ?, ?, ?, ?)"
-                        );
                         $bugIdForAttachment = (string)$id; // Ensure string type
-                        $stmt->execute([
-                            $attachmentId,
+                        $duration = $this->parseVoiceNoteDurationFromRequest($data, $key);
+                        $result = $this->insertBugAttachmentRow(
                             $bugIdForAttachment,
                             $fileName,
                             $relativePath,
                             $fileType,
-                            $decoded->user_id
-                        ]);
-                        error_log("BugController::create - Saved attachment: bug_id=$bugIdForAttachment, file=$fileName");
+                            $decoded->user_id,
+                            null,
+                            $duration
+                        );
+                        error_log("BugController::create - Saved attachment: bug_id=$bugIdForAttachment, file=$fileName, duration=$duration, success=" . ($result ? 'yes' : 'no'));
                         // Add the relative path to the list
                         $uploadedAttachments[] = $relativePath;
                         @unlink($tmp_name);
@@ -1797,8 +1868,11 @@ class BugController extends BaseAPI {
             $this->conn->commit();
             
             // Fetch attachments from database to include in response
+            $this->ensureTesterRetestColumns();
+            $durationSelect = $this->bugAttachmentsHasDurationColumn() ? ', duration' : '';
+            $contextSelect = $this->bugAttachmentsHasUploadContextColumn() ? ', upload_context' : '';
             $attachStmt = $this->conn->prepare("
-                SELECT id, file_name, file_path, file_type, uploaded_by, created_at
+                SELECT id, file_name, file_path, file_type, uploaded_by, created_at{$contextSelect}{$durationSelect}
                 FROM bug_attachments
                 WHERE bug_id = ?
                 ORDER BY created_at ASC
@@ -1818,6 +1892,10 @@ class BugController extends BaseAPI {
                     'file_type' => $attachment['file_type'],
                     'uploaded_by' => $attachment['uploaded_by'],
                     'created_at' => $attachment['created_at'],
+                    'upload_context' => $attachment['upload_context'] ?? null,
+                    'duration' => isset($attachment['duration']) && $attachment['duration'] !== null
+                        ? (int) $attachment['duration']
+                        : null,
                     'full_url' => $fullPath
                 ];
             }
@@ -2102,7 +2180,9 @@ class BugController extends BaseAPI {
                 $bugIds = array_column($bugs, 'id');
                 $placeholders = str_repeat('?,', count($bugIds) - 1) . '?';
                 
-                $attachmentQuery = "SELECT bug_id, id, file_name, file_path, file_type 
+                $this->ensureTesterRetestColumns();
+                $durationSelect = $this->bugAttachmentsHasDurationColumn() ? ', duration' : '';
+                $attachmentQuery = "SELECT bug_id, id, file_name, file_path, file_type{$durationSelect}
                                   FROM bug_attachments 
                                   WHERE bug_id IN ($placeholders)
                                   ORDER BY bug_id, id";
@@ -2774,15 +2854,17 @@ class BugController extends BaseAPI {
                     if (move_uploaded_file($tmp_name, $filePath)) {
                         $relativePath = str_replace(__DIR__ . '/../../uploads/', 'uploads/', $filePath);
                         $bugIdForAttachment = (string)$data['id'];
+                        $duration = $this->parseVoiceNoteDurationFromRequest($data, $key);
                         $result = $this->insertBugAttachmentRow(
                             $bugIdForAttachment,
                             $fileName,
                             $relativePath,
                             $fileType,
                             $userId,
-                            $uploadContext
+                            $uploadContext,
+                            $duration
                         );
-                        error_log("BugController::updateBugWithAttachments - Saved voice note: bug_id=$bugIdForAttachment, file=$fileName, success=" . ($result ? 'yes' : 'no'));
+                        error_log("BugController::updateBugWithAttachments - Saved voice note: bug_id=$bugIdForAttachment, file=$fileName, duration=$duration, success=" . ($result ? 'yes' : 'no'));
                     } else {
                         error_log("BugController::updateBugWithAttachments - Failed to move uploaded file: $tmp_name to $filePath");
                     }
@@ -2822,8 +2904,11 @@ class BugController extends BaseAPI {
             }
 
             // Get attachments (same logic as getById) - use CAST for type safety
+            $this->ensureTesterRetestColumns();
+            $durationSelect = $this->bugAttachmentsHasDurationColumn() ? ', duration' : '';
+            $contextSelect = $this->bugAttachmentsHasUploadContextColumn() ? ', upload_context' : '';
             $attachStmt = $this->conn->prepare("
-                SELECT id, file_name, file_path, file_type, uploaded_by, created_at
+                SELECT id, file_name, file_path, file_type, uploaded_by, created_at{$contextSelect}{$durationSelect}
                 FROM bug_attachments
                 WHERE CAST(bug_id AS CHAR) = CAST(? AS CHAR)
                 ORDER BY created_at ASC
@@ -2855,6 +2940,9 @@ class BugController extends BaseAPI {
                     'uploaded_by' => $attachment['uploaded_by'],
                     'created_at' => $attachment['created_at'],
                     'upload_context' => $attachment['upload_context'] ?? null,
+                    'duration' => isset($attachment['duration']) && $attachment['duration'] !== null
+                        ? (int) $attachment['duration']
+                        : null,
                 ];
                 
                 $updatedBug['attachments'][] = $attachmentObj;

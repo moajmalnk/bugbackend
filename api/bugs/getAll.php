@@ -173,7 +173,16 @@ try {
         $bugIds = array_column($bugs, 'id');
         $placeholders = str_repeat('?,', count($bugIds) - 1) . '?';
         
-        $attachmentQuery = "SELECT bug_id, id, file_name, file_path, file_type 
+        // Prefer duration when migration 042 has been applied
+        $hasDuration = false;
+        try {
+            $colStmt = $api->query("SHOW COLUMNS FROM bug_attachments LIKE 'duration'");
+            $hasDuration = (bool) ($colStmt && $colStmt->rowCount() > 0);
+        } catch (Throwable $e) {
+            $hasDuration = false;
+        }
+        $durationSelect = $hasDuration ? ', duration' : '';
+        $attachmentQuery = "SELECT bug_id, id, file_name, file_path, file_type{$durationSelect}
                           FROM bug_attachments 
                           WHERE bug_id IN ($placeholders)
                           ORDER BY bug_id, id";
