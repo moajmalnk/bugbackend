@@ -20,6 +20,25 @@ class AttendanceExceptionController extends BaseAPI
     }
 
     /**
+     * Why: Accept `date` or `dates[]` so single and multi admin flows share one endpoint.
+     *
+     * @param array $input
+     * @return list<string>
+     */
+    private function resolveDates(array $input): array
+    {
+        $dates = [];
+        if (isset($input['dates']) && is_array($input['dates'])) {
+            $dates = br_normalize_ymd_dates($input['dates']);
+        }
+        $single = trim((string)($input['date'] ?? $input['exception_date'] ?? ''));
+        if ($single !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $single)) {
+            $dates[] = $single;
+        }
+        return br_normalize_ymd_dates($dates);
+    }
+
+    /**
      * GET — list exceptions + recent late days for a user.
      */
     public function listForUser()
@@ -110,8 +129,8 @@ class AttendanceExceptionController extends BaseAPI
     }
 
     /**
-     * POST — upsert day exception and/or forgive late.
-     * Body: user_id, date, allow_wfh?, forgive_late?, admin_note?, action?: 'save'|'forgive_late'|'clear'
+     * POST — upsert day exception(s) and/or forgive late / clear.
+     * Body: user_id, date|dates[], allow_wfh?, forgive_late?, admin_note?, action?: 'save'|'forgive_late'|'clear'
      */
     public function save()
     {
@@ -127,22 +146,38 @@ class AttendanceExceptionController extends BaseAPI
         }
 
         $userId = trim((string)($input['user_id'] ?? ''));
-        $date = trim((string)($input['date'] ?? $input['exception_date'] ?? ''));
+        $dates = $this->resolveDates($input);
         $action = strtolower(trim((string)($input['action'] ?? 'save')));
         $adminNote = isset($input['admin_note']) ? trim((string)$input['admin_note']) : null;
 
-        if ($userId === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
-            $this->sendJsonResponse(400, 'user_id and date (YYYY-MM-DD) are required');
+        if ($userId === '' || $dates === []) {
+            $this->sendJsonResponse(400, 'user_id and date/dates (YYYY-MM-DD) are required');
             return;
         }
 
         br_ensure_checkin_policy_schema($this->conn);
+        $today = br_server_today();
+
+        if ($action === 'clear') {
+            $result = br_clear_day_exceptions($this->conn, $userId, $dates);
+            if (empty($result['ok'])) {
+                $this->sendJsonResponse(400, $result['message'] ?? 'Failed to clear exception');
+                return;
+            }
+            $this->sendJsonResponse(200, $result['message'], [
+                'cleared' => $result['cleared'] ?? 0,
+                'dates' => $result['dates'] ?? $dates,
+                'exception' => null,
+                'policy' => br_checkin_policy_status($this->conn, $userId, $today),
+            ]);
+            return;
+        }
 
         if ($action === 'forgive_late') {
             $result = br_forgive_late_day(
                 $this->conn,
                 $userId,
-                $date,
+                $dates,
                 $decoded->user_id,
                 $adminNote
             );
@@ -150,39 +185,31 @@ class AttendanceExceptionController extends BaseAPI
                 $this->sendJsonResponse(400, $result['message'] ?? 'Failed to forgive late');
                 return;
             }
-            // Optionally also set allow_wfh if provided
+            // Optionally also set allow_wfh if provided (same flags for all dates)
             if (array_key_exists('allow_wfh', $input)) {
-                br_upsert_day_exception(
-                    $this->conn,
-                    $userId,
-                    $date,
-                    !empty($input['allow_wfh']),
-                    true,
-                    $decoded->user_id,
-                    $adminNote
-                );
+                foreach ($dates as $date) {
+                    br_upsert_day_exception(
+                        $this->conn,
+                        $userId,
+                        $date,
+                        !empty($input['allow_wfh']),
+                        true,
+                        $decoded->user_id,
+                        $adminNote
+                    );
+                }
             }
             $this->sendJsonResponse(200, $result['message'], [
-                'exception' => br_day_exception($this->conn, $userId, $date),
+                'dates' => $dates,
+                'exception' => count($dates) === 1
+                    ? br_day_exception($this->conn, $userId, $dates[0])
+                    : null,
+                'exceptions' => array_map(
+                    fn($d) => array_merge(['exception_date' => $d], br_day_exception($this->conn, $userId, $d) ?? []),
+                    $dates
+                ),
                 'recalc' => $result['recalc'] ?? null,
-                'policy' => br_checkin_policy_status($this->conn, $userId, br_server_today()),
-            ]);
-            return;
-        }
-
-        if ($action === 'clear') {
-            try {
-                $del = $this->conn->prepare(
-                    'DELETE FROM attendance_day_exceptions WHERE user_id = ? AND exception_date = ?'
-                );
-                $del->execute([$userId, $date]);
-            } catch (Throwable $e) {
-                $this->sendJsonResponse(500, 'Failed to clear exception');
-                return;
-            }
-            $this->sendJsonResponse(200, 'Exception cleared', [
-                'exception' => null,
-                'policy' => br_checkin_policy_status($this->conn, $userId, br_server_today()),
+                'policy' => br_checkin_policy_status($this->conn, $userId, $today),
             ]);
             return;
         }
@@ -195,30 +222,64 @@ class AttendanceExceptionController extends BaseAPI
             return;
         }
 
-        $saved = br_upsert_day_exception(
-            $this->conn,
-            $userId,
-            $date,
-            $allowWfh,
-            $forgiveLate,
-            $decoded->user_id,
-            $adminNote
-        );
-        if (empty($saved['ok'])) {
-            $this->sendJsonResponse(400, $saved['message'] ?? 'Failed to save');
+        $savedExceptions = [];
+        $errors = [];
+        foreach ($dates as $date) {
+            $saved = br_upsert_day_exception(
+                $this->conn,
+                $userId,
+                $date,
+                $allowWfh,
+                $forgiveLate,
+                $decoded->user_id,
+                $adminNote
+            );
+            if (empty($saved['ok'])) {
+                $errors[] = $date . ': ' . ($saved['message'] ?? 'Failed');
+                continue;
+            }
+            $exc = $saved['exception'];
+            if (!empty($exc['forgive_late'])) {
+                // Defer strike rebuild until after all days are forgiven
+                try {
+                    $upd = $this->conn->prepare(
+                        'UPDATE work_submissions
+                         SET is_late = 0, late_strike_consumed = 0
+                         WHERE user_id = ? AND submission_date = ?'
+                    );
+                    $upd->execute([(string)$userId, $date]);
+                } catch (Throwable $e) {
+                    error_log('AttendanceExceptionController::save forgive flag: ' . $e->getMessage());
+                }
+            }
+            $savedExceptions[] = array_merge(
+                ['exception_date' => $date],
+                $exc ?? []
+            );
+        }
+
+        $recalc = null;
+        if ($forgiveLate === true || ($forgiveLate === null && !empty(array_filter($savedExceptions, fn($e) => !empty($e['forgive_late']))))) {
+            $recalc = br_recalc_late_strikes($this->conn, $userId);
+        }
+
+        if ($savedExceptions === [] && $errors !== []) {
+            $this->sendJsonResponse(400, implode('; ', $errors));
             return;
         }
 
-        // If forgive_late turned on, also clear any existing late flag that day
-        $exc = $saved['exception'];
-        if (!empty($exc['forgive_late'])) {
-            br_forgive_late_day($this->conn, $userId, $date, $decoded->user_id, $adminNote);
-            $exc = br_day_exception($this->conn, $userId, $date);
-        }
+        $msg = count($dates) === 1
+            ? ($savedExceptions[0] ? 'Exception saved.' : 'Save failed.')
+            : (count($savedExceptions) . ' of ' . count($dates) . ' exceptions saved.');
 
-        $this->sendJsonResponse(200, $saved['message'] ?? 'Saved', [
-            'exception' => $exc,
-            'policy' => br_checkin_policy_status($this->conn, $userId, br_server_today()),
+        $this->sendJsonResponse(200, $msg, [
+            'dates' => $dates,
+            'saved_count' => count($savedExceptions),
+            'errors' => $errors,
+            'exception' => count($savedExceptions) === 1 ? $savedExceptions[0] : null,
+            'exceptions' => $savedExceptions,
+            'recalc' => $recalc,
+            'policy' => br_checkin_policy_status($this->conn, $userId, $today),
         ]);
     }
 }

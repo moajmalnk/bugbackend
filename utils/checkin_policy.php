@@ -569,6 +569,63 @@ function br_day_exception(PDO $conn, $userId, string $date): ?array
 }
 
 /**
+ * Why: Normalize admin multi-date payloads to unique YYYY-MM-DD values only.
+ *
+ * @param mixed $dates
+ * @return list<string>
+ */
+function br_normalize_ymd_dates($dates): array
+{
+    $out = [];
+    if (!is_array($dates)) {
+        return $out;
+    }
+    foreach ($dates as $d) {
+        $d = trim((string)$d);
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) {
+            $out[$d] = $d;
+        }
+    }
+    $list = array_values($out);
+    sort($list);
+    return $list;
+}
+
+/**
+ * Why: Clear many day exceptions in one statement for multi-remove admin UX.
+ *
+ * @param list<string> $dates
+ * @return array{ok:bool,message:string,cleared:int,dates:list<string>}
+ */
+function br_clear_day_exceptions(PDO $conn, $userId, array $dates): array
+{
+    br_ensure_checkin_policy_schema($conn);
+    $dates = br_normalize_ymd_dates($dates);
+    if ($dates === []) {
+        return ['ok' => false, 'message' => 'No valid dates.', 'cleared' => 0, 'dates' => []];
+    }
+
+    try {
+        $placeholders = implode(',', array_fill(0, count($dates), '?'));
+        $stmt = $conn->prepare(
+            "DELETE FROM attendance_day_exceptions
+             WHERE user_id = ? AND exception_date IN ($placeholders)"
+        );
+        $params = array_merge([(string)$userId], $dates);
+        $stmt->execute($params);
+        return [
+            'ok' => true,
+            'message' => count($dates) === 1 ? 'Exception cleared.' : 'Exceptions cleared.',
+            'cleared' => (int)$stmt->rowCount(),
+            'dates' => $dates,
+        ];
+    } catch (Throwable $e) {
+        error_log('br_clear_day_exceptions: ' . $e->getMessage());
+        return ['ok' => false, 'message' => 'Failed to clear exceptions.', 'cleared' => 0, 'dates' => $dates];
+    }
+}
+
+/**
  * Upsert a day exception. Passing null for a flag keeps the existing value (or 0 on insert).
  *
  * @return array{ok:bool,message:?string,exception:?array}
@@ -692,46 +749,56 @@ function br_recalc_late_strikes(PDO $conn, $userId): array
 }
 
 /**
- * Clear late flag for a day, record forgive exception, recalc strikes.
+ * Clear late flag for day(s), record forgive exception, recalc strikes once.
  *
- * @return array{ok:bool,message:string,recalc?:array}
+ * @param string|list<string> $dateOrDates
+ * @return array{ok:bool,message:string,recalc?:array,dates?:list<string>}
  */
-function br_forgive_late_day(PDO $conn, $userId, string $date, $adminId, ?string $adminNote = null): array
+function br_forgive_late_day(PDO $conn, $userId, $dateOrDates, $adminId, ?string $adminNote = null): array
 {
     br_ensure_checkin_policy_schema($conn);
-    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+    $dates = is_array($dateOrDates)
+        ? br_normalize_ymd_dates($dateOrDates)
+        : br_normalize_ymd_dates([(string)$dateOrDates]);
+
+    if ($dates === []) {
         return ['ok' => false, 'message' => 'Invalid date.'];
     }
 
-    try {
-        $upd = $conn->prepare(
-            'UPDATE work_submissions
-             SET is_late = 0, late_strike_consumed = 0
-             WHERE user_id = ? AND submission_date = ?'
-        );
-        $upd->execute([(string)$userId, $date]);
-    } catch (Throwable $e) {
-        error_log('br_forgive_late_day update: ' . $e->getMessage());
-        return ['ok' => false, 'message' => 'Failed to clear late flag.'];
-    }
+    foreach ($dates as $date) {
+        try {
+            $upd = $conn->prepare(
+                'UPDATE work_submissions
+                 SET is_late = 0, late_strike_consumed = 0
+                 WHERE user_id = ? AND submission_date = ?'
+            );
+            $upd->execute([(string)$userId, $date]);
+        } catch (Throwable $e) {
+            error_log('br_forgive_late_day update: ' . $e->getMessage());
+            return ['ok' => false, 'message' => 'Failed to clear late flag.', 'dates' => $dates];
+        }
 
-    $existing = br_day_exception($conn, $userId, $date);
-    br_upsert_day_exception(
-        $conn,
-        $userId,
-        $date,
-        $existing['allow_wfh'] ?? false,
-        true,
-        $adminId,
-        $adminNote
-    );
+        $existing = br_day_exception($conn, $userId, $date);
+        br_upsert_day_exception(
+            $conn,
+            $userId,
+            $date,
+            $existing['allow_wfh'] ?? false,
+            true,
+            $adminId,
+            $adminNote
+        );
+    }
 
     $recalc = br_recalc_late_strikes($conn, $userId);
 
     return [
         'ok' => true,
-        'message' => 'Late check-in unmarked for this day.',
+        'message' => count($dates) === 1
+            ? 'Late check-in unmarked for this day.'
+            : ('Late check-ins unmarked for ' . count($dates) . ' days.'),
         'recalc' => $recalc,
+        'dates' => $dates,
     ];
 }
 
