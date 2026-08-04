@@ -1114,6 +1114,7 @@ class UserWorkStatsController extends BaseAPI {
                 'avg_check_in_label' => null,
                 'bugs_reported' => 0,
                 'bugs_fixed' => 0,
+                'projects' => [],
             ],
             'lookback' => [
                 'months' => 0,
@@ -1144,6 +1145,19 @@ class UserWorkStatsController extends BaseAPI {
         }
         $bucket['break_minutes'] += $breakMinutes;
 
+        if (!isset($bucket['project_ids']) || !is_array($bucket['project_ids'])) {
+            $bucket['project_ids'] = [];
+        }
+        foreach ($this->parsePlannedProjectIds($submission['planned_projects'] ?? null) as $projectId) {
+            $bucket['project_ids'][(string)$projectId] = true;
+        }
+        $updates = $this->parseProjectUpdates($submission['project_updates'] ?? null);
+        foreach ($updates as $update) {
+            if (!empty($update['project_id'])) {
+                $bucket['project_ids'][(string)$update['project_id']] = true;
+            }
+        }
+
         if ($includeCheckIn) {
             $checkIn = $submission['check_in_time'] ?? $submission['start_time'] ?? null;
             $minutes = $this->parseCheckInMinutes($checkIn);
@@ -1153,7 +1167,7 @@ class UserWorkStatsController extends BaseAPI {
         }
     }
 
-    private function finalizeAnalyticsBucket(array $bucket, $monthDivisor = 1) {
+    private function finalizeAnalyticsBucket(array $bucket, $monthDivisor = 1, array $projectNameMap = []) {
         $days = count($bucket['dates'] ?? []);
         $hours = round((float)($bucket['hours'] ?? 0), 2);
         $avgHoursPerDay = $days > 0 ? round($hours / $days, 2) : 0.0;
@@ -1163,6 +1177,23 @@ class UserWorkStatsController extends BaseAPI {
             : null;
 
         $months = max(1, (int)$monthDivisor);
+        $projectIds = array_keys($bucket['project_ids'] ?? []);
+        $projectNames = [];
+        foreach ($projectIds as $projectId) {
+            $resolved = $this->lookupProjectName($projectId, $projectNameMap);
+            if ($resolved === '' || $resolved === null) {
+                continue;
+            }
+            if (
+                preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $resolved) &&
+                strcasecmp($resolved, (string)$projectId) === 0
+            ) {
+                continue;
+            }
+            $projectNames[] = $resolved;
+        }
+        $projectNames = array_values(array_unique($projectNames));
+        sort($projectNames, SORT_NATURAL | SORT_FLAG_CASE);
 
         return [
             'days' => $days,
@@ -1178,6 +1209,7 @@ class UserWorkStatsController extends BaseAPI {
             'avg_days_per_month' => round($days / $months, 1),
             'avg_tasks_completed_per_month' => round(((int)($bucket['tasks_completed'] ?? 0)) / $months, 1),
             'avg_overtime_hours_per_month' => round(((float)($bucket['overtime_hours'] ?? 0)) / $months, 2),
+            'projects' => $projectNames,
         ];
     }
 
@@ -1341,6 +1373,7 @@ class UserWorkStatsController extends BaseAPI {
                     'overtime_hours' => 0.0,
                     'break_minutes' => 0,
                     'check_in_minutes' => [],
+                    'project_ids' => [],
                 ];
                 $currentBuckets[$uid] = $emptyBucket;
                 $lookbackBuckets[$uid] = [
@@ -1352,6 +1385,7 @@ class UserWorkStatsController extends BaseAPI {
                     'overtime_hours' => 0.0,
                     'break_minutes' => 0,
                     'check_in_minutes' => [],
+                    'project_ids' => [],
                 ];
             }
 
@@ -1368,6 +1402,7 @@ class UserWorkStatsController extends BaseAPI {
             }
             $submissionStmt->execute([$lookbackStart, $periodEnd]);
             $submissions = $submissionStmt->fetchAll(PDO::FETCH_ASSOC);
+            $projectNameMap = $this->buildProjectNameMapFromSubmissions($submissions);
 
             foreach ($submissions as $submission) {
                 $uid = (string)($submission['user_id'] ?? $submission['user_ref_id'] ?? '');
@@ -1425,8 +1460,8 @@ class UserWorkStatsController extends BaseAPI {
 
                 $uid = (string)$user['id'];
                 $row = $this->emptyUserAnalyticsRow($user);
-                $current = $this->finalizeAnalyticsBucket($currentBuckets[$uid] ?? [], 1);
-                $lookback = $this->finalizeAnalyticsBucket($lookbackBuckets[$uid] ?? [], $lookbackMonths);
+                $current = $this->finalizeAnalyticsBucket($currentBuckets[$uid] ?? [], 1, $projectNameMap);
+                $lookback = $this->finalizeAnalyticsBucket($lookbackBuckets[$uid] ?? [], $lookbackMonths, $projectNameMap);
 
                 $row['current_period'] = [
                     'days' => $current['days'],
@@ -1441,6 +1476,7 @@ class UserWorkStatsController extends BaseAPI {
                     'avg_check_in_label' => $current['avg_check_in_label'],
                     'bugs_reported' => (int)($bugsReported[$uid] ?? 0),
                     'bugs_fixed' => (int)($bugsFixed[$uid] ?? 0),
+                    'projects' => $current['projects'] ?? [],
                 ];
                 $row['lookback'] = [
                     'months' => $lookbackMonths,
