@@ -23,9 +23,84 @@ if (!defined('BR_OFFICE_LABEL')) {
     define('BR_OFFICE_LABEL', 'Wired In Coworks, Kottakkal');
 }
 
-function br_checkin_cutoff_time(): string
+if (!defined('BR_CHECKIN_CUTOFF_TIME')) {
+    define('BR_CHECKIN_CUTOFF_TIME', '10:00:00');
+}
+
+/**
+ * Default late cutoff (HH:MM:SS, Asia/Kolkata). Prefer br_checkin_cutoff_config($conn).
+ */
+function br_checkin_cutoff_time(?PDO $conn = null): string
 {
-    return '10:00:00';
+    return br_checkin_cutoff_config($conn)['time'];
+}
+
+/**
+ * Why: Admins can disable late strikes or change the before-time (e.g. 10:00 AM) in Settings.
+ *
+ * @return array{enabled:bool,time:string,label:string}
+ */
+function br_checkin_cutoff_config(?PDO $conn = null): array
+{
+    $enabled = true;
+    $time = (string)BR_CHECKIN_CUTOFF_TIME;
+
+    if ($conn) {
+        $rows = br_load_setting_values($conn, [
+            'checkin_cutoff_enabled',
+            'checkin_cutoff_time',
+        ]);
+        if (isset($rows['checkin_cutoff_enabled']) && $rows['checkin_cutoff_enabled'] !== '') {
+            $raw = strtolower(trim((string)$rows['checkin_cutoff_enabled']));
+            $enabled = in_array($raw, ['1', 'true', 'yes', 'on'], true);
+        }
+        if (!empty($rows['checkin_cutoff_time'])) {
+            $normalized = br_normalize_cutoff_time((string)$rows['checkin_cutoff_time']);
+            if ($normalized !== null) {
+                $time = $normalized;
+            }
+        }
+    }
+
+    return [
+        'enabled' => $enabled,
+        'time' => $time,
+        'label' => br_format_cutoff_label($time),
+    ];
+}
+
+/**
+ * Normalize admin input to HH:MM:SS or null if invalid.
+ */
+function br_normalize_cutoff_time(string $value): ?string
+{
+    $value = trim($value);
+    if (!preg_match('/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/', $value, $m)) {
+        return null;
+    }
+    $h = (int)$m[1];
+    $min = (int)$m[2];
+    $s = isset($m[3]) ? (int)$m[3] : 0;
+    if ($h < 0 || $h > 23 || $min < 0 || $min > 59 || $s < 0 || $s > 59) {
+        return null;
+    }
+    return sprintf('%02d:%02d:%02d', $h, $min, $s);
+}
+
+/**
+ * Human label for IST cutoff, e.g. "10:00 AM IST".
+ */
+function br_format_cutoff_label(string $time): string
+{
+    $parts = explode(':', $time);
+    $h = isset($parts[0]) ? (int)$parts[0] : 10;
+    $min = isset($parts[1]) ? (int)$parts[1] : 0;
+    $ampm = $h >= 12 ? 'PM' : 'AM';
+    $h12 = $h % 12;
+    if ($h12 === 0) {
+        $h12 = 12;
+    }
+    return sprintf('%d:%02d %s IST', $h12, $min, $ampm);
 }
 
 function br_checkin_late_limit(): int
@@ -1152,17 +1227,21 @@ function br_checkin_policy_status(PDO $conn, $userId, string $date): array
     $restriction = br_active_office_restriction($conn, $userId, $date);
     $lateCount = br_count_unconsumed_lates($conn, $userId);
     $exception = br_day_exception($conn, $userId, $date);
-    $allowWfhToday = !empty($exception['allow_wfh']);
-    $forgiveLateToday = !empty($exception['forgive_late']);
-    $officeOnly = $restriction !== null && !$allowWfhToday;
     $wfhRequest = br_wfh_request_for_day($conn, $userId, $date);
     $wfhRequestStatus = $wfhRequest['status'] ?? 'none';
     if ($wfhRequestStatus === '' || $wfhRequestStatus === null) {
         $wfhRequestStatus = 'none';
     }
-    // Why: Request only when WFH is locked and not already granted/approved.
-    $canRequestWfh = $officeOnly
-        && !$allowWfhToday
+
+    // Why: WFH is never a free choice — only Attendance exception days (or approved WFH request).
+    $allowWfhToday = !empty($exception['allow_wfh']) || $wfhRequestStatus === 'approved';
+    $forgiveLateToday = !empty($exception['forgive_late']);
+
+    // Penalty week banner (late strikes) — separate from daily WFH gating.
+    $officeOnly = $restriction !== null && !$allowWfhToday;
+
+    // Why: Request only when WFH is not already granted/approved for today.
+    $canRequestWfh = !$allowWfhToday
         && $wfhRequestStatus !== 'pending'
         && $wfhRequestStatus !== 'approved';
 
@@ -1200,7 +1279,7 @@ function br_checkin_policy_status(PDO $conn, $userId, string $date): array
         'office_only_week_start' => $restriction['week_start'] ?? null,
         'office_only_week_end' => $restriction['week_end'] ?? null,
         'upcoming_office_only_week' => $upcoming,
-        'work_mode_locked_to' => $officeOnly ? 'office' : null,
+        'work_mode_locked_to' => $allowWfhToday ? null : 'office',
         'allow_wfh_today' => $allowWfhToday,
         'forgive_late_today' => $forgiveLateToday,
         'day_exception' => $exception,

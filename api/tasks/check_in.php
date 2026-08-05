@@ -88,6 +88,26 @@ class CheckInController extends BaseAPI {
             $dayException = br_day_exception($this->conn, $userId, $submissionDate);
             $allowWfhToday = !empty($dayException['allow_wfh']);
             $forgiveLateToday = !empty($dayException['forgive_late']);
+            $wfhRequest = br_wfh_request_for_day($this->conn, $userId, $submissionDate);
+            if (($wfhRequest['status'] ?? '') === 'approved') {
+                $allowWfhToday = true;
+            }
+
+            // Why: WFH is only allowed when an Attendance exception day (or approved request) exists.
+            if ($workMode === 'wfh' && !$allowWfhToday) {
+                $this->sendJsonResponse(
+                    403,
+                    'WFH check-in requires an admin Attendance exception for today. Check in as Office, or request WFH for admin approval.',
+                    [
+                        'work_mode_locked_to' => 'office',
+                        'allow_wfh_today' => false,
+                    ]
+                );
+                return;
+            }
+            if (!$allowWfhToday) {
+                $workMode = 'office';
+            }
 
             $officeRestriction = br_active_office_restriction($this->conn, $userId, $submissionDate);
             if ($officeRestriction && $workMode === 'wfh' && !$allowWfhToday) {
