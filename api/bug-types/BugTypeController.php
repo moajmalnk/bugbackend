@@ -54,6 +54,37 @@ class BugTypeController extends BaseAPI
         }
     }
 
+    private function normalizePriority($value): string
+    {
+        $priority = strtolower(trim((string) $value));
+        if (in_array($priority, ['low', 'medium', 'high'], true)) {
+            return $priority;
+        }
+        return 'medium';
+    }
+
+    private function hasDefaultPriorityColumn(): bool
+    {
+        static $cached = null;
+        if ($cached !== null) {
+            return $cached;
+        }
+        try {
+            $stmt = $this->conn->query(
+                "SELECT COUNT(*) AS c
+                 FROM information_schema.COLUMNS
+                 WHERE TABLE_SCHEMA = DATABASE()
+                   AND TABLE_NAME = 'bug_types'
+                   AND COLUMN_NAME = 'default_priority'"
+            );
+            $row = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : null;
+            $cached = $row && (int) ($row['c'] ?? 0) > 0;
+        } catch (Exception $e) {
+            $cached = false;
+        }
+        return $cached;
+    }
+
     private function slugify(string $name): string
     {
         $slug = strtolower(trim($name));
@@ -108,7 +139,10 @@ class BugTypeController extends BaseAPI
             $includeInactive = isset($_GET['include_inactive'])
                 && ($_GET['include_inactive'] === '1' || $_GET['include_inactive'] === 'true');
 
-            $sql = "SELECT id, name, slug, is_active, sort_order, created_at, updated_at
+            $hasPriority = $this->hasDefaultPriorityColumn();
+            $prioritySelect = $hasPriority ? ', default_priority' : '';
+
+            $sql = "SELECT id, name, slug, is_active, sort_order{$prioritySelect}, created_at, updated_at
                     FROM bug_types";
             if (!$includeInactive) {
                 $sql .= " WHERE is_active = 1";
@@ -120,6 +154,9 @@ class BugTypeController extends BaseAPI
             foreach ($rows as &$row) {
                 $row['is_active'] = (int) $row['is_active'] === 1;
                 $row['sort_order'] = (int) $row['sort_order'];
+                $row['default_priority'] = $hasPriority
+                    ? $this->normalizePriority($row['default_priority'] ?? 'medium')
+                    : 'medium';
             }
             unset($row);
 
@@ -159,14 +196,24 @@ class BugTypeController extends BaseAPI
             $isActive = array_key_exists('is_active', $data)
                 ? ((int) (!!$data['is_active']))
                 : 1;
+            $defaultPriority = $this->normalizePriority($data['default_priority'] ?? 'medium');
             $id = Utils::generateUUID();
             $slug = $this->uniqueSlug($name);
+            $hasPriority = $this->hasDefaultPriorityColumn();
 
-            $stmt = $this->conn->prepare(
-                "INSERT INTO bug_types (id, name, slug, is_active, sort_order)
-                 VALUES (?, ?, ?, ?, ?)"
-            );
-            $stmt->execute([$id, $name, $slug, $isActive, $sortOrder]);
+            if ($hasPriority) {
+                $stmt = $this->conn->prepare(
+                    "INSERT INTO bug_types (id, name, slug, is_active, sort_order, default_priority)
+                     VALUES (?, ?, ?, ?, ?, ?)"
+                );
+                $stmt->execute([$id, $name, $slug, $isActive, $sortOrder, $defaultPriority]);
+            } else {
+                $stmt = $this->conn->prepare(
+                    "INSERT INTO bug_types (id, name, slug, is_active, sort_order)
+                     VALUES (?, ?, ?, ?, ?)"
+                );
+                $stmt->execute([$id, $name, $slug, $isActive, $sortOrder]);
+            }
 
             $this->sendJsonResponse(200, "Bug type created", [
                 'id' => $id,
@@ -174,6 +221,7 @@ class BugTypeController extends BaseAPI
                 'slug' => $slug,
                 'is_active' => $isActive === 1,
                 'sort_order' => $sortOrder,
+                'default_priority' => $defaultPriority,
             ]);
         } catch (Exception $e) {
             $this->sendJsonResponse(500, "Failed to create bug type: " . $e->getMessage());
@@ -233,6 +281,10 @@ class BugTypeController extends BaseAPI
                 $fields[] = "sort_order = ?";
                 $params[] = (int) $data['sort_order'];
             }
+            if (array_key_exists('default_priority', $data) && $this->hasDefaultPriorityColumn()) {
+                $fields[] = "default_priority = ?";
+                $params[] = $this->normalizePriority($data['default_priority']);
+            }
 
             if (empty($fields)) {
                 $this->sendJsonResponse(400, "No fields to update");
@@ -244,14 +296,19 @@ class BugTypeController extends BaseAPI
             $stmt = $this->conn->prepare($sql);
             $stmt->execute($params);
 
+            $hasPriority = $this->hasDefaultPriorityColumn();
+            $prioritySelect = $hasPriority ? ', default_priority' : '';
             $fetch = $this->conn->prepare(
-                "SELECT id, name, slug, is_active, sort_order, created_at, updated_at FROM bug_types WHERE id = ?"
+                "SELECT id, name, slug, is_active, sort_order{$prioritySelect}, created_at, updated_at FROM bug_types WHERE id = ?"
             );
             $fetch->execute([$id]);
             $row = $fetch->fetch(PDO::FETCH_ASSOC);
             if ($row) {
                 $row['is_active'] = (int) $row['is_active'] === 1;
                 $row['sort_order'] = (int) $row['sort_order'];
+                $row['default_priority'] = $hasPriority
+                    ? $this->normalizePriority($row['default_priority'] ?? 'medium')
+                    : 'medium';
             }
 
             $this->sendJsonResponse(200, "Bug type updated", $row);
