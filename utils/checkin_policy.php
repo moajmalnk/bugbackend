@@ -1,9 +1,9 @@
 <?php
 /**
- * Why: Company check-in policy — 10:00 AM IST cutoff (Mon–Sat), Sunday holiday
- * (anytime, never late), Office/WFH mode, rolling late strikes that force
- * Office-only for the next calendar week after 3 unconsumed lates, and
- * Office geofence at Wired In Coworks (500 m).
+ * Why: Company check-in policy — configurable IST late cutoff (default 10:00 AM,
+ * Mon–Sat), Sunday holiday (anytime, never late), Office/WFH mode, rolling late
+ * strikes that force Office-only for the next calendar week after 3 unconsumed
+ * lates, and Office geofence at Wired In Coworks (500 m).
  */
 
 if (!defined('BR_CHECKIN_LATE_LIMIT')) {
