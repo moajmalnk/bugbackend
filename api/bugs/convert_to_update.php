@@ -313,6 +313,8 @@ try {
         $api->clearCache('bug_count_');
         $api->clearCache('updates_');
         $api->clearCache('user_updates_');
+        $api->clearCache('project_stats_');
+        $api->clearCache('bug_stats_');
     } catch (Exception $cacheEx) {
         error_log('Bug→Update convert cache clear failed: ' . $cacheEx->getMessage());
     }

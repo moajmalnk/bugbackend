@@ -530,5 +530,42 @@ class BaseAPI {
             exit();
         }
     }
+
+    /**
+     * Why: Allow legacy JWT role=admin OR RBAC permission so custom roles work
+     * while existing admins without remapped role_id keep access.
+     */
+    public function requirePermissionOrAdmin($permissionKey, $projectId = null) {
+        try {
+            $decoded = $this->validateToken();
+            if (!$decoded || !isset($decoded->user_id)) {
+                throw new Exception('Authentication required');
+            }
+
+            $userId = $decoded->user_id;
+            $legacyRole = isset($decoded->role) ? $decoded->role : null;
+
+            require_once __DIR__ . '/PermissionManager.php';
+            $pm = PermissionManager::getInstance();
+            if (!$pm->hasPermissionOrAdmin($userId, $permissionKey, $legacyRole, $projectId)) {
+                http_response_code(403);
+                echo json_encode([
+                    'success' => false,
+                    'message' => 'Access denied. You do not have permission to perform this action.',
+                    'required_permission' => $permissionKey
+                ]);
+                exit();
+            }
+        } catch (Exception $e) {
+            error_log("Permission check error: " . $e->getMessage());
+            http_response_code(403);
+            echo json_encode([
+                'success' => false,
+                'message' => 'Access denied. Permission check failed.',
+                'error' => $e->getMessage()
+            ]);
+            exit();
+        }
+    }
 }
 ?>

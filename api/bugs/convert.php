@@ -145,12 +145,14 @@ try {
         error_log('Bug convert activity log failed: ' . $logEx->getMessage());
     }
 
-    // Invalidate bug list caches for both projects
+    // Invalidate bug list + project card stats (source & target counts)
     try {
         $api->clearCache('user_bugs_');
         $api->clearCache('bugs_');
         $api->clearCache('bug_count_');
         $api->clearCache('user_total_bugs_');
+        $api->clearCache('project_stats_');
+        $api->clearCache('bug_stats_');
     } catch (Exception $cacheEx) {
         error_log('Bug convert cache clear failed: ' . $cacheEx->getMessage());
     }

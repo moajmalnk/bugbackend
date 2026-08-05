@@ -50,14 +50,14 @@ function attachProjectListStats(PDO $conn, array &$projects): void
     }
 
     $bugStatsByProject = [];
-    $bugStmt = $conn->prepare(
-        "SELECT project_id,
+    const bugStmt = $conn->prepare(
+        "SELECT CAST(project_id AS CHAR) AS project_id,
                 COUNT(*) AS total,
                 SUM(CASE WHEN status IN ('pending', 'in_progress') THEN 1 ELSE 0 END) AS open_count,
                 SUM(CASE WHEN status = 'fixed' THEN 1 ELSE 0 END) AS fixed_count
          FROM bugs
-         WHERE project_id IN ($placeholders)
-         GROUP BY project_id"
+         WHERE CAST(project_id AS CHAR) IN ($placeholders)
+         GROUP BY CAST(project_id AS CHAR)"
     );
     $bugStmt->execute($projectIds);
     foreach ($bugStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
@@ -127,14 +127,14 @@ function buildProjectStatsBundle(PDO $conn, array $projectIds, int $user_id, boo
 
     $placeholders = implode(',', array_fill(0, count($projectIds), '?'));
 
-    $bugStmt = $conn->prepare(
-        "SELECT project_id,
+    const bugStmt = $conn->prepare(
+        "SELECT CAST(project_id AS CHAR) AS project_id,
                 COUNT(*) AS total,
                 SUM(CASE WHEN status IN ('pending', 'in_progress') THEN 1 ELSE 0 END) AS open_count,
                 SUM(CASE WHEN status = 'fixed' THEN 1 ELSE 0 END) AS fixed_count
          FROM bugs
-         WHERE project_id IN ($placeholders)
-         GROUP BY project_id"
+         WHERE CAST(project_id AS CHAR) IN ($placeholders)
+         GROUP BY CAST(project_id AS CHAR)"
     );
     $bugStmt->execute($projectIds);
     foreach ($bugStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {

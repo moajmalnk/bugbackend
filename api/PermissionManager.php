@@ -4,6 +4,18 @@ require_once __DIR__ . '/../config/database.php';
 class PermissionManager {
     private $conn;
     private static $instance = null;
+
+    /**
+     * Why: FE/API historically used keys that differ from the seeded catalog
+     * (e.g. MESSAGING_CREATE vs MESSAGING_SEND). Checking either key must succeed.
+     */
+    private static $ALIASES = [
+        'MESSAGING_CREATE' => ['MESSAGING_SEND'],
+        'MESSAGING_SEND' => ['MESSAGING_CREATE'],
+        'MESSAGING_MANAGE' => ['MESSAGING_MANAGE_GROUPS'],
+        'MESSAGING_MANAGE_GROUPS' => ['MESSAGING_MANAGE'],
+        'PROJECTS_VIEW' => ['PROJECTS_VIEW_ALL', 'PROJECTS_VIEW_ASSIGNED'],
+    ];
     
     private function __construct() {
         $db = Database::getInstance();
@@ -15,6 +27,20 @@ class PermissionManager {
             self::$instance = new PermissionManager();
         }
         return self::$instance;
+    }
+
+    /**
+     * Keys to evaluate for a requested permission (requested key + aliases).
+     * @return string[]
+     */
+    private function resolvePermissionKeys($permissionKey) {
+        $keys = [$permissionKey];
+        if (isset(self::$ALIASES[$permissionKey])) {
+            foreach (self::$ALIASES[$permissionKey] as $alias) {
+                $keys[] = $alias;
+            }
+        }
+        return array_values(array_unique($keys));
     }
     
     /**
@@ -31,37 +57,65 @@ class PermissionManager {
             if ($this->hasSuperAdmin($userId)) {
                 return true;
             }
-            
-            // Step 2: Get the permission ID
-            $stmt = $this->conn->prepare("SELECT id, scope FROM permissions WHERE permission_key = ?");
-            $stmt->execute([$permissionKey]);
-            $permission = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$permission) {
+
+            $keys = $this->resolvePermissionKeys($permissionKey);
+            $anyKeyExists = false;
+
+            foreach ($keys as $key) {
+                $stmt = $this->conn->prepare("SELECT id, scope FROM permissions WHERE permission_key = ?");
+                $stmt->execute([$key]);
+                $permission = $stmt->fetch(PDO::FETCH_ASSOC);
+
+                if (!$permission) {
+                    continue;
+                }
+                $anyKeyExists = true;
+
+                $permissionId = $permission['id'];
+                $scope = $permission['scope'];
+
+                $roleHasPermission = $this->checkRolePermission($userId, $permissionId);
+                $userOverride = $this->checkUserOverride($userId, $permissionId, $projectId, $scope);
+
+                if ($userOverride !== null) {
+                    if ($userOverride) {
+                        return true;
+                    }
+                    // Explicit deny on this key — continue aliases only if deny; treat deny as definitive for that key
+                    continue;
+                }
+
+                if ($roleHasPermission) {
+                    return true;
+                }
+            }
+
+            if (!$anyKeyExists) {
                 error_log("Permission not found: $permissionKey");
-                return false;
             }
-            
-            $permissionId = $permission['id'];
-            $scope = $permission['scope'];
-            
-            // Step 3: Check user's role permissions
-            $roleHasPermission = $this->checkRolePermission($userId, $permissionId);
-            
-            // Step 4: Check user permission overrides
-            $userOverride = $this->checkUserOverride($userId, $permissionId, $projectId, $scope);
-            
-            // If user override exists (not null), use it; otherwise use role permission
-            if ($userOverride !== null) {
-                return $userOverride;
-            }
-            
-            return $roleHasPermission;
+            return false;
             
         } catch (Exception $e) {
             error_log("Permission check error: " . $e->getMessage());
             return false;
         }
+    }
+
+    /**
+     * Why: Bridge legacy JWT role ENUM with RBAC so admins without remapped role_id
+     * still pass until all callers use permissions alone.
+     *
+     * @param string $userId
+     * @param string $permissionKey
+     * @param string|null $legacyRole From JWT / users.role
+     * @param string|null $projectId
+     * @return bool
+     */
+    public function hasPermissionOrAdmin($userId, $permissionKey, $legacyRole = null, $projectId = null) {
+        if ($legacyRole !== null && strtolower((string)$legacyRole) === 'admin') {
+            return true;
+        }
+        return $this->hasPermission($userId, $permissionKey, $projectId);
     }
     
     /**
@@ -215,7 +269,20 @@ class PermissionManager {
                 }
             }
             
-            return array_keys(array_filter($effective));
+            $keys = array_keys(array_filter($effective));
+
+            // Why: Expand aliases so FE checks for either canonical key succeed
+            // (e.g. role has MESSAGING_SEND → also expose MESSAGING_CREATE).
+            $expanded = [];
+            foreach ($keys as $key) {
+                $expanded[$key] = true;
+                if (isset(self::$ALIASES[$key])) {
+                    foreach (self::$ALIASES[$key] as $alias) {
+                        $expanded[$alias] = true;
+                    }
+                }
+            }
+            return array_keys($expanded);
             
         } catch (Exception $e) {
             error_log("Get effective permissions error: " . $e->getMessage());
