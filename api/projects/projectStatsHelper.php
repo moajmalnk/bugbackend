@@ -50,23 +50,27 @@ function attachProjectListStats(PDO $conn, array &$projects): void
     }
 
     $bugStatsByProject = [];
-    $bugStmt = $conn->prepare(
-        "SELECT project_id,
-                COUNT(*) AS total,
-                SUM(CASE WHEN status IN ('pending', 'in_progress') THEN 1 ELSE 0 END) AS open_count,
-                SUM(CASE WHEN status = 'fixed' THEN 1 ELSE 0 END) AS fixed_count
-         FROM bugs
-         WHERE project_id IN ($placeholders)
-         GROUP BY project_id"
-    );
-    $bugStmt->execute($projectIds);
-    foreach ($bugStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-        $pid = (string) $row['project_id'];
-        $bugStatsByProject[$pid] = [
-            'total' => (int) $row['total'],
-            'open' => (int) $row['open_count'],
-            'fixed' => (int) $row['fixed_count'],
-        ];
+    try {
+        $bugStmt = $conn->prepare(
+            "SELECT project_id,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN status IN ('pending', 'in_progress') THEN 1 ELSE 0 END) AS open_count,
+                    SUM(CASE WHEN status = 'fixed' THEN 1 ELSE 0 END) AS fixed_count
+             FROM bugs
+             WHERE project_id IN ($placeholders)
+             GROUP BY project_id"
+        );
+        $bugStmt->execute($projectIds);
+        foreach ($bugStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $pid = (string) $row['project_id'];
+            $bugStatsByProject[$pid] = [
+                'total' => (int) $row['total'],
+                'open' => (int) $row['open_count'],
+                'fixed' => (int) $row['fixed_count'],
+            ];
+        }
+    } catch (Throwable $e) {
+        error_log('attachProjectListStats bug_stats: ' . $e->getMessage());
     }
 
     $updateStatsByProject = [];
