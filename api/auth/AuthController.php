@@ -166,8 +166,8 @@ class AuthController extends BaseAPI {
                 return;
             }
 
-            // Include phone so clients receive full profile data
-            $stmt = $this->conn->prepare("SELECT id, username, email, phone, role FROM users WHERE id = ?");
+            // Include phone + role_id so custom-role clients keep RBAC mapping after refresh
+            $stmt = $this->conn->prepare("SELECT id, username, email, phone, role, role_id FROM users WHERE id = ?");
             $stmt->execute([$decoded->user_id]);
 
             if ($stmt->rowCount() === 0) {

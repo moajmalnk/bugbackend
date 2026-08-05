@@ -11,6 +11,15 @@ class AnnouncementController extends BaseAPI {
         parent::__construct();
     }
 
+    private function canManageAnnouncements($decoded): bool {
+        $pm = PermissionManager::getInstance();
+        return $pm->hasPermissionOrAdmin(
+            $decoded->user_id ?? '',
+            'ANNOUNCEMENTS_MANAGE',
+            $decoded->role ?? null
+        );
+    }
+
     public function getLatestActive() {
         if (!isset($_SERVER['REQUEST_METHOD']) || $_SERVER['REQUEST_METHOD'] !== 'GET') {
             return $this->sendJsonResponse(405, "Method not allowed");
@@ -77,7 +86,7 @@ class AnnouncementController extends BaseAPI {
 
         try {
             $decoded = $this->validateToken();
-            if ($decoded->role !== 'admin') {
+            if (!$this->canManageAnnouncements($decoded)) {
                 return $this->sendJsonResponse(403, "Forbidden: You are not authorized to perform this action.");
             }
 
@@ -101,7 +110,7 @@ class AnnouncementController extends BaseAPI {
 
         try {
             $decoded = $this->validateToken();
-            if ($decoded->role !== 'admin') {
+            if (!$this->canManageAnnouncements($decoded)) {
                 return $this->sendJsonResponse(403, "Forbidden: You are not authorized to perform this action.");
             }
 
@@ -183,7 +192,7 @@ class AnnouncementController extends BaseAPI {
     
         try {
             $decoded = $this->validateToken();
-            if ($decoded->role !== 'admin') {
+            if (!$this->canManageAnnouncements($decoded)) {
                 return $this->sendJsonResponse(403, "Forbidden: You are not authorized.");
             }
     
@@ -255,7 +264,7 @@ class AnnouncementController extends BaseAPI {
 
         try {
             $decoded = $this->validateToken();
-            if ($decoded->role !== 'admin') {
+            if (!$this->canManageAnnouncements($decoded)) {
                 return $this->sendJsonResponse(403, "Forbidden: You are not authorized.");
             }
 
@@ -282,7 +291,7 @@ class AnnouncementController extends BaseAPI {
 
         try {
             $decoded = $this->validateToken();
-            if ($decoded->role !== 'admin') {
+            if (!$this->canManageAnnouncements($decoded)) {
                 return $this->sendJsonResponse(403, "Forbidden: You are not authorized.");
             }
 

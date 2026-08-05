@@ -25,31 +25,35 @@ class RolesController extends BaseAPI {
             $stmt = $this->conn->prepare("SELECT role, role_id FROM users WHERE id = ?");
             $stmt->execute([$userId]);
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
+            $legacyRole = $user['role'] ?? ($decoded->role ?? null);
+
+            require_once __DIR__ . '/../PermissionManager.php';
+            $pm = PermissionManager::getInstance();
             
             // GET /api/settings/roles - List all roles (allow all authenticated users)
             if ($method === 'GET') {
                 $this->listRoles();
             }
-            // POST /api/settings/roles - Create new role (requires admin)
+            // POST /api/settings/roles - Create new role (ROLES_MANAGE or admin)
             elseif ($method === 'POST') {
-                if (!$user || $user['role'] !== 'admin') {
-                    $this->sendJsonResponse(403, "Access denied. Admin access required.");
+                if (!$pm->hasPermissionOrAdmin($userId, 'ROLES_MANAGE', $legacyRole)) {
+                    $this->sendJsonResponse(403, "Access denied. ROLES_MANAGE permission required.");
                     return;
                 }
                 $this->createRole();
             }
-            // PUT /api/settings/roles/{roleId} - Update role (requires admin)
+            // PUT /api/settings/roles/{roleId} - Update role
             elseif ($method === 'PUT') {
-                if (!$user || $user['role'] !== 'admin') {
-                    $this->sendJsonResponse(403, "Access denied. Admin access required.");
+                if (!$pm->hasPermissionOrAdmin($userId, 'ROLES_MANAGE', $legacyRole)) {
+                    $this->sendJsonResponse(403, "Access denied. ROLES_MANAGE permission required.");
                     return;
                 }
                 $this->updateRole();
             }
-            // DELETE /api/settings/roles/{roleId} - Delete role (requires admin)
+            // DELETE /api/settings/roles/{roleId} - Delete role
             elseif ($method === 'DELETE') {
-                if (!$user || $user['role'] !== 'admin') {
-                    $this->sendJsonResponse(403, "Access denied. Admin access required.");
+                if (!$pm->hasPermissionOrAdmin($userId, 'ROLES_MANAGE', $legacyRole)) {
+                    $this->sendJsonResponse(403, "Access denied. ROLES_MANAGE permission required.");
                     return;
                 }
                 $this->deleteRole();

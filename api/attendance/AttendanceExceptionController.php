@@ -12,8 +12,13 @@ class AttendanceExceptionController extends BaseAPI
             $this->sendJsonResponse(401, 'Authentication failed');
             return null;
         }
-        if (strtolower((string)($decoded->role ?? '')) !== 'admin') {
-            $this->sendJsonResponse(403, 'Only admins can manage attendance exceptions');
+        $pm = PermissionManager::getInstance();
+        if (!$pm->hasPermissionOrAdmin(
+            $decoded->user_id,
+            'ATTENDANCE_MANAGE',
+            $decoded->role ?? null
+        )) {
+            $this->sendJsonResponse(403, 'Only users with ATTENDANCE_MANAGE can manage attendance exceptions');
             return null;
         }
         return $decoded;

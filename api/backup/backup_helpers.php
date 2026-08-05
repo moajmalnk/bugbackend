@@ -123,7 +123,9 @@ function backup_require_settings_permission(BaseAPI $api): object
     }
 
     $permissionManager = PermissionManager::getInstance();
-    if (!$permissionManager->hasPermission($decoded->user_id, 'SETTINGS_EDIT')) {
+    $legacyRole = $decoded->role ?? null;
+    if (!$permissionManager->hasPermissionOrAdmin($decoded->user_id, 'BACKUP_MANAGE', $legacyRole)
+        && !$permissionManager->hasPermissionOrAdmin($decoded->user_id, 'SETTINGS_EDIT', $legacyRole)) {
         $api->sendJsonResponse(403, 'You do not have permission to access backups');
     }
 

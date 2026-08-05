@@ -904,8 +904,9 @@ class UserController extends BaseAPI {
 
             if (array_key_exists('account_active', $data) && $hasAccountActiveCol) {
                 $actor = $this->validateToken();
-                if (!isset($actor->role) || $actor->role !== 'admin') {
-                    $this->sendJsonResponse(403, "Only administrators can change account status");
+                $pm = PermissionManager::getInstance();
+                if (!$pm->hasPermissionOrAdmin($actor->user_id ?? '', 'USERS_EDIT', $actor->role ?? null)) {
+                    $this->sendJsonResponse(403, "USERS_EDIT permission required to change account status");
                     return;
                 }
                 if (isset($actor->user_id) && $actor->user_id === $id) {

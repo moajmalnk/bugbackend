@@ -741,7 +741,7 @@ class ChatGroupController extends BaseAPI {
         }
         
         // Check PROJECTS_VIEW permission
-        if ($pm->hasPermission($userId, 'PROJECTS_VIEW', $projectId)) {
+        if ($pm->hasPermission($userId, 'PROJECTS_VIEW_ALL', $projectId)) {
             error_log("✅ validateProjectAccess - User has PROJECTS_VIEW permission");
             return true;
         }

@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/../PermissionManager.php';
 require_once __DIR__ . '/../../config/cors.php';
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../config/fcm_config.php';
@@ -34,9 +35,10 @@ try {
     }
 
     $role = strtolower((string) ($decoded->role ?? ''));
-    if ($role !== 'admin') {
+    $pm = PermissionManager::getInstance();
+    if (!$pm->hasPermissionOrAdmin($decoded->user_id, 'PUSH_COVERAGE_VIEW', $role)) {
         http_response_code(403);
-        echo json_encode(['success' => false, 'message' => 'Only admins can view push coverage']);
+        echo json_encode(['success' => false, 'message' => 'PUSH_COVERAGE_VIEW permission required']);
         exit;
     }
 

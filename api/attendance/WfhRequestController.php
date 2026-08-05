@@ -21,7 +21,12 @@ class WfhRequestController extends BaseAPI
 
     private function isAdmin($decoded): bool
     {
-        return strtolower((string)($decoded->role ?? '')) === 'admin';
+        $pm = PermissionManager::getInstance();
+        return $pm->hasPermissionOrAdmin(
+            $decoded->user_id ?? '',
+            'ATTENDANCE_MANAGE',
+            $decoded->role ?? null
+        );
     }
 
     private function usernameFor($userId): string

@@ -23,7 +23,12 @@ class LeaveController extends BaseAPI
 
     private function requireAdmin($decoded): bool
     {
-        if (strtolower((string)($decoded->role ?? '')) !== 'admin') {
+        $pm = PermissionManager::getInstance();
+        if (!$pm->hasPermissionOrAdmin(
+            $decoded->user_id ?? '',
+            'LEAVE_MANAGE',
+            $decoded->role ?? null
+        )) {
             $this->sendJsonResponse(403, 'Access denied');
             return false;
         }

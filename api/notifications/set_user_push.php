@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/../PermissionManager.php';
 /**
  * Admin: enable/disable push notifications for a user.
  * POST JSON: { user_id: string, enabled: bool }
@@ -45,9 +46,10 @@ try {
         exit;
     }
 
-    if (strtolower((string) ($decoded->role ?? '')) !== 'admin') {
+    $pm = PermissionManager::getInstance();
+    if (!$pm->hasPermissionOrAdmin($decoded->user_id ?? '', 'PUSH_COVERAGE_VIEW', $decoded->role ?? null)) {
         http_response_code(403);
-        echo json_encode(['success' => false, 'message' => 'Only admins can change push settings']);
+        echo json_encode(['success' => false, 'message' => 'PUSH_COVERAGE_VIEW permission required']);
         exit;
     }
 

@@ -115,8 +115,13 @@ class ClientController extends BaseAPI
 
     private function requireAdmin($decoded): void
     {
-        if (strtolower(trim((string) ($decoded->role ?? ''))) !== 'admin') {
-            $this->sendJsonResponse(403, 'Only admins can manage clients');
+        $pm = PermissionManager::getInstance();
+        if (!$pm->hasPermissionOrAdmin(
+            $decoded->user_id ?? '',
+            'CLIENTS_VIEW',
+            $decoded->role ?? null
+        )) {
+            $this->sendJsonResponse(403, 'Only users with CLIENTS_VIEW can manage clients');
             exit;
         }
     }

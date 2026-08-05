@@ -118,8 +118,9 @@ class BackupController {
             
             // Check permission (PermissionManager is a singleton)
             $permissionManager = PermissionManager::getInstance();
-            
-            if (!$permissionManager->hasPermission($userId, 'SETTINGS_EDIT')) {
+            $legacyRole = $tokenData->role ?? null;
+            if (!$permissionManager->hasPermissionOrAdmin($userId, 'BACKUP_MANAGE', $legacyRole)
+                && !$permissionManager->hasPermissionOrAdmin($userId, 'SETTINGS_EDIT', $legacyRole)) {
                 $this->sendErrorResponse(403, "You do not have permission to create backups");
             }
             

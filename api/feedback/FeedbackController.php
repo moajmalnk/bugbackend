@@ -233,7 +233,8 @@ class FeedbackController extends BaseAPI {
                 'has_role_property' => property_exists($tokenData, 'role')
             ]));
             
-            if (!isset($tokenData->role) || $tokenData->role !== 'admin') {
+            $pm = PermissionManager::getInstance();
+            if (!$pm->hasPermissionOrAdmin($tokenData->user_id ?? '', 'FEEDBACK_VIEW', $tokenData->role ?? null)) {
                 error_log("FeedbackController::getFeedbackStats - Access denied for role: " . ($tokenData->role ?? 'null'));
                 
                 // Get user data from database for comparison
@@ -361,7 +362,8 @@ class FeedbackController extends BaseAPI {
             // Validate authentication and admin role
             $tokenData = $this->validateToken();
             
-            if (!isset($tokenData->role) || $tokenData->role !== 'admin') {
+            $pm = PermissionManager::getInstance();
+            if (!$pm->hasPermissionOrAdmin($tokenData->user_id ?? '', 'FEEDBACK_VIEW', $tokenData->role ?? null)) {
                 $this->sendJsonResponse(403, "Access denied. Only administrators can delete feedback.");
                 return;
             }

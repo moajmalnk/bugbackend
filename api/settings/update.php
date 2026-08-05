@@ -6,8 +6,10 @@ $api = new BaseAPI();
 $conn = $api->getConnection();
 
 $decoded = $api->validateToken();
-if (!$decoded || $decoded->role !== 'admin') {
-    $api->sendJsonResponse(403, "Only admins can update settings");
+require_once __DIR__ . '/../PermissionManager.php';
+$pm = PermissionManager::getInstance();
+if (!$decoded || !$pm->hasPermissionOrAdmin($decoded->user_id ?? '', 'SETTINGS_EDIT', $decoded->role ?? null)) {
+    $api->sendJsonResponse(403, "SETTINGS_EDIT permission required");
     exit;
 }
 

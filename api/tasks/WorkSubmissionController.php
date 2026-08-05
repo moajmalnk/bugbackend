@@ -573,11 +573,16 @@ class WorkSubmissionController extends BaseAPI {
 
     public function allRequestSubmissions($q) {
         $decoded = $this->validateToken();
-        $role = strtolower((string)($decoded->role ?? ''));
-        if ($role !== 'admin') {
+        $pm = PermissionManager::getInstance();
+        if (!$pm->hasPermissionOrAdmin(
+            $decoded->user_id ?? '',
+            'OVERTIME_MANAGE',
+            $decoded->role ?? null
+        )) {
             $this->sendJsonResponse(403, 'Access denied');
             return;
         }
+        $role = strtolower((string)($decoded->role ?? ''));
 
         $this->ensureExtraHoursApprovalColumns();
 

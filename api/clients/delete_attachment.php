@@ -11,7 +11,9 @@ try {
     $api = new BaseAPI();
     $decoded = $api->validateToken();
 
-    if ($decoded->role !== 'admin') {
+    require_once __DIR__ . '/../PermissionManager.php';
+    $pm = PermissionManager::getInstance();
+    if (!$pm->hasPermissionOrAdmin($decoded->user_id ?? '', 'CLIENTS_EDIT', $decoded->role ?? null)) {
         $api->sendJsonResponse(403, 'Only admins can delete client attachments');
         exit;
     }
