@@ -25,9 +25,9 @@ class OptimizedBugController extends OptimizedBaseAPI {
                 p.description as project_description,
                 updater.username as updater_name
             FROM bugs b
-            LEFT JOIN users u ON b.reported_by = u.id
-            LEFT JOIN projects p ON b.project_id = p.id
-            LEFT JOIN users updater ON b.updated_by = updater.id
+            LEFT JOIN users u ON u.id = CAST(b.reported_by AS CHAR)
+            LEFT JOIN projects p ON CAST(p.id AS CHAR) = CAST(b.project_id AS CHAR)
+            LEFT JOIN users updater ON updater.id = CAST(b.updated_by AS CHAR)
             WHERE b.id = ?
         ",
         

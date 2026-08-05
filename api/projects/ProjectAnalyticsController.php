@@ -297,19 +297,29 @@ class ProjectAnalyticsController extends BaseAPI
                 $bugSelect .= ', b.fixed_by';
             }
 
+            $fixerCol = $hasFixedBy ? 'b.fixed_by' : 'b.updated_by';
             $bugsStmt = $this->conn->prepare(
                 "SELECT $bugSelect,
-                        reporter.username AS reported_by_name,
-                        fixer.username AS fixed_by_name
+                        (SELECT username FROM users WHERE id = CAST(b.reported_by AS CHAR) LIMIT 1) AS reported_by_name,
+                        (SELECT username FROM users WHERE id = CAST({$fixerCol} AS CHAR) LIMIT 1) AS fixed_by_name
                  FROM bugs b
-                 LEFT JOIN users reporter ON reporter.id = b.reported_by
-                 LEFT JOIN users fixer ON fixer.id = " . ($hasFixedBy ? 'b.fixed_by' : 'b.updated_by') . "
                  WHERE b.project_id = ?
                  ORDER BY b.created_at DESC
                  LIMIT 1000"
             );
             $bugsStmt->execute([$projectId]);
-            $bugRows = $bugsStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            $bugRowsRaw = $bugsStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            // Why: Guard against any residual JOIN/type fan-out — one row per bug id.
+            $bugRows = [];
+            $seenBugIds = [];
+            foreach ($bugRowsRaw as $row) {
+                $bid = (string) ($row['id'] ?? '');
+                if ($bid === '' || isset($seenBugIds[$bid])) {
+                    continue;
+                }
+                $seenBugIds[$bid] = true;
+                $bugRows[] = $row;
+            }
 
             $updCols = [];
             $updColRes = $this->conn->query('SHOW COLUMNS FROM updates');

@@ -543,6 +543,64 @@ class BugController extends BaseAPI {
     }
 
     /**
+     * Why: Legacy DBs stored updated_by/fixed_by as INT while users.id is UUID.
+     * MySQL then coerces UUID→0 and LEFT JOIN users multiplies every bug into many rows.
+     */
+    private function ensureBugActorColumnsAreUuid(): void
+    {
+        foreach (['updated_by', 'fixed_by', 'reported_by'] as $col) {
+            try {
+                $st = $this->conn->query("SHOW COLUMNS FROM bugs LIKE " . $this->conn->quote($col));
+                $row = $st ? $st->fetch(PDO::FETCH_ASSOC) : null;
+                if (!$row) {
+                    continue;
+                }
+                $type = strtolower((string) ($row['Type'] ?? ''));
+                if (strpos($type, 'int') === false) {
+                    continue;
+                }
+                $this->conn->exec(
+                    "ALTER TABLE bugs MODIFY `{$col}` VARCHAR(36) NULL DEFAULT NULL"
+                );
+            } catch (Throwable $e) {
+                error_log("ensureBugActorColumnsAreUuid {$col}: " . $e->getMessage());
+            }
+        }
+    }
+
+    /**
+     * Why: Scalar username lookup never multiplies list rows (unlike LEFT JOIN users).
+     * CAST forces string compare so INT 0 / truncated ids do not match every UUID.
+     */
+    private function bugActorUsernameSelectSql(string $column, string $alias): string
+    {
+        $safeCol = preg_replace('/[^a-z_]/', '', strtolower($column));
+        $safeAlias = preg_replace('/[^a-z_]/', '', strtolower($alias));
+        if ($safeCol === '' || $safeAlias === '') {
+            return "NULL AS invalid_alias";
+        }
+        return "(SELECT username FROM users WHERE id = CAST(b.`{$safeCol}` AS CHAR) LIMIT 1) AS {$safeAlias}";
+    }
+
+    /**
+     * Why: Belt-and-suspenders if any JOIN still fans out — keep one row per bug id.
+     */
+    private function dedupeBugsById(array $bugs): array
+    {
+        $seen = [];
+        $out = [];
+        foreach ($bugs as $bug) {
+            $id = isset($bug['id']) ? (string) $bug['id'] : '';
+            if ($id === '' || isset($seen[$id])) {
+                continue;
+            }
+            $seen[$id] = true;
+            $out[] = $bug;
+        }
+        return $out;
+    }
+
+    /**
      * Ensure tester retest columns exist (idempotent for hosts that skip migrations).
      */
     private function ensureTesterRetestColumns(): void
@@ -1075,14 +1133,11 @@ class BugController extends BaseAPI {
             
             $query = "SELECT b.*, 
                             p.name as project_name,
-                            reporter.username as reporter_name,
-                            updater.username as updated_by_name,
-                            fixer.username as fixed_by_name
+                            " . $this->bugActorUsernameSelectSql('reported_by', 'reporter_name') . ",
+                            " . $this->bugActorUsernameSelectSql('updated_by', 'updated_by_name') . ",
+                            " . $this->bugActorUsernameSelectSql('fixed_by', 'fixed_by_name') . "
                      FROM bugs b
-                     LEFT JOIN projects p ON b.project_id = p.id
-                     LEFT JOIN users reporter ON b.reported_by = reporter.id
-                     LEFT JOIN users updater ON b.updated_by = updater.id
-                     LEFT JOIN users fixer ON b.fixed_by = fixer.id";
+                     LEFT JOIN projects p ON CAST(b.project_id AS CHAR) = CAST(p.id AS CHAR)";
                      
             if ($projectId) {
                 $query .= " WHERE b.project_id = ?";
@@ -1098,7 +1153,7 @@ class BugController extends BaseAPI {
                 $stmt->execute();
             }
             
-            $bugs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $bugs = $this->dedupeBugsById($stmt->fetchAll(PDO::FETCH_ASSOC));
             
             $this->sendJsonResponse(200, "Bugs retrieved successfully", $bugs);
             
@@ -1123,14 +1178,12 @@ class BugController extends BaseAPI {
                 SELECT b.*, 
                        p.name as project_name,
                        reporter.username as reporter_name,
-                       updater.username as updated_by_name,
-                       fixer.username as fixed_by_name
+                       " . $this->bugActorUsernameSelectSql('updated_by', 'updated_by_name') . ",
+                       " . $this->bugActorUsernameSelectSql('fixed_by', 'fixed_by_name') . "
                        $retesterSelect
                 FROM bugs b
                 LEFT JOIN projects p ON b.project_id = p.id
                 LEFT JOIN users reporter ON b.reported_by = reporter.id
-                LEFT JOIN users updater ON b.updated_by = updater.id
-                LEFT JOIN users fixer ON b.fixed_by = fixer.id
                 $retesterJoin
                 WHERE b.id = ?
             ");
@@ -1306,24 +1359,18 @@ class BugController extends BaseAPI {
                        b.reported_by, b.updated_by,
                        p.name AS project_name,
                        reporter.username AS reporter_name,
-                       updater.username AS updated_by_name";
+                       " . $this->bugActorUsernameSelectSql('updated_by', 'updated_by_name');
             if ($hasFixedBy) {
-                $select .= ", b.fixed_by, fixer.username AS fixed_by_name";
+                $select .= ", b.fixed_by, " . $this->bugActorUsernameSelectSql('fixed_by', 'fixed_by_name');
             }
             if ($hasBugLevel) $select .= ", b.bug_level";
             if ($hasAlreadyRaised) $select .= ", b.already_raised";
-
-            $fixerJoin = $hasFixedBy
-                ? "LEFT JOIN users fixer ON b.fixed_by = fixer.id"
-                : "";
 
             $stmt = $this->conn->prepare(
                 "SELECT $select
                  FROM bugs b
                  LEFT JOIN projects p ON p.id = b.project_id
                  LEFT JOIN users reporter ON b.reported_by = reporter.id
-                 LEFT JOIN users updater ON b.updated_by = updater.id
-                 $fixerJoin
                  WHERE b.id = ?
                  LIMIT 1"
             );
@@ -2269,6 +2316,9 @@ class BugController extends BaseAPI {
                 throw new Exception("Database connection failed");
             }
 
+            // Prevent INT updated_by JOIN fan-out before list/cache runs
+            $this->ensureBugActorColumnsAreUuid();
+
             $page = max(1, (int) $page);
             $limit = max(1, min(1000, (int) $limit));
 
@@ -2292,7 +2342,7 @@ class BugController extends BaseAPI {
             }
             $statusKey = !empty($statusList) ? implode(',', $statusList) : 'all';
 
-            $cacheKey = 'bugs_v3_' . md5(json_encode([
+            $cacheKey = 'bugs_v6_' . md5(json_encode([
                 $projectId, $page, $limit, $statusKey, $userId,
                 $search, $priority, $fixedBy, $bugTypeId, $accessUserId, $facetUserId,
             ]));
@@ -2301,20 +2351,8 @@ class BugController extends BaseAPI {
                 return $cachedResult;
             }
 
-            $query = "SELECT b.*, 
-                     u.username as reporter_name,
-                     p.name as project_name,
-                     updater.username as updated_by_name,
-                     fixer.username as fixed_by_name
-                     FROM bugs b
-                     LEFT JOIN users u ON b.reported_by = u.id
-                     LEFT JOIN projects p ON b.project_id = p.id
-                     LEFT JOIN users updater ON b.updated_by = updater.id
-                     LEFT JOIN users fixer ON b.fixed_by = fixer.id";
-
             $countQuery = "SELECT COUNT(*) as total FROM bugs b";
             $where = [];
-            $params = [];
             $countParams = [];
 
             // Scope to projects the non-admin user can access
@@ -2325,56 +2363,45 @@ class BugController extends BaseAPI {
                     SELECT DISTINCT id FROM projects WHERE created_by = ?
                 )";
                 $where[] = $accessSql;
-                $params[] = $accessUserId;
-                $params[] = $accessUserId;
                 $countParams[] = $accessUserId;
                 $countParams[] = $accessUserId;
             }
 
             if ($projectId) {
                 $where[] = "b.project_id = ?";
-                $params[] = $projectId;
                 $countParams[] = $projectId;
             }
 
             if (count($statusList) === 1) {
                 $where[] = "b.status = ?";
-                $params[] = $statusList[0];
                 $countParams[] = $statusList[0];
             } elseif (count($statusList) > 1) {
                 $placeholders = implode(',', array_fill(0, count($statusList), '?'));
                 $where[] = "b.status IN ($placeholders)";
                 foreach ($statusList as $s) {
-                    $params[] = $s;
                     $countParams[] = $s;
                 }
             }
 
             if ($userId) {
                 $where[] = "b.reported_by = ?";
-                $params[] = $userId;
                 $countParams[] = $userId;
             }
 
             if ($fixedBy !== '') {
                 // Match UI fixer identity: prefer fixed_by, fall back to updated_by
                 $where[] = "COALESCE(NULLIF(TRIM(b.fixed_by), ''), b.updated_by) = ?";
-                $params[] = $fixedBy;
                 $countParams[] = $fixedBy;
             }
 
             if ($priority !== '' && in_array($priority, ['high', 'medium', 'low'], true)) {
                 $where[] = "b.priority = ?";
-                $params[] = $priority;
                 $countParams[] = $priority;
             }
 
             if ($search !== '') {
                 $where[] = "(b.title LIKE ? OR b.description LIKE ? OR CAST(b.id AS CHAR) LIKE ?)";
                 $like = '%' . $search . '%';
-                $params[] = $like;
-                $params[] = $like;
-                $params[] = $like;
                 $countParams[] = $like;
                 $countParams[] = $like;
                 $countParams[] = $like;
@@ -2385,30 +2412,41 @@ class BugController extends BaseAPI {
                     SELECT 1 FROM bug_bug_types j
                     WHERE j.bug_id = b.id AND j.bug_type_id = ?
                 )";
-                $params[] = $bugTypeId;
                 $countParams[] = $bugTypeId;
             }
 
-            if (!empty($where)) {
-                $whereSql = " WHERE " . implode(" AND ", $where);
-                $query .= $whereSql;
-                $countQuery .= $whereSql;
-            }
-
-            $query .= " ORDER BY b.created_at DESC";
-
-            $offset = ($page - 1) * $limit;
-            $query .= " LIMIT ? OFFSET ?";
-            $params[] = (int) $limit;
-            $params[] = (int) $offset;
+            $whereSql = !empty($where) ? (" WHERE " . implode(" AND ", $where)) : "";
+            $countQuery .= $whereSql;
 
             $countStmt = $this->conn->prepare($countQuery);
             $countStmt->execute($countParams);
             $totalBugs = (int) ($countStmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
 
-            $stmt = $this->conn->prepare($query);
-            $stmt->execute($params);
-            $bugs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            // Why: Paginate unique bug ids FIRST — dedupe-after-LIMIT shrinks pages (1-10 of 73 → 1 row).
+            $offset = ($page - 1) * $limit;
+            $idQuery = "SELECT b.id FROM bugs b{$whereSql} ORDER BY b.created_at DESC LIMIT ? OFFSET ?";
+            $idParams = array_merge($countParams, [(int) $limit, (int) $offset]);
+            $idStmt = $this->conn->prepare($idQuery);
+            $idStmt->execute($idParams);
+            $pageIds = array_column($idStmt->fetchAll(PDO::FETCH_ASSOC), 'id');
+
+            $bugs = [];
+            if (!empty($pageIds)) {
+                $inPlaceholders = implode(',', array_fill(0, count($pageIds), '?'));
+                $fieldPlaceholders = implode(',', array_fill(0, count($pageIds), '?'));
+                $detailQuery = "SELECT b.*, 
+                     " . $this->bugActorUsernameSelectSql('reported_by', 'reporter_name') . ",
+                     p.name as project_name,
+                     " . $this->bugActorUsernameSelectSql('updated_by', 'updated_by_name') . ",
+                     " . $this->bugActorUsernameSelectSql('fixed_by', 'fixed_by_name') . "
+                     FROM bugs b
+                     LEFT JOIN projects p ON CAST(b.project_id AS CHAR) = CAST(p.id AS CHAR)
+                     WHERE b.id IN ($inPlaceholders)
+                     ORDER BY FIELD(b.id, $fieldPlaceholders)";
+                $detailStmt = $this->conn->prepare($detailQuery);
+                $detailStmt->execute(array_merge($pageIds, $pageIds));
+                $bugs = $detailStmt->fetchAll(PDO::FETCH_ASSOC);
+            }
 
             if (!empty($bugs)) {
                 $bugIds = array_column($bugs, 'id');
@@ -2553,10 +2591,9 @@ class BugController extends BaseAPI {
 
             $from = "
                 FROM bugs b
-                LEFT JOIN users u ON b.reported_by = u.id
-                LEFT JOIN projects p ON b.project_id = p.id
+                LEFT JOIN projects p ON CAST(p.id AS CHAR) = CAST(b.project_id AS CHAR)
                 LEFT JOIN ({$dupSubquery}) dup
-                    ON dup.project_id = b.project_id
+                    ON CAST(dup.project_id AS CHAR) = CAST(b.project_id AS CHAR)
                     AND LOWER(TRIM(b.title)) = dup.norm_title
             ";
 
@@ -2595,7 +2632,7 @@ class BugController extends BaseAPI {
             $alreadyRaisedSelect = $hasAlreadyRaised ? 'b.already_raised' : '0 AS already_raised';
             $select = "
                 SELECT b.*,
-                       u.username AS reporter_name,
+                       " . $this->bugActorUsernameSelectSql('reported_by', 'reporter_name') . ",
                        p.name AS project_name,
                        COALESCE(dup.duplicate_count, 0) AS duplicate_count,
                        {$alreadyRaisedSelect}
@@ -2608,7 +2645,7 @@ class BugController extends BaseAPI {
             $listParams = array_merge($params, [$limit, $offset]);
             $stmt = $this->conn->prepare($select);
             $stmt->execute($listParams);
-            $bugs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $bugs = $this->dedupeBugsById($stmt->fetchAll(PDO::FETCH_ASSOC));
 
             $developersByProject = [];
             if (!empty($bugs)) {
@@ -2839,14 +2876,12 @@ class BugController extends BaseAPI {
                     SELECT b.*, 
                            p.name as project_name, 
                            reporter.username as reporter_name,
-                           updater.username as updated_by_name,
-                           fixer.username as fixed_by_name,
+                           " . $this->bugActorUsernameSelectSql('updated_by', 'updated_by_name') . ",
+                           " . $this->bugActorUsernameSelectSql('fixed_by', 'fixed_by_name') . ",
                            retester.username as tester_verified_by_name
                     FROM bugs b
                     LEFT JOIN projects p ON b.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci
                     LEFT JOIN users reporter ON b.reported_by COLLATE utf8mb4_unicode_ci = reporter.id COLLATE utf8mb4_unicode_ci
-                    LEFT JOIN users updater ON b.updated_by COLLATE utf8mb4_unicode_ci = updater.id COLLATE utf8mb4_unicode_ci
-                    LEFT JOIN users fixer ON b.fixed_by COLLATE utf8mb4_unicode_ci = fixer.id COLLATE utf8mb4_unicode_ci
                     LEFT JOIN users retester ON b.tester_verified_by COLLATE utf8mb4_unicode_ci = retester.id COLLATE utf8mb4_unicode_ci
                     WHERE b.id = ?
                 ";
@@ -3216,14 +3251,12 @@ class BugController extends BaseAPI {
                 SELECT b.*, 
                        p.name as project_name,
                        reporter.username as reporter_name,
-                       updater.username as updated_by_name,
-                       fixer.username as fixed_by_name
+                       " . $this->bugActorUsernameSelectSql('updated_by', 'updated_by_name') . ",
+                       " . $this->bugActorUsernameSelectSql('fixed_by', 'fixed_by_name') . "
                        $retesterSelect
                 FROM bugs b
                 LEFT JOIN projects p ON b.project_id = p.id
                 LEFT JOIN users reporter ON b.reported_by = reporter.id
-                LEFT JOIN users updater ON b.updated_by = updater.id
-                LEFT JOIN users fixer ON b.fixed_by = fixer.id
                 $retesterJoin
                 WHERE CAST(b.id AS CHAR) = CAST(? AS CHAR)
             ");

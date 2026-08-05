@@ -161,9 +161,9 @@ try {
                 u.username AS reporter_name,
                 ub.username AS updated_by_name
          FROM bugs b
-         LEFT JOIN projects p ON p.id = b.project_id
-         LEFT JOIN users u ON u.id = b.reported_by
-         LEFT JOIN users ub ON ub.id = b.updated_by
+         LEFT JOIN projects p ON CAST(p.id AS CHAR) = CAST(b.project_id AS CHAR)
+         LEFT JOIN users u ON u.id = CAST(b.reported_by AS CHAR)
+         LEFT JOIN users ub ON ub.id = CAST(b.updated_by AS CHAR)
          WHERE b.id = ?
          LIMIT 1"
     );
