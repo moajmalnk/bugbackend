@@ -44,15 +44,19 @@ function br_attendance_punctuality_label(array $meta): string
     if (!empty($meta['is_sunday'])) {
         return 'Sunday holiday · on-time (never late)';
     }
+    $cutoffLabel = trim((string)($meta['checkin_cutoff_label'] ?? ''));
+    if ($cutoffLabel === '') {
+        $cutoffLabel = '10:00 AM IST';
+    }
     if (!empty($meta['is_late'])) {
         $count = isset($meta['late_count']) ? (int)$meta['late_count'] : null;
         $limit = isset($meta['late_limit']) ? (int)$meta['late_limit'] : 3;
         if ($count !== null && $count > 0) {
             return "Late check-in ({$count}/{$limit} strikes)";
         }
-        return 'Late check-in (after 10:00 AM IST)';
+        return "Late check-in (after {$cutoffLabel})";
     }
-    return 'On time (before 10:00 AM IST)';
+    return "On time (before {$cutoffLabel})";
 }
 
 /**

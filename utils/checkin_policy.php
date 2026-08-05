@@ -458,11 +458,20 @@ function br_is_sunday(string $date): bool
 }
 
 /**
- * Late only on Mon–Sat when server time is at/after 10:00 IST and date is today.
+ * Late only on Mon–Sat when cutoff policy is enabled, server time is at/after
+ * the configured IST cutoff, and the submission date is today.
  * Sunday is never late. Past/future admin dates are not marked late from "now".
  */
-function br_is_late_checkin(?DateTimeInterface $now, string $submissionDate): bool
-{
+function br_is_late_checkin(
+    ?DateTimeInterface $now,
+    string $submissionDate,
+    ?PDO $conn = null
+): bool {
+    $cutoff = br_checkin_cutoff_config($conn);
+    if (!$cutoff['enabled']) {
+        return false;
+    }
+
     if (br_is_sunday($submissionDate)) {
         return false;
     }
@@ -479,7 +488,7 @@ function br_is_late_checkin(?DateTimeInterface $now, string $submissionDate): bo
         return false;
     }
 
-    return $now->format('H:i:s') >= br_checkin_cutoff_time();
+    return $now->format('H:i:s') >= $cutoff['time'];
 }
 
 /**
@@ -1270,8 +1279,12 @@ function br_checkin_policy_status(PDO $conn, $userId, string $date): array
         $upcoming = null;
     }
 
+    $cutoff = br_checkin_cutoff_config($conn);
+
     return [
-        'checkin_cutoff' => br_checkin_cutoff_time(),
+        'checkin_cutoff' => $cutoff['time'],
+        'checkin_cutoff_enabled' => $cutoff['enabled'],
+        'checkin_cutoff_label' => $cutoff['label'],
         'is_sunday' => $isSunday,
         'late_count' => $lateCount,
         'late_limit' => br_checkin_late_limit(),

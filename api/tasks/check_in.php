@@ -250,7 +250,7 @@ class CheckInController extends BaseAPI {
             $checkInTime = date('Y-m-d H:i:s');
             $tz = new DateTimeZone('Asia/Kolkata');
             $nowIst = new DateTime('now', $tz);
-            $computedLate = br_is_late_checkin($nowIst, $submissionDate) ? 1 : 0;
+            $computedLate = br_is_late_checkin($nowIst, $submissionDate, $this->conn) ? 1 : 0;
             if ($forgiveLateToday) {
                 $computedLate = 0;
             }

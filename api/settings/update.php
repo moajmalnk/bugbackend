@@ -85,6 +85,37 @@ if ($updatingOffice) {
     $updated['office_label'] = $office['label'];
 }
 
+$updatingCutoff =
+    array_key_exists('checkin_cutoff_enabled', $data)
+    || array_key_exists('checkin_cutoff_time', $data);
+
+if ($updatingCutoff) {
+    $hasAny = true;
+    $currentCutoff = br_checkin_cutoff_config($conn);
+
+    if (array_key_exists('checkin_cutoff_enabled', $data)) {
+        $enabled = !empty($data['checkin_cutoff_enabled']) ? '1' : '0';
+        br_upsert_setting($conn, 'checkin_cutoff_enabled', $enabled);
+    }
+
+    if (array_key_exists('checkin_cutoff_time', $data)) {
+        $normalized = br_normalize_cutoff_time((string)$data['checkin_cutoff_time']);
+        if ($normalized === null) {
+            $api->sendJsonResponse(400, "Check-in cutoff time must be HH:MM or HH:MM:SS (24-hour).");
+            exit;
+        }
+        br_upsert_setting($conn, 'checkin_cutoff_time', $normalized);
+    } elseif (!array_key_exists('checkin_cutoff_enabled', $data)) {
+        // no-op
+    }
+
+    br_clear_setting_cache();
+    $cutoff = br_checkin_cutoff_config($conn);
+    $updated['checkin_cutoff_enabled'] = $cutoff['enabled'];
+    $updated['checkin_cutoff_time'] = $cutoff['time'];
+    $updated['checkin_cutoff_label'] = $cutoff['label'];
+}
+
 if (!$hasAny) {
     $api->sendJsonResponse(400, "No settings fields provided");
     exit;
@@ -95,6 +126,7 @@ $emailRow = $conn->prepare("SELECT value FROM settings WHERE key_name = 'email_n
 $emailRow->execute();
 $emailVal = $emailRow->fetch(PDO::FETCH_ASSOC);
 $office = br_office_config($conn);
+$cutoff = br_checkin_cutoff_config($conn);
 
 $api->sendJsonResponse(200, "Settings updated", array_merge([
     'email_notifications_enabled' => (($emailVal['value'] ?? '1') === '1'),
@@ -102,4 +134,7 @@ $api->sendJsonResponse(200, "Settings updated", array_merge([
     'office_lng' => $office['lng'],
     'office_radius_m' => $office['radius_m'],
     'office_label' => $office['label'],
+    'checkin_cutoff_enabled' => $cutoff['enabled'],
+    'checkin_cutoff_time' => $cutoff['time'],
+    'checkin_cutoff_label' => $cutoff['label'],
 ], $updated));

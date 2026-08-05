@@ -19,6 +19,7 @@ try {
 }
 
 $office = br_office_config($conn);
+$cutoff = br_checkin_cutoff_config($conn);
 
 // Prevent caching on the client-side
 header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
@@ -31,10 +32,18 @@ $api->sendJsonResponse(200, "Fetched application settings", [
     'office_lng' => $office['lng'],
     'office_radius_m' => $office['radius_m'],
     'office_label' => $office['label'],
+    'checkin_cutoff_enabled' => $cutoff['enabled'],
+    'checkin_cutoff_time' => $cutoff['time'],
+    'checkin_cutoff_label' => $cutoff['label'],
     'office_defaults' => [
         'lat' => (float)BR_OFFICE_LAT,
         'lng' => (float)BR_OFFICE_LNG,
         'radius_m' => (int)BR_OFFICE_RADIUS_M,
         'label' => (string)BR_OFFICE_LABEL,
+    ],
+    'checkin_cutoff_defaults' => [
+        'enabled' => true,
+        'time' => (string)BR_CHECKIN_CUTOFF_TIME,
+        'label' => br_format_cutoff_label((string)BR_CHECKIN_CUTOFF_TIME),
     ],
 ]);
