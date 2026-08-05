@@ -33,12 +33,17 @@ class CodoRulesController extends BaseAPI
 
     private function tablesReady(): bool
     {
+        static $ready = null;
+        if ($ready !== null) {
+            return $ready;
+        }
         try {
             $res = $this->conn->query("SHOW TABLES LIKE 'codo_common_rules'");
-            return (bool)($res && $res->fetch(PDO::FETCH_NUM));
+            $ready = (bool)($res && $res->fetch(PDO::FETCH_NUM));
         } catch (Throwable $e) {
-            return false;
+            $ready = false;
         }
+        return $ready;
     }
 
     private function ackTableReady(): bool
@@ -352,6 +357,40 @@ class CodoRulesController extends BaseAPI
                 $stmt->execute([$ruleId, $userId]);
             }
 
+            // Why: Mark must feel instant — return after DB write; emails/WhatsApp/push run after flush.
+            $now = date('Y-m-d H:i:s');
+            if ($role === 'admin') {
+                $summary = $this->buildAckSummary($ruleId, (string)$rule['phase'], $userId);
+            } else {
+                $summary = [
+                    'required_total' => 0,
+                    'responded_count' => 1,
+                    'acknowledged_count' => $status === 'acknowledged' ? 1 : 0,
+                    'doubt_count' => $status === 'doubt' ? 1 : 0,
+                    'not_required_count' => $status === 'not_required' ? 1 : 0,
+                    'pending_count' => 0,
+                    'current_user_status' => $status,
+                    'current_user_acknowledged_at' => $now,
+                    'current_user_acknowledged' => $status === 'acknowledged',
+                    'current_user_must_acknowledge' => false,
+                    'acknowledged' => [],
+                    'doubt' => [],
+                    'not_required' => [],
+                    'pending' => [],
+                ];
+            }
+
+            $labels = [
+                'acknowledged' => 'Rule acknowledged',
+                'doubt' => 'Marked as doubt',
+                'not_required' => 'Marked as not required',
+            ];
+            $this->flushJsonResponse(200, $labels[$status] ?? 'Response saved', [
+                'rule_id' => $ruleId,
+                'status' => $status,
+                'acknowledgements' => $summary,
+            ]);
+
             $this->notifyAdminsOfCodoStatus(
                 $ruleId,
                 (string)($rule['title'] ?? ''),
@@ -360,28 +399,40 @@ class CodoRulesController extends BaseAPI
                 $status,
                 $userId
             );
-
-            $summary = $this->buildAckSummary($ruleId, (string)$rule['phase'], $userId);
-            if ($role !== 'admin') {
-                $summary['acknowledged'] = [];
-                $summary['doubt'] = [];
-                $summary['not_required'] = [];
-                $summary['pending'] = [];
-            }
-            $labels = [
-                'acknowledged' => 'Rule acknowledged',
-                'doubt' => 'Marked as doubt',
-                'not_required' => 'Marked as not required',
-            ];
-            $this->sendJsonResponse(200, $labels[$status] ?? 'Response saved', [
-                'rule_id' => $ruleId,
-                'status' => $status,
-                'acknowledgements' => $summary,
-            ]);
         } catch (Throwable $e) {
             error_log('CodoRulesController::acknowledge: ' . $e->getMessage());
             $this->sendJsonResponse(500, 'Failed to save response: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * Why: Close the HTTP response before slow fan-out (email / WhatsApp / push).
+     */
+    private function flushJsonResponse(int $statusCode, string $message, $data = null): void
+    {
+        if (headers_sent()) {
+            return;
+        }
+        http_response_code($statusCode);
+        header('Content-Type: application/json; charset=utf-8');
+        $payload = [
+            'success' => $statusCode >= 200 && $statusCode < 300,
+            'message' => $message,
+            'data' => $data,
+        ];
+        echo json_encode($payload);
+        if (function_exists('fastcgi_finish_request')) {
+            fastcgi_finish_request();
+            return;
+        }
+        if (function_exists('litespeed_finish_request')) {
+            litespeed_finish_request();
+            return;
+        }
+        while (ob_get_level() > 0) {
+            @ob_end_flush();
+        }
+        @flush();
     }
 
     private function notifyAdminsOfCodoStatus(
