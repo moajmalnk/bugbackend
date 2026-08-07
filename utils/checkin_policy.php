@@ -1122,6 +1122,84 @@ function br_review_wfh_request(
 }
 
 /**
+ * Why: Admins need to remove stale/rejected/approved WFH request history.
+ * Deleting an approved request also revokes the auto-granted allow_wfh for that day
+ * (keeps forgive_late if present).
+ *
+ * @return array{ok:bool,message:?string,request:?array,exception:?array,deleted:?array}
+ */
+function br_delete_wfh_request(PDO $conn, $userId, string $date): array
+{
+    br_ensure_checkin_policy_schema($conn);
+
+    $existing = br_wfh_request_for_day($conn, $userId, $date);
+    if (!$existing) {
+        return [
+            'ok' => false,
+            'message' => 'No WFH request found for this day.',
+            'request' => null,
+            'exception' => null,
+            'deleted' => null,
+        ];
+    }
+
+    $wasApproved = ($existing['status'] ?? '') === 'approved';
+
+    try {
+        $stmt = $conn->prepare(
+            'DELETE FROM attendance_wfh_requests
+             WHERE user_id = ? AND request_date = ?'
+        );
+        $stmt->execute([(string)$userId, $date]);
+        if ($stmt->rowCount() < 1) {
+            return [
+                'ok' => false,
+                'message' => 'Could not delete WFH request.',
+                'request' => $existing,
+                'exception' => br_day_exception($conn, $userId, $date),
+                'deleted' => null,
+            ];
+        }
+    } catch (Throwable $e) {
+        error_log('br_delete_wfh_request: ' . $e->getMessage());
+        return [
+            'ok' => false,
+            'message' => 'Failed to delete WFH request.',
+            'request' => $existing,
+            'exception' => null,
+            'deleted' => null,
+        ];
+    }
+
+    $exception = br_day_exception($conn, $userId, $date);
+    if ($wasApproved && $exception && !empty($exception['allow_wfh'])) {
+        if (!empty($exception['forgive_late'])) {
+            $upsert = br_upsert_day_exception(
+                $conn,
+                $userId,
+                $date,
+                false,
+                null,
+                null,
+                $exception['admin_note'] ?? null
+            );
+            $exception = $upsert['exception'] ?? br_day_exception($conn, $userId, $date);
+        } else {
+            br_clear_day_exceptions($conn, $userId, [$date]);
+            $exception = null;
+        }
+    }
+
+    return [
+        'ok' => true,
+        'message' => 'WFH request deleted.',
+        'request' => null,
+        'exception' => $exception,
+        'deleted' => $existing,
+    ];
+}
+
+/**
  * @return list<array<string,mixed>>
  */
 function br_list_pending_wfh_requests(PDO $conn, int $limit = 100): array

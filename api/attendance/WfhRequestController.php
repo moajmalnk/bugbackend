@@ -233,7 +233,7 @@ class WfhRequestController extends BaseAPI
     }
 
     /**
-     * POST — create request, or admin approve/reject.
+     * POST — create request, or admin approve/reject/delete.
      */
     public function save()
     {
@@ -245,6 +245,31 @@ class WfhRequestController extends BaseAPI
         $input = $this->getRequestData() ?: [];
         $action = strtolower(trim((string)($input['action'] ?? 'request')));
         $actorId = (string)$decoded->user_id;
+
+        if ($action === 'delete') {
+            if (!$this->isAdmin($decoded)) {
+                $this->sendJsonResponse(403, 'Only admins can delete WFH requests');
+                return;
+            }
+            $userId = trim((string)($input['user_id'] ?? ''));
+            $date = trim((string)($input['date'] ?? $input['request_date'] ?? ''));
+            if ($userId === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+                $this->sendJsonResponse(400, 'user_id and date are required');
+                return;
+            }
+            $result = br_delete_wfh_request($this->conn, $userId, $date);
+            if (!$result['ok']) {
+                $this->sendJsonResponse(400, $result['message'] ?? 'Delete failed', $result);
+                return;
+            }
+            $this->sendJsonResponse(200, $result['message'] ?? 'WFH request deleted.', [
+                'request' => null,
+                'deleted' => $result['deleted'] ?? null,
+                'exception' => $result['exception'] ?? null,
+                'policy' => br_checkin_policy_status($this->conn, $userId, $date),
+            ]);
+            return;
+        }
 
         if (in_array($action, ['approve', 'reject'], true)) {
             if (!$this->isAdmin($decoded)) {
