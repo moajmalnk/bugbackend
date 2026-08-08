@@ -9,7 +9,7 @@
  */
 
 require_once __DIR__ . '/../../../../config/cors.php';
-// cors.php auto-invokes handleCORS()
+require_once __DIR__ . '/../../../../utils/finbro_integration.php';
 
 require_once __DIR__ . '/FinbroIntegrationController.php';
 

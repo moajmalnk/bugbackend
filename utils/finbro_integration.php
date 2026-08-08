@@ -236,10 +236,9 @@ function br_finbro_load_users(PDO $conn, ?string $emailFilter = null): array
  */
 function br_finbro_aggregate_hours_by_user(PDO $conn, string $from, string $to): array
 {
+    // Why: OT approval columns may be absent on older DBs; SELECT * avoids hard-coded column failures.
     $stmt = $conn->prepare(
-        'SELECT user_id, submission_date, hours_today, overtime_hours,
-                requested_extra_hours, approval_reason, extra_hours_approval_status,
-                extra_hours_approved_amount, break_entries, total_break_minutes, notes
+        'SELECT *
          FROM work_submissions
          WHERE submission_date >= ? AND submission_date <= ?
          ORDER BY submission_date ASC'
