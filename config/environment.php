@@ -44,6 +44,8 @@ class Environment {
             'FCM_TOKEN_EPOCH',
             'FIREBASE_SERVICE_ACCOUNT_BASE64',
             'FIREBASE_SERVICE_ACCOUNT_PATH',
+            'DEADLINE_REMINDER_SECRET',
+            'FINBRO_INTEGRATION_TOKEN',
         ];
         
         foreach ($envVars as $var) {

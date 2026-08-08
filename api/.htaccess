@@ -11,6 +11,14 @@
   RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
 </IfModule>
 
+# Finbro M2M producer endpoints (clean paths → front controller)
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteRule ^v1/integrations/finbro/users/status/?$ v1/integrations/finbro/index.php?finbro_route=users/status [L,QSA]
+  RewriteRule ^v1/integrations/finbro/hours/by-user/?$ v1/integrations/finbro/index.php?finbro_route=hours/by-user [L,QSA]
+  RewriteRule ^v1/integrations/finbro/hours/?$ v1/integrations/finbro/index.php?finbro_route=hours [L,QSA]
+</IfModule>
+
 # Emit CORS on every response (including LiteSpeed/Apache errors) so browsers
 # do not mis-report origin blocks as "No Access-Control-Allow-Origin".
 # PHP cors.php still handles the precise allow-list for successful requests.
