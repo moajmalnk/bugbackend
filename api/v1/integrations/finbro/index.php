@@ -41,5 +41,11 @@ function br_finbro_resolve_route(): string
 }
 
 $route = br_finbro_resolve_route();
-$controller = new FinbroIntegrationController();
-$controller->dispatch($route);
+
+try {
+    $controller = new FinbroIntegrationController();
+    $controller->dispatch($route);
+} catch (Throwable $e) {
+    error_log('Finbro integration error [' . $route . ']: ' . $e->getMessage());
+    br_finbro_json_response(500, ['error' => 'Internal server error']);
+}

@@ -5,8 +5,8 @@
  * Why: Finbro is SoT for rates/payroll; BugRicer exposes hours + account status only.
  */
 
-require_once __DIR__ . '/../../../config/database.php';
-require_once __DIR__ . '/../../../utils/finbro_integration.php';
+require_once __DIR__ . '/../../../../config/database.php';
+require_once __DIR__ . '/../../../../utils/finbro_integration.php';
 
 class FinbroIntegrationController
 {
