@@ -124,6 +124,25 @@ class AttendanceExceptionController extends BaseAPI
         $policy = br_checkin_policy_status($this->conn, $userId, $today);
         $restriction = br_active_office_restriction($this->conn, $userId, $today);
 
+        $officeActiveDays = 0;
+        try {
+            $fromDate = (new DateTimeImmutable($today . ' 00:00:00'))
+                ->modify('-120 days')
+                ->format('Y-m-d');
+            $officeStmt = $this->conn->prepare(
+                "SELECT COUNT(DISTINCT submission_date) AS office_active_days
+                 FROM work_submissions
+                 WHERE user_id = ?
+                   AND check_in_time IS NOT NULL
+                   AND submission_date >= ?
+                   AND (work_mode = 'office' OR work_mode IS NULL OR work_mode = '')"
+            );
+            $officeStmt->execute([$userId, $fromDate]);
+            $officeActiveDays = (int)($officeStmt->fetch(PDO::FETCH_ASSOC)['office_active_days'] ?? 0);
+        } catch (Throwable $e) {
+            error_log('AttendanceExceptionController::listForUser office days: ' . $e->getMessage());
+        }
+
         $this->sendJsonResponse(200, 'OK', [
             'user_id' => $userId,
             'today' => $today,
@@ -138,6 +157,7 @@ class AttendanceExceptionController extends BaseAPI
             'active_restriction' => $restriction,
             'allow_wfh_today' => !empty($policy['allow_wfh_today']),
             'forgive_late_today' => !empty($policy['forgive_late_today']),
+            'office_active_days' => $officeActiveDays,
         ]);
     }
 
@@ -219,6 +239,36 @@ class AttendanceExceptionController extends BaseAPI
             error_log('AttendanceExceptionController::listAll lates: ' . $e->getMessage());
         }
 
+        // Why: Admins need each teammate's office check-in day count on the roster / header.
+        $officeActiveByUser = [];
+        $officeActiveTotal = 0;
+        try {
+            $officeStmt = $this->conn->prepare(
+                "SELECT ws.user_id, COUNT(DISTINCT ws.submission_date) AS office_active_days
+                 FROM work_submissions ws
+                 INNER JOIN users u
+                   ON u.id COLLATE utf8mb4_unicode_ci = ws.user_id COLLATE utf8mb4_unicode_ci
+                 WHERE ws.check_in_time IS NOT NULL
+                   AND ws.submission_date >= ?
+                   AND (ws.work_mode = 'office' OR ws.work_mode IS NULL OR ws.work_mode = '')
+                   AND LOWER(TRIM(COALESCE(u.role, ''))) IN ('admin', 'developer', 'user')
+                   AND (u.account_active IS NULL OR u.account_active = 1)
+                 GROUP BY ws.user_id"
+            );
+            $officeStmt->execute([$fromDate]);
+            while ($row = $officeStmt->fetch(PDO::FETCH_ASSOC)) {
+                $uid = (string)($row['user_id'] ?? '');
+                if ($uid === '') {
+                    continue;
+                }
+                $days = (int)($row['office_active_days'] ?? 0);
+                $officeActiveByUser[$uid] = $days;
+                $officeActiveTotal += $days;
+            }
+        } catch (Throwable $e) {
+            error_log('AttendanceExceptionController::listAll office days: ' . $e->getMessage());
+        }
+
         // Why: user-first admin UI needs one row per teammate with counts.
         $byUser = [];
         foreach ($exceptions as $row) {
@@ -233,6 +283,7 @@ class AttendanceExceptionController extends BaseAPI
                     'role' => $row['role'] ?? null,
                     'exception_count' => 0,
                     'late_count' => 0,
+                    'office_active_days' => $officeActiveByUser[$uid] ?? 0,
                     'latest_exception_date' => null,
                     'latest_late_date' => null,
                 ];
@@ -255,6 +306,7 @@ class AttendanceExceptionController extends BaseAPI
                     'role' => $row['role'] ?? null,
                     'exception_count' => 0,
                     'late_count' => 0,
+                    'office_active_days' => $officeActiveByUser[$uid] ?? 0,
                     'latest_exception_date' => null,
                     'latest_late_date' => null,
                 ];
@@ -263,6 +315,23 @@ class AttendanceExceptionController extends BaseAPI
             $d = $row['submission_date'] ?? null;
             if ($d && ($byUser[$uid]['latest_late_date'] === null || $d > $byUser[$uid]['latest_late_date'])) {
                 $byUser[$uid]['latest_late_date'] = $d;
+            }
+        }
+        // Ensure every user with office days appears even with zero exceptions/lates.
+        foreach ($officeActiveByUser as $uid => $days) {
+            if (!isset($byUser[$uid])) {
+                $byUser[$uid] = [
+                    'user_id' => $uid,
+                    'username' => 'Unknown',
+                    'role' => null,
+                    'exception_count' => 0,
+                    'late_count' => 0,
+                    'office_active_days' => $days,
+                    'latest_exception_date' => null,
+                    'latest_late_date' => null,
+                ];
+            } else {
+                $byUser[$uid]['office_active_days'] = $days;
             }
         }
         $usersSummary = array_values($byUser);
@@ -282,6 +351,7 @@ class AttendanceExceptionController extends BaseAPI
             'users' => $usersSummary,
             'exception_count' => count($exceptions),
             'late_count' => count($lateDays),
+            'office_active_days_total' => $officeActiveTotal,
             'late_limit' => br_checkin_late_limit(),
         ]);
     }
