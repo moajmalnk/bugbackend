@@ -50,6 +50,7 @@ try {
     $docType = $input['doc_type'] ?? 'general';
     $projectId = $input['project_id'] ?? null;
     $role = $input['role'] ?? 'all';
+    $allowedUserIds = $input['allowed_user_ids'] ?? ($input['allowed_users'] ?? null);
     
     // Validate template ID if provided
     if ($templateId !== null && !is_numeric($templateId)) {
@@ -89,7 +90,7 @@ try {
     error_log("Creating general document: '{$docTitle}' for user: {$userId}, project: " . ($projectId ?? 'none') . ", role: {$role}");
     
     // Create document
-    $result = $controller->createGeneralDocument($userId, $docTitle, $templateId, $docType, $projectId, $role);
+    $result = $controller->createGeneralDocument($userId, $docTitle, $templateId, $docType, $projectId, $role, $allowedUserIds);
     
     http_response_code(201);
     echo json_encode($result);

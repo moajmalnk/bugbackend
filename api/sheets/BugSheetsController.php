@@ -219,6 +219,18 @@ class BugSheetsController extends BaseAPI {
      * @param string $tableAlias Table alias for user_sheets (default: 's')
      * @return string SQL WHERE clause for role filtering
      */
+    /**
+     * Why: Explicit user shares must work even when role is for_me or does not match.
+     * Escapes user id for safe interpolation into FIND_IN_SET clauses.
+     */
+    private function getExplicitUserShareSQL($tableAlias, $userId) {
+        if (!$userId) {
+            return '0';
+        }
+        $uid = str_replace(["'", "\\"], ["''", ""], (string)$userId);
+        return "({$tableAlias}.allowed_user_ids IS NOT NULL AND {$tableAlias}.allowed_user_ids != '' AND FIND_IN_SET('{$uid}', REPLACE({$tableAlias}.allowed_user_ids, ' ', '')) > 0)";
+    }
+
     private function getRoleFilterSQL($userRole, $tableAlias = 's', $userId = null) {
         $filter = '';
         
@@ -231,7 +243,7 @@ class BugSheetsController extends BaseAPI {
         $dbRole = isset($roleMap[$userRole]) ? $roleMap[$userRole] : $userRole;
         
         // Build base filter - exclude "for_me" items unless user is the creator
-        // "for_me" items should only be visible to their creator
+        // "for_me" items should only be visible to their creator (or explicit allowed users below)
         $excludeForMe = '';
         if ($userId) {
             // Allow "for_me" items if user is the creator
@@ -259,9 +271,60 @@ class BugSheetsController extends BaseAPI {
         else {
             $filter = "({$tableAlias}.role IS NULL OR {$tableAlias}.role = 'all'){$excludeForMe}";
         }
+
+        // Why: Specific users are an OR grant — they see the item even when role audience does not match.
+        if ($userId) {
+            $filter = "(({$filter}) OR " . $this->getExplicitUserShareSQL($tableAlias, $userId) . ")";
+        }
         
         error_log("🔐 Role Filter - User Role: {$userRole}, UserId: {$userId}, Filter: {$filter}");
         return $filter;
+    }
+
+    /**
+     * Normalize allowed_user_ids payload to a comma-separated UUID string (or null).
+     *
+     * @param mixed $raw Array of ids, CSV string, or null
+     * @return string|null
+     */
+    private function normalizeAllowedUserIds($raw) {
+        if ($raw === null || $raw === '' || $raw === false) {
+            return null;
+        }
+        if (is_array($raw)) {
+            $ids = $raw;
+        } else {
+            $ids = preg_split('/\s*,\s*/', (string)$raw) ?: [];
+        }
+        $clean = [];
+        foreach ($ids as $id) {
+            $id = trim((string)$id);
+            if ($id === '' || isset($clean[$id])) {
+                continue;
+            }
+            // Basic UUID / id shape guard — reject injection-y payloads
+            if (!preg_match('/^[a-zA-Z0-9_-]{8,64}$/', $id)) {
+                continue;
+            }
+            $clean[$id] = true;
+        }
+        if (empty($clean)) {
+            return null;
+        }
+        return implode(',', array_keys($clean));
+    }
+
+    private function ensureAllowedUserIdsColumn() {
+        try {
+            $check = $this->conn->query("SHOW COLUMNS FROM user_sheets LIKE 'allowed_user_ids'");
+            if ($check && $check->rowCount() === 0) {
+                $this->conn->exec(
+                    "ALTER TABLE user_sheets ADD COLUMN allowed_user_ids TEXT NULL DEFAULT NULL COMMENT 'Comma-separated user UUIDs with explicit access (OR with role)' AFTER role"
+                );
+            }
+        } catch (Exception $e) {
+            error_log("Note: allowed_user_ids column check/add failed: " . $e->getMessage());
+        }
     }
     
     /**
@@ -273,9 +336,10 @@ class BugSheetsController extends BaseAPI {
      * @param string $sheetType Sheet type (default: 'general')
      * @param string|null $projectId Project ID (optional)
      * @param string $role Role access (default: 'all')
+     * @param string|null $allowedUserIds Comma-separated user UUIDs with explicit access
      * @return array Sheet details with URL
      */
-    public function createGeneralSheet($userId, $sheetTitle, $templateId = null, $sheetType = 'general', $projectId = null, $role = 'all') {
+    public function createGeneralSheet($userId, $sheetTitle, $templateId = null, $sheetType = 'general', $projectId = null, $role = 'all', $allowedUserIds = null) {
         try {
             // Get authenticated client
             $client = $this->authService->getClientForUser($userId);
@@ -383,15 +447,19 @@ class BugSheetsController extends BaseAPI {
             }
             
             // Save to user_sheets table
+            $this->ensureAllowedUserIdsColumn();
+            // Why: "All Users" already covers everyone — drop redundant explicit shares.
+            $normalizedAllowed = ($role === 'all') ? null : $this->normalizeAllowedUserIds($allowedUserIds);
+
             $stmt = $this->conn->prepare(
                 "INSERT INTO user_sheets 
-                (sheet_title, google_sheet_id, google_sheet_url, creator_user_id, template_id, sheet_type, project_id, role) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                (sheet_title, google_sheet_id, google_sheet_url, creator_user_id, template_id, sheet_type, project_id, role, allowed_user_ids) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
             );
-            $stmt->execute([$sheetTitle, $sheetId, $sheetUrl, $userId, $templateId, $sheetType, $projectId, $role]);
+            $stmt->execute([$sheetTitle, $sheetId, $sheetUrl, $userId, $templateId, $sheetType, $projectId, $role, $normalizedAllowed]);
             $insertId = $this->conn->lastInsertId();
             
-            error_log("General sheet created: {$sheetId} for user: {$userId} with role: {$role}");
+            error_log("General sheet created: {$sheetId} for user: {$userId} with role: {$role}, allowed_users: " . ($normalizedAllowed ?? 'none'));
             
             // Send notifications to project members
             try {
@@ -494,6 +562,18 @@ class BugSheetsController extends BaseAPI {
             
             if ($hasRoleColumn) {
                 $sql .= ", s.role";
+            }
+
+            // Include explicit user shares in list payloads (edit modal needs them)
+            $hasAllowedUsersColumn = false;
+            try {
+                $testStmt = $this->conn->query("SHOW COLUMNS FROM user_sheets WHERE Field = 'allowed_user_ids'");
+                $hasAllowedUsersColumn = $testStmt->rowCount() > 0;
+            } catch (Exception $e) {
+                $hasAllowedUsersColumn = false;
+            }
+            if ($hasAllowedUsersColumn) {
+                $sql .= ", s.allowed_user_ids";
             }
             
             // Try sheet_templates first, fallback to doc_templates
@@ -816,19 +896,38 @@ class BugSheetsController extends BaseAPI {
                 if ($hasRoleColumn) {
                     $sql .= ", s.role";
                 }
+
+                $hasAllowedUsersColumn = false;
+                try {
+                    $testStmt = $this->conn->query("SHOW COLUMNS FROM user_sheets WHERE Field = 'allowed_user_ids'");
+                    $hasAllowedUsersColumn = $testStmt->rowCount() > 0;
+                } catch (Exception $e) {
+                    $hasAllowedUsersColumn = false;
+                }
+                if ($hasAllowedUsersColumn) {
+                    $sql .= ", s.allowed_user_ids";
+                }
                 
                 $sql .= " FROM user_sheets s
                         LEFT JOIN sheet_templates t ON s.template_id = t.id
                         LEFT JOIN users u ON s.creator_user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
-                        WHERE s.project_id IS NULL
-                        AND CONVERT(s.creator_user_id, CHAR) COLLATE utf8mb4_unicode_ci <> ?";
+                        WHERE CONVERT(s.creator_user_id, CHAR) COLLATE utf8mb4_unicode_ci <> ?";
                 
                 if (!$includeArchived) {
                     $sql .= " AND s.is_archived = 0";
                 }
+
+                // Why: Explicit shares must appear even with no project membership.
+                $explicitShare = $hasAllowedUsersColumn
+                    ? $this->getExplicitUserShareSQL('s', $userId)
+                    : '0';
                 
                 if ($hasRoleColumn) {
-                    $sql .= " AND " . $this->getRoleFilterSQL($userRole, 's', $userId);
+                    $sql .= " AND ((s.project_id IS NULL AND " . $this->getRoleFilterSQL($userRole, 's', $userId) . ") OR {$explicitShare})";
+                } else if ($hasAllowedUsersColumn) {
+                    $sql .= " AND ((s.project_id IS NULL) OR {$explicitShare})";
+                } else {
+                    $sql .= " AND s.project_id IS NULL";
                 }
                 
                 $sql .= " ORDER BY s.created_at DESC";
@@ -904,6 +1003,17 @@ class BugSheetsController extends BaseAPI {
             if ($hasRoleColumn) {
                 $sql .= ", s.role";
             }
+
+            $hasAllowedUsersColumn = false;
+            try {
+                $testStmt = $this->conn->query("SHOW COLUMNS FROM user_sheets WHERE Field = 'allowed_user_ids'");
+                $hasAllowedUsersColumn = $testStmt->rowCount() > 0;
+            } catch (Exception $e) {
+                $hasAllowedUsersColumn = false;
+            }
+            if ($hasAllowedUsersColumn) {
+                $sql .= ", s.allowed_user_ids";
+            }
             
             $sql .= " FROM user_sheets s
                     LEFT JOIN sheet_templates t ON s.template_id = t.id
@@ -913,6 +1023,9 @@ class BugSheetsController extends BaseAPI {
             
             // Why: Shared Sheets must not include the viewer's own sheets (those belong in My Sheets).
             $params = [$userId];
+            $explicitShare = $hasAllowedUsersColumn
+                ? $this->getExplicitUserShareSQL('s', $userId)
+                : '0';
             
             // For developers: show ALL sheets that match their role (role='developers' or role='all')
             // regardless of project association. This ensures they see all accessible sheets.
@@ -923,6 +1036,7 @@ class BugSheetsController extends BaseAPI {
                 $sql .= " AND " . $this->getRoleFilterSQL($userRole, 's', $userId);
             } else {
                 // For other roles (testers, regular users): only show sheets from their projects OR sheets with no project
+                // OR sheets explicitly shared with them
                 // Support comma-separated project IDs: check if any of the user's projects match
                 if (!empty($projectIds)) {
                     // Build conditions for each project ID to check if it's in the comma-separated list
@@ -934,15 +1048,17 @@ class BugSheetsController extends BaseAPI {
                         $params[] = '%,' . $pid; // At end of list
                         $params[] = '%,' . $pid . ',%'; // In middle of list
                     }
-                    $sql .= " AND ((" . implode(' OR ', $projectConditions) . ") OR s.project_id IS NULL)";
+                    $sql .= " AND (((" . implode(' OR ', $projectConditions) . ") OR s.project_id IS NULL) OR {$explicitShare})";
                 } else {
-                    // No projects, only show sheets with no project
-                    $sql .= " AND s.project_id IS NULL";
+                    // No projects, only show sheets with no project OR explicit shares
+                    $sql .= " AND (s.project_id IS NULL OR {$explicitShare})";
                 }
                 
-                // Add role-based filtering
+                // Add role-based filtering (includes explicit user share OR)
                 if ($hasRoleColumn) {
                     $sql .= " AND " . $this->getRoleFilterSQL($userRole, 's', $userId);
+                } else if ($hasAllowedUsersColumn) {
+                    $sql .= " AND {$explicitShare}";
                 }
             }
             
@@ -1113,15 +1229,26 @@ class BugSheetsController extends BaseAPI {
      */
     public function getProjectsWithSheetCounts($userId) {
         try {
-            $memberController = new ProjectMemberController();
-            $userProjects = $memberController->getUserProjects($userId);
-            
-            // Get user role to determine if admin
-            $userStmt = $this->conn->prepare("SELECT role FROM users WHERE id = ?");
-            $userStmt->execute([$userId]);
-            $user = $userStmt->fetch(PDO::FETCH_ASSOC);
-            $isAdmin = $user && strtolower($user['role']) === 'admin';
-            
+            // Why: Sheet/doc pickers must list only projects the user is explicitly assigned to
+            // (project_members). Do not expand admins/developers to the full catalog here.
+            $memberStmt = $this->conn->prepare(
+                "SELECT DISTINCT pm.project_id
+                 FROM project_members pm
+                 INNER JOIN projects p ON p.id = pm.project_id
+                 WHERE pm.user_id = ?
+                   AND (p.status != 'archived' OR p.status IS NULL)
+                 ORDER BY p.name ASC"
+            );
+            $memberStmt->execute([$userId]);
+            $projectIds = array_column($memberStmt->fetchAll(PDO::FETCH_ASSOC), 'project_id');
+
+            if (empty($projectIds)) {
+                return [
+                    'success' => true,
+                    'projects' => []
+                ];
+            }
+
             // Check if project_id column exists
             $hasProjectColumn = false;
             try {
@@ -1135,57 +1262,26 @@ class BugSheetsController extends BaseAPI {
                     $hasProjectColumn = false;
                 }
             }
-            
+
+            $placeholders = implode(',', array_fill(0, count($projectIds), '?'));
+            $projectStmt = $this->conn->prepare(
+                "SELECT id, name, description, status FROM projects WHERE id IN ($placeholders) ORDER BY name ASC"
+            );
+            $projectStmt->execute($projectIds);
+            $projects = $projectStmt->fetchAll(PDO::FETCH_ASSOC);
+
             if (!$hasProjectColumn) {
-                // Return projects without counts
-                $projectIds = array_column($userProjects, 'project_id');
-                if (empty($projectIds) && !$isAdmin) {
-                    return [
-                        'success' => true,
-                        'projects' => []
-                    ];
-                }
-                
-                if ($isAdmin) {
-                    $projectStmt = $this->conn->query("SELECT id, name, description, status FROM projects");
-                    $projects = $projectStmt->fetchAll(PDO::FETCH_ASSOC);
-                } else {
-                    $placeholders = implode(',', array_fill(0, count($projectIds), '?'));
-                    $projectStmt = $this->conn->prepare("SELECT id, name, description, status FROM projects WHERE id IN ($placeholders)");
-                    $projectStmt->execute($projectIds);
-                    $projects = $projectStmt->fetchAll(PDO::FETCH_ASSOC);
-                }
-                
                 foreach ($projects as &$proj) {
                     $proj['sheet_count'] = 0;
                 }
                 unset($proj);
-                
+
                 return [
                     'success' => true,
                     'projects' => $projects
                 ];
             }
-            
-            // Get projects
-            if ($isAdmin) {
-                $projectStmt = $this->conn->query("SELECT id, name, description, status FROM projects");
-                $projects = $projectStmt->fetchAll(PDO::FETCH_ASSOC);
-            } else {
-                $projectIds = array_column($userProjects, 'project_id');
-                if (empty($projectIds)) {
-                    return [
-                        'success' => true,
-                        'projects' => []
-                    ];
-                }
-                
-                $placeholders = implode(',', array_fill(0, count($projectIds), '?'));
-                $projectStmt = $this->conn->prepare("SELECT id, name, description, status FROM projects WHERE id IN ($placeholders)");
-                $projectStmt->execute($projectIds);
-                $projects = $projectStmt->fetchAll(PDO::FETCH_ASSOC);
-            }
-            
+
             // Get sheet counts for each project (support comma-separated project IDs)
             foreach ($projects as &$project) {
                 $countStmt = $this->conn->prepare(
@@ -1204,29 +1300,12 @@ class BugSheetsController extends BaseAPI {
                 $project['sheet_count'] = (int)$countResult['count'];
             }
             unset($project);
-            
-            // Also get count for "No Project" if admin
-            if ($isAdmin) {
-                $noProjectStmt = $this->conn->query(
-                    "SELECT COUNT(*) as count FROM user_sheets WHERE (project_id IS NULL OR project_id = '') AND is_archived = 0"
-                );
-                $noProjectCount = $noProjectStmt->fetch(PDO::FETCH_ASSOC);
-                if ($noProjectCount && $noProjectCount['count'] > 0) {
-                    $projects[] = [
-                        'id' => 'no-project',
-                        'name' => 'No Project',
-                        'description' => 'Sheets not associated with any project',
-                        'status' => 'active',
-                        'sheet_count' => (int)$noProjectCount['count']
-                    ];
-                }
-            }
-            
+
             return [
                 'success' => true,
                 'projects' => $projects
             ];
-            
+
         } catch (Exception $e) {
             error_log("Error getting projects with sheet counts: " . $e->getMessage());
             throw $e;
@@ -1308,7 +1387,7 @@ class BugSheetsController extends BaseAPI {
      * @param string $role Role access (default: 'all')
      * @return array Success status and updated sheet info
      */
-    public function updateSheet($sheetId, $userId, $newTitle, $isAdmin = false, $projectId = null, $templateId = null, $role = 'all') {
+    public function updateSheet($sheetId, $userId, $newTitle, $isAdmin = false, $projectId = null, $templateId = null, $role = 'all', $allowedUserIds = null) {
         try {
             // Get sheet details - admins can edit any sheet, others can only edit their own
             if ($isAdmin) {
@@ -1402,6 +1481,18 @@ class BugSheetsController extends BaseAPI {
                 }
             } catch (Exception $e) {
                 error_log("Note: role column check: " . $e->getMessage());
+            }
+
+            $this->ensureAllowedUserIdsColumn();
+            try {
+                $columnCheck = $this->conn->query("SHOW COLUMNS FROM user_sheets LIKE 'allowed_user_ids'");
+                if ($columnCheck && $columnCheck->rowCount() > 0) {
+                    $normalizedAllowed = ($role === 'all') ? null : $this->normalizeAllowedUserIds($allowedUserIds);
+                    $updateFields[] = 'allowed_user_ids = ?';
+                    $updateParams[] = $normalizedAllowed;
+                }
+            } catch (Exception $e) {
+                error_log("Note: allowed_user_ids column check: " . $e->getMessage());
             }
             
             $updateParams[] = $sheetId;

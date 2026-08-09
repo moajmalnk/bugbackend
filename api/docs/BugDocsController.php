@@ -208,6 +208,17 @@ class BugDocsController extends BaseAPI {
     }
     
     /**
+     * Why: Explicit user shares must work even when role is for_me or does not match.
+     */
+    private function getExplicitUserShareSQL($tableAlias, $userId) {
+        if (!$userId) {
+            return '0';
+        }
+        $uid = str_replace(["'", "\\"], ["''", ""], (string)$userId);
+        return "({$tableAlias}.allowed_user_ids IS NOT NULL AND {$tableAlias}.allowed_user_ids != '' AND FIND_IN_SET('{$uid}', REPLACE({$tableAlias}.allowed_user_ids, ' ', '')) > 0)";
+    }
+
+    /**
      * Build SQL filter for role-based access
      * 
      * @param string $userRole User's role
@@ -226,7 +237,7 @@ class BugDocsController extends BaseAPI {
         $dbRole = isset($roleMap[$userRole]) ? $roleMap[$userRole] : $userRole;
         
         // Build base filter - exclude "for_me" items unless user is the creator
-        // "for_me" items should only be visible to their creator
+        // "for_me" items should only be visible to their creator (or explicit allowed users below)
         $excludeForMe = '';
         if ($userId) {
             // Allow "for_me" items if user is the creator
@@ -254,9 +265,56 @@ class BugDocsController extends BaseAPI {
         else {
             $filter = "({$tableAlias}.role IS NULL OR {$tableAlias}.role = 'all'){$excludeForMe}";
         }
+
+        // Why: Specific users are an OR grant — they see the item even when role audience does not match.
+        if ($userId) {
+            $filter = "(({$filter}) OR " . $this->getExplicitUserShareSQL($tableAlias, $userId) . ")";
+        }
         
         error_log("🔐 Role Filter - User Role: {$userRole}, UserId: {$userId}, Filter: {$filter}");
         return $filter;
+    }
+
+    /**
+     * Normalize allowed_user_ids payload to a comma-separated UUID string (or null).
+     */
+    private function normalizeAllowedUserIds($raw) {
+        if ($raw === null || $raw === '' || $raw === false) {
+            return null;
+        }
+        if (is_array($raw)) {
+            $ids = $raw;
+        } else {
+            $ids = preg_split('/\s*,\s*/', (string)$raw) ?: [];
+        }
+        $clean = [];
+        foreach ($ids as $id) {
+            $id = trim((string)$id);
+            if ($id === '' || isset($clean[$id])) {
+                continue;
+            }
+            if (!preg_match('/^[a-zA-Z0-9_-]{8,64}$/', $id)) {
+                continue;
+            }
+            $clean[$id] = true;
+        }
+        if (empty($clean)) {
+            return null;
+        }
+        return implode(',', array_keys($clean));
+    }
+
+    private function ensureAllowedUserIdsColumn() {
+        try {
+            $check = $this->conn->query("SHOW COLUMNS FROM user_documents LIKE 'allowed_user_ids'");
+            if ($check && $check->rowCount() === 0) {
+                $this->conn->exec(
+                    "ALTER TABLE user_documents ADD COLUMN allowed_user_ids TEXT NULL DEFAULT NULL COMMENT 'Comma-separated user UUIDs with explicit access (OR with role)' AFTER role"
+                );
+            }
+        } catch (Exception $e) {
+            error_log("Note: allowed_user_ids column check/add failed: " . $e->getMessage());
+        }
     }
     
     /**
@@ -270,7 +328,7 @@ class BugDocsController extends BaseAPI {
      * @param string $role Role access (default: 'all')
      * @return array Document details with URL
      */
-    public function createGeneralDocument($userId, $docTitle, $templateId = null, $docType = 'general', $projectId = null, $role = 'all') {
+    public function createGeneralDocument($userId, $docTitle, $templateId = null, $docType = 'general', $projectId = null, $role = 'all', $allowedUserIds = null) {
         try {
             // Get authenticated client
             $client = $this->authService->getClientForUser($userId);
@@ -353,15 +411,18 @@ class BugDocsController extends BaseAPI {
             }
             
             // Save to user_documents table
+            $this->ensureAllowedUserIdsColumn();
+            $normalizedAllowed = ($role === 'all') ? null : $this->normalizeAllowedUserIds($allowedUserIds);
+
             $stmt = $this->conn->prepare(
                 "INSERT INTO user_documents 
-                (doc_title, google_doc_id, google_doc_url, creator_user_id, template_id, doc_type, project_id, role) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                (doc_title, google_doc_id, google_doc_url, creator_user_id, template_id, doc_type, project_id, role, allowed_user_ids) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
             );
-            $stmt->execute([$docTitle, $docId, $docUrl, $userId, $templateId, $docType, $projectId, $role]);
+            $stmt->execute([$docTitle, $docId, $docUrl, $userId, $templateId, $docType, $projectId, $role, $normalizedAllowed]);
             $insertId = $this->conn->lastInsertId();
             
-            error_log("General document created: {$docId} for user: {$userId} with role: {$role}");
+            error_log("General document created: {$docId} for user: {$userId} with role: {$role}, allowed_users: " . ($normalizedAllowed ?? 'none'));
             
             // Send notifications to project members
             try {
@@ -454,6 +515,17 @@ class BugDocsController extends BaseAPI {
             
             if ($hasRoleColumn) {
                 $sql .= ", d.role";
+            }
+
+            $hasAllowedUsersColumn = false;
+            try {
+                $testStmt = $this->conn->query("SHOW COLUMNS FROM user_documents WHERE Field = 'allowed_user_ids'");
+                $hasAllowedUsersColumn = $testStmt->rowCount() > 0;
+            } catch (Exception $e) {
+                $hasAllowedUsersColumn = false;
+            }
+            if ($hasAllowedUsersColumn) {
+                $sql .= ", d.allowed_user_ids";
             }
             
             $sql .= " FROM user_documents d
@@ -754,19 +826,37 @@ class BugDocsController extends BaseAPI {
                 if ($hasRoleColumn) {
                     $sql .= ", d.role";
                 }
+
+                $hasAllowedUsersColumn = false;
+                try {
+                    $testStmt = $this->conn->query("SHOW COLUMNS FROM user_documents WHERE Field = 'allowed_user_ids'");
+                    $hasAllowedUsersColumn = $testStmt->rowCount() > 0;
+                } catch (Exception $e) {
+                    $hasAllowedUsersColumn = false;
+                }
+                if ($hasAllowedUsersColumn) {
+                    $sql .= ", d.allowed_user_ids";
+                }
                 
                 $sql .= " FROM user_documents d
                         LEFT JOIN doc_templates t ON d.template_id = t.id
                         LEFT JOIN users u ON d.creator_user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
-                        WHERE d.project_id IS NULL
-                        AND CONVERT(d.creator_user_id, CHAR) COLLATE utf8mb4_unicode_ci <> ?";
+                        WHERE CONVERT(d.creator_user_id, CHAR) COLLATE utf8mb4_unicode_ci <> ?";
                 
                 if (!$includeArchived) {
                     $sql .= " AND d.is_archived = 0";
                 }
+
+                $explicitShare = $hasAllowedUsersColumn
+                    ? $this->getExplicitUserShareSQL('d', $userId)
+                    : '0';
                 
                 if ($hasRoleColumn) {
-                    $sql .= " AND " . $this->getRoleFilterSQL($userRole, 'd', $userId);
+                    $sql .= " AND ((d.project_id IS NULL AND " . $this->getRoleFilterSQL($userRole, 'd', $userId) . ") OR {$explicitShare})";
+                } else if ($hasAllowedUsersColumn) {
+                    $sql .= " AND ((d.project_id IS NULL) OR {$explicitShare})";
+                } else {
+                    $sql .= " AND d.project_id IS NULL";
                 }
                 
                 $sql .= " ORDER BY d.created_at DESC";
@@ -842,6 +932,17 @@ class BugDocsController extends BaseAPI {
             if ($hasRoleColumn) {
                 $sql .= ", d.role";
             }
+
+            $hasAllowedUsersColumn = false;
+            try {
+                $testStmt = $this->conn->query("SHOW COLUMNS FROM user_documents WHERE Field = 'allowed_user_ids'");
+                $hasAllowedUsersColumn = $testStmt->rowCount() > 0;
+            } catch (Exception $e) {
+                $hasAllowedUsersColumn = false;
+            }
+            if ($hasAllowedUsersColumn) {
+                $sql .= ", d.allowed_user_ids";
+            }
             
             $sql .= " FROM user_documents d
                     LEFT JOIN doc_templates t ON d.template_id = t.id
@@ -851,6 +952,9 @@ class BugDocsController extends BaseAPI {
             
             // Why: Shared Docs must not include the viewer's own docs (those belong in My Docs).
             $params = [$userId];
+            $explicitShare = $hasAllowedUsersColumn
+                ? $this->getExplicitUserShareSQL('d', $userId)
+                : '0';
             
             // For developers: show ALL documents that match their role (role='developers' or role='all')
             // regardless of project association. This ensures they see all accessible documents.
@@ -861,6 +965,7 @@ class BugDocsController extends BaseAPI {
                 $sql .= " AND " . $this->getRoleFilterSQL($userRole, 'd', $userId);
             } else {
                 // For other roles (testers, regular users): only show documents from their projects OR documents with no project
+                // OR documents explicitly shared with them
                 // Support comma-separated project IDs: check if any of the user's projects match
                 if (!empty($projectIds)) {
                     // Build conditions for each project ID to check if it's in the comma-separated list
@@ -872,15 +977,17 @@ class BugDocsController extends BaseAPI {
                         $params[] = '%,' . $pid; // At end of list
                         $params[] = '%,' . $pid . ',%'; // In middle of list
                     }
-                    $sql .= " AND ((" . implode(' OR ', $projectConditions) . ") OR d.project_id IS NULL)";
+                    $sql .= " AND (((" . implode(' OR ', $projectConditions) . ") OR d.project_id IS NULL) OR {$explicitShare})";
                 } else {
-                    // No projects, only show documents with no project
-                    $sql .= " AND d.project_id IS NULL";
+                    // No projects, only show documents with no project OR explicit shares
+                    $sql .= " AND (d.project_id IS NULL OR {$explicitShare})";
                 }
                 
-                // Add role-based filtering
+                // Add role-based filtering (includes explicit user share OR)
                 if ($hasRoleColumn) {
                     $sql .= " AND " . $this->getRoleFilterSQL($userRole, 'd', $userId);
+                } else if ($hasAllowedUsersColumn) {
+                    $sql .= " AND {$explicitShare}";
                 }
             }
             
@@ -1051,15 +1158,26 @@ class BugDocsController extends BaseAPI {
      */
     public function getProjectsWithDocumentCounts($userId) {
         try {
-            $memberController = new ProjectMemberController();
-            $userProjects = $memberController->getUserProjects($userId);
-            
-            // Get user role to determine if admin
-            $userStmt = $this->conn->prepare("SELECT role FROM users WHERE id = ?");
-            $userStmt->execute([$userId]);
-            $user = $userStmt->fetch(PDO::FETCH_ASSOC);
-            $isAdmin = $user && strtolower($user['role']) === 'admin';
-            
+            // Why: Sheet/doc pickers must list only projects the user is explicitly assigned to
+            // (project_members). Do not expand admins/developers to the full catalog here.
+            $memberStmt = $this->conn->prepare(
+                "SELECT DISTINCT pm.project_id
+                 FROM project_members pm
+                 INNER JOIN projects p ON p.id = pm.project_id
+                 WHERE pm.user_id = ?
+                   AND (p.status != 'archived' OR p.status IS NULL)
+                 ORDER BY p.name ASC"
+            );
+            $memberStmt->execute([$userId]);
+            $projectIds = array_column($memberStmt->fetchAll(PDO::FETCH_ASSOC), 'project_id');
+
+            if (empty($projectIds)) {
+                return [
+                    'success' => true,
+                    'projects' => []
+                ];
+            }
+
             // Check if project_id column exists
             $hasProjectColumn = false;
             try {
@@ -1073,57 +1191,26 @@ class BugDocsController extends BaseAPI {
                     $hasProjectColumn = false;
                 }
             }
-            
+
+            $placeholders = implode(',', array_fill(0, count($projectIds), '?'));
+            $projectStmt = $this->conn->prepare(
+                "SELECT id, name, description, status FROM projects WHERE id IN ($placeholders) ORDER BY name ASC"
+            );
+            $projectStmt->execute($projectIds);
+            $projects = $projectStmt->fetchAll(PDO::FETCH_ASSOC);
+
             if (!$hasProjectColumn) {
-                // Return projects without counts
-                $projectIds = array_column($userProjects, 'project_id');
-                if (empty($projectIds) && !$isAdmin) {
-                    return [
-                        'success' => true,
-                        'projects' => []
-                    ];
-                }
-                
-                if ($isAdmin) {
-                    $projectStmt = $this->conn->query("SELECT id, name, description, status FROM projects");
-                    $projects = $projectStmt->fetchAll(PDO::FETCH_ASSOC);
-                } else {
-                    $placeholders = implode(',', array_fill(0, count($projectIds), '?'));
-                    $projectStmt = $this->conn->prepare("SELECT id, name, description, status FROM projects WHERE id IN ($placeholders)");
-                    $projectStmt->execute($projectIds);
-                    $projects = $projectStmt->fetchAll(PDO::FETCH_ASSOC);
-                }
-                
                 foreach ($projects as &$proj) {
                     $proj['document_count'] = 0;
                 }
                 unset($proj);
-                
+
                 return [
                     'success' => true,
                     'projects' => $projects
                 ];
             }
-            
-            // Get projects
-            if ($isAdmin) {
-                $projectStmt = $this->conn->query("SELECT id, name, description, status FROM projects");
-                $projects = $projectStmt->fetchAll(PDO::FETCH_ASSOC);
-            } else {
-                $projectIds = array_column($userProjects, 'project_id');
-                if (empty($projectIds)) {
-                    return [
-                        'success' => true,
-                        'projects' => []
-                    ];
-                }
-                
-                $placeholders = implode(',', array_fill(0, count($projectIds), '?'));
-                $projectStmt = $this->conn->prepare("SELECT id, name, description, status FROM projects WHERE id IN ($placeholders)");
-                $projectStmt->execute($projectIds);
-                $projects = $projectStmt->fetchAll(PDO::FETCH_ASSOC);
-            }
-            
+
             // Get document counts for each project (support comma-separated project IDs)
             foreach ($projects as &$project) {
                 $countStmt = $this->conn->prepare(
@@ -1142,29 +1229,12 @@ class BugDocsController extends BaseAPI {
                 $project['document_count'] = (int)$countResult['count'];
             }
             unset($project);
-            
-            // Also get count for "No Project" if admin
-            if ($isAdmin) {
-                $noProjectStmt = $this->conn->query(
-                    "SELECT COUNT(*) as count FROM user_documents WHERE (project_id IS NULL OR project_id = '') AND is_archived = 0"
-                );
-                $noProjectCount = $noProjectStmt->fetch(PDO::FETCH_ASSOC);
-                if ($noProjectCount && $noProjectCount['count'] > 0) {
-                    $projects[] = [
-                        'id' => 'no-project',
-                        'name' => 'No Project',
-                        'description' => 'Documents not associated with any project',
-                        'status' => 'active',
-                        'document_count' => (int)$noProjectCount['count']
-                    ];
-                }
-            }
-            
+
             return [
                 'success' => true,
                 'projects' => $projects
             ];
-            
+
         } catch (Exception $e) {
             error_log("Error getting projects with document counts: " . $e->getMessage());
             throw $e;
@@ -1248,7 +1318,7 @@ class BugDocsController extends BaseAPI {
      * @param string $role Role access (default: 'all')
      * @return array Success status and updated document info
      */
-    public function updateDocument($documentId, $userId, $newTitle, $isAdmin = false, $projectId = null, $templateId = null, $role = 'all') {
+    public function updateDocument($documentId, $userId, $newTitle, $isAdmin = false, $projectId = null, $templateId = null, $role = 'all', $allowedUserIds = null) {
         try {
             // Get document details - admins can edit any document, others can only edit their own
             if ($isAdmin) {
@@ -1342,6 +1412,18 @@ class BugDocsController extends BaseAPI {
                 }
             } catch (Exception $e) {
                 error_log("Note: role column check: " . $e->getMessage());
+            }
+
+            $this->ensureAllowedUserIdsColumn();
+            try {
+                $columnCheck = $this->conn->query("SHOW COLUMNS FROM user_documents LIKE 'allowed_user_ids'");
+                if ($columnCheck && $columnCheck->rowCount() > 0) {
+                    $normalizedAllowed = ($role === 'all') ? null : $this->normalizeAllowedUserIds($allowedUserIds);
+                    $updateFields[] = 'allowed_user_ids = ?';
+                    $updateParams[] = $normalizedAllowed;
+                }
+            } catch (Exception $e) {
+                error_log("Note: allowed_user_ids column check: " . $e->getMessage());
             }
             
             $updateParams[] = $documentId;

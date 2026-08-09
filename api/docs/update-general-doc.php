@@ -84,6 +84,7 @@ try {
     $projectId = isset($input['project_id']) ? ($input['project_id'] === 'none' || $input['project_id'] === '' ? null : $input['project_id']) : null;
     $templateId = isset($input['template_id']) ? ($input['template_id'] === '0' || $input['template_id'] === '' || $input['template_id'] === 0 ? null : (int)$input['template_id']) : null;
     $role = isset($input['role']) ? $input['role'] : 'all';
+    $allowedUserIds = $input['allowed_user_ids'] ?? ($input['allowed_users'] ?? null);
     
     // Validate role (support comma-separated roles for multi-select)
     $validRoles = ['for_me', 'all', 'admins', 'developers', 'testers'];
@@ -114,7 +115,7 @@ try {
     $isAdmin = isset($userData->role) && $userData->role === 'admin';
     
     // Update document (allow admin to edit any document)
-    $result = $controller->updateDocument($documentId, $userId, $docTitle, $isAdmin, $projectId, $templateId, $role);
+    $result = $controller->updateDocument($documentId, $userId, $docTitle, $isAdmin, $projectId, $templateId, $role, $allowedUserIds);
     
     http_response_code(200);
     echo json_encode($result);
