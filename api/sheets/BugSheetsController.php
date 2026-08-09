@@ -117,6 +117,84 @@ class BugSheetsController extends BaseAPI {
     }
     
     /**
+     * Why: project_id may be comma-separated; a single JOIN cannot resolve names.
+     * Batch-load project names so the UI never receives raw UUIDs.
+     *
+     * @param array $rows Sheets or documents with project_id / project_name
+     * @return array
+     */
+    private function hydrateProjectNames(array $rows) {
+        $allIds = [];
+        foreach ($rows as $row) {
+            $raw = isset($row['project_id']) ? (string)$row['project_id'] : '';
+            if ($raw === '') {
+                continue;
+            }
+            foreach (explode(',', $raw) as $id) {
+                $id = trim($id);
+                $lower = strtolower($id);
+                if ($id === '' || in_array($lower, ['no-project', 'none', 'null', 'undefined'], true)) {
+                    continue;
+                }
+                $allIds[$id] = true;
+            }
+        }
+
+        if (empty($allIds)) {
+            foreach ($rows as &$row) {
+                $raw = isset($row['project_id']) ? trim((string)$row['project_id']) : '';
+                $lower = strtolower($raw);
+                if ($raw === '' || in_array($lower, ['no-project', 'none', 'null', 'undefined'], true)) {
+                    $row['project_id'] = null;
+                    $row['project_name'] = null;
+                }
+            }
+            unset($row);
+            return $rows;
+        }
+
+        $ids = array_keys($allIds);
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        $nameById = [];
+        try {
+            $stmt = $this->conn->prepare("SELECT id, name FROM projects WHERE id IN ($placeholders)");
+            $stmt->execute($ids);
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $project) {
+                $nameById[(string)$project['id']] = $project['name'];
+            }
+        } catch (Exception $e) {
+            error_log("hydrateProjectNames failed: " . $e->getMessage());
+            return $rows;
+        }
+
+        foreach ($rows as &$row) {
+            $raw = isset($row['project_id']) ? (string)$row['project_id'] : '';
+            $lowerRaw = strtolower(trim($raw));
+            if ($raw === '' || in_array($lowerRaw, ['no-project', 'none', 'null', 'undefined'], true)) {
+                $row['project_id'] = null;
+                $row['project_name'] = null;
+                continue;
+            }
+
+            $names = [];
+            foreach (explode(',', $raw) as $id) {
+                $id = trim($id);
+                $lower = strtolower($id);
+                if ($id === '' || in_array($lower, ['no-project', 'none', 'null', 'undefined'], true)) {
+                    continue;
+                }
+                if (isset($nameById[$id])) {
+                    $names[] = $nameById[$id];
+                }
+            }
+            $row['project_name'] = !empty($names) ? implode(', ', $names) : null;
+        }
+        unset($row);
+
+        return $rows;
+    }
+
+    /**
      * Get user role from database
      * 
      * @param string $userId User ID
@@ -544,6 +622,8 @@ class BugSheetsController extends BaseAPI {
             }
             unset($sheet);
             
+            $sheets = $this->hydrateProjectNames($sheets);
+
             return [
                 'success' => true,
                 'sheets' => $sheets,
@@ -756,6 +836,7 @@ class BugSheetsController extends BaseAPI {
                 $stmt = $this->conn->prepare($sql);
                 $stmt->execute([$userId]);
                 $sheets = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                $sheets = $this->hydrateProjectNames($sheets);
                 
                 return [
                     'success' => true,
@@ -895,6 +976,8 @@ class BugSheetsController extends BaseAPI {
             }
             unset($sheet);
             
+            $sheets = $this->hydrateProjectNames($sheets);
+
             return [
                 'success' => true,
                 'sheets' => $sheets,
