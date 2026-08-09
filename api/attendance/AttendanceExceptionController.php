@@ -125,22 +125,67 @@ class AttendanceExceptionController extends BaseAPI
         $restriction = br_active_office_restriction($this->conn, $userId, $today);
 
         $officeActiveDays = 0;
+        $wfhActiveDays = 0;
+        $attendanceDays = [];
         try {
-            $fromDate = (new DateTimeImmutable($today . ' 00:00:00'))
-                ->modify('-120 days')
-                ->format('Y-m-d');
-            $officeStmt = $this->conn->prepare(
-                "SELECT COUNT(DISTINCT submission_date) AS office_active_days
+            $attStmt = $this->conn->prepare(
+                "SELECT submission_date, check_in_time, work_mode, is_late
                  FROM work_submissions
                  WHERE user_id = ?
                    AND check_in_time IS NOT NULL
                    AND submission_date >= ?
-                   AND (work_mode = 'office' OR work_mode IS NULL OR work_mode = '')"
+                 ORDER BY submission_date DESC
+                 LIMIT 250"
             );
-            $officeStmt->execute([$userId, $fromDate]);
-            $officeActiveDays = (int)($officeStmt->fetch(PDO::FETCH_ASSOC)['office_active_days'] ?? 0);
+            $attStmt->execute([$userId, $fromDate]);
+            $seenDates = [];
+            while ($row = $attStmt->fetch(PDO::FETCH_ASSOC)) {
+                $date = (string)($row['submission_date'] ?? '');
+                if ($date === '' || isset($seenDates[$date])) {
+                    continue;
+                }
+                $seenDates[$date] = true;
+                $rawMode = strtolower(trim((string)($row['work_mode'] ?? '')));
+                $mode = $rawMode === 'wfh' ? 'wfh' : 'office';
+                if ($mode === 'office') {
+                    $officeActiveDays++;
+                } else {
+                    $wfhActiveDays++;
+                }
+                $attendanceDays[] = [
+                    'date' => $date,
+                    'work_mode' => $mode,
+                    'is_late' => (int)($row['is_late'] ?? 0) === 1,
+                    'check_in_time' => $row['check_in_time'] ?? null,
+                    'source' => 'checkin',
+                ];
+            }
+
+            // Why: WFH exceptions without a check-in still count as planned WFH days in the tables.
+            foreach ($exceptions as $exc) {
+                if (empty($exc['allow_wfh'])) {
+                    continue;
+                }
+                $date = (string)($exc['exception_date'] ?? '');
+                if ($date === '' || isset($seenDates[$date])) {
+                    continue;
+                }
+                $seenDates[$date] = true;
+                $wfhActiveDays++;
+                $attendanceDays[] = [
+                    'date' => $date,
+                    'work_mode' => 'wfh',
+                    'is_late' => false,
+                    'check_in_time' => null,
+                    'source' => 'exception',
+                ];
+            }
+
+            usort($attendanceDays, static function ($a, $b) {
+                return strcmp((string)$b['date'], (string)$a['date']);
+            });
         } catch (Throwable $e) {
-            error_log('AttendanceExceptionController::listForUser office days: ' . $e->getMessage());
+            error_log('AttendanceExceptionController::listForUser attendance days: ' . $e->getMessage());
         }
 
         $this->sendJsonResponse(200, 'OK', [
@@ -158,6 +203,9 @@ class AttendanceExceptionController extends BaseAPI
             'allow_wfh_today' => !empty($policy['allow_wfh_today']),
             'forgive_late_today' => !empty($policy['forgive_late_today']),
             'office_active_days' => $officeActiveDays,
+            'wfh_active_days' => $wfhActiveDays,
+            'attendance_days' => $attendanceDays,
+            'attendance_from' => $fromDate,
         ]);
     }
 
