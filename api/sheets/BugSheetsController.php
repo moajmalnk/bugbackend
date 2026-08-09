@@ -407,6 +407,7 @@ class BugSheetsController extends BaseAPI {
                         s.created_at,
                         s.updated_at,
                         s.last_accessed_at,
+                        s.creator_user_id,
                         t.template_name";
             
             if ($hasProjectColumn) {
@@ -482,6 +483,7 @@ class BugSheetsController extends BaseAPI {
                                 s.created_at,
                                 s.updated_at,
                                 s.last_accessed_at,
+                                s.creator_user_id,
                                 t.template_name";
                     
                     if ($hasRoleColumn) {
@@ -532,6 +534,9 @@ class BugSheetsController extends BaseAPI {
                 }
                 if (!isset($sheet['project_name'])) {
                     $sheet['project_name'] = null;
+                }
+                if (!isset($sheet['creator_user_id']) || $sheet['creator_user_id'] === null || $sheet['creator_user_id'] === '') {
+                    $sheet['creator_user_id'] = $userId;
                 }
                 if (!isset($sheet['role'])) {
                     $sheet['role'] = 'all';
@@ -735,7 +740,8 @@ class BugSheetsController extends BaseAPI {
                 $sql .= " FROM user_sheets s
                         LEFT JOIN sheet_templates t ON s.template_id = t.id
                         LEFT JOIN users u ON s.creator_user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
-                        WHERE s.project_id IS NULL";
+                        WHERE s.project_id IS NULL
+                        AND CONVERT(s.creator_user_id, CHAR) COLLATE utf8mb4_unicode_ci <> ?";
                 
                 if (!$includeArchived) {
                     $sql .= " AND s.is_archived = 0";
@@ -748,7 +754,7 @@ class BugSheetsController extends BaseAPI {
                 $sql .= " ORDER BY s.created_at DESC";
                 
                 $stmt = $this->conn->prepare($sql);
-                $stmt->execute();
+                $stmt->execute([$userId]);
                 $sheets = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 
                 return [
@@ -822,9 +828,10 @@ class BugSheetsController extends BaseAPI {
                     LEFT JOIN sheet_templates t ON s.template_id = t.id
                     LEFT JOIN users u ON s.creator_user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
                     LEFT JOIN projects p ON s.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci
-                    WHERE 1=1";
+                    WHERE CONVERT(s.creator_user_id, CHAR) COLLATE utf8mb4_unicode_ci <> ?";
             
-            $params = [];
+            // Why: Shared Sheets must not include the viewer's own sheets (those belong in My Sheets).
+            $params = [$userId];
             
             // For developers: show ALL sheets that match their role (role='developers' or role='all')
             // regardless of project association. This ensures they see all accessible sheets.

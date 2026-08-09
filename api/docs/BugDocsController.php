@@ -367,6 +367,7 @@ class BugDocsController extends BaseAPI {
                         d.created_at,
                         d.updated_at,
                         d.last_accessed_at,
+                        d.creator_user_id,
                         t.template_name";
             
             if ($hasProjectColumn) {
@@ -431,6 +432,7 @@ class BugDocsController extends BaseAPI {
                                 d.created_at,
                                 d.updated_at,
                                 d.last_accessed_at,
+                                d.creator_user_id,
                                 t.template_name";
                     
                     if ($hasRoleColumn) {
@@ -470,6 +472,9 @@ class BugDocsController extends BaseAPI {
                 }
                 if (!isset($doc['project_name'])) {
                     $doc['project_name'] = null;
+                }
+                if (!isset($doc['creator_user_id']) || $doc['creator_user_id'] === null || $doc['creator_user_id'] === '') {
+                    $doc['creator_user_id'] = $userId;
                 }
                 if (!isset($doc['role'])) {
                     $doc['role'] = 'all';
@@ -673,7 +678,8 @@ class BugDocsController extends BaseAPI {
                 $sql .= " FROM user_documents d
                         LEFT JOIN doc_templates t ON d.template_id = t.id
                         LEFT JOIN users u ON d.creator_user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
-                        WHERE d.project_id IS NULL";
+                        WHERE d.project_id IS NULL
+                        AND CONVERT(d.creator_user_id, CHAR) COLLATE utf8mb4_unicode_ci <> ?";
                 
                 if (!$includeArchived) {
                     $sql .= " AND d.is_archived = 0";
@@ -686,7 +692,7 @@ class BugDocsController extends BaseAPI {
                 $sql .= " ORDER BY d.created_at DESC";
                 
                 $stmt = $this->conn->prepare($sql);
-                $stmt->execute();
+                $stmt->execute([$userId]);
                 $documents = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 
                 return [
@@ -760,9 +766,10 @@ class BugDocsController extends BaseAPI {
                     LEFT JOIN doc_templates t ON d.template_id = t.id
                     LEFT JOIN users u ON d.creator_user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
                     LEFT JOIN projects p ON d.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci
-                    WHERE 1=1";
+                    WHERE CONVERT(d.creator_user_id, CHAR) COLLATE utf8mb4_unicode_ci <> ?";
             
-            $params = [];
+            // Why: Shared Docs must not include the viewer's own docs (those belong in My Docs).
+            $params = [$userId];
             
             // For developers: show ALL documents that match their role (role='developers' or role='all')
             // regardless of project association. This ensures they see all accessible documents.
