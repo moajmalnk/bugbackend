@@ -75,9 +75,13 @@ class VerifyContactEmailOtpAPI extends BaseAPI
                 'onboarding_mail:%',
             ]);
 
+            $verifiedAt = date('c');
+            $this->stampContactEmailVerified($userId, $email);
+
             $this->sendJsonResponse(200, 'Contact email verified', [
                 'email' => $email,
                 'verified' => true,
+                'verified_at' => $verifiedAt,
             ]);
         } catch (Exception $e) {
             error_log('verify_contact_email_otp error: ' . $e->getMessage());
@@ -88,6 +92,33 @@ class VerifyContactEmailOtpAPI extends BaseAPI
     private function purposeKey(string $userId): string
     {
         return 'om_' . substr(hash('sha256', $userId), 0, 16);
+    }
+
+    private function stampContactEmailVerified(string $userId, string $email): void
+    {
+        try {
+            $cols = [];
+            $res = $this->conn->query('SHOW COLUMNS FROM user_onboarding_details');
+            if ($res) {
+                while ($row = $res->fetch(PDO::FETCH_ASSOC)) {
+                    $cols[] = $row['Field'];
+                }
+            }
+            if (
+                !in_array('contact_email', $cols, true) ||
+                !in_array('contact_email_verified_at', $cols, true)
+            ) {
+                return;
+            }
+            $stmt = $this->conn->prepare(
+                'UPDATE user_onboarding_details
+                 SET contact_email = ?, contact_email_verified_at = NOW()
+                 WHERE user_id = ?'
+            );
+            $stmt->execute([$email, $userId]);
+        } catch (Exception $e) {
+            error_log('stampContactEmailVerified: ' . $e->getMessage());
+        }
     }
 }
 

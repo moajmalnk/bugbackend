@@ -63,13 +63,45 @@ class VerifyEmergencyOtpAPI extends BaseAPI
             $del = $this->conn->prepare('DELETE FROM user_otps WHERE email = ?');
             $del->execute([$purposeEmail]);
 
+            $verifiedAt = date('c');
+            $this->stampEmergencyVerified($userId, $phone);
+
             $this->sendJsonResponse(200, 'Emergency contact verified', [
                 'phone' => $phone,
                 'verified' => true,
+                'verified_at' => $verifiedAt,
             ]);
         } catch (Exception $e) {
             error_log('verify_emergency_otp error: ' . $e->getMessage());
             $this->sendJsonResponse(500, 'Failed to verify OTP');
+        }
+    }
+
+    private function stampEmergencyVerified(string $userId, string $phone): void
+    {
+        try {
+            $cols = [];
+            $res = $this->conn->query('SHOW COLUMNS FROM user_onboarding_details');
+            if ($res) {
+                while ($row = $res->fetch(PDO::FETCH_ASSOC)) {
+                    $cols[] = $row['Field'];
+                }
+            }
+            if (!in_array('emergency_contact_verified_at', $cols, true)) {
+                return;
+            }
+            $digits = preg_replace('/\D/', '', $phone) ?? '';
+            if (strlen($digits) === 12 && strpos($digits, '91') === 0) {
+                $digits = substr($digits, 2);
+            }
+            $stmt = $this->conn->prepare(
+                'UPDATE user_onboarding_details
+                 SET emergency_contact = ?, emergency_contact_verified_at = NOW()
+                 WHERE user_id = ?'
+            );
+            $stmt->execute([substr($digits, -15), $userId]);
+        } catch (Exception $e) {
+            error_log('stampEmergencyVerified: ' . $e->getMessage());
         }
     }
 }
