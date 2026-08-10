@@ -33,11 +33,19 @@ class UserController extends BaseAPI {
             $hasLastActive = in_array('last_active_at', $cols);
             $hasAccountActive = in_array('account_active', $cols);
             $hasJoiningDate = in_array('joining_date', $cols);
+            $hasOnboardingCompleted = in_array('onboarding_completed', $cols, true);
+            $hasOnboardingVerification = in_array('onboarding_verification_status', $cols, true);
+            $hasOnboardingVerifiedAt = in_array('onboarding_verified_at', $cols, true);
+            $hasOnboardingCompletedAt = in_array('onboarding_completed_at', $cols, true);
 
             $select = ['id', 'username', 'email', 'role', 'role_id', 'created_at', 'updated_at'];
             if ($hasPhone) $select[] = 'phone';
             if ($hasAccountActive) $select[] = 'account_active';
             if ($hasJoiningDate) $select[] = 'joining_date';
+            if ($hasOnboardingCompleted) $select[] = 'onboarding_completed';
+            if ($hasOnboardingVerification) $select[] = 'onboarding_verification_status';
+            if ($hasOnboardingVerifiedAt) $select[] = 'onboarding_verified_at';
+            if ($hasOnboardingCompletedAt) $select[] = 'onboarding_completed_at';
             if ($hasLastActive) {
                 $select[] = 'last_active_at';
                 $select[] = "(CASE WHEN last_active_at IS NULL THEN 'offline' WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 120 THEN 'active' WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 900 THEN 'idle' ELSE 'offline' END) as status";
