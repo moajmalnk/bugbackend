@@ -146,43 +146,14 @@ function sendBugCreatedEmail($emails, $bugId, $bugTitle, $projectName, $reported
     return sendBugNotification($emails, $subject, $body, []);
 }
 
-function sendWelcomeEmail($to, $subject, $body) {
-    // Log function call
-    error_log("Sending welcome email to: $to");
-    
-    try {
-        $mail = new PHPMailer(true);
-        
-        // GMAIL SMTP CONFIGURATION
-        $mail->isSMTP();
-        $mail->Host = 'smtp.gmail.com';
-        $mail->SMTPAuth = true;
-        $mail->Username = 'codo.bugricer@gmail.com';
-        $mail->Password = 'gwgh vtlm fzkx rdkj';
-        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-        $mail->Port = 587;
-
-        configurePhpMailerUtf8($mail);
-        
-        // Recipients
-        $mail->setFrom('codo.bugricer@gmail.com', 'BugRicer');
-        $mail->addAddress($to); // Send directly to the new user
-        
-        // Content
-        $mail->isHTML(true);
-        $mail->Subject = $subject;
-        $mail->Body    = $body;
-        
-        $mail->Debugoutput = function($str, $level) {
-            error_log("PHPMailer debug: $str");
-        };
-        
-        $mail->send();
-        return true;
-    } catch (Exception $e) {
-        error_log("Welcome mail error: " . $e->getMessage());
-        return false;
-    }
+/**
+ * Why: Old callers hit hardcoded SMTP here (codo.bugricer@gmail.com) which
+ * silently failed. Route through email.php / .env SMTP instead.
+ */
+function sendWelcomeEmailHtml($to, $subject, $body) {
+    require_once __DIR__ . '/email.php';
+    error_log("Sending welcome email (HTML) to: $to");
+    return sendEmail($to, (string) $subject, (string) $body);
 }
 
 function sendOtpEmail($to, $otp) {

@@ -1300,44 +1300,64 @@ function sendUpdateCreationWhatsApp($conn, $updateId, $updateTitle, $updateType,
  * @return string Formatted WhatsApp message
  */
 function formatWelcomeForWhatsApp($username, $loginLink = null, $email = null, $password = null, $role = null) {
+    require_once __DIR__ . '/user_onboarding.php';
+    $needsOnboarding = br_role_requires_onboarding($role);
+
     $message = "🎉 *Welcome to BugRicer!*\n";
     $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
     $message .= "👋 Hello *$username*,\n\n";
-    $message .= "Welcome to BugRicer! Your account has been created. Login with your email and password to set up your workspace.\n\n";
-    $message .= "On first login you will complete a mandatory onboarding wizard (profile, statutory docs, banking, and permissions).\n\n";
-    
+    $message .= "Welcome to BugRicer! Your account has been created.\n\n";
+
+    if ($needsOnboarding) {
+        $message .= "Login with your email and temporary password, then complete the mandatory onboarding wizard (profile, statutory docs, banking, and permissions).\n\n";
+    } else {
+        $message .= "Login with your email and password to open your dashboard. You can change your password later from Profile.\n\n";
+    }
+
     // Add login credentials if provided
     if ($email || $password || $role) {
         $message .= "━━━━━━━━━━━━━━━━━━━━\n";
         $message .= "🔑 *Login Details:*\n\n";
-        
+
         if ($email) {
             $message .= "📧 *Email:* $email\n";
         }
-        
+
         if ($password) {
-            $message .= "🔒 *Temporary password:* $password\n";
-            $message .= "_(Set your own password during onboarding)_\n";
+            $pwdLabel = $needsOnboarding ? 'Temporary password' : 'Password';
+            $message .= "🔒 *$pwdLabel:* $password\n";
+            if ($needsOnboarding) {
+                $message .= "_(Set your own password during onboarding)_\n";
+            }
         }
-        
+
         if ($role) {
             $message .= "👤 *Role:* " . ucfirst($role) . "\n";
         }
-        
+
         $message .= "\n";
     }
-    
+
     $message .= "━━━━━━━━━━━━━━━━━━━━\n";
     $message .= "🎯 *What's Next?*\n\n";
-    $message .= "1️⃣ Login and complete workspace onboarding\n";
-    $message .= "2️⃣ Accept Terms & Privacy Policy\n";
-    $message .= "3️⃣ Start reporting bugs and collaborating\n\n";
-    
+    if ($needsOnboarding) {
+        $message .= "1️⃣ Login and complete workspace onboarding\n";
+        $message .= "2️⃣ Accept Terms & Privacy Policy\n";
+        $message .= "3️⃣ Start reporting bugs and collaborating\n\n";
+    } else {
+        $message .= "1️⃣ Login with the credentials above\n";
+        $message .= "2️⃣ Open your role dashboard\n";
+        $message .= "3️⃣ Start collaborating with the team\n\n";
+    }
     if ($loginLink) {
         $message .= "━━━━━━━━━━━━━━━━━━━━\n";
         $message .= "🔗 *Login Link:*\n";
         $message .= "$loginLink\n\n";
-        $message .= "💡 *Note:* After onboarding you will land on your role-specific dashboard.\n";
+        if ($needsOnboarding) {
+            $message .= "💡 *Note:* After onboarding you will land on your role-specific dashboard.\n";
+        } else {
+            $message .= "💡 *Note:* Onboarding documents are only required for developers.\n";
+        }
     }
     
     $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";

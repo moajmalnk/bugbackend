@@ -10,6 +10,7 @@ require_once __DIR__ . '/../../config/environment.php';
 require_once __DIR__ . '/../../config/utils.php';
 require_once __DIR__ . '/../../config/cors.php';
 require_once __DIR__ . '/../../config/fcm_config.php';
+require_once __DIR__ . '/../../utils/user_avatar.php';
 
 // Set headers
 header('Content-Type: application/json');
@@ -114,12 +115,13 @@ try {
     
     // Remove sensitive data from user object
     unset($user['password']);
+    $user = br_user_with_resolved_avatar($user);
     
     echo json_encode([
         'success' => true,
         'message' => 'Authentication successful',
         'token' => $token,
-        'user' => $user,
+        'user' => FcmConfig::appendEpochToPayload($user),
         'fcm_token_epoch' => FcmConfig::getTokenEpoch(),
     ]);
     

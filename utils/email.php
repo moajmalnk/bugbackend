@@ -220,65 +220,102 @@ function sendEmailWithAttachment(
     }
 }
 
-function sendWelcomeEmail($email, $username) {
-    $subject = "Welcome to BugRicer!";
-    
+function sendWelcomeEmail(
+    $email,
+    $username,
+    $password = null,
+    $role = null,
+    $loginLink = null
+) {
+    require_once __DIR__ . '/user_onboarding.php';
+    $needsOnboarding = br_role_requires_onboarding($role);
+
+    $subject = $needsOnboarding
+        ? "Welcome to BugRicer — set up your workspace"
+        : "Welcome to BugRicer — your login details";
+
+    if ($loginLink === null || $loginLink === '') {
+        require_once __DIR__ . '/whatsapp.php';
+        $loginLink = rtrim(getFrontendBaseUrl(), '/') . '/login';
+    }
+
+    $roleLabel = $role ? ucfirst((string) $role) : 'Team member';
+    $safeUser = htmlspecialchars((string) $username, ENT_QUOTES, 'UTF-8');
+    $safeEmail = htmlspecialchars((string) $email, ENT_QUOTES, 'UTF-8');
+    $safeRole = htmlspecialchars($roleLabel, ENT_QUOTES, 'UTF-8');
+    $safePass = $password !== null && $password !== ''
+        ? htmlspecialchars((string) $password, ENT_QUOTES, 'UTF-8')
+        : null;
+    $safeLink = htmlspecialchars((string) $loginLink, ENT_QUOTES, 'UTF-8');
+    $passwordLabel = $needsOnboarding ? 'Temporary password' : 'Password';
+
+    $credentialsBlock = '';
+    $credentialsText = '';
+    if ($safePass !== null) {
+        $credentialsBlock = "
+            <div style=\"background-color: #f8fafc; padding: 15px; border-radius: 5px; margin-bottom: 15px;\">
+                <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Username:</strong> {$safeUser}</p>
+                <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Email:</strong> {$safeEmail}</p>
+                <p style=\"font-size: 14px; margin: 5px 0;\"><strong>{$passwordLabel}:</strong> {$safePass}</p>
+                <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Role:</strong> {$safeRole}</p>
+            </div>";
+        $credentialsText = "Username: {$username}\nEmail: {$email}\n{$passwordLabel}: {$password}\nRole: {$roleLabel}\n";
+    }
+
+    if ($needsOnboarding) {
+        $introHtml = '<p>Welcome to the team! Your BugRicer account is ready. Use the temporary login below once, then choose your own password during onboarding.</p>
+          <p>On first login you will complete a short mandatory onboarding wizard (profile, statutory documents, banking, permissions, and password).</p>';
+        $ctaLabel = 'Login &amp; Set Up Workspace';
+        $noteHtml = '<strong>Note:</strong> After onboarding you will land on your role-specific dashboard.';
+        $introText = "Your BugRicer account is ready. Log in with the temporary password, then complete onboarding and set your own password.";
+    } else {
+        $introHtml = '<p>Welcome to the team! Your BugRicer account is ready. Use the login details below to access your dashboard.</p>
+          <p>You can change your password anytime from Profile → Reset password.</p>';
+        $ctaLabel = 'Login to BugRicer';
+        $noteHtml = '<strong>Note:</strong> Onboarding documents are only required for developers.';
+        $introText = "Your BugRicer account is ready. Log in with the password below. You can change it later from your profile.";
+    }
+
     $html_body = "
     <div style=\"font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;\">
       <div style=\"max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">
-        
-        <!-- Header -->
-        <div style=\"background-color: #65a30d; color: #ffffff; padding: 20px; text-align: center;\">
-           <h1 style=\"margin: 0; font-size: 24px; display: flex; align-items: center; justify-content: center;\">
-            <img src=\"https://fonts.gstatic.com/s/e/notoemoji/16.0/1f41e/32.png\" alt=\"BugRicer Logo\" style=\"width: 30px; height: 30px; margin-right: 10px; vertical-align: middle;\">
-            BugRicer Welcome
-          </h1>
-          <p style=\"margin: 5px 0 0 0; font-size: 16px;\">Account Created Successfully</p>
+        <div style=\"background-color: #2563eb; color: #ffffff; padding: 20px; text-align: center;\">
+          <h1 style=\"margin: 0; font-size: 24px;\">Welcome to BugRicer!</h1>
+          <p style=\"margin: 5px 0 0 0; font-size: 16px;\">Your account is ready</p>
         </div>
-        
-        <!-- Body -->
         <div style=\"padding: 20px; border-bottom: 1px solid #e2e8f0;\">
-          <h3 style=\"margin-top: 0; color: #1e293b; font-size: 18px;\">Hello $username,</h3>
-          <p style=\"white-space: pre-line; margin-bottom: 15px; font-size: 14px;\">Welcome to BugRicer! Your account has been successfully created and you're ready to start tracking bugs and managing your projects.</p>
-          
-          <p style=\"white-space: pre-line; margin-bottom: 15px; font-size: 14px;\">You can now log in to your account and start exploring all the features we have to offer.</p>
-          
-          <div style=\"margin-bottom: 15px; padding: 12px; background-color: #f0f9ff; border-left: 4px solid #0ea5e9; border-radius: 4px;\">
-            <p style=\"margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #0c4a6e;\"><strong>🎉 What's Next?</strong></p>
-            <p style=\"margin: 0; font-size: 14px; color: #0c4a6e;\">• Create your first project<br/>• Start reporting bugs<br/>• Collaborate with your team<br/>• Track progress and updates</p>
-          </div>
-          
-          <p style=\"font-size: 14px; margin-bottom: 0;\">If you have any questions or need assistance, please don't hesitate to contact our support team.</p>
-          <p style=\"font-size: 14px; margin-bottom: 0;\">Best regards,<br>The BugRicer Team</p>
+          <h3 style=\"margin-top: 0; color: #1e293b; font-size: 18px;\">Hello {$safeUser},</h3>
+          {$introHtml}
+          <p>Here are your login details:</p>
+          {$credentialsBlock}
+          <p style=\"text-align: center;\">
+            <a href=\"{$safeLink}\" style=\"background-color: #2563eb; color: #ffffff; padding: 12px 25px; text-decoration: none; border-radius: 5px; display: inline-block;\">{$ctaLabel}</a>
+          </p>
+          <p style=\"font-size: 14px; color: #64748b; text-align: center; margin-top: 15px;\">
+            {$noteHtml}
+          </p>
         </div>
-        
-        <!-- Footer -->
         <div style=\"background-color: #f8fafc; color: #64748b; padding: 20px; text-align: center; font-size: 12px;\">
-          <p style=\"margin: 0;\">This is an automated notification from BugRicer. Please do not reply to this email.</p>
+          <p style=\"margin: 0;\">This is an automated notification. Please do not reply to this email.</p>
           <p style=\"margin: 5px 0 0 0;\">&copy; " . date('Y') . " BugRicer. All rights reserved.</p>
         </div>
-        
       </div>
     </div>
     ";
-    
+
     $text_body = "
 Welcome to BugRicer!
 
-Hello $username,
+Hello {$username},
 
-Welcome to BugRicer! Your account has been successfully created and you're ready to start tracking bugs and managing your projects.
+{$introText}
 
-You can now log in to your account and start exploring all the features we have to offer.
+{$credentialsText}
+Login: {$loginLink}
 
-If you have any questions or need assistance, please don't hesitate to contact our support team.
-
-Best regards,
-The BugRicer Team
-
-© 2025 BugRicer. All rights reserved.
+© " . date('Y') . " BugRicer. All rights reserved.
     ";
-    
+
     return sendEmail($email, $subject, $html_body, $text_body);
 }
 

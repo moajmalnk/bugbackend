@@ -625,13 +625,8 @@ class UserController extends BaseAPI {
             // Generate UUID for id
             $id = $this->utils->generateUUID(); // Make sure you have a UUID generator in your utils
 
-            /**
-             * Why: Admins no longer choose passwords. New hires log in once with a
-             * temporary password, then set their own during mandatory onboarding.
-             */
-            $mustSetPassword = true;
             if ($password === '' || strlen($password) < 6) {
-                $password = bin2hex(random_bytes(6)); // 12 hex chars, first-login only
+                $password = bin2hex(random_bytes(6)); // 12 hex chars for first login
             }
             $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
 
@@ -671,6 +666,14 @@ class UserController extends BaseAPI {
                 }
             }
 
+            /**
+             * Why: Only developers must complete statutory onboarding + choose password.
+             * Testers/admins get emailed credentials and skip the wizard.
+             */
+            require_once __DIR__ . '/../../utils/user_onboarding.php';
+            $requiresOnboarding = br_role_requires_onboarding($role, $roleId);
+            $mustSetPassword = $requiresOnboarding;
+
             // Insert user
             $userCols = [];
             $ucRes = $this->conn->query("SHOW COLUMNS FROM users");
@@ -681,6 +684,7 @@ class UserController extends BaseAPI {
             }
             $hasJoiningDateCol = in_array('joining_date', $userCols, true);
             $hasMustSetPasswordCol = in_array('must_set_password', $userCols, true);
+            $hasOnboardingCompletedCol = in_array('onboarding_completed', $userCols, true);
 
             $insertCols = ['id', 'username', 'email', 'phone', 'password', 'role', 'role_id'];
             $insertVals = [$id, $username, $email, $phone, $hashedPassword, $role, $roleId];
@@ -691,6 +695,11 @@ class UserController extends BaseAPI {
             if ($hasMustSetPasswordCol) {
                 $insertCols[] = 'must_set_password';
                 $insertVals[] = $mustSetPassword ? 1 : 0;
+            }
+            if ($hasOnboardingCompletedCol) {
+                $insertCols[] = 'onboarding_completed';
+                // Non-developers skip the wizard — mark complete so guards never lock them.
+                $insertVals[] = $requiresOnboarding ? 0 : 1;
             }
             $placeholders = implode(', ', array_fill(0, count($insertCols), '?'));
             $query = 'INSERT INTO users (' . implode(', ', $insertCols) . ') VALUES (' . $placeholders . ')';
@@ -736,75 +745,30 @@ class UserController extends BaseAPI {
 
             // If user created successfully, send welcome email and WhatsApp to ALL users
             $emailSent = false;
-            
-            // Generate role-based login URL
-            $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
-            $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-            
-            // Determine if we're in development or production
-            if (strpos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false) {
-                // Development - use localhost with role-based routing
-                $loginLink = "http://localhost:8080/login";
-            } else {
-                // Production - use the bug tracker domain with role-based routing
-                $loginLink = "https://bugs.bugricer.com/login";
-            }
-            
-            $subject = 'Welcome to BugRicer!';
-            $body = "
-                <div style=\"font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;\">
-                    <div style=\"max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">
-                        <div style=\"background-color: #2563eb; color: #ffffff; padding: 20px; text-align: center;\">
-                            <h1 style=\"margin: 0; font-size: 24px;\">Welcome to BugRicer!</h1>
-                            <p style=\"margin: 5px 0 0 0; font-size: 16px;\">Login to set up your workspace.</p>
-                        </div>
-                        <div style=\"padding: 20px; border-bottom: 1px solid #e2e8f0;\">
-                            <h3 style=\"margin-top: 0; color: #1e293b; font-size: 18px;\">Hello {$username},</h3>
-                            <p>Welcome to the team! Your BugRicer account is ready. Use the temporary login below once, then choose your own password during onboarding.</p>
-                            <p>On first login you will complete a short mandatory onboarding wizard (profile, statutory documents, banking, permissions, and password).</p>
-                            <p>Here are your login details:</p>
-                            <div style=\"background-color: #f8fafc; padding: 15px; border-radius: 5px; margin-bottom: 15px;\">
-                                <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Username:</strong> {$username}</p>
-                                <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Email:</strong> {$email}</p>
-                                <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Temporary password:</strong> {$password}</p>
-                                <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Role:</strong> " . ucfirst($role) . "</p>
-                            </div>
-                            <p style=\"text-align: center;\">
-                                <a href=\"{$loginLink}\" style=\"background-color: #2563eb; color: #ffffff; padding: 12px 25px; text-decoration: none; border-radius: 5px; display: inline-block;\">Login &amp; Set Up Workspace</a>
-                            </p>
-                            <p style=\"font-size: 14px; color: #64748b; text-align: center; margin-top: 15px;\">
-                                <strong>Note:</strong> After onboarding you will land on your role-specific dashboard.
-                            </p>
-                        </div>
-                        <div style=\"background-color: #f8fafc; color: #64748b; padding: 20px; text-align: center; font-size: 12px;\">
-                            <p style=\"margin: 0;\">This is an automated notification. Please do not reply to this email.</p>
-                            <p style=\"margin: 5px 0 0 0;\">&copy; " . date('Y') . " BugRicer. All rights reserved.</p>
-                        </div>
-                    </div>
-                </div>
-            ";
-            
-            // Send email notification
+
+            require_once __DIR__ . '/../../utils/whatsapp.php';
+            $loginLink = rtrim(getFrontendBaseUrl(), '/') . '/login';
+
+            // Send onboarding welcome via .env SMTP (email.php) — not legacy hardcoded Gmail.
             try {
-                require_once __DIR__ . '/../../utils/send_email.php';
+                require_once __DIR__ . '/../../utils/email.php';
                 error_log("📧 Sending welcome email notification to new user: $username ($email)");
-                $emailSent = sendWelcomeEmail($email, $subject, $body);
-                
+                $emailSent = (bool) sendWelcomeEmail($email, $username, $password, $role, $loginLink);
+
                 if ($emailSent) {
                     error_log("✅ Successfully sent welcome email to: $email");
                 } else {
                     error_log("❌ Failed to send welcome email to: $email");
                 }
-            } catch (Exception $e) {
+            } catch (Throwable $e) {
                 error_log("⚠️ Failed to send welcome email notification: " . $e->getMessage());
             }
-            
+
             // Send welcome WhatsApp notification if phone number is provided
-            if (!empty(trim($phone))) {
+            if (!empty(trim((string) $phone))) {
                 try {
-                    require_once __DIR__ . '/../../utils/whatsapp.php';
                     error_log("📱 Sending welcome WhatsApp notification to new user: $username");
-                    
+
                     $whatsappSent = sendWelcomeWhatsApp(
                         $phone,
                         $username,
@@ -813,13 +777,13 @@ class UserController extends BaseAPI {
                         $password, // Original password before hashing
                         $role
                     );
-                    
+
                     if ($whatsappSent) {
                         error_log("✅ Successfully sent welcome WhatsApp notification to: $phone");
                     } else {
                         error_log("❌ Failed to send welcome WhatsApp notification to: $phone");
                     }
-                } catch (Exception $e) {
+                } catch (Throwable $e) {
                     // Don't fail user creation if WhatsApp fails
                     error_log("⚠️ Failed to send welcome WhatsApp notification: " . $e->getMessage());
                 }
@@ -834,16 +798,21 @@ class UserController extends BaseAPI {
                 $message .= ", but the welcome email could not be sent.";
             }
 
-            
-            $this->sendJsonResponse(201, $message, [
+            $responsePayload = [
                 "id" => $id,
                 "username" => $username,
                 "email" => $email,
                 "phone" => $phone,
                 "role" => $role,
-                "role_id" => $roleId
-            ]);
-        } catch (Exception $e) {
+                "role_id" => $roleId,
+                "email_sent" => $emailSent,
+            ];
+            // Why: If SMTP fails, admin still needs the temp password to share manually.
+            if (!$emailSent) {
+                $responsePayload['temporary_password'] = $password;
+            }
+
+            $this->sendJsonResponse(201, $message, $responsePayload);        } catch (Exception $e) {
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
         }
     }
