@@ -34,6 +34,9 @@ class MeController extends BaseAPI {
             if (in_array('onboarding_completed', $cols, true)) {
                 $select[] = 'onboarding_completed';
             }
+            if (in_array('must_set_password', $cols, true)) {
+                $select[] = 'must_set_password';
+            }
             if (in_array('terms_accepted_at', $cols, true)) {
                 $select[] = 'terms_accepted_at';
             }

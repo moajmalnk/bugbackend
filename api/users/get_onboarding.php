@@ -54,6 +54,9 @@ class GetOnboardingAPI extends BaseAPI
             if (in_array('onboarding_completed', $cols, true)) {
                 $select[] = 'onboarding_completed';
             }
+            if (in_array('must_set_password', $cols, true)) {
+                $select[] = 'must_set_password';
+            }
             if (in_array('terms_accepted_at', $cols, true)) {
                 $select[] = 'terms_accepted_at';
             }
@@ -101,6 +104,9 @@ class GetOnboardingAPI extends BaseAPI
                 'details' => $details,
                 'onboarding_completed' => isset($user['onboarding_completed'])
                     ? (int) $user['onboarding_completed']
+                    : 0,
+                'must_set_password' => isset($user['must_set_password'])
+                    ? (int) $user['must_set_password']
                     : 0,
                 'onboarding_verification_status' => $user['onboarding_verification_status'] ?? 'none',
                 'onboarding_verified_at' => $user['onboarding_verified_at'] ?? null,

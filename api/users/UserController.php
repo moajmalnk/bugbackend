@@ -568,7 +568,7 @@ class UserController extends BaseAPI {
         try {
             $username = trim($data['username'] ?? '');
             $email = trim($data['email'] ?? '');
-            $password = $data['password'] ?? '';
+            $password = isset($data['password']) ? trim((string) $data['password']) : '';
             $role = $data['role'] ?? '';
             $roleId = isset($data['role_id']) && !empty($data['role_id']) ? $data['role_id'] : null;
             $phone = isset($data['phone']) && trim($data['phone']) !== '' ? trim($data['phone']) : null;
@@ -590,9 +590,9 @@ class UserController extends BaseAPI {
             // Log the incoming data for debugging (remove in production if sensitive)
             error_log("Creating user - Username: $username, Email: $email, Phone: " . ($phone ?? 'null'));
 
-            // Validate required fields
-            if (!$username || !$email || !$password) {
-                $this->sendJsonResponse(400, "Username, email, and password are required.");
+            // Validate required fields (password is set by the employee during onboarding)
+            if (!$username || !$email) {
+                $this->sendJsonResponse(400, "Username and email are required.");
                 return;
             }
 
@@ -625,7 +625,14 @@ class UserController extends BaseAPI {
             // Generate UUID for id
             $id = $this->utils->generateUUID(); // Make sure you have a UUID generator in your utils
 
-            // Hash password
+            /**
+             * Why: Admins no longer choose passwords. New hires log in once with a
+             * temporary password, then set their own during mandatory onboarding.
+             */
+            $mustSetPassword = true;
+            if ($password === '' || strlen($password) < 6) {
+                $password = bin2hex(random_bytes(6)); // 12 hex chars, first-login only
+            }
             $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
 
             // If role_id not provided, try to map from role string
@@ -673,16 +680,22 @@ class UserController extends BaseAPI {
                 }
             }
             $hasJoiningDateCol = in_array('joining_date', $userCols, true);
+            $hasMustSetPasswordCol = in_array('must_set_password', $userCols, true);
 
+            $insertCols = ['id', 'username', 'email', 'phone', 'password', 'role', 'role_id'];
+            $insertVals = [$id, $username, $email, $phone, $hashedPassword, $role, $roleId];
             if ($hasJoiningDateCol) {
-                $query = "INSERT INTO users (id, username, email, phone, password, role, role_id, joining_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
-                $stmt = $this->conn->prepare($query);
-                $ok = $stmt->execute([$id, $username, $email, $phone, $hashedPassword, $role, $roleId, $joiningDate]);
-            } else {
-                $query = "INSERT INTO users (id, username, email, phone, password, role, role_id) VALUES (?, ?, ?, ?, ?, ?, ?)";
-                $stmt = $this->conn->prepare($query);
-                $ok = $stmt->execute([$id, $username, $email, $phone, $hashedPassword, $role, $roleId]);
+                $insertCols[] = 'joining_date';
+                $insertVals[] = $joiningDate;
             }
+            if ($hasMustSetPasswordCol) {
+                $insertCols[] = 'must_set_password';
+                $insertVals[] = $mustSetPassword ? 1 : 0;
+            }
+            $placeholders = implode(', ', array_fill(0, count($insertCols), '?'));
+            $query = 'INSERT INTO users (' . implode(', ', $insertCols) . ') VALUES (' . $placeholders . ')';
+            $stmt = $this->conn->prepare($query);
+            $ok = $stmt->execute($insertVals);
             if (!$ok) {
                 $errorInfo = $stmt->errorInfo();
                 if (strpos($errorInfo[2], 'username') !== false) {
@@ -747,13 +760,13 @@ class UserController extends BaseAPI {
                         </div>
                         <div style=\"padding: 20px; border-bottom: 1px solid #e2e8f0;\">
                             <h3 style=\"margin-top: 0; color: #1e293b; font-size: 18px;\">Hello {$username},</h3>
-                            <p>Welcome to the team! Your BugRicer account is ready. Login with your email and password at the link below to set up your workspace.</p>
-                            <p>On first login you will complete a short mandatory onboarding wizard (profile, statutory documents, banking, and permissions).</p>
+                            <p>Welcome to the team! Your BugRicer account is ready. Use the temporary login below once, then choose your own password during onboarding.</p>
+                            <p>On first login you will complete a short mandatory onboarding wizard (profile, statutory documents, banking, permissions, and password).</p>
                             <p>Here are your login details:</p>
                             <div style=\"background-color: #f8fafc; padding: 15px; border-radius: 5px; margin-bottom: 15px;\">
                                 <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Username:</strong> {$username}</p>
                                 <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Email:</strong> {$email}</p>
-                                <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Password:</strong> {$password}</p>
+                                <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Temporary password:</strong> {$password}</p>
                                 <p style=\"font-size: 14px; margin: 5px 0;\"><strong>Role:</strong> " . ucfirst($role) . "</p>
                             </div>
                             <p style=\"text-align: center;\">

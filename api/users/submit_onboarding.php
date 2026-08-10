@@ -70,6 +70,34 @@ class SubmitOnboardingAPI extends BaseAPI
                 return;
             }
 
+            $mustSetPassword = in_array('must_set_password', $cols, true);
+            $needsPassword = false;
+            if ($mustSetPassword) {
+                $flagStmt = $this->conn->prepare(
+                    'SELECT must_set_password FROM users WHERE id = ? LIMIT 1'
+                );
+                $flagStmt->execute([$userId]);
+                $flagRow = $flagStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+                $needsPassword = (int) ($flagRow['must_set_password'] ?? 0) === 1;
+            }
+
+            $newPassword = isset($_POST['password']) ? (string) $_POST['password'] : '';
+            $confirmPassword = isset($_POST['confirm_password'])
+                ? (string) $_POST['confirm_password']
+                : '';
+            $hashedNewPassword = null;
+            if ($needsPassword) {
+                if (strlen($newPassword) < 6) {
+                    $this->sendJsonResponse(400, 'Password must be at least 6 characters');
+                    return;
+                }
+                if ($newPassword !== $confirmPassword) {
+                    $this->sendJsonResponse(400, 'Password and confirmation do not match');
+                    return;
+                }
+                $hashedNewPassword = password_hash($newPassword, PASSWORD_DEFAULT);
+            }
+
             $fields = $this->sanitizePayload($_POST);
             $missing = $this->validateRequired($fields);
             if (!empty($missing)) {
@@ -229,6 +257,13 @@ class SubmitOnboardingAPI extends BaseAPI
             }
             if (in_array('onboarding_verified_by', $cols, true)) {
                 $updateSql .= ', onboarding_verified_by = NULL';
+            }
+            if ($hashedNewPassword !== null) {
+                $updateSql .= ', password = ?';
+                $updateParams[] = $hashedNewPassword;
+                if (in_array('must_set_password', $cols, true)) {
+                    $updateSql .= ', must_set_password = 0';
+                }
             }
             $updateSql .= ' WHERE id = ?';
             $updateParams[] = $userId;

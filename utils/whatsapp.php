@@ -1316,7 +1316,8 @@ function formatWelcomeForWhatsApp($username, $loginLink = null, $email = null, $
         }
         
         if ($password) {
-            $message .= "🔒 *Password:* $password\n";
+            $message .= "🔒 *Temporary password:* $password\n";
+            $message .= "_(Set your own password during onboarding)_\n";
         }
         
         if ($role) {
