@@ -83,14 +83,18 @@ class ReviewsController extends BaseAPI
             }
         }
 
-        // Why: Tables created earlier with unicode_ci break JOINs against users (general_ci).
-        foreach (['review_templates', 'review_questions', 'performance_reviews', 'review_answers'] as $table) {
-            try {
-                $this->conn->exec(
-                    "ALTER TABLE `{$table}` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci"
-                );
-            } catch (Throwable $e) {
-                // Ignore if table missing or already matching
+        // Why: Existing 057 tables used unicode_ci; users is general_ci — convert once per request max.
+        static $collationFixed = false;
+        if (!$collationFixed) {
+            $collationFixed = true;
+            foreach (['review_templates', 'review_questions', 'performance_reviews', 'review_answers'] as $table) {
+                try {
+                    $this->conn->exec(
+                        "ALTER TABLE `{$table}` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci"
+                    );
+                } catch (Throwable $e) {
+                    error_log("ReviewsController collation fix {$table}: " . $e->getMessage());
+                }
             }
         }
     }
@@ -412,8 +416,8 @@ class ReviewsController extends BaseAPI
 
             $whereSql = implode(' AND ', $where);
             $from = "FROM performance_reviews pr
-                     LEFT JOIN users eu ON eu.id = pr.employee_id COLLATE utf8mb4_general_ci
-                     LEFT JOIN users ru ON ru.id = pr.reviewer_id COLLATE utf8mb4_general_ci
+                     LEFT JOIN users eu ON BINARY eu.id = BINARY pr.employee_id
+                     LEFT JOIN users ru ON BINARY ru.id = BINARY pr.reviewer_id
                      WHERE {$whereSql}";
 
             $countStmt = $this->conn->prepare("SELECT COUNT(*) AS c {$from}");
@@ -538,8 +542,8 @@ class ReviewsController extends BaseAPI
                     eu.role AS employee_role,
                     ru.username AS reviewer_username
              FROM performance_reviews pr
-             LEFT JOIN users eu ON eu.id = pr.employee_id COLLATE utf8mb4_general_ci
-             LEFT JOIN users ru ON ru.id = pr.reviewer_id COLLATE utf8mb4_general_ci
+             LEFT JOIN users eu ON BINARY eu.id = BINARY pr.employee_id
+             LEFT JOIN users ru ON BINARY ru.id = BINARY pr.reviewer_id
              WHERE pr.id = ?
              LIMIT 1"
         );
@@ -805,7 +809,7 @@ class ReviewsController extends BaseAPI
                 FROM review_answers ra
                 INNER JOIN performance_reviews pr ON pr.id = ra.review_id
                 INNER JOIN review_questions rq ON rq.id = ra.question_id
-                INNER JOIN users u ON u.id = pr.employee_id COLLATE utf8mb4_general_ci
+                INNER JOIN users u ON BINARY u.id = BINARY pr.employee_id
                 WHERE {$whereSql}
                 ORDER BY pr.review_month DESC, u.username ASC, rq.display_order ASC";
 
