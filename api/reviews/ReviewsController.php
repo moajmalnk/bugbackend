@@ -797,13 +797,16 @@ class ReviewsController extends BaseAPI
         }
 
         $whereSql = implode(' AND ', $where);
-        $sql = "SELECT pr.review_month,
+        $sql = "SELECT pr.id AS review_id,
+                       pr.review_month,
                        pr.department,
                        pr.employee_id,
+                       pr.overall_rating,
                        u.username AS employee_username,
                        rq.section_name,
                        rq.question_text,
                        rq.question_type,
+                       rq.display_order,
                        ra.answer_text,
                        pr.status
                 FROM review_answers ra
@@ -811,7 +814,7 @@ class ReviewsController extends BaseAPI
                 INNER JOIN review_questions rq ON rq.id = ra.question_id
                 INNER JOIN users u ON BINARY u.id = BINARY pr.employee_id
                 WHERE {$whereSql}
-                ORDER BY pr.review_month DESC, u.username ASC, rq.display_order ASC";
+                ORDER BY pr.review_month DESC, u.username ASC, rq.display_order ASC, rq.id ASC";
 
         $stmt = $this->conn->prepare($sql);
         $stmt->execute($params);
@@ -827,12 +830,17 @@ class ReviewsController extends BaseAPI
                 ];
             }
             $grouped[$month]['entries'][] = [
+                'review_id' => (int)$r['review_id'],
                 'employee_id' => $r['employee_id'],
                 'employee_username' => $r['employee_username'],
                 'department' => $r['department'],
+                'overall_rating' => isset($r['overall_rating']) && $r['overall_rating'] !== null
+                    ? (float)$r['overall_rating']
+                    : null,
                 'section_name' => $r['section_name'],
                 'question_text' => $r['question_text'],
                 'question_type' => $r['question_type'],
+                'display_order' => (int)($r['display_order'] ?? 0),
                 'answer_text' => $r['answer_text'],
                 'status' => $r['status'],
             ];
