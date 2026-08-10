@@ -128,6 +128,24 @@ class BaseAPI {
         exit();
     }
 
+    /**
+     * Why: Return JSON immediately, then run slow mail/WhatsApp/push so the UI
+     * never waits on external channels.
+     *
+     * @param callable():void $afterResponse
+     */
+    protected function sendJsonThen(callable $afterResponse, $status_code, $message, $data = null, $success = null): void
+    {
+        require_once __DIR__ . '/../utils/http_finish.php';
+        br_after_response(
+            $afterResponse,
+            (int) $status_code,
+            (string) $message,
+            $data,
+            $success
+        );
+    }
+
     protected function usersTableHasAccountActiveColumn() {
         if ($this->usersHasAccountActiveColumn !== null) {
             return $this->usersHasAccountActiveColumn;

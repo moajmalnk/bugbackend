@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../../utils/user_avatar.php';
 
 class UpdateProfilePictureAPI extends BaseAPI {
     
@@ -56,19 +57,14 @@ class UpdateProfilePictureAPI extends BaseAPI {
             
             // Why: Store relative so production (bugbackend) and local both resolve.
             $relativePath = 'uploads/profile_pictures/' . $filename;
-            
-            // Update user profile picture
-            $stmt = $this->conn->prepare("
-                UPDATE users 
-                SET avatar = ? 
-                WHERE id = ?
-            ");
-            $stmt->execute([$relativePath, $userId]);
-            
+
+            br_user_persist_avatar($this->conn, (string) $userId, $relativePath);
+
             $this->sendJsonResponse(200, "Profile picture updated successfully", [
-                'profile_picture_url' => $relativePath
+                'avatar' => $relativePath,
+                'profile_picture_url' => $relativePath,
             ]);
-            
+
         } catch (Exception $e) {
             error_log("Error updating profile picture: " . $e->getMessage());
             $this->sendJsonResponse(500, "Failed to update profile picture: " . $e->getMessage());

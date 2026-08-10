@@ -121,40 +121,7 @@ class WfhRequestController extends BaseAPI
      */
     private function respondThen(callable $afterResponse, int $statusCode, string $message, $data = null): void
     {
-        ignore_user_abort(true);
-        if (function_exists('session_write_close')) {
-            @session_write_close();
-        }
-
-        if (!headers_sent()) {
-            http_response_code($statusCode);
-            header('Content-Type: application/json');
-        }
-
-        $response = [
-            'success' => $statusCode >= 200 && $statusCode < 300,
-            'message' => $message,
-        ];
-        if ($data !== null) {
-            $response['data'] = $data;
-        }
-
-        echo json_encode($response);
-
-        if (function_exists('fastcgi_finish_request')) {
-            fastcgi_finish_request();
-        } else {
-            if (ob_get_level() > 0) {
-                @ob_end_flush();
-            }
-            @flush();
-        }
-
-        try {
-            $afterResponse();
-        } catch (Throwable $e) {
-            error_log('WfhRequestController deferred work: ' . $e->getMessage());
-        }
+        $this->sendJsonThen($afterResponse, $statusCode, $message, $data);
     }
 
     /**

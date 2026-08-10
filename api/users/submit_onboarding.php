@@ -7,6 +7,7 @@ header('Content-Type: application/json');
 
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../utils/validation.php';
+require_once __DIR__ . '/../../utils/user_avatar.php';
 
 class SubmitOnboardingAPI extends BaseAPI
 {
@@ -239,9 +240,17 @@ class SubmitOnboardingAPI extends BaseAPI
 
             $updateSql = 'UPDATE users SET onboarding_completed = 1';
             $updateParams = [];
-            if ($avatarPath && in_array('avatar', $cols, true)) {
-                $updateSql .= ', avatar = ?';
-                $updateParams[] = $avatarPath;
+            if ($avatarPath) {
+                $writeCols = br_user_avatar_write_cols($cols);
+                if ($writeCols === []) {
+                    $this->conn->rollBack();
+                    $this->sendJsonResponse(
+                        500,
+                        'Profile photo column missing — run migration 064_users_avatar.sql'
+                    );
+                    return;
+                }
+                $updateSql = br_user_avatar_append_update($updateSql, $updateParams, $avatarPath, $cols);
             }
             if (in_array('terms_accepted_at', $cols, true)) {
                 $updateSql .= ', terms_accepted_at = ?';
@@ -279,9 +288,7 @@ class SubmitOnboardingAPI extends BaseAPI
             $this->conn->commit();
 
             $userSelect = ['id', 'username', 'email', 'phone', 'role', 'role_id', 'onboarding_completed'];
-            if (in_array('avatar', $cols, true)) {
-                $userSelect[] = 'avatar';
-            }
+            $userSelect = br_user_avatar_select_cols($userSelect, $cols);
             if (in_array('terms_accepted_at', $cols, true)) {
                 $userSelect[] = 'terms_accepted_at';
             }
@@ -302,6 +309,10 @@ class SubmitOnboardingAPI extends BaseAPI
             );
             $userStmt->execute([$userId]);
             $user = $userStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+            $user = br_user_with_resolved_avatar($user);
+            if (empty($user['avatar']) && $avatarPath) {
+                $user['avatar'] = $avatarPath;
+            }
 
             $payload = [
                 'onboarding_completed' => 1,
@@ -317,31 +328,31 @@ class SubmitOnboardingAPI extends BaseAPI
             ];
 
             // Why: Flush JSON to the client before email/WhatsApp so Save feels instant.
-            $this->sendJsonAndFinish(
+            $this->sendJsonThen(
+                function () use ($isUpdate, $userId, $user) {
+                    try {
+                        require_once __DIR__ . '/../../utils/onboarding_notifications.php';
+                        if ($isUpdate) {
+                            br_notify_admins_onboarding_updated(
+                                $this->conn,
+                                $userId,
+                                (string) ($user['username'] ?? '')
+                            );
+                        } else {
+                            br_notify_admins_onboarding_submitted(
+                                $this->conn,
+                                $userId,
+                                (string) ($user['username'] ?? '')
+                            );
+                        }
+                    } catch (Throwable $e) {
+                        error_log('submit_onboarding notify: ' . $e->getMessage());
+                    }
+                },
                 200,
                 $isUpdate ? 'Onboarding details updated successfully' : 'Onboarding completed successfully',
                 $payload
             );
-
-            try {
-                require_once __DIR__ . '/../../utils/onboarding_notifications.php';
-                if ($isUpdate) {
-                    // Why: Edits only need a light push — full email/WA to every admin made Save hang.
-                    br_notify_admins_onboarding_updated(
-                        $this->conn,
-                        $userId,
-                        (string) ($user['username'] ?? '')
-                    );
-                } else {
-                    br_notify_admins_onboarding_submitted(
-                        $this->conn,
-                        $userId,
-                        (string) ($user['username'] ?? '')
-                    );
-                }
-            } catch (Throwable $e) {
-                error_log('submit_onboarding notify: ' . $e->getMessage());
-            }
             return;
         } catch (Exception $e) {
             if ($this->conn && $this->conn->inTransaction()) {
@@ -594,8 +605,8 @@ class SubmitOnboardingAPI extends BaseAPI
     }
 
     /**
-     * Why: Profile photo is required for first-time onboarding and lives on users.avatar
-     * (same path convention as messaging update_profile_picture). On edit it is optional.
+     * Why: Profile photo is required for first-time onboarding and is dual-written
+     * to users.avatar + users.profile_picture when present. On edit it is optional.
      *
      * @return string|null|false Relative web path on success, null if optional missing, false on error
      */
@@ -661,42 +672,6 @@ class SubmitOnboardingAPI extends BaseAPI
         // Why: Relative path works on Hostinger + local; frontend resolveAvatarUrl
         // maps this to the backend origin (legacy /BugRicer/backend/... 404s in prod).
         return 'uploads/profile_pictures/' . $filename;
-    }
-
-    /**
-     * Why: Return JSON to the browser immediately, then keep PHP alive for slow
-     * side-effects (email / WhatsApp) so Save does not wait on SMTP.
-     */
-    private function sendJsonAndFinish(int $statusCode, string $message, $data = null): void
-    {
-        if (!headers_sent()) {
-            http_response_code($statusCode);
-            header('Content-Type: application/json');
-        }
-
-        $response = [
-            'success' => $statusCode >= 200 && $statusCode < 300,
-            'message' => $message,
-            'data' => $data,
-        ];
-
-        echo json_encode($response);
-
-        // LiteSpeed / PHP-FPM: detach so SMTP does not block the client.
-        if (function_exists('fastcgi_finish_request')) {
-            @fastcgi_finish_request();
-            return;
-        }
-        if (function_exists('litespeed_finish_request')) {
-            @litespeed_finish_request();
-            return;
-        }
-
-        ignore_user_abort(true);
-        while (ob_get_level() > 0) {
-            @ob_end_flush();
-        }
-        @flush();
     }
 
     private function fetchDetails(string $userId): ?array

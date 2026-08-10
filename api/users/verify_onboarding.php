@@ -100,25 +100,35 @@ class VerifyOnboardingAPI extends BaseAPI
                 $adminName = null;
             }
 
-            try {
-                require_once __DIR__ . '/../../utils/onboarding_notifications.php';
-                br_notify_employee_onboarding_decision(
-                    $this->conn,
-                    $targetId,
-                    $status,
-                    $adminName
-                );
-            } catch (Throwable $e) {
-                error_log('verify_onboarding notify: ' . $e->getMessage());
-            }
-
-            $this->sendJsonResponse(200, $action === 'verify'
-                ? 'Onboarding verified successfully'
-                : 'Onboarding marked as rejected', [
+            $payload = [
                 'user_id' => $targetId,
                 'onboarding_verification_status' => $status,
                 'onboarding_verified_by' => $adminId,
-            ]);
+            ];
+            $okMessage = $action === 'verify'
+                ? 'Onboarding verified successfully'
+                : 'Onboarding marked as rejected';
+
+            // Why: Flush first — employee email/WhatsApp/push must not block Confirm verify.
+            $this->sendJsonThen(
+                function () use ($targetId, $status, $adminName) {
+                    try {
+                        require_once __DIR__ . '/../../utils/onboarding_notifications.php';
+                        br_notify_employee_onboarding_decision(
+                            $this->conn,
+                            $targetId,
+                            $status,
+                            $adminName
+                        );
+                    } catch (Throwable $e) {
+                        error_log('verify_onboarding notify: ' . $e->getMessage());
+                    }
+                },
+                200,
+                $okMessage,
+                $payload
+            );
+            return;
         } catch (Exception $e) {
             error_log('verify_onboarding error: ' . $e->getMessage());
             $this->sendJsonResponse(500, 'Failed to update verification status');

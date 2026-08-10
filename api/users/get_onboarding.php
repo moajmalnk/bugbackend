@@ -6,6 +6,7 @@ header('Content-Type: application/json');
 
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../PermissionManager.php';
+require_once __DIR__ . '/../../utils/user_avatar.php';
 
 class GetOnboardingAPI extends BaseAPI
 {
@@ -54,9 +55,7 @@ class GetOnboardingAPI extends BaseAPI
             if (in_array('phone', $cols, true)) {
                 $select[] = 'phone';
             }
-            if (in_array('avatar', $cols, true)) {
-                $select[] = 'avatar';
-            }
+            $select = br_user_avatar_select_cols($select, $cols);
             if (in_array('joining_date', $cols, true)) {
                 $select[] = 'joining_date';
             }
@@ -94,6 +93,7 @@ class GetOnboardingAPI extends BaseAPI
                 $this->sendJsonResponse(404, 'User not found');
                 return;
             }
+            $user = br_user_with_resolved_avatar($user);
 
             $detailsStmt = $this->conn->prepare(
                 'SELECT * FROM user_onboarding_details WHERE user_id = ? LIMIT 1'

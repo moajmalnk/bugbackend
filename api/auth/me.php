@@ -1,6 +1,7 @@
 <?php
 require_once '../BaseAPI.php';
 require_once __DIR__ . '/../../config/fcm_config.php';
+require_once __DIR__ . '/../../utils/user_avatar.php';
 
 class MeController extends BaseAPI {
     public function __construct() {
@@ -28,9 +29,7 @@ class MeController extends BaseAPI {
                 }
             }
             $select = ['id', 'username', 'email', 'phone', 'role', 'role_id'];
-            if (in_array('avatar', $cols, true)) {
-                $select[] = 'avatar';
-            }
+            $select = br_user_avatar_select_cols($select, $cols);
             if (in_array('account_active', $cols, true)) {
                 $select[] = 'account_active';
             }
@@ -70,6 +69,7 @@ class MeController extends BaseAPI {
                     return;
                 }
                 unset($user['account_active']);
+                $user = br_user_with_resolved_avatar($user);
                 $user = FcmConfig::appendEpochToPayload($user);
                 $this->sendJsonResponse(200, "User data retrieved successfully", $user);
             } else {

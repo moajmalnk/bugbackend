@@ -282,6 +282,7 @@ class LeaveController extends BaseAPI
 
             $createdIds = [];
             $summaryParts = [];
+            $notifyQueue = [];
             foreach ($segments as $segment) {
                 $segDays = br_leave_calendar_days($segment['start'], $segment['end']);
                 $stmt->execute([
@@ -296,18 +297,13 @@ class LeaveController extends BaseAPI
                 $createdIds[] = $segId;
                 $segDaysLabel = rtrim(rtrim(number_format($segDays, 2, '.', ''), '0'), '.');
                 $summaryParts[] = "{$segDaysLabel} day" . ($segDays == 1.0 ? '' : 's') . " {$segment['type']['name']}";
-
-                try {
-                    NotificationManager::getInstance()->notifyLeaveRequested(
-                        $segId,
-                        $userId,
-                        (string)$segment['type']['name'],
-                        $segment['start'],
-                        $segment['end']
-                    );
-                } catch (Throwable $e) {
-                    error_log('notifyLeaveRequested: ' . $e->getMessage());
-                }
+                $notifyQueue[] = [
+                    'id' => $segId,
+                    'userId' => $userId,
+                    'typeName' => (string)$segment['type']['name'],
+                    'start' => $segment['start'],
+                    'end' => $segment['end'],
+                ];
             }
 
             $message = count($createdIds) > 1
@@ -321,7 +317,26 @@ class LeaveController extends BaseAPI
             $formatted = array_map([$this, 'formatRequestRow'], $rows);
             $primary = $formatted[0] ?? ['id' => $createdIds[0]];
             $primary['requests'] = $formatted;
-            $this->sendJsonResponse(201, $message, $primary);
+            $this->sendJsonThen(
+                function () use ($notifyQueue) {
+                    foreach ($notifyQueue as $item) {
+                        try {
+                            NotificationManager::getInstance()->notifyLeaveRequested(
+                                $item['id'],
+                                $item['userId'],
+                                $item['typeName'],
+                                $item['start'],
+                                $item['end']
+                            );
+                        } catch (Throwable $e) {
+                            error_log('notifyLeaveRequested: ' . $e->getMessage());
+                        }
+                    }
+                },
+                201,
+                $message,
+                $primary
+            );
         } catch (Throwable $e) {
             error_log('LeaveController::request: ' . $e->getMessage());
             $this->sendJsonResponse(500, 'Failed to submit leave request: ' . $e->getMessage());
@@ -433,23 +448,33 @@ class LeaveController extends BaseAPI
             $id,
         ]);
 
-        try {
-            NotificationManager::getInstance()->notifyLeaveReviewed(
-                $id,
-                (string)$row['user_id'],
-                $newStatus,
-                (string)$row['start_date'],
-                (string)$row['end_date'],
-                $adminNote
-            );
-        } catch (Throwable $e) {
-            error_log('notifyLeaveReviewed: ' . $e->getMessage());
-        }
-
         $fetch = $this->conn->prepare($this->selectSql() . ' WHERE lr.id = ? LIMIT 1');
         $fetch->execute([$id]);
         $out = $fetch->fetch(PDO::FETCH_ASSOC);
-        $this->sendJsonResponse(200, 'Leave request ' . $newStatus, $out ? $this->formatRequestRow($out) : null);
+        $formatted = $out ? $this->formatRequestRow($out) : null;
+        $reviewUserId = (string)$row['user_id'];
+        $reviewStart = (string)$row['start_date'];
+        $reviewEnd = (string)$row['end_date'];
+
+        $this->sendJsonThen(
+            function () use ($id, $reviewUserId, $newStatus, $reviewStart, $reviewEnd, $adminNote) {
+                try {
+                    NotificationManager::getInstance()->notifyLeaveReviewed(
+                        $id,
+                        $reviewUserId,
+                        $newStatus,
+                        $reviewStart,
+                        $reviewEnd,
+                        $adminNote
+                    );
+                } catch (Throwable $e) {
+                    error_log('notifyLeaveReviewed: ' . $e->getMessage());
+                }
+            },
+            200,
+            'Leave request ' . $newStatus,
+            $formatted
+        );
     }
 
     /**
