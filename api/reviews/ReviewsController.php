@@ -56,32 +56,42 @@ class ReviewsController extends BaseAPI
     /**
      * Why: Production may deploy API files before an admin runs 057 manually.
      * Auto-apply the migration once (same pattern as Shorts/Clients).
+     * Also normalize collation to match users (utf8mb4_general_ci) to avoid JOIN mix errors.
      */
     private function ensureSchema(): void
     {
-        if ($this->tablesReady()) {
-            return;
-        }
         $migration = realpath(__DIR__ . '/../../migrations/057_performance_reviews.sql');
-        if (!$migration || !is_readable($migration)) {
-            error_log('ReviewsController::ensureSchema: migration file missing');
-            return;
-        }
-        try {
-            $sql = file_get_contents($migration);
-            if ($sql === false || trim($sql) === '') {
+        if (!$this->tablesReady()) {
+            if (!$migration || !is_readable($migration)) {
+                error_log('ReviewsController::ensureSchema: migration file missing');
                 return;
             }
-            // Strip full-line SQL comments, then run statement-by-statement
-            $sql = preg_replace('/^\s*--.*$/m', '', $sql);
-            foreach (array_filter(array_map('trim', explode(';', (string)$sql))) as $statement) {
-                if ($statement === '') {
-                    continue;
+            try {
+                $sql = file_get_contents($migration);
+                if ($sql === false || trim($sql) === '') {
+                    return;
                 }
-                $this->conn->exec($statement);
+                $sql = preg_replace('/^\s*--.*$/m', '', $sql);
+                foreach (array_filter(array_map('trim', explode(';', (string)$sql))) as $statement) {
+                    if ($statement === '') {
+                        continue;
+                    }
+                    $this->conn->exec($statement);
+                }
+            } catch (Throwable $e) {
+                error_log('ReviewsController::ensureSchema: ' . $e->getMessage());
             }
-        } catch (Throwable $e) {
-            error_log('ReviewsController::ensureSchema: ' . $e->getMessage());
+        }
+
+        // Why: Tables created earlier with unicode_ci break JOINs against users (general_ci).
+        foreach (['review_templates', 'review_questions', 'performance_reviews', 'review_answers'] as $table) {
+            try {
+                $this->conn->exec(
+                    "ALTER TABLE `{$table}` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci"
+                );
+            } catch (Throwable $e) {
+                // Ignore if table missing or already matching
+            }
         }
     }
 
@@ -402,8 +412,8 @@ class ReviewsController extends BaseAPI
 
             $whereSql = implode(' AND ', $where);
             $from = "FROM performance_reviews pr
-                     LEFT JOIN users eu ON eu.id = pr.employee_id
-                     LEFT JOIN users ru ON ru.id = pr.reviewer_id
+                     LEFT JOIN users eu ON eu.id = pr.employee_id COLLATE utf8mb4_general_ci
+                     LEFT JOIN users ru ON ru.id = pr.reviewer_id COLLATE utf8mb4_general_ci
                      WHERE {$whereSql}";
 
             $countStmt = $this->conn->prepare("SELECT COUNT(*) AS c {$from}");
@@ -528,8 +538,8 @@ class ReviewsController extends BaseAPI
                     eu.role AS employee_role,
                     ru.username AS reviewer_username
              FROM performance_reviews pr
-             LEFT JOIN users eu ON eu.id = pr.employee_id
-             LEFT JOIN users ru ON ru.id = pr.reviewer_id
+             LEFT JOIN users eu ON eu.id = pr.employee_id COLLATE utf8mb4_general_ci
+             LEFT JOIN users ru ON ru.id = pr.reviewer_id COLLATE utf8mb4_general_ci
              WHERE pr.id = ?
              LIMIT 1"
         );
@@ -795,7 +805,7 @@ class ReviewsController extends BaseAPI
                 FROM review_answers ra
                 INNER JOIN performance_reviews pr ON pr.id = ra.review_id
                 INNER JOIN review_questions rq ON rq.id = ra.question_id
-                INNER JOIN users u ON u.id = pr.employee_id
+                INNER JOIN users u ON u.id = pr.employee_id COLLATE utf8mb4_general_ci
                 WHERE {$whereSql}
                 ORDER BY pr.review_month DESC, u.username ASC, rq.display_order ASC";
 

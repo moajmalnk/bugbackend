@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS `review_templates` (
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_review_templates_active` (`is_active`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE IF NOT EXISTS `review_questions` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS `review_questions` (
   KEY `idx_review_questions_template_order` (`template_id`, `display_order`),
   CONSTRAINT `fk_review_questions_template`
     FOREIGN KEY (`template_id`) REFERENCES `review_templates` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE IF NOT EXISTS `performance_reviews` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS `performance_reviews` (
   KEY `idx_perf_reviews_month` (`review_month`),
   KEY `idx_perf_reviews_created` (`created_at`),
   KEY `idx_perf_reviews_reviewer` (`reviewer_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE IF NOT EXISTS `review_answers` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS `review_answers` (
     FOREIGN KEY (`review_id`) REFERENCES `performance_reviews` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_review_answers_question`
     FOREIGN KEY (`question_id`) REFERENCES `review_questions` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- Permission seed
 INSERT INTO `permissions` (`permission_key`, `permission_name`, `category`, `scope`, `created_at`)
