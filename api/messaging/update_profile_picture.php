@@ -54,8 +54,8 @@ class UpdateProfilePictureAPI extends BaseAPI {
                 return;
             }
             
-            // Get relative path for database
-            $relativePath = '/BugRicer/backend/uploads/profile_pictures/' . $filename;
+            // Why: Store relative so production (bugbackend) and local both resolve.
+            $relativePath = 'uploads/profile_pictures/' . $filename;
             
             // Update user profile picture
             $stmt = $this->conn->prepare("

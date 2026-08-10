@@ -52,16 +52,9 @@ class SubmitOnboardingAPI extends BaseAPI
                 return;
             }
 
-            if ((int) $row['onboarding_completed'] === 1) {
-                $details = $this->fetchDetails($userId);
-                $this->sendJsonResponse(200, 'Onboarding already completed', [
-                    'onboarding_completed' => 1,
-                    'terms_accepted_at' => null,
-                    'privacy_accepted_at' => null,
-                    'details' => $details,
-                ]);
-                return;
-            }
+            /** Why: Profile "Edit" reuses this endpoint; keep existing files when omitted. */
+            $isUpdate = (int) ($row['onboarding_completed'] ?? 0) === 1;
+            $existingDetails = $isUpdate ? $this->fetchDetails($userId) : null;
 
             $termsAccepted = $this->truthy($_POST['terms_accepted'] ?? '');
             $privacyAccepted = $this->truthy($_POST['privacy_accepted'] ?? '');
@@ -72,7 +65,8 @@ class SubmitOnboardingAPI extends BaseAPI
 
             $mustSetPassword = in_array('must_set_password', $cols, true);
             $needsPassword = false;
-            if ($mustSetPassword) {
+            // Password is only required on first-time onboarding for new hires.
+            if (!$isUpdate && $mustSetPassword) {
                 $flagStmt = $this->conn->prepare(
                     'SELECT must_set_password FROM users WHERE id = ? LIMIT 1'
                 );
@@ -111,18 +105,29 @@ class SubmitOnboardingAPI extends BaseAPI
                 return;
             }
 
-            $aadhaarPath = $this->storeUpload('aadhaar_file', $userId, $uploadDir, true);
+            $aadhaarPath = $this->storeUpload('aadhaar_file', $userId, $uploadDir, !$isUpdate);
             if ($aadhaarPath === false) {
                 return;
             }
+            if ($aadhaarPath === null && $isUpdate) {
+                $aadhaarPath = $existingDetails['aadhaar_file_path'] ?? null;
+            }
+            if ($aadhaarPath === null || $aadhaarPath === '') {
+                $this->sendJsonResponse(400, 'aadhaar_file is required');
+                return;
+            }
+
             $panPath = $this->storeUpload('pan_file', $userId, $uploadDir, false);
             if ($panPath === false) {
                 return;
             }
+            if ($panPath === null && $isUpdate && !empty($existingDetails['pan_file_path'])) {
+                $panPath = $existingDetails['pan_file_path'];
+            }
             // Offer letter is no longer collected in onboarding; keep null / existing.
             $offerPath = null;
 
-            $avatarPath = $this->storeProfilePhoto($userId);
+            $avatarPath = $this->storeProfilePhoto($userId, !$isUpdate);
             if ($avatarPath === false) {
                 return;
             }
@@ -246,7 +251,8 @@ class SubmitOnboardingAPI extends BaseAPI
                 $updateSql .= ', privacy_accepted_at = ?';
                 $updateParams[] = $privacyAt;
             }
-            if (in_array('onboarding_completed_at', $cols, true)) {
+            // Keep original completion time on edits; only stamp on first submit.
+            if (!$isUpdate && in_array('onboarding_completed_at', $cols, true)) {
                 $updateSql .= ', onboarding_completed_at = NOW()';
             }
             if (in_array('onboarding_verification_status', $cols, true)) {
@@ -308,16 +314,21 @@ class SubmitOnboardingAPI extends BaseAPI
                 error_log('submit_onboarding notify: ' . $e->getMessage());
             }
 
-            $this->sendJsonResponse(200, 'Onboarding completed successfully', [
-                'onboarding_completed' => 1,
-                'onboarding_verification_status' => $user['onboarding_verification_status'] ?? 'pending',
-                'terms_accepted_at' => $user['terms_accepted_at'] ?? null,
-                'privacy_accepted_at' => $user['privacy_accepted_at'] ?? null,
-                'onboarding_completed_at' => $user['onboarding_completed_at'] ?? null,
-                'avatar' => $user['avatar'] ?? $avatarPath,
-                'user' => $user,
-                'details' => $this->fetchDetails($userId),
-            ]);
+            $this->sendJsonResponse(
+                200,
+                $isUpdate ? 'Onboarding details updated successfully' : 'Onboarding completed successfully',
+                [
+                    'onboarding_completed' => 1,
+                    'onboarding_verification_status' => $user['onboarding_verification_status'] ?? 'pending',
+                    'terms_accepted_at' => $user['terms_accepted_at'] ?? null,
+                    'privacy_accepted_at' => $user['privacy_accepted_at'] ?? null,
+                    'onboarding_completed_at' => $user['onboarding_completed_at'] ?? null,
+                    'avatar' => $user['avatar'] ?? $avatarPath,
+                    'user' => $user,
+                    'details' => $this->fetchDetails($userId),
+                    'updated' => $isUpdate,
+                ]
+            );
         } catch (Exception $e) {
             if ($this->conn && $this->conn->inTransaction()) {
                 $this->conn->rollBack();
@@ -560,23 +571,29 @@ class SubmitOnboardingAPI extends BaseAPI
     }
 
     /**
-     * Why: Profile photo is required for onboarding and lives on users.avatar
-     * (same path convention as messaging update_profile_picture).
+     * Why: Profile photo is required for first-time onboarding and lives on users.avatar
+     * (same path convention as messaging update_profile_picture). On edit it is optional.
      *
-     * @return string|false Relative web path on success, false on error (response already sent)
+     * @return string|null|false Relative web path on success, null if optional missing, false on error
      */
-    private function storeProfilePhoto(string $userId)
+    private function storeProfilePhoto(string $userId, bool $required = true)
     {
         $field = 'profile_photo';
         if (!isset($_FILES[$field]) || !is_array($_FILES[$field])) {
-            $this->sendJsonResponse(400, 'profile_photo is required');
-            return false;
+            if ($required) {
+                $this->sendJsonResponse(400, 'profile_photo is required');
+                return false;
+            }
+            return null;
         }
 
         $file = $_FILES[$field];
         if (($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
-            $this->sendJsonResponse(400, 'profile_photo is required');
-            return false;
+            if ($required) {
+                $this->sendJsonResponse(400, 'profile_photo is required');
+                return false;
+            }
+            return null;
         }
         if (($file['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) {
             $this->sendJsonResponse(400, 'Upload failed for profile_photo');
@@ -618,7 +635,9 @@ class SubmitOnboardingAPI extends BaseAPI
             return false;
         }
 
-        return '/BugRicer/backend/uploads/profile_pictures/' . $filename;
+        // Why: Relative path works on Hostinger + local; frontend resolveAvatarUrl
+        // maps this to the backend origin (legacy /BugRicer/backend/... 404s in prod).
+        return 'uploads/profile_pictures/' . $filename;
     }
 
     private function fetchDetails(string $userId): ?array
