@@ -81,7 +81,20 @@ class SendEmergencyOtpAPI extends BaseAPI
             $msg .= "If you did not expect this, ignore the message.\n\n";
             $msg .= "🐞 _BugRicer Onboarding_";
 
-            $sent = sendWhatsAppMessage($phone, $msg);
+            // Prefer international digits without '+' (same as login WhatsApp OTP).
+            $sent = sendWhatsAppMessage('91' . $digits, $msg);
+            if (!$sent) {
+                $sent = sendWhatsAppMessage($phone, $msg);
+            }
+            if (!$sent && defined('WHATSAPP_API_KEY') && defined('WHATSAPP_API_URL')) {
+                $url = WHATSAPP_API_URL
+                    . '?apikey=' . urlencode(WHATSAPP_API_KEY)
+                    . '&number=' . urlencode('91' . $digits)
+                    . '&msg=' . urlencode($msg);
+                $raw = @file_get_contents($url);
+                $sent = is_string($raw) && $raw !== '' && stripos($raw, 'error') === false;
+                error_log('send_emergency_otp fallback WhatsApp response: ' . substr((string) $raw, 0, 300));
+            }
             if (!$sent) {
                 $this->sendJsonResponse(502, 'Could not send WhatsApp OTP. Check the number and try again.');
                 return;
