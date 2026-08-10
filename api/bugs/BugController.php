@@ -2565,7 +2565,7 @@ class BugController extends BaseAPI {
 
     /**
      * Common bugs: already raised and/or duplicate titles within a project.
-     * Admins see all projects; developers are scoped to their project memberships.
+     * Admins see all projects; developers/testers are scoped to their memberships.
      */
     public function getCommonBugs($page = 1, $limit = 20, $projectId = null, $reason = 'all', $scopeUserId = null) {
         try {

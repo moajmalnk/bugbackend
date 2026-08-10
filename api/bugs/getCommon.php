@@ -31,6 +31,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/BugController.php';
+require_once __DIR__ . '/../PermissionManager.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
     http_response_code(405);
@@ -43,6 +44,7 @@ try {
     $decoded = $api->validateToken();
 
     $user_role = $decoded->role ?? '';
+    $userId = $decoded->user_id ?? null;
 
     $is_impersonated = false;
     if (isset($decoded->impersonated)) {
@@ -56,14 +58,29 @@ try {
     $user_role_lower = strtolower(trim((string) $user_role));
     $isAdmin = ($user_role_lower === 'admin' && !$is_impersonated) || ($is_impersonated && $admin_role === 'admin');
     $isDeveloper = $user_role_lower === 'developer';
+    $isTester = $user_role_lower === 'tester';
 
-    if (!$isAdmin && !$isDeveloper) {
+    $hasCommonBugsPermission = false;
+    if ($userId) {
+        try {
+            $hasCommonBugsPermission = PermissionManager::getInstance()->hasPermissionOrAdmin(
+                (string) $userId,
+                'COMMON_BUGS_VIEW',
+                $user_role
+            );
+        } catch (Throwable $e) {
+            error_log('getCommon permission check: ' . $e->getMessage());
+        }
+    }
+
+    // Why: Testers are granted COMMON_BUGS_VIEW; API previously blocked everyone
+    // except admin/developer and returned 403 while the sidebar still showed the page.
+    if (!$isAdmin && !$isDeveloper && !$isTester && !$hasCommonBugsPermission) {
         http_response_code(403);
-        echo json_encode(['success' => false, 'message' => 'Admin or developer access required']);
+        echo json_encode(['success' => false, 'message' => "You don't have permission to perform this action."]);
         exit;
     }
 
-    $userId = $decoded->user_id ?? null;
     $scopeUserId = $isAdmin ? null : $userId;
 
     $projectId = isset($_GET['project_id']) && $_GET['project_id'] !== '' ? $_GET['project_id'] : null;
