@@ -1309,9 +1309,9 @@ function formatWelcomeForWhatsApp($username, $loginLink = null, $email = null, $
     $message .= "Welcome to BugRicer! Your account has been created.\n\n";
 
     if ($needsOnboarding) {
-        $message .= "Login with your email and temporary password, then complete the mandatory onboarding wizard (profile, statutory docs, banking, and permissions).\n\n";
+        $message .= "Tap the secure link below to sign in instantly (no password typing). Then complete the mandatory onboarding wizard.\n\n";
     } else {
-        $message .= "Login with your email and password to open your dashboard. You can change your password later from Profile.\n\n";
+        $message .= "Tap the secure link below to sign in instantly (no password typing). You can change your password later from Profile.\n\n";
     }
 
     // Add login credentials if provided
@@ -1351,12 +1351,12 @@ function formatWelcomeForWhatsApp($username, $loginLink = null, $email = null, $
     }
     if ($loginLink) {
         $message .= "━━━━━━━━━━━━━━━━━━━━\n";
-        $message .= "🔗 *Login Link:*\n";
+        $message .= "🔗 *One-click sign-in:*\n";
         $message .= "$loginLink\n\n";
         if ($needsOnboarding) {
-            $message .= "💡 *Note:* After onboarding you will land on your role-specific dashboard.\n";
+            $message .= "💡 *Note:* This link signs you in automatically, then opens onboarding.\n";
         } else {
-            $message .= "💡 *Note:* Onboarding documents are only required for developers.\n";
+            $message .= "💡 *Note:* This link signs you in automatically. Password above is a backup.\n";
         }
     }
     

@@ -96,6 +96,23 @@ class Utils {
     }
 
     /**
+     * Why: One-click welcome email login — not a full session until exchanged
+     * at verify_welcome_invite.php for a normal JWT.
+     */
+    public static function generateWelcomeInviteJWT($user_id, $username, $role, $ttlSeconds = 604800) {
+        $issued_at = time();
+        $payload = [
+            'iat' => $issued_at,
+            'exp' => $issued_at + max(3600, (int) $ttlSeconds),
+            'user_id' => $user_id,
+            'username' => $username,
+            'role' => $role,
+            'purpose' => 'welcome_invite',
+        ];
+        return JWT::encode($payload, self::getJwtSecret(), 'HS256');
+    }
+
+    /**
      * Current auth_token_epoch for a user (0 if column/user missing).
      */
     public static function getUserAuthTokenEpoch($user_id) {

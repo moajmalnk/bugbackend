@@ -746,8 +746,9 @@ class UserController extends BaseAPI {
             // If user created successfully, send welcome email and WhatsApp to ALL users
             $emailSent = false;
 
-            require_once __DIR__ . '/../../utils/whatsapp.php';
-            $loginLink = rtrim(getFrontendBaseUrl(), '/') . '/login';
+            // One-click welcome link (auto-login → required onboarding popup when needed)
+            require_once __DIR__ . '/../../utils/welcome_invite.php';
+            $loginLink = br_create_welcome_login_url($id, $username, $role);
 
             // Send onboarding welcome via .env SMTP (email.php) — not legacy hardcoded Gmail.
             try {

@@ -263,17 +263,17 @@ function sendWelcomeEmail(
     }
 
     if ($needsOnboarding) {
-        $introHtml = '<p>Welcome to the team! Your BugRicer account is ready. Use the temporary login below once, then choose your own password during onboarding.</p>
-          <p>On first login you will complete a short mandatory onboarding wizard (profile, statutory documents, banking, permissions, and password).</p>';
-        $ctaLabel = 'Login &amp; Set Up Workspace';
-        $noteHtml = '<strong>Note:</strong> After onboarding you will land on your role-specific dashboard.';
-        $introText = "Your BugRicer account is ready. Log in with the temporary password, then complete onboarding and set your own password.";
+        $introHtml = '<p>Welcome to the team! Your BugRicer account is ready. Click the button below to sign in instantly — no password typing needed.</p>
+          <p>You will then complete a short mandatory onboarding wizard (profile, statutory documents, banking, permissions, and password).</p>';
+        $ctaLabel = 'Open BugRicer &amp; Set Up Workspace';
+        $noteHtml = '<strong>Note:</strong> This secure link signs you in automatically. After onboarding you will land on your role dashboard.';
+        $introText = "Your BugRicer account is ready. Open the one-click login link to sign in automatically, then complete onboarding.";
     } else {
-        $introHtml = '<p>Welcome to the team! Your BugRicer account is ready. Use the login details below to access your dashboard.</p>
+        $introHtml = '<p>Welcome to the team! Your BugRicer account is ready. Click the button below to sign in instantly — no password typing needed.</p>
           <p>You can change your password anytime from Profile → Reset password.</p>';
-        $ctaLabel = 'Login to BugRicer';
-        $noteHtml = '<strong>Note:</strong> Onboarding documents are only required for developers.';
-        $introText = "Your BugRicer account is ready. Log in with the password below. You can change it later from your profile.";
+        $ctaLabel = 'Open BugRicer (one-click sign-in)';
+        $noteHtml = '<strong>Note:</strong> This secure link signs you in automatically. Keep the password below as a backup.';
+        $introText = "Your BugRicer account is ready. Open the one-click login link to sign in automatically.";
     }
 
     $html_body = "
