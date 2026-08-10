@@ -9,6 +9,7 @@ header('Content-Type: application/json');
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../config/utils.php';
 require_once __DIR__ . '/../../utils/whatsapp.php';
+require_once __DIR__ . '/../../utils/onboarding_contact_unique.php';
 
 class SendEmergencyOtpAPI extends BaseAPI
 {
@@ -39,6 +40,12 @@ class SendEmergencyOtpAPI extends BaseAPI
             }
             if (strlen($digits) !== 10) {
                 $this->sendJsonResponse(400, 'Enter a valid 10-digit Indian mobile number');
+                return;
+            }
+
+            $conflict = br_onboarding_emergency_phone_conflict($this->conn, $digits, $userId);
+            if ($conflict !== null) {
+                $this->sendJsonResponse(409, $conflict);
                 return;
             }
 

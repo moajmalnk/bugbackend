@@ -10,6 +10,7 @@ header('Content-Type: application/json');
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../config/composer_autoload.php';
 require_once __DIR__ . '/../../utils/email.php';
+require_once __DIR__ . '/../../utils/onboarding_contact_unique.php';
 
 class SendContactEmailOtpAPI extends BaseAPI
 {
@@ -40,6 +41,12 @@ class SendContactEmailOtpAPI extends BaseAPI
             }
             if (strlen($email) > 150) {
                 $this->sendJsonResponse(400, 'Email is too long');
+                return;
+            }
+
+            $conflict = br_onboarding_contact_email_conflict($this->conn, $email, $userId);
+            if ($conflict !== null) {
+                $this->sendJsonResponse(409, $conflict);
                 return;
             }
 

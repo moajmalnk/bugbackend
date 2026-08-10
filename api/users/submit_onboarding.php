@@ -8,6 +8,7 @@ header('Content-Type: application/json');
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../utils/validation.php';
 require_once __DIR__ . '/../../utils/user_avatar.php';
+require_once __DIR__ . '/../../utils/onboarding_contact_unique.php';
 
 class SubmitOnboardingAPI extends BaseAPI
 {
@@ -97,6 +98,25 @@ class SubmitOnboardingAPI extends BaseAPI
             $missing = $this->validateRequired($fields);
             if (!empty($missing)) {
                 $this->sendJsonResponse(400, 'Missing required fields: ' . implode(', ', $missing));
+                return;
+            }
+
+            $emailConflict = br_onboarding_contact_email_conflict(
+                $this->conn,
+                (string) $fields['contact_email'],
+                $userId
+            );
+            if ($emailConflict !== null) {
+                $this->sendJsonResponse(409, $emailConflict);
+                return;
+            }
+            $phoneConflict = br_onboarding_emergency_phone_conflict(
+                $this->conn,
+                (string) $fields['emergency_contact'],
+                $userId
+            );
+            if ($phoneConflict !== null) {
+                $this->sendJsonResponse(409, $phoneConflict);
                 return;
             }
 
