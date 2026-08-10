@@ -31,6 +31,15 @@ class MeController extends BaseAPI {
             if (in_array('account_active', $cols, true)) {
                 $select[] = 'account_active';
             }
+            if (in_array('onboarding_completed', $cols, true)) {
+                $select[] = 'onboarding_completed';
+            }
+            if (in_array('terms_accepted_at', $cols, true)) {
+                $select[] = 'terms_accepted_at';
+            }
+            if (in_array('privacy_accepted_at', $cols, true)) {
+                $select[] = 'privacy_accepted_at';
+            }
             $stmt = $this->conn->prepare(
                 'SELECT ' . implode(', ', $select) . ' FROM users WHERE id = ?'
             );

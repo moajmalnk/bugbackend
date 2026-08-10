@@ -1303,8 +1303,8 @@ function formatWelcomeForWhatsApp($username, $loginLink = null, $email = null, $
     $message = "🎉 *Welcome to BugRicer!*\n";
     $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
     $message .= "👋 Hello *$username*,\n\n";
-    $message .= "Welcome to BugRicer! Your account has been successfully created and you're ready to start tracking bugs and managing your projects.\n\n";
-    $message .= "You can now log in to your account and start exploring all the features we have to offer.\n\n";
+    $message .= "Welcome to BugRicer! Your account has been created. Login with your email and password to set up your workspace.\n\n";
+    $message .= "On first login you will complete a mandatory onboarding wizard (profile, statutory docs, banking, and permissions).\n\n";
     
     // Add login credentials if provided
     if ($email || $password || $role) {
@@ -1328,16 +1328,15 @@ function formatWelcomeForWhatsApp($username, $loginLink = null, $email = null, $
     
     $message .= "━━━━━━━━━━━━━━━━━━━━\n";
     $message .= "🎯 *What's Next?*\n\n";
-    $message .= "✅ Create your first project\n";
-    $message .= "🐛 Start reporting bugs\n";
-    $message .= "👥 Collaborate with your team\n";
-    $message .= "📊 Track progress and updates\n\n";
+    $message .= "1️⃣ Login and complete workspace onboarding\n";
+    $message .= "2️⃣ Accept Terms & Privacy Policy\n";
+    $message .= "3️⃣ Start reporting bugs and collaborating\n\n";
     
     if ($loginLink) {
         $message .= "━━━━━━━━━━━━━━━━━━━━\n";
         $message .= "🔗 *Login Link:*\n";
         $message .= "$loginLink\n\n";
-        $message .= "💡 *Note:* You'll be redirected to your role-specific dashboard after login.\n";
+        $message .= "💡 *Note:* After onboarding you will land on your role-specific dashboard.\n";
     }
     
     $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
