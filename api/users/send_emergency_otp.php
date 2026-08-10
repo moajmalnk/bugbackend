@@ -1,7 +1,8 @@
 <?php
 /**
- * Why: Confirm the emergency contact number during onboarding via WhatsApp OTP
- * so HR does not store an unreachable number.
+ * Why: Confirm emergency contact via WhatsApp OTP. Respond immediately after
+ * storing the code so the UI feels instant; deliver WhatsApp after the response
+ * is flushed to the client.
  */
 header('Content-Type: application/json');
 
@@ -41,10 +42,9 @@ class SendEmergencyOtpAPI extends BaseAPI
                 return;
             }
 
-            $phone = Utils::normalizePhone($digits); // +91XXXXXXXXXX
+            $phone = Utils::normalizePhone($digits);
             $purposeEmail = 'onboarding_emg:' . $userId;
 
-            // Rate-limit: one send per 45 seconds for this user+purpose
             $rateStmt = $this->conn->prepare(
                 'SELECT created_at FROM user_otps
                  WHERE email = ? AND phone = ?
@@ -54,9 +54,9 @@ class SendEmergencyOtpAPI extends BaseAPI
             $last = $rateStmt->fetch(PDO::FETCH_ASSOC);
             if ($last && !empty($last['created_at'])) {
                 $elapsed = time() - strtotime($last['created_at']);
-                if ($elapsed < 45) {
-                    $this->sendJsonResponse(429, 'Please wait ' . (45 - $elapsed) . 's before resending OTP', [
-                        'retry_after' => 45 - $elapsed,
+                if ($elapsed < 30) {
+                    $this->sendJsonResponse(429, 'Please wait ' . (30 - $elapsed) . 's before resending OTP', [
+                        'retry_after' => 30 - $elapsed,
                     ]);
                     return;
                 }
@@ -65,7 +65,6 @@ class SendEmergencyOtpAPI extends BaseAPI
             $otp = str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
             $expiresAt = date('Y-m-d H:i:s', time() + 5 * 60);
 
-            // Clear prior unused OTPs for this onboarding purpose
             $del = $this->conn->prepare('DELETE FROM user_otps WHERE email = ?');
             $del->execute([$purposeEmail]);
 
@@ -74,6 +73,15 @@ class SendEmergencyOtpAPI extends BaseAPI
             );
             $ins->execute([$purposeEmail, $phone, $otp, $expiresAt]);
 
+            $masked = substr($digits, 0, 2) . '******' . substr($digits, -2);
+
+            // Return immediately — WhatsApp delivery continues after flush.
+            $this->flushJson(200, 'OTP sent via WhatsApp', [
+                'phone' => $phone,
+                'masked' => $masked,
+                'expires_in' => 300,
+            ]);
+
             $msg = "🔐 *BugRicer Emergency Contact OTP*\n\n";
             $msg .= "Your verification code is: *$otp*\n";
             $msg .= "Valid for 5 minutes.\n\n";
@@ -81,35 +89,64 @@ class SendEmergencyOtpAPI extends BaseAPI
             $msg .= "If you did not expect this, ignore the message.\n\n";
             $msg .= "🐞 _BugRicer Onboarding_";
 
-            // Prefer international digits without '+' (same as login WhatsApp OTP).
-            $sent = sendWhatsAppMessage('91' . $digits, $msg);
-            if (!$sent) {
-                $sent = sendWhatsAppMessage($phone, $msg);
-            }
-            if (!$sent && defined('WHATSAPP_API_KEY') && defined('WHATSAPP_API_URL')) {
-                $url = WHATSAPP_API_URL
-                    . '?apikey=' . urlencode(WHATSAPP_API_KEY)
-                    . '&number=' . urlencode('91' . $digits)
-                    . '&msg=' . urlencode($msg);
-                $raw = @file_get_contents($url);
-                $sent = is_string($raw) && $raw !== '' && stripos($raw, 'error') === false;
-                error_log('send_emergency_otp fallback WhatsApp response: ' . substr((string) $raw, 0, 300));
-            }
-            if (!$sent) {
-                $this->sendJsonResponse(502, 'Could not send WhatsApp OTP. Check the number and try again.');
-                return;
-            }
-
-            $masked = substr($digits, 0, 2) . '******' . substr($digits, -2);
-            $this->sendJsonResponse(200, 'OTP sent via WhatsApp', [
-                'phone' => $phone,
-                'masked' => $masked,
-                'expires_in' => 300,
-            ]);
+            $this->sendWhatsAppFast('91' . $digits, $msg);
         } catch (Exception $e) {
             error_log('send_emergency_otp error: ' . $e->getMessage());
-            $this->sendJsonResponse(500, 'Failed to send OTP');
+            if (!headers_sent()) {
+                $this->sendJsonResponse(500, 'Failed to send OTP');
+            }
         }
+    }
+
+    /**
+     * @param array<string, mixed>|null $data
+     */
+    private function flushJson(int $status, string $message, ?array $data = null): void
+    {
+        http_response_code($status);
+        $payload = [
+            'success' => $status >= 200 && $status < 300,
+            'message' => $message,
+        ];
+        if ($data !== null) {
+            $payload['data'] = $data;
+        }
+        echo json_encode($payload);
+        if (function_exists('fastcgi_finish_request')) {
+            fastcgi_finish_request();
+        } else {
+            if (ob_get_level() > 0) {
+                @ob_end_flush();
+            }
+            @flush();
+        }
+        ignore_user_abort(true);
+    }
+
+    private function sendWhatsAppFast(string $number, string $message): void
+    {
+        if (!defined('WHATSAPP_API_URL') || !defined('WHATSAPP_API_KEY')) {
+            return;
+        }
+        $number = preg_replace('/\D/', '', $number);
+        $url = WHATSAPP_API_URL
+            . '?apikey=' . urlencode(WHATSAPP_API_KEY)
+            . '&number=' . urlencode($number)
+            . '&msg=' . urlencode($message);
+
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $url,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => '',
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 3,
+            CURLOPT_TIMEOUT => 6,
+        ]);
+        $response = curl_exec($ch);
+        $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        error_log("send_emergency_otp fast WA HTTP {$httpCode}: " . substr((string) $response, 0, 200));
     }
 }
 

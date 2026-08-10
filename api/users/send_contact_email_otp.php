@@ -1,6 +1,7 @@
 <?php
 /**
- * Why: Confirm the onboarding contact email via OTP so HR has a reachable inbox.
+ * Why: Confirm onboarding contact email via OTP. Respond as soon as the code is
+ * stored so the UI can show OTP fields instantly; SMTP delivery runs after flush.
  */
 header('Content-Type: application/json');
 
@@ -51,8 +52,8 @@ class SendContactEmailOtpAPI extends BaseAPI
             $last = $rateStmt->fetch(PDO::FETCH_ASSOC);
             if ($last && !empty($last['created_at'])) {
                 $elapsed = time() - strtotime($last['created_at']);
-                if ($elapsed < 45) {
-                    $this->sendJsonResponse(429, 'Please wait ' . (45 - $elapsed) . 's before resending OTP', [
+                if ($elapsed < 30) {
+                    $this->sendJsonResponse(429, 'Please wait ' . (30 - $elapsed) . 's before resending OTP', [
                         'retry_after' => 45 - $elapsed,
                     ]);
                     return;
@@ -70,6 +71,20 @@ class SendContactEmailOtpAPI extends BaseAPI
             );
             $ins->execute([$email, $purposePhone, $otp, $expiresAt]);
 
+            $parts = explode('@', $email);
+            $local = $parts[0] ?? '';
+            $domain = $parts[1] ?? '';
+            $maskedLocal = strlen($local) <= 2
+                ? str_repeat('*', strlen($local))
+                : substr($local, 0, 1) . str_repeat('*', max(1, strlen($local) - 2)) . substr($local, -1);
+            $masked = $maskedLocal . '@' . $domain;
+
+            $this->flushJson(200, 'OTP sent via email', [
+                'email' => $email,
+                'masked' => $masked,
+                'expires_in' => 300,
+            ]);
+
             $html = '<div style="font-family:Segoe UI,Arial,sans-serif;max-width:480px;margin:0 auto;background:#fff;border-radius:8px;box-shadow:0 2px 8px #e2e8f0;overflow:hidden;">
   <div style="background:#2563eb;color:#fff;padding:24px 0;text-align:center;">
     <h1 style="margin:0;font-size:24px;letter-spacing:1px;">BugRicer Email Verification</h1>
@@ -86,29 +101,40 @@ class SendContactEmailOtpAPI extends BaseAPI
 </div>';
             $text = "Your BugRicer onboarding email OTP is: {$otp}. Valid for 5 minutes.";
 
-            $sent = sendEmail($email, 'BugRicer — verify your contact email', $html, $text);
-            if (!$sent) {
-                $this->sendJsonResponse(502, 'Could not send verification email. Try again.');
-                return;
-            }
-
-            $parts = explode('@', $email);
-            $local = $parts[0] ?? '';
-            $domain = $parts[1] ?? '';
-            $maskedLocal = strlen($local) <= 2
-                ? str_repeat('*', strlen($local))
-                : substr($local, 0, 1) . str_repeat('*', max(1, strlen($local) - 2)) . substr($local, -1);
-            $masked = $maskedLocal . '@' . $domain;
-
-            $this->sendJsonResponse(200, 'OTP sent via email', [
-                'email' => $email,
-                'masked' => $masked,
-                'expires_in' => 300,
-            ]);
+            // Best-effort after response; keep SMTP timeout low.
+            @ini_set('default_socket_timeout', '8');
+            sendEmail($email, 'BugRicer — verify your contact email', $html, $text);
         } catch (Exception $e) {
             error_log('send_contact_email_otp error: ' . $e->getMessage());
-            $this->sendJsonResponse(500, 'Failed to send email OTP');
+            if (!headers_sent()) {
+                $this->sendJsonResponse(500, 'Failed to send email OTP');
+            }
         }
+    }
+
+    /**
+     * @param array<string, mixed>|null $data
+     */
+    private function flushJson(int $status, string $message, ?array $data = null): void
+    {
+        http_response_code($status);
+        $payload = [
+            'success' => $status >= 200 && $status < 300,
+            'message' => $message,
+        ];
+        if ($data !== null) {
+            $payload['data'] = $data;
+        }
+        echo json_encode($payload);
+        if (function_exists('fastcgi_finish_request')) {
+            fastcgi_finish_request();
+        } else {
+            if (ob_get_level() > 0) {
+                @ob_end_flush();
+            }
+            @flush();
+        }
+        ignore_user_abort(true);
     }
 }
 
