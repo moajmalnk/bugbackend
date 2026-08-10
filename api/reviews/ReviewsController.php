@@ -53,10 +53,46 @@ class ReviewsController extends BaseAPI
         }
     }
 
+    /**
+     * Why: Production may deploy API files before an admin runs 057 manually.
+     * Auto-apply the migration once (same pattern as Shorts/Clients).
+     */
+    private function ensureSchema(): void
+    {
+        if ($this->tablesReady()) {
+            return;
+        }
+        $migration = realpath(__DIR__ . '/../../migrations/057_performance_reviews.sql');
+        if (!$migration || !is_readable($migration)) {
+            error_log('ReviewsController::ensureSchema: migration file missing');
+            return;
+        }
+        try {
+            $sql = file_get_contents($migration);
+            if ($sql === false || trim($sql) === '') {
+                return;
+            }
+            // Strip full-line SQL comments, then run statement-by-statement
+            $sql = preg_replace('/^\s*--.*$/m', '', $sql);
+            foreach (array_filter(array_map('trim', explode(';', (string)$sql))) as $statement) {
+                if ($statement === '') {
+                    continue;
+                }
+                $this->conn->exec($statement);
+            }
+        } catch (Throwable $e) {
+            error_log('ReviewsController::ensureSchema: ' . $e->getMessage());
+        }
+    }
+
     private function ensureReady(): bool
     {
+        $this->ensureSchema();
         if (!$this->tablesReady()) {
-            $this->sendJsonResponse(503, 'Performance reviews not set up. Run migration 057_performance_reviews.sql.');
+            $this->sendJsonResponse(
+                503,
+                'Performance reviews not set up. Run migration 057_performance_reviews.sql on the database.'
+            );
             return false;
         }
         return true;
