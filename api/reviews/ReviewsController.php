@@ -43,7 +43,11 @@ class ReviewsController extends BaseAPI
     {
         try {
             $stmt = $this->conn->query("SHOW TABLES LIKE 'performance_reviews'");
-            return $stmt && $stmt->rowCount() > 0;
+            if (!$stmt) {
+                return false;
+            }
+            $row = $stmt->fetch(PDO::FETCH_NUM);
+            return $row !== false && !empty($row[0]);
         } catch (Throwable $e) {
             return false;
         }
@@ -324,69 +328,79 @@ class ReviewsController extends BaseAPI
             return;
         }
 
-        $employeeId = isset($_GET['employee_id']) ? trim((string)$_GET['employee_id']) : '';
-        $reviewMonth = isset($_GET['review_month']) ? trim((string)$_GET['review_month']) : '';
-        $department = isset($_GET['department']) ? trim((string)$_GET['department']) : '';
-        $status = isset($_GET['status']) ? trim((string)$_GET['status']) : '';
-        $search = isset($_GET['search']) ? trim((string)$_GET['search']) : '';
-        $page = max(1, (int)($_GET['page'] ?? 1));
-        $limit = min(100, max(1, (int)($_GET['limit'] ?? 20)));
-        $offset = ($page - 1) * $limit;
+        try {
+            $employeeId = isset($_GET['employee_id']) ? trim((string)$_GET['employee_id']) : '';
+            $reviewMonth = isset($_GET['review_month']) ? trim((string)$_GET['review_month']) : '';
+            $department = isset($_GET['department']) ? trim((string)$_GET['department']) : '';
+            $status = isset($_GET['status']) ? trim((string)$_GET['status']) : '';
+            $search = isset($_GET['search']) ? trim((string)$_GET['search']) : '';
+            $page = max(1, (int)($_GET['page'] ?? 1));
+            $limit = min(100, max(1, (int)($_GET['limit'] ?? 20)));
+            $offset = ($page - 1) * $limit;
 
-        $where = ['1=1'];
-        $params = [];
+            $where = ['1=1'];
+            $params = [];
 
-        if ($employeeId !== '') {
-            $where[] = 'pr.employee_id = ?';
-            $params[] = $employeeId;
+            if ($employeeId !== '') {
+                $where[] = 'pr.employee_id = ?';
+                $params[] = $employeeId;
+            }
+            if ($reviewMonth !== '' && preg_match('/^\d{4}-\d{2}$/', $reviewMonth)) {
+                $where[] = 'pr.review_month = ?';
+                $params[] = $reviewMonth;
+            }
+            if ($department !== '') {
+                $where[] = 'pr.department = ?';
+                $params[] = $department;
+            }
+            if ($status !== '' && in_array($status, self::STATUSES, true)) {
+                $where[] = 'pr.status = ?';
+                $params[] = $status;
+            }
+            if ($search !== '') {
+                $where[] = '(eu.username LIKE ? OR eu.email LIKE ?)';
+                $like = '%' . $search . '%';
+                $params[] = $like;
+                $params[] = $like;
+            }
+
+            $whereSql = implode(' AND ', $where);
+            $from = "FROM performance_reviews pr
+                     LEFT JOIN users eu ON eu.id = pr.employee_id
+                     LEFT JOIN users ru ON ru.id = pr.reviewer_id
+                     WHERE {$whereSql}";
+
+            $countStmt = $this->conn->prepare("SELECT COUNT(*) AS c {$from}");
+            $countStmt->execute($params);
+            $total = (int)($countStmt->fetch(PDO::FETCH_ASSOC)['c'] ?? 0);
+
+            $sql = "SELECT pr.*,
+                           eu.username AS employee_username,
+                           eu.email AS employee_email,
+                           eu.role AS employee_role,
+                           ru.username AS reviewer_username
+                    {$from}
+                    ORDER BY pr.created_at DESC, pr.id DESC
+                    LIMIT {$limit} OFFSET {$offset}";
+            $stmt = $this->conn->prepare($sql);
+            $stmt->execute($params);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $items = [];
+            foreach ($rows as $r) {
+                $items[] = $this->formatReview($r);
+            }
+
+            $this->sendJsonResponse(200, 'OK', [
+                'items' => $items,
+                'total' => $total,
+                'page' => $page,
+                'limit' => $limit,
+            ]);
+        } catch (Throwable $e) {
+            error_log('listReviews error: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Failed to list reviews: ' . $e->getMessage());
         }
-        if ($reviewMonth !== '' && preg_match('/^\d{4}-\d{2}$/', $reviewMonth)) {
-            $where[] = 'pr.review_month = ?';
-            $params[] = $reviewMonth;
-        }
-        if ($department !== '') {
-            $where[] = 'pr.department = ?';
-            $params[] = $department;
-        }
-        if ($status !== '' && in_array($status, self::STATUSES, true)) {
-            $where[] = 'pr.status = ?';
-            $params[] = $status;
-        }
-        if ($search !== '') {
-            $where[] = '(eu.username LIKE ? OR eu.email LIKE ?)';
-            $like = '%' . $search . '%';
-            $params[] = $like;
-            $params[] = $like;
-        }
-
-        $whereSql = implode(' AND ', $where);
-        $from = "FROM performance_reviews pr
-                 LEFT JOIN users eu ON eu.id = pr.employee_id
-                 LEFT JOIN users ru ON ru.id = pr.reviewer_id
-                 WHERE {$whereSql}";
-
-        $countStmt = $this->conn->prepare("SELECT COUNT(*) AS c {$from}");
-        $countStmt->execute($params);
-        $total = (int)($countStmt->fetch(PDO::FETCH_ASSOC)['c'] ?? 0);
-
-        $sql = "SELECT pr.*,
-                       eu.username AS employee_username,
-                       eu.email AS employee_email,
-                       eu.role AS employee_role,
-                       ru.username AS reviewer_username
-                {$from}
-                ORDER BY pr.created_at DESC, pr.id DESC
-                LIMIT {$limit} OFFSET {$offset}";
-        $stmt = $this->conn->prepare($sql);
-        $stmt->execute($params);
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        $this->sendJsonResponse(200, 'OK', [
-            'items' => array_map(fn($r) => $this->formatReview($r), $rows),
-            'total' => $total,
-            'page' => $page,
-            'limit' => $limit,
-        ]);
     }
 
     /** POST create draft review for active employee */
