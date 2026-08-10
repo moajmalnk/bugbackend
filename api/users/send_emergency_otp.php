@@ -63,15 +63,15 @@ class SendEmergencyOtpAPI extends BaseAPI
             }
 
             $otp = str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
-            $expiresAt = date('Y-m-d H:i:s', time() + 5 * 60);
 
             $del = $this->conn->prepare('DELETE FROM user_otps WHERE email = ?');
             $del->execute([$purposeEmail]);
 
             $ins = $this->conn->prepare(
-                'INSERT INTO user_otps (email, phone, otp, expires_at) VALUES (?, ?, ?, ?)'
+                'INSERT INTO user_otps (email, phone, otp, expires_at)
+                 VALUES (?, ?, ?, DATE_ADD(NOW(), INTERVAL 5 MINUTE))'
             );
-            $ins->execute([$purposeEmail, $phone, $otp, $expiresAt]);
+            $ins->execute([$purposeEmail, $phone, $otp]);
 
             $masked = substr($digits, 0, 2) . '******' . substr($digits, -2);
 
@@ -81,6 +81,15 @@ class SendEmergencyOtpAPI extends BaseAPI
                 'masked' => $masked,
                 'expires_in' => 300,
             ]);
+
+            // Skip WhatsApp if already verified (OTP cleared) during flush window.
+            $still = $this->conn->prepare(
+                'SELECT id FROM user_otps WHERE email = ? AND phone = ? AND otp = ? LIMIT 1'
+            );
+            $still->execute([$purposeEmail, $phone, $otp]);
+            if (!$still->fetch(PDO::FETCH_ASSOC)) {
+                return;
+            }
 
             $msg = "🔐 *BugRicer Emergency Contact OTP*\n\n";
             $msg .= "Your verification code is: *$otp*\n";

@@ -39,14 +39,22 @@ class VerifyContactEmailOtpAPI extends BaseAPI
                 return;
             }
 
-            $purposePhone = 'onboarding_mail:' . $userId;
+            $purposePhone = $this->purposeKey($userId);
 
+            // Match new short purpose key, or legacy truncated "onboarding_mail:…" rows by email+otp.
             $stmt = $this->conn->prepare(
-                'SELECT id FROM user_otps
-                 WHERE phone = ? AND email = ? AND otp = ? AND expires_at > NOW()
+                'SELECT id, phone FROM user_otps
+                 WHERE email = ? AND otp = ? AND expires_at > NOW()
+                   AND (phone = ? OR phone LIKE ? OR phone LIKE ?)
                  ORDER BY id DESC LIMIT 1'
             );
-            $stmt->execute([$purposePhone, $email, $otp]);
+            $stmt->execute([
+                $email,
+                $otp,
+                $purposePhone,
+                'onboarding_mail:%',
+                'om_%',
+            ]);
             $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if (!$row) {
@@ -54,8 +62,18 @@ class VerifyContactEmailOtpAPI extends BaseAPI
                 return;
             }
 
-            $del = $this->conn->prepare('DELETE FROM user_otps WHERE phone = ?');
-            $del->execute([$purposePhone]);
+            // Clear this user's mail OTPs (and any legacy rows for this email) so SMTP is skipped.
+            $del = $this->conn->prepare(
+                'DELETE FROM user_otps
+                 WHERE phone = ?
+                    OR (email = ? AND (phone LIKE ? OR phone LIKE ?))'
+            );
+            $del->execute([
+                $purposePhone,
+                $email,
+                'om_%',
+                'onboarding_mail:%',
+            ]);
 
             $this->sendJsonResponse(200, 'Contact email verified', [
                 'email' => $email,
@@ -65,6 +83,11 @@ class VerifyContactEmailOtpAPI extends BaseAPI
             error_log('verify_contact_email_otp error: ' . $e->getMessage());
             $this->sendJsonResponse(500, 'Failed to verify email OTP');
         }
+    }
+
+    private function purposeKey(string $userId): string
+    {
+        return 'om_' . substr(hash('sha256', $userId), 0, 16);
     }
 }
 

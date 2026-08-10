@@ -2,6 +2,8 @@
 /**
  * Why: Confirm onboarding contact email via OTP. Respond as soon as the code is
  * stored so the UI can show OTP fields instantly; SMTP delivery runs after flush.
+ *
+ * Purpose key must fit user_otps.phone VARCHAR(20) — never store full UUIDs there.
  */
 header('Content-Type: application/json');
 
@@ -41,7 +43,7 @@ class SendContactEmailOtpAPI extends BaseAPI
                 return;
             }
 
-            $purposePhone = 'onboarding_mail:' . $userId;
+            $purposePhone = $this->purposeKey($userId);
 
             $rateStmt = $this->conn->prepare(
                 'SELECT created_at FROM user_otps
@@ -61,15 +63,15 @@ class SendContactEmailOtpAPI extends BaseAPI
             }
 
             $otp = str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
-            $expiresAt = date('Y-m-d H:i:s', time() + 5 * 60);
 
-            $del = $this->conn->prepare('DELETE FROM user_otps WHERE phone = ?');
-            $del->execute([$purposePhone]);
+            $del = $this->conn->prepare('DELETE FROM user_otps WHERE phone = ? OR (email = ? AND phone LIKE ?)');
+            $del->execute([$purposePhone, $email, 'onboarding_mail:%']);
 
             $ins = $this->conn->prepare(
-                'INSERT INTO user_otps (email, phone, otp, expires_at) VALUES (?, ?, ?, ?)'
+                'INSERT INTO user_otps (email, phone, otp, expires_at)
+                 VALUES (?, ?, ?, DATE_ADD(NOW(), INTERVAL 5 MINUTE))'
             );
-            $ins->execute([$email, $purposePhone, $otp, $expiresAt]);
+            $ins->execute([$email, $purposePhone, $otp]);
 
             $parts = explode('@', $email);
             $local = $parts[0] ?? '';
@@ -84,6 +86,15 @@ class SendContactEmailOtpAPI extends BaseAPI
                 'masked' => $masked,
                 'expires_in' => 300,
             ]);
+
+            // Skip SMTP if user already verified (OTP row cleared) while we were flushing.
+            $still = $this->conn->prepare(
+                'SELECT id FROM user_otps WHERE phone = ? AND email = ? AND otp = ? LIMIT 1'
+            );
+            $still->execute([$purposePhone, $email, $otp]);
+            if (!$still->fetch(PDO::FETCH_ASSOC)) {
+                return;
+            }
 
             $html = '<div style="font-family:Segoe UI,Arial,sans-serif;max-width:480px;margin:0 auto;background:#fff;border-radius:8px;box-shadow:0 2px 8px #e2e8f0;overflow:hidden;">
   <div style="background:#2563eb;color:#fff;padding:24px 0;text-align:center;">
@@ -101,7 +112,6 @@ class SendContactEmailOtpAPI extends BaseAPI
 </div>';
             $text = "Your BugRicer onboarding email OTP is: {$otp}. Valid for 5 minutes.";
 
-            // Best-effort after response; keep SMTP timeout low.
             @ini_set('default_socket_timeout', '8');
             sendEmail($email, 'BugRicer — verify your contact email', $html, $text);
         } catch (Exception $e) {
@@ -110,6 +120,12 @@ class SendContactEmailOtpAPI extends BaseAPI
                 $this->sendJsonResponse(500, 'Failed to send email OTP');
             }
         }
+    }
+
+    private function purposeKey(string $userId): string
+    {
+        // Fits VARCHAR(20): om_ + 16 hex chars
+        return 'om_' . substr(hash('sha256', $userId), 0, 16);
     }
 
     /**
