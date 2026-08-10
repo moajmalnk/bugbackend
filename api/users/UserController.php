@@ -211,6 +211,15 @@ class UserController extends BaseAPI {
             if (in_array('joining_date', $cols, true)) {
                 $select[] = 'joining_date';
             }
+            if (in_array('onboarding_completed', $cols, true)) {
+                $select[] = 'onboarding_completed';
+            }
+            if (in_array('onboarding_verification_status', $cols, true)) {
+                $select[] = 'onboarding_verification_status';
+            }
+            if (in_array('onboarding_verified_at', $cols, true)) {
+                $select[] = 'onboarding_verified_at';
+            }
 
             $query = "SELECT " . implode(', ', $select) . " FROM users WHERE id = ?";
             $stmt = $this->conn->prepare($query);

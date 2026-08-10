@@ -40,6 +40,12 @@ class MeController extends BaseAPI {
             if (in_array('privacy_accepted_at', $cols, true)) {
                 $select[] = 'privacy_accepted_at';
             }
+            if (in_array('onboarding_verification_status', $cols, true)) {
+                $select[] = 'onboarding_verification_status';
+            }
+            if (in_array('onboarding_verified_at', $cols, true)) {
+                $select[] = 'onboarding_verified_at';
+            }
             $stmt = $this->conn->prepare(
                 'SELECT ' . implode(', ', $select) . ' FROM users WHERE id = ?'
             );

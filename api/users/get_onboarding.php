@@ -60,6 +60,15 @@ class GetOnboardingAPI extends BaseAPI
             if (in_array('privacy_accepted_at', $cols, true)) {
                 $select[] = 'privacy_accepted_at';
             }
+            if (in_array('onboarding_verification_status', $cols, true)) {
+                $select[] = 'onboarding_verification_status';
+            }
+            if (in_array('onboarding_verified_at', $cols, true)) {
+                $select[] = 'onboarding_verified_at';
+            }
+            if (in_array('onboarding_verified_by', $cols, true)) {
+                $select[] = 'onboarding_verified_by';
+            }
 
             $userStmt = $this->conn->prepare(
                 'SELECT ' . implode(', ', $select) . ' FROM users WHERE id = ? LIMIT 1'
@@ -90,6 +99,8 @@ class GetOnboardingAPI extends BaseAPI
                 'onboarding_completed' => isset($user['onboarding_completed'])
                     ? (int) $user['onboarding_completed']
                     : 0,
+                'onboarding_verification_status' => $user['onboarding_verification_status'] ?? 'none',
+                'onboarding_verified_at' => $user['onboarding_verified_at'] ?? null,
             ]);
         } catch (Exception $e) {
             error_log('get_onboarding error: ' . $e->getMessage());

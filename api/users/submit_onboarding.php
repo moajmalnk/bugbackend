@@ -91,10 +91,6 @@ class SubmitOnboardingAPI extends BaseAPI
             if ($offerPath === false) {
                 return;
             }
-            $ndaPath = $this->storeUpload('nda_file', $userId, $uploadDir, true);
-            if ($ndaPath === false) {
-                return;
-            }
             $panPath = $this->storeUpload('pan_file', $userId, $uploadDir, false);
             if ($panPath === false) {
                 return;
@@ -114,7 +110,7 @@ class SubmitOnboardingAPI extends BaseAPI
                     post_office = ?, pin_code = ?, district = ?, state = ?, country = ?,
                     wfh_latitude = ?, wfh_longitude = ?,
                     aadhaar_number = ?, aadhaar_file_path = ?, pan_number = ?, pan_file_path = ?,
-                    offer_letter_path = ?, nda_path = ?,
+                    offer_letter_path = ?,
                     account_holder_name = ?, bank_name = ?, account_number = ?, ifsc_code = ?,
                     branch_name = ?, account_type = ?, upi_id = ?, upi_linked_phone = ?
                     WHERE user_id = ?';
@@ -123,7 +119,7 @@ class SubmitOnboardingAPI extends BaseAPI
                     $fields['city'], $fields['post_office'], $fields['pin_code'], $fields['district'],
                     $fields['state'], $fields['country'], $fields['wfh_latitude'], $fields['wfh_longitude'],
                     $fields['aadhaar_number'], $aadhaarPath, $fields['pan_number'], $panPath,
-                    $offerPath, $ndaPath,
+                    $offerPath,
                     $fields['account_holder_name'], $fields['bank_name'], $fields['account_number'],
                     $fields['ifsc_code'], $fields['branch_name'], $fields['account_type'],
                     $fields['upi_id'], $fields['upi_linked_phone'], $userId,
@@ -133,11 +129,11 @@ class SubmitOnboardingAPI extends BaseAPI
                     user_id, emergency_contact, house_name_number, landmark, city, post_office,
                     pin_code, district, state, country, wfh_latitude, wfh_longitude,
                     aadhaar_number, aadhaar_file_path, pan_number, pan_file_path,
-                    offer_letter_path, nda_path,
+                    offer_letter_path,
                     account_holder_name, bank_name, account_number, ifsc_code, branch_name,
                     account_type, upi_id, upi_linked_phone
                 ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )';
                 $params = [
                     $userId,
@@ -145,7 +141,7 @@ class SubmitOnboardingAPI extends BaseAPI
                     $fields['city'], $fields['post_office'], $fields['pin_code'], $fields['district'],
                     $fields['state'], $fields['country'], $fields['wfh_latitude'], $fields['wfh_longitude'],
                     $fields['aadhaar_number'], $aadhaarPath, $fields['pan_number'], $panPath,
-                    $offerPath, $ndaPath,
+                    $offerPath,
                     $fields['account_holder_name'], $fields['bank_name'], $fields['account_number'],
                     $fields['ifsc_code'], $fields['branch_name'], $fields['account_type'],
                     $fields['upi_id'], $fields['upi_linked_phone'],
@@ -162,6 +158,15 @@ class SubmitOnboardingAPI extends BaseAPI
             if (in_array('privacy_accepted_at', $cols, true)) {
                 $updateSql .= ', privacy_accepted_at = NOW()';
             }
+            if (in_array('onboarding_verification_status', $cols, true)) {
+                $updateSql .= ", onboarding_verification_status = 'pending'";
+            }
+            if (in_array('onboarding_verified_at', $cols, true)) {
+                $updateSql .= ', onboarding_verified_at = NULL';
+            }
+            if (in_array('onboarding_verified_by', $cols, true)) {
+                $updateSql .= ', onboarding_verified_by = NULL';
+            }
             $updateSql .= ' WHERE id = ?';
             $updateStmt = $this->conn->prepare($updateSql);
             $updateStmt->execute([$userId]);
@@ -175,6 +180,12 @@ class SubmitOnboardingAPI extends BaseAPI
             if (in_array('privacy_accepted_at', $cols, true)) {
                 $userSelect[] = 'privacy_accepted_at';
             }
+            if (in_array('onboarding_verification_status', $cols, true)) {
+                $userSelect[] = 'onboarding_verification_status';
+            }
+            if (in_array('onboarding_verified_at', $cols, true)) {
+                $userSelect[] = 'onboarding_verified_at';
+            }
             $userStmt = $this->conn->prepare(
                 'SELECT ' . implode(', ', $userSelect) . ' FROM users WHERE id = ? LIMIT 1'
             );
@@ -183,6 +194,7 @@ class SubmitOnboardingAPI extends BaseAPI
 
             $this->sendJsonResponse(200, 'Onboarding completed successfully', [
                 'onboarding_completed' => 1,
+                'onboarding_verification_status' => $user['onboarding_verification_status'] ?? 'pending',
                 'terms_accepted_at' => $user['terms_accepted_at'] ?? null,
                 'privacy_accepted_at' => $user['privacy_accepted_at'] ?? null,
                 'user' => $user,
