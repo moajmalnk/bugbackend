@@ -28,6 +28,9 @@ class MeController extends BaseAPI {
                 }
             }
             $select = ['id', 'username', 'email', 'phone', 'role', 'role_id'];
+            if (in_array('avatar', $cols, true)) {
+                $select[] = 'avatar';
+            }
             if (in_array('account_active', $cols, true)) {
                 $select[] = 'account_active';
             }
@@ -36,6 +39,12 @@ class MeController extends BaseAPI {
             }
             if (in_array('must_set_password', $cols, true)) {
                 $select[] = 'must_set_password';
+            }
+            if (in_array('joining_date', $cols, true)) {
+                $select[] = 'joining_date';
+            }
+            if (in_array('created_at', $cols, true)) {
+                $select[] = 'created_at';
             }
             if (in_array('terms_accepted_at', $cols, true)) {
                 $select[] = 'terms_accepted_at';
