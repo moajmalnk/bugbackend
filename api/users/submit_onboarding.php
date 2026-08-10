@@ -87,22 +87,24 @@ class SubmitOnboardingAPI extends BaseAPI
             if ($aadhaarPath === false) {
                 return;
             }
-            $offerPath = $this->storeUpload('offer_letter', $userId, $uploadDir, true);
-            if ($offerPath === false) {
-                return;
-            }
             $panPath = $this->storeUpload('pan_file', $userId, $uploadDir, false);
             if ($panPath === false) {
                 return;
             }
+            // Offer letter is no longer collected in onboarding; keep null / existing.
+            $offerPath = null;
 
             $this->conn->beginTransaction();
 
             $existsStmt = $this->conn->prepare(
-                'SELECT id FROM user_onboarding_details WHERE user_id = ? LIMIT 1'
+                'SELECT id, offer_letter_path FROM user_onboarding_details WHERE user_id = ? LIMIT 1'
             );
             $existsStmt->execute([$userId]);
-            $existingId = $existsStmt->fetchColumn();
+            $existingRow = $existsStmt->fetch(PDO::FETCH_ASSOC);
+            $existingId = $existingRow['id'] ?? null;
+            if ($offerPath === null && !empty($existingRow['offer_letter_path'])) {
+                $offerPath = $existingRow['offer_letter_path'];
+            }
 
             if ($existingId) {
                 $sql = 'UPDATE user_onboarding_details SET
