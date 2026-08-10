@@ -51,6 +51,15 @@ class GetOnboardingAPI extends BaseAPI
             }
 
             $select = ['id', 'username', 'email', 'role', 'role_id'];
+            if (in_array('phone', $cols, true)) {
+                $select[] = 'phone';
+            }
+            if (in_array('avatar', $cols, true)) {
+                $select[] = 'avatar';
+            }
+            if (in_array('joining_date', $cols, true)) {
+                $select[] = 'joining_date';
+            }
             if (in_array('onboarding_completed', $cols, true)) {
                 $select[] = 'onboarding_completed';
             }
