@@ -197,15 +197,29 @@ class SubmitOnboardingAPI extends BaseAPI
             $stmt = $this->conn->prepare($sql);
             $stmt->execute($params);
 
+            $this->stampDetailVerifiedAts($userId, $fields, $detailCols);
+
+            $termsAt = $this->parseClientTimestamp($_POST['terms_accepted_at'] ?? null)
+                ?? date('Y-m-d H:i:s');
+            $privacyAt = $this->parseClientTimestamp($_POST['privacy_accepted_at'] ?? null)
+                ?? date('Y-m-d H:i:s');
+
             $updateSql = 'UPDATE users SET onboarding_completed = 1';
+            $updateParams = [];
             if ($avatarPath && in_array('avatar', $cols, true)) {
                 $updateSql .= ', avatar = ?';
+                $updateParams[] = $avatarPath;
             }
             if (in_array('terms_accepted_at', $cols, true)) {
-                $updateSql .= ', terms_accepted_at = NOW()';
+                $updateSql .= ', terms_accepted_at = ?';
+                $updateParams[] = $termsAt;
             }
             if (in_array('privacy_accepted_at', $cols, true)) {
-                $updateSql .= ', privacy_accepted_at = NOW()';
+                $updateSql .= ', privacy_accepted_at = ?';
+                $updateParams[] = $privacyAt;
+            }
+            if (in_array('onboarding_completed_at', $cols, true)) {
+                $updateSql .= ', onboarding_completed_at = NOW()';
             }
             if (in_array('onboarding_verification_status', $cols, true)) {
                 $updateSql .= ", onboarding_verification_status = 'pending'";
@@ -217,10 +231,8 @@ class SubmitOnboardingAPI extends BaseAPI
                 $updateSql .= ', onboarding_verified_by = NULL';
             }
             $updateSql .= ' WHERE id = ?';
+            $updateParams[] = $userId;
             $updateStmt = $this->conn->prepare($updateSql);
-            $updateParams = ($avatarPath && in_array('avatar', $cols, true))
-                ? [$avatarPath, $userId]
-                : [$userId];
             $updateStmt->execute($updateParams);
 
             $this->conn->commit();
@@ -234,6 +246,9 @@ class SubmitOnboardingAPI extends BaseAPI
             }
             if (in_array('privacy_accepted_at', $cols, true)) {
                 $userSelect[] = 'privacy_accepted_at';
+            }
+            if (in_array('onboarding_completed_at', $cols, true)) {
+                $userSelect[] = 'onboarding_completed_at';
             }
             if (in_array('onboarding_verification_status', $cols, true)) {
                 $userSelect[] = 'onboarding_verification_status';
@@ -252,6 +267,7 @@ class SubmitOnboardingAPI extends BaseAPI
                 'onboarding_verification_status' => $user['onboarding_verification_status'] ?? 'pending',
                 'terms_accepted_at' => $user['terms_accepted_at'] ?? null,
                 'privacy_accepted_at' => $user['privacy_accepted_at'] ?? null,
+                'onboarding_completed_at' => $user['onboarding_completed_at'] ?? null,
                 'avatar' => $user['avatar'] ?? $avatarPath,
                 'user' => $user,
                 'details' => $this->fetchDetails($userId),
@@ -263,6 +279,61 @@ class SubmitOnboardingAPI extends BaseAPI
             error_log('submit_onboarding error: ' . $e->getMessage());
             $this->sendJsonResponse(500, 'Failed to submit onboarding: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * @param array<string, mixed> $fields
+     * @param list<string> $detailCols
+     */
+    private function stampDetailVerifiedAts(string $userId, array $fields, array $detailCols): void
+    {
+        $sets = [];
+        $params = [];
+
+        if (in_array('emergency_contact_verified_at', $detailCols, true)) {
+            $at = $this->parseClientTimestamp($fields['emergency_contact_verified_at'] ?? null);
+            if ($at !== null) {
+                $sets[] = 'emergency_contact_verified_at = ?';
+                $params[] = $at;
+            }
+        }
+        if (in_array('contact_email_verified_at', $detailCols, true)) {
+            $at = $this->parseClientTimestamp($fields['contact_email_verified_at'] ?? null);
+            if ($at !== null) {
+                $sets[] = 'contact_email_verified_at = ?';
+                $params[] = $at;
+            }
+        }
+
+        if (empty($sets)) {
+            return;
+        }
+
+        $params[] = $userId;
+        $stmt = $this->conn->prepare(
+            'UPDATE user_onboarding_details SET ' . implode(', ', $sets) . ' WHERE user_id = ?'
+        );
+        $stmt->execute($params);
+    }
+
+    private function parseClientTimestamp($raw): ?string
+    {
+        if ($raw === null) {
+            return null;
+        }
+        $value = trim((string) $raw);
+        if ($value === '') {
+            return null;
+        }
+        $ts = strtotime($value);
+        if ($ts === false) {
+            return null;
+        }
+        $now = time();
+        if ($ts < $now - 60 * 24 * 60 * 60 || $ts > $now + 24 * 60 * 60) {
+            return null;
+        }
+        return date('Y-m-d H:i:s', $ts);
     }
 
     private function usersColumnSet(): array
@@ -319,6 +390,8 @@ class SubmitOnboardingAPI extends BaseAPI
         return [
             'emergency_contact' => $this->digitsOnly((string) ($post['emergency_contact'] ?? ''), 15),
             'contact_email' => strtolower($this->clamp((string) ($post['contact_email'] ?? ''), 150)),
+            'emergency_contact_verified_at' => (string) ($post['emergency_contact_verified_at'] ?? ''),
+            'contact_email_verified_at' => (string) ($post['contact_email_verified_at'] ?? ''),
             'house_name_number' => $this->clamp((string) ($post['house_name_number'] ?? ''), 150),
             'landmark' => $this->clamp((string) ($post['landmark'] ?? ''), 200),
             'city' => $this->clamp((string) ($post['city'] ?? ''), 100),

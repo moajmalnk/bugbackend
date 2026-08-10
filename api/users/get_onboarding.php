@@ -60,6 +60,9 @@ class GetOnboardingAPI extends BaseAPI
             if (in_array('privacy_accepted_at', $cols, true)) {
                 $select[] = 'privacy_accepted_at';
             }
+            if (in_array('onboarding_completed_at', $cols, true)) {
+                $select[] = 'onboarding_completed_at';
+            }
             if (in_array('onboarding_verification_status', $cols, true)) {
                 $select[] = 'onboarding_verification_status';
             }
@@ -101,6 +104,9 @@ class GetOnboardingAPI extends BaseAPI
                     : 0,
                 'onboarding_verification_status' => $user['onboarding_verification_status'] ?? 'none',
                 'onboarding_verified_at' => $user['onboarding_verified_at'] ?? null,
+                'onboarding_completed_at' => $user['onboarding_completed_at'] ?? null,
+                'terms_accepted_at' => $user['terms_accepted_at'] ?? null,
+                'privacy_accepted_at' => $user['privacy_accepted_at'] ?? null,
             ]);
         } catch (Exception $e) {
             error_log('get_onboarding error: ' . $e->getMessage());
