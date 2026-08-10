@@ -116,6 +116,18 @@ class VerifyContactEmailOtpAPI extends BaseAPI
                  WHERE user_id = ?'
             );
             $stmt->execute([$email, $userId]);
+            // Why: First-time onboarding verifies OTP before the details row exists.
+            if ($stmt->rowCount() === 0) {
+                $ins = $this->conn->prepare(
+                    'INSERT INTO user_onboarding_details (user_id, contact_email, contact_email_verified_at)
+                     VALUES (?, ?, NOW())'
+                );
+                try {
+                    $ins->execute([$userId, $email]);
+                } catch (Exception $ignored) {
+                    // Row may have been created concurrently; ignore.
+                }
+            }
         } catch (Exception $e) {
             error_log('stampContactEmailVerified: ' . $e->getMessage());
         }

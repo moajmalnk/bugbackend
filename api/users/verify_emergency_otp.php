@@ -94,12 +94,25 @@ class VerifyEmergencyOtpAPI extends BaseAPI
             if (strlen($digits) === 12 && strpos($digits, '91') === 0) {
                 $digits = substr($digits, 2);
             }
+            $safePhone = substr($digits, -15);
             $stmt = $this->conn->prepare(
                 'UPDATE user_onboarding_details
                  SET emergency_contact = ?, emergency_contact_verified_at = NOW()
                  WHERE user_id = ?'
             );
-            $stmt->execute([substr($digits, -15), $userId]);
+            $stmt->execute([$safePhone, $userId]);
+            // Why: First-time onboarding verifies OTP before the details row exists.
+            if ($stmt->rowCount() === 0) {
+                $ins = $this->conn->prepare(
+                    'INSERT INTO user_onboarding_details (user_id, emergency_contact, emergency_contact_verified_at)
+                     VALUES (?, ?, NOW())'
+                );
+                try {
+                    $ins->execute([$userId, $safePhone]);
+                } catch (Exception $ignored) {
+                    // Row may have been created concurrently; ignore.
+                }
+            }
         } catch (Exception $e) {
             error_log('stampEmergencyVerified: ' . $e->getMessage());
         }

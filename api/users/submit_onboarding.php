@@ -348,14 +348,23 @@ class SubmitOnboardingAPI extends BaseAPI
         $params = [];
 
         if (in_array('emergency_contact_verified_at', $detailCols, true)) {
-            $at = $this->parseClientTimestamp($fields['emergency_contact_verified_at'] ?? null);
+            $raw = $fields['emergency_contact_verified_at'] ?? null;
+            $at = $this->parseClientTimestamp($raw);
+            // Why: Client may send an older audit stamp from edit-mode hydrate; still persist verified.
+            if ($at === null && is_string($raw) && trim($raw) !== '') {
+                $at = date('Y-m-d H:i:s');
+            }
             if ($at !== null) {
                 $sets[] = 'emergency_contact_verified_at = ?';
                 $params[] = $at;
             }
         }
         if (in_array('contact_email_verified_at', $detailCols, true)) {
-            $at = $this->parseClientTimestamp($fields['contact_email_verified_at'] ?? null);
+            $raw = $fields['contact_email_verified_at'] ?? null;
+            $at = $this->parseClientTimestamp($raw);
+            if ($at === null && is_string($raw) && trim($raw) !== '') {
+                $at = date('Y-m-d H:i:s');
+            }
             if ($at !== null) {
                 $sets[] = 'contact_email_verified_at = ?';
                 $params[] = $at;
