@@ -116,6 +116,7 @@ function sendEmail($to, $subject, $html_body, $text_body = '') {
         $mail->Password = $smtpPass;
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port = $smtpPort;
+        $mail->Timeout = 8;
 
         $mail->CharSet = PHPMailer::CHARSET_UTF8;
         $mail->Encoding = 'base64';

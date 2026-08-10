@@ -54,7 +54,7 @@ class SendContactEmailOtpAPI extends BaseAPI
                 $elapsed = time() - strtotime($last['created_at']);
                 if ($elapsed < 30) {
                     $this->sendJsonResponse(429, 'Please wait ' . (30 - $elapsed) . 's before resending OTP', [
-                        'retry_after' => 45 - $elapsed,
+                        'retry_after' => 30 - $elapsed,
                     ]);
                     return;
                 }
