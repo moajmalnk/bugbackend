@@ -303,32 +303,46 @@ class SubmitOnboardingAPI extends BaseAPI
             $userStmt->execute([$userId]);
             $user = $userStmt->fetch(PDO::FETCH_ASSOC) ?: [];
 
+            $payload = [
+                'onboarding_completed' => 1,
+                'onboarding_verification_status' => $user['onboarding_verification_status'] ?? 'pending',
+                'terms_accepted_at' => $user['terms_accepted_at'] ?? null,
+                'privacy_accepted_at' => $user['privacy_accepted_at'] ?? null,
+                'onboarding_completed_at' => $user['onboarding_completed_at'] ?? null,
+                'avatar' => $user['avatar'] ?? $avatarPath,
+                'user' => $user,
+                // Why: Skip heavy details re-fetch on edit — Profile invalidates & reloads.
+                'details' => $isUpdate ? null : $this->fetchDetails($userId),
+                'updated' => $isUpdate,
+            ];
+
+            // Why: Flush JSON to the client before email/WhatsApp so Save feels instant.
+            $this->sendJsonAndFinish(
+                200,
+                $isUpdate ? 'Onboarding details updated successfully' : 'Onboarding completed successfully',
+                $payload
+            );
+
             try {
                 require_once __DIR__ . '/../../utils/onboarding_notifications.php';
-                br_notify_admins_onboarding_submitted(
-                    $this->conn,
-                    $userId,
-                    (string) ($user['username'] ?? '')
-                );
+                if ($isUpdate) {
+                    // Why: Edits only need a light push — full email/WA to every admin made Save hang.
+                    br_notify_admins_onboarding_updated(
+                        $this->conn,
+                        $userId,
+                        (string) ($user['username'] ?? '')
+                    );
+                } else {
+                    br_notify_admins_onboarding_submitted(
+                        $this->conn,
+                        $userId,
+                        (string) ($user['username'] ?? '')
+                    );
+                }
             } catch (Throwable $e) {
                 error_log('submit_onboarding notify: ' . $e->getMessage());
             }
-
-            $this->sendJsonResponse(
-                200,
-                $isUpdate ? 'Onboarding details updated successfully' : 'Onboarding completed successfully',
-                [
-                    'onboarding_completed' => 1,
-                    'onboarding_verification_status' => $user['onboarding_verification_status'] ?? 'pending',
-                    'terms_accepted_at' => $user['terms_accepted_at'] ?? null,
-                    'privacy_accepted_at' => $user['privacy_accepted_at'] ?? null,
-                    'onboarding_completed_at' => $user['onboarding_completed_at'] ?? null,
-                    'avatar' => $user['avatar'] ?? $avatarPath,
-                    'user' => $user,
-                    'details' => $this->fetchDetails($userId),
-                    'updated' => $isUpdate,
-                ]
-            );
+            return;
         } catch (Exception $e) {
             if ($this->conn && $this->conn->inTransaction()) {
                 $this->conn->rollBack();
@@ -647,6 +661,42 @@ class SubmitOnboardingAPI extends BaseAPI
         // Why: Relative path works on Hostinger + local; frontend resolveAvatarUrl
         // maps this to the backend origin (legacy /BugRicer/backend/... 404s in prod).
         return 'uploads/profile_pictures/' . $filename;
+    }
+
+    /**
+     * Why: Return JSON to the browser immediately, then keep PHP alive for slow
+     * side-effects (email / WhatsApp) so Save does not wait on SMTP.
+     */
+    private function sendJsonAndFinish(int $statusCode, string $message, $data = null): void
+    {
+        if (!headers_sent()) {
+            http_response_code($statusCode);
+            header('Content-Type: application/json');
+        }
+
+        $response = [
+            'success' => $statusCode >= 200 && $statusCode < 300,
+            'message' => $message,
+            'data' => $data,
+        ];
+
+        echo json_encode($response);
+
+        // LiteSpeed / PHP-FPM: detach so SMTP does not block the client.
+        if (function_exists('fastcgi_finish_request')) {
+            @fastcgi_finish_request();
+            return;
+        }
+        if (function_exists('litespeed_finish_request')) {
+            @litespeed_finish_request();
+            return;
+        }
+
+        ignore_user_abort(true);
+        while (ob_get_level() > 0) {
+            @ob_end_flush();
+        }
+        @flush();
     }
 
     private function fetchDetails(string $userId): ?array

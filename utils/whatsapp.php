@@ -2089,9 +2089,14 @@ function sendWfhRequestDecisionWhatsApp($userPhone, $username, $date, $status, $
  */
 function sendOnboardingSubmittedAdminWhatsApp($adminPhone, $username)
 {
+    $base = function_exists('getFrontendBaseUrl')
+        ? rtrim(getFrontendBaseUrl(), '/')
+        : 'https://bugs.bugricer.com';
+    $reviewUrl = $base . '/admin/users?tab=pending';
     $message = "📋 *Onboarding pending review*\n\n"
         . "*{$username}* submitted onboarding documents for verification.\n\n"
-        . "Open their profile in BugRicer → *Review & decide* to verify or reject.";
+        . "Open their profile in BugRicer → *Review & decide* to verify or reject.\n\n"
+        . "{$reviewUrl}";
     return sendWhatsAppMessage($adminPhone, $message);
 }
 

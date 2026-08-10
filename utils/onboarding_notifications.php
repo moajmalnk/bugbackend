@@ -60,6 +60,31 @@ function br_notify_admins_onboarding_submitted(PDO $conn, string $userId, ?strin
 }
 
 /**
+ * Why: Profile edits re-queue HR review — push only so Save stays snappy
+ * (email/WhatsApp to every admin made updates feel stuck on "Saving…").
+ */
+function br_notify_admins_onboarding_updated(PDO $conn, string $userId, ?string $username = null): void
+{
+    $username = trim((string) $username);
+    if ($username === '') {
+        try {
+            $stmt = $conn->prepare('SELECT username FROM users WHERE id = ? LIMIT 1');
+            $stmt->execute([$userId]);
+            $username = trim((string) ($stmt->fetchColumn() ?: '')) ?: 'Employee';
+        } catch (Throwable $e) {
+            $username = 'Employee';
+        }
+    }
+
+    try {
+        require_once __DIR__ . '/../api/NotificationManager.php';
+        NotificationManager::getInstance()->notifyOnboardingSubmitted($userId, $username);
+    } catch (Throwable $e) {
+        error_log('onboarding update push: ' . $e->getMessage());
+    }
+}
+
+/**
  * Alert the employee when HR verifies or rejects their onboarding documents.
  *
  * @param 'verified'|'rejected' $status
