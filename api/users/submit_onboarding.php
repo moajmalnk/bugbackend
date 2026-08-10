@@ -94,15 +94,20 @@ class SubmitOnboardingAPI extends BaseAPI
             // Offer letter is no longer collected in onboarding; keep null / existing.
             $offerPath = null;
 
+            $avatarPath = $this->storeProfilePhoto($userId);
+            if ($avatarPath === false) {
+                return;
+            }
+
             $this->conn->beginTransaction();
 
             $existsStmt = $this->conn->prepare(
                 'SELECT id, offer_letter_path FROM user_onboarding_details WHERE user_id = ? LIMIT 1'
             );
             $existsStmt->execute([$userId]);
-            $existingRow = $existsStmt->fetch(PDO::FETCH_ASSOC);
+            $existingRow = $existsStmt->fetch(PDO::FETCH_ASSOC) ?: null;
             $existingId = $existingRow['id'] ?? null;
-            if ($offerPath === null && !empty($existingRow['offer_letter_path'])) {
+            if ($offerPath === null && $existingRow && !empty($existingRow['offer_letter_path'])) {
                 $offerPath = $existingRow['offer_letter_path'];
             }
 
@@ -154,6 +159,9 @@ class SubmitOnboardingAPI extends BaseAPI
             $stmt->execute($params);
 
             $updateSql = 'UPDATE users SET onboarding_completed = 1';
+            if ($avatarPath && in_array('avatar', $cols, true)) {
+                $updateSql .= ', avatar = ?';
+            }
             if (in_array('terms_accepted_at', $cols, true)) {
                 $updateSql .= ', terms_accepted_at = NOW()';
             }
@@ -171,11 +179,17 @@ class SubmitOnboardingAPI extends BaseAPI
             }
             $updateSql .= ' WHERE id = ?';
             $updateStmt = $this->conn->prepare($updateSql);
-            $updateStmt->execute([$userId]);
+            $updateParams = ($avatarPath && in_array('avatar', $cols, true))
+                ? [$avatarPath, $userId]
+                : [$userId];
+            $updateStmt->execute($updateParams);
 
             $this->conn->commit();
 
             $userSelect = ['id', 'username', 'email', 'phone', 'role', 'role_id', 'onboarding_completed'];
+            if (in_array('avatar', $cols, true)) {
+                $userSelect[] = 'avatar';
+            }
             if (in_array('terms_accepted_at', $cols, true)) {
                 $userSelect[] = 'terms_accepted_at';
             }
@@ -199,6 +213,7 @@ class SubmitOnboardingAPI extends BaseAPI
                 'onboarding_verification_status' => $user['onboarding_verification_status'] ?? 'pending',
                 'terms_accepted_at' => $user['terms_accepted_at'] ?? null,
                 'privacy_accepted_at' => $user['privacy_accepted_at'] ?? null,
+                'avatar' => $user['avatar'] ?? $avatarPath,
                 'user' => $user,
                 'details' => $this->fetchDetails($userId),
             ]);
@@ -379,6 +394,68 @@ class SubmitOnboardingAPI extends BaseAPI
         }
 
         return 'uploads/statutory/' . $filename;
+    }
+
+    /**
+     * Why: Profile photo is required for onboarding and lives on users.avatar
+     * (same path convention as messaging update_profile_picture).
+     *
+     * @return string|false Relative web path on success, false on error (response already sent)
+     */
+    private function storeProfilePhoto(string $userId)
+    {
+        $field = 'profile_photo';
+        if (!isset($_FILES[$field]) || !is_array($_FILES[$field])) {
+            $this->sendJsonResponse(400, 'profile_photo is required');
+            return false;
+        }
+
+        $file = $_FILES[$field];
+        if (($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+            $this->sendJsonResponse(400, 'profile_photo is required');
+            return false;
+        }
+        if (($file['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) {
+            $this->sendJsonResponse(400, 'Upload failed for profile_photo');
+            return false;
+        }
+
+        $original = (string) ($file['name'] ?? '');
+        $ext = strtolower(pathinfo($original, PATHINFO_EXTENSION));
+        $allowedExt = ['jpg', 'jpeg', 'png', 'webp'];
+        if (!in_array($ext, $allowedExt, true)) {
+            $this->sendJsonResponse(400, 'profile_photo: use JPG, PNG, or WebP');
+            return false;
+        }
+
+        if (!validateFileSize((int) ($file['size'] ?? 0), self::MAX_FILE_BYTES)) {
+            $this->sendJsonResponse(400, 'profile_photo: file too large (max 5MB)');
+            return false;
+        }
+
+        $mime = (string) ($file['type'] ?? '');
+        $allowedMime = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+        if ($mime !== '' && !in_array($mime, $allowedMime, true)) {
+            $this->sendJsonResponse(400, 'profile_photo: unsupported MIME type');
+            return false;
+        }
+
+        $uploadDir = __DIR__ . '/../../uploads/profile_pictures/';
+        if (!is_dir($uploadDir) && !mkdir($uploadDir, 0775, true)) {
+            $this->sendJsonResponse(500, 'Failed to create profile picture directory');
+            return false;
+        }
+
+        $safeUser = preg_replace('/[^a-zA-Z0-9_-]/', '', $userId) ?: 'user';
+        $filename = $safeUser . '_' . time() . '.' . ($ext === 'jpeg' ? 'jpg' : $ext);
+        $dest = rtrim($uploadDir, '/') . '/' . $filename;
+
+        if (!move_uploaded_file($file['tmp_name'], $dest)) {
+            $this->sendJsonResponse(500, 'Failed to store profile_photo');
+            return false;
+        }
+
+        return '/BugRicer/backend/uploads/profile_pictures/' . $filename;
     }
 
     private function fetchDetails(string $userId): ?array
