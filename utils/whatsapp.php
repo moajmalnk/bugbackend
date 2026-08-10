@@ -2061,10 +2061,15 @@ function sendWfhRequestNotificationWhatsApp($adminPhone, $username, $date, $user
 {
     $dateFormatted = date('D, M j', strtotime($date));
     $note = $userNote ? "\nNote: " . trim((string)$userNote) : '';
+    $base = function_exists('getFrontendBaseUrl')
+        ? rtrim(getFrontendBaseUrl(), '/')
+        : 'https://bugs.bugricer.com';
+    $reviewUrl = $base . '/admin/attendance-exceptions';
     $message = "🏠 *WFH request*\n\n"
         . "*{$username}* requested work-from-home for *{$dateFormatted}*."
         . $note
-        . "\n\nOpen Attendance exceptions in BugRicer to approve or reject.";
+        . "\n\nOpen Attendance exceptions in BugRicer to approve or reject.\n\n"
+        . "{$reviewUrl}";
     return sendWhatsAppMessage($adminPhone, $message);
 }
 

@@ -1218,7 +1218,7 @@ class NotificationManager extends BaseAPI {
                 'entity_id' => $userId,
                 'created_by' => $userName,
                 'status' => 'pending',
-                'url' => '/admin/users/' . rawurlencode($userId) . '?tab=pending',
+                'url' => '/admin/users?tab=pending',
             ]
         );
     }

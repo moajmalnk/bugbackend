@@ -1217,6 +1217,19 @@ function sendWfhRequestNotificationEmail($adminEmail, $username, $date, $userNot
         : '';
     $noteText = $userNote ? "\nNote: {$userNote}\n" : '';
 
+    $base = 'https://bugs.bugricer.com';
+    if (function_exists('getFrontendBaseUrl')) {
+        $base = rtrim(getFrontendBaseUrl(), '/');
+    } elseif (
+        isset($_SERVER['HTTP_HOST']) &&
+        (strpos((string) $_SERVER['HTTP_HOST'], 'localhost') !== false ||
+            strpos((string) $_SERVER['HTTP_HOST'], '127.0.0.1') !== false)
+    ) {
+        $base = 'http://localhost:8080';
+    }
+    $reviewUrl = $base . '/admin/attendance-exceptions';
+    $safeUrl = htmlspecialchars($reviewUrl, ENT_QUOTES, 'UTF-8');
+
     $html_body = "
     <div style=\"font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto;\">
       <div style=\"background: linear-gradient(135deg,#0ea5e9,#10b981); padding: 20px; border-radius: 12px 12px 0 0;\">
@@ -1225,11 +1238,16 @@ function sendWfhRequestNotificationEmail($adminEmail, $username, $date, $userNot
       <div style=\"border:1px solid #e5e7eb;border-top:0;padding:20px;border-radius:0 0 12px 12px;\">
         <p><strong>" . htmlspecialchars((string)$username, ENT_QUOTES, 'UTF-8') . "</strong> requested work-from-home for <strong>{$dateFormatted}</strong>.</p>
         {$noteHtml}
-        <p style=\"margin-top:16px;color:#64748b;font-size:13px;\">Open Attendance exceptions in BugRicer to approve or reject.</p>
+        <p style=\"margin-top:16px;\">
+          <a href=\"{$safeUrl}\" style=\"display:inline-block;background:#0ea5e9;color:#fff;text-decoration:none;padding:10px 16px;border-radius:10px;font-weight:600;\">
+            Open Attendance exceptions
+          </a>
+        </p>
+        <p style=\"margin-top:12px;color:#64748b;font-size:12px;word-break:break-all;\">{$safeUrl}</p>
       </div>
     </div>";
 
-    $text_body = "WFH request — BugRicer\n\n{$username} requested WFH for {$dateFormatted}.{$noteText}\nOpen Attendance exceptions to approve or reject.\n";
+    $text_body = "WFH request — BugRicer\n\n{$username} requested WFH for {$dateFormatted}.{$noteText}\nOpen Attendance exceptions to approve or reject.\n\n{$reviewUrl}\n";
 
     return sendEmail($adminEmail, $subject, $html_body, $text_body);
 }
@@ -1278,6 +1296,18 @@ function sendWfhRequestDecisionEmail($userEmail, $username, $date, $status, $adm
 function sendOnboardingSubmittedAdminEmail($adminEmail, $username)
 {
     $safeName = htmlspecialchars((string) $username, ENT_QUOTES, 'UTF-8');
+    $base = 'https://bugs.bugricer.com';
+    if (function_exists('getFrontendBaseUrl')) {
+        $base = rtrim(getFrontendBaseUrl(), '/');
+    } elseif (
+        isset($_SERVER['HTTP_HOST']) &&
+        (strpos((string) $_SERVER['HTTP_HOST'], 'localhost') !== false ||
+            strpos((string) $_SERVER['HTTP_HOST'], '127.0.0.1') !== false)
+    ) {
+        $base = 'http://localhost:8080';
+    }
+    $reviewUrl = $base . '/admin/users?tab=pending';
+    $safeUrl = htmlspecialchars($reviewUrl, ENT_QUOTES, 'UTF-8');
     $subject = "Onboarding pending · {$username}";
     $html_body = "
     <div style=\"font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto;\">
@@ -1286,10 +1316,15 @@ function sendOnboardingSubmittedAdminEmail($adminEmail, $username)
       </div>
       <div style=\"border:1px solid #e5e7eb;border-top:0;padding:20px;border-radius:0 0 12px 12px;\">
         <p><strong>{$safeName}</strong> submitted onboarding documents (address, statutory, and banking) for verification.</p>
-        <p style=\"margin-top:16px;color:#64748b;font-size:13px;\">Open the employee profile in BugRicer → Review &amp; decide to verify or reject.</p>
+        <p style=\"margin-top:16px;\">
+          <a href=\"{$safeUrl}\" style=\"display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:10px 16px;border-radius:10px;font-weight:600;\">
+            Review pending onboarding
+          </a>
+        </p>
+        <p style=\"margin-top:12px;color:#64748b;font-size:12px;word-break:break-all;\">{$safeUrl}</p>
       </div>
     </div>";
-    $text_body = "Onboarding pending review — BugRicer\n\n{$username} submitted onboarding documents for verification.\nOpen the employee profile to Review & decide.\n";
+    $text_body = "Onboarding pending review — BugRicer\n\n{$username} submitted onboarding documents for verification.\n\nReview: {$reviewUrl}\n";
     return sendEmail($adminEmail, $subject, $html_body, $text_body);
 }
 
