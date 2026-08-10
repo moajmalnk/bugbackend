@@ -91,6 +91,27 @@ class VerifyOnboardingAPI extends BaseAPI
             $stmt = $this->conn->prepare($sql);
             $stmt->execute($params);
 
+            $adminName = null;
+            try {
+                $an = $this->conn->prepare('SELECT username FROM users WHERE id = ? LIMIT 1');
+                $an->execute([$adminId]);
+                $adminName = trim((string) ($an->fetchColumn() ?: '')) ?: null;
+            } catch (Throwable $e) {
+                $adminName = null;
+            }
+
+            try {
+                require_once __DIR__ . '/../../utils/onboarding_notifications.php';
+                br_notify_employee_onboarding_decision(
+                    $this->conn,
+                    $targetId,
+                    $status,
+                    $adminName
+                );
+            } catch (Throwable $e) {
+                error_log('verify_onboarding notify: ' . $e->getMessage());
+            }
+
             $this->sendJsonResponse(200, $action === 'verify'
                 ? 'Onboarding verified successfully'
                 : 'Onboarding marked as rejected', [

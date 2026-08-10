@@ -1199,6 +1199,67 @@ class NotificationManager extends BaseAPI {
     }
 
     /**
+     * Why: Admins must review statutory/banking docs after wizard submit.
+     */
+    public function notifyOnboardingSubmitted($userId, $username = null)
+    {
+        $userId = (string) $userId;
+        $userName = $username ? (string) $username : $this->getUserName($userId);
+        $notificationType = $this->getValidNotificationType('onboarding_submitted', 'new_update');
+        $userIds = $this->resolveAdminRecipients($userId);
+
+        return $this->createNotification(
+            $notificationType,
+            'Onboarding pending review',
+            "{$userName} submitted onboarding documents for verification",
+            $userIds,
+            [
+                'entity_type' => 'onboarding',
+                'entity_id' => $userId,
+                'created_by' => $userName,
+                'status' => 'pending',
+                'url' => '/admin/users/' . rawurlencode($userId) . '?tab=pending',
+            ]
+        );
+    }
+
+    /**
+     * Why: Tell the employee when HR verifies or rejects their documents.
+     *
+     * @param string $status verified|rejected
+     */
+    public function notifyOnboardingVerificationDecision($userId, $status, $adminUsername = null)
+    {
+        $userId = (string) $userId;
+        $verified = strtolower((string) $status) === 'verified';
+        $notificationType = $this->getValidNotificationType(
+            $verified ? 'onboarding_verified' : 'onboarding_rejected',
+            'status_change'
+        );
+
+        $title = $verified ? 'Onboarding verified' : 'Onboarding rejected';
+        $message = $verified
+            ? 'Your onboarding documents were verified by HR. You are all set.'
+            : 'Your onboarding documents were rejected. Please contact HR for next steps.';
+        if ($adminUsername) {
+            $message .= ' (' . trim((string) $adminUsername) . ')';
+        }
+
+        return $this->createNotification(
+            $notificationType,
+            $title,
+            $message,
+            [$userId],
+            [
+                'entity_type' => $verified ? 'onboarding_verified' : 'onboarding_rejected',
+                'entity_id' => $userId,
+                'status' => $verified ? 'verified' : 'rejected',
+                'url' => '/profile',
+            ]
+        );
+    }
+
+    /**
      * Get user role by user ID.
      */
     private function getUserRole($userId) {

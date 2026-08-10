@@ -297,6 +297,17 @@ class SubmitOnboardingAPI extends BaseAPI
             $userStmt->execute([$userId]);
             $user = $userStmt->fetch(PDO::FETCH_ASSOC) ?: [];
 
+            try {
+                require_once __DIR__ . '/../../utils/onboarding_notifications.php';
+                br_notify_admins_onboarding_submitted(
+                    $this->conn,
+                    $userId,
+                    (string) ($user['username'] ?? '')
+                );
+            } catch (Throwable $e) {
+                error_log('submit_onboarding notify: ' . $e->getMessage());
+            }
+
             $this->sendJsonResponse(200, 'Onboarding completed successfully', [
                 'onboarding_completed' => 1,
                 'onboarding_verification_status' => $user['onboarding_verification_status'] ?? 'pending',

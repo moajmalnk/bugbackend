@@ -1271,4 +1271,63 @@ function sendWfhRequestDecisionEmail($userEmail, $username, $date, $status, $adm
 
     return sendEmail($userEmail, $subject, $html_body, $text_body);
 }
+
+/**
+ * Why: Alert admins when an employee finishes onboarding and awaits HR verification.
+ */
+function sendOnboardingSubmittedAdminEmail($adminEmail, $username)
+{
+    $safeName = htmlspecialchars((string) $username, ENT_QUOTES, 'UTF-8');
+    $subject = "Onboarding pending · {$username}";
+    $html_body = "
+    <div style=\"font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto;\">
+      <div style=\"background: linear-gradient(135deg,#2563eb,#4f46e5); padding: 20px; border-radius: 12px 12px 0 0;\">
+        <h2 style=\"margin:0;color:#fff;\">Onboarding pending review</h2>
+      </div>
+      <div style=\"border:1px solid #e5e7eb;border-top:0;padding:20px;border-radius:0 0 12px 12px;\">
+        <p><strong>{$safeName}</strong> submitted onboarding documents (address, statutory, and banking) for verification.</p>
+        <p style=\"margin-top:16px;color:#64748b;font-size:13px;\">Open the employee profile in BugRicer → Review &amp; decide to verify or reject.</p>
+      </div>
+    </div>";
+    $text_body = "Onboarding pending review — BugRicer\n\n{$username} submitted onboarding documents for verification.\nOpen the employee profile to Review & decide.\n";
+    return sendEmail($adminEmail, $subject, $html_body, $text_body);
+}
+
+/**
+ * Why: Tell the employee when HR verifies or rejects onboarding documents.
+ *
+ * @param 'verified'|'rejected'|string $status
+ */
+function sendOnboardingVerificationDecisionEmail($userEmail, $username, $status, $adminUsername = null)
+{
+    $verified = strtolower((string) $status) === 'verified';
+    $safeName = htmlspecialchars((string) $username, ENT_QUOTES, 'UTF-8');
+    $subject = $verified ? 'Onboarding verified · BugRicer' : 'Onboarding rejected · BugRicer';
+    $headline = $verified ? 'Your documents were verified' : 'Your documents were rejected';
+    $bodyLine = $verified
+        ? 'HR has verified your onboarding documents. You are cleared to continue in BugRicer.'
+        : 'HR rejected your onboarding documents. Please contact your administrator for next steps.';
+    $adminHtml = $adminUsername
+        ? '<p style="margin:12px 0 0;color:#64748b;font-size:13px;">Reviewed by ' . htmlspecialchars((string) $adminUsername, ENT_QUOTES, 'UTF-8') . '.</p>'
+        : '';
+    $adminText = $adminUsername ? "\nReviewed by: {$adminUsername}\n" : '';
+    $color = $verified ? '#10b981' : '#f43f5e';
+
+    $html_body = "
+    <div style=\"font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto;\">
+      <div style=\"background: {$color}; padding: 20px; border-radius: 12px 12px 0 0;\">
+        <h2 style=\"margin:0;color:#fff;\">{$headline}</h2>
+      </div>
+      <div style=\"border:1px solid #e5e7eb;border-top:0;padding:20px;border-radius:0 0 12px 12px;\">
+        <p>Hi {$safeName},</p>
+        <p>{$bodyLine}</p>
+        {$adminHtml}
+        <p style=\"margin-top:16px;color:#64748b;font-size:13px;\">You can also check status on your BugRicer profile.</p>
+      </div>
+    </div>";
+
+    $text_body = "{$headline} — BugRicer\n\nHi {$username},\n{$bodyLine}{$adminText}\nCheck your BugRicer profile for status.\n";
+
+    return sendEmail($userEmail, $subject, $html_body, $text_body);
+}
 ?>

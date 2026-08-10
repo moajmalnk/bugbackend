@@ -2083,5 +2083,33 @@ function sendWfhRequestDecisionWhatsApp($userPhone, $username, $date, $status, $
     $message = "{$headline}\n\nHi {$username},\nDate: *{$dateFormatted}*\n{$body}{$note}";
     return sendWhatsAppMessage($userPhone, $message);
 }
+
+/**
+ * Why: Alert admins on WhatsApp when onboarding docs await verification.
+ */
+function sendOnboardingSubmittedAdminWhatsApp($adminPhone, $username)
+{
+    $message = "📋 *Onboarding pending review*\n\n"
+        . "*{$username}* submitted onboarding documents for verification.\n\n"
+        . "Open their profile in BugRicer → *Review & decide* to verify or reject.";
+    return sendWhatsAppMessage($adminPhone, $message);
+}
+
+/**
+ * Why: Notify the employee on WhatsApp after verify/reject.
+ *
+ * @param 'verified'|'rejected'|string $status
+ */
+function sendOnboardingVerificationDecisionWhatsApp($userPhone, $username, $status, $adminUsername = null)
+{
+    $verified = strtolower((string) $status) === 'verified';
+    $headline = $verified ? '✅ *Onboarding verified*' : '❌ *Onboarding rejected*';
+    $body = $verified
+        ? 'HR verified your documents. You are all set in BugRicer.'
+        : 'HR rejected your onboarding documents. Please contact your administrator.';
+    $note = $adminUsername ? "\nReviewed by: *{$adminUsername}*" : '';
+    $message = "{$headline}\n\nHi {$username},\n{$body}{$note}\n\nCheck your BugRicer profile for status.";
+    return sendWhatsAppMessage($userPhone, $message);
+}
 ?>
 

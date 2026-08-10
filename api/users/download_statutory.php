@@ -79,13 +79,15 @@ class DownloadStatutoryAPI extends BaseAPI
             ];
             $mime = $mimeMap[$ext] ?? 'application/octet-stream';
             $downloadName = basename($absolute);
+            $inline = isset($_GET['preview']) && (string) $_GET['preview'] === '1';
 
             if (ob_get_length()) {
                 ob_end_clean();
             }
             header('Content-Type: ' . $mime);
             header('Content-Length: ' . filesize($absolute));
-            header('Content-Disposition: attachment; filename="' . $downloadName . '"');
+            $disposition = $inline ? 'inline' : 'attachment';
+            header('Content-Disposition: ' . $disposition . '; filename="' . $downloadName . '"');
             header('X-Content-Type-Options: nosniff');
             readfile($absolute);
             exit();
