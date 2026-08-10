@@ -111,9 +111,24 @@ class SubmitOnboardingAPI extends BaseAPI
                 $offerPath = $existingRow['offer_letter_path'];
             }
 
+            $detailCols = [];
+            $colRes = $this->conn->query('SHOW COLUMNS FROM user_onboarding_details');
+            if ($colRes) {
+                while ($c = $colRes->fetch(PDO::FETCH_ASSOC)) {
+                    $detailCols[] = $c['Field'];
+                }
+            }
+            $hasContactEmail = in_array('contact_email', $detailCols, true);
+
             if ($existingId) {
                 $sql = 'UPDATE user_onboarding_details SET
-                    emergency_contact = ?, house_name_number = ?, landmark = ?, city = ?,
+                    emergency_contact = ?,';
+                $params = [$fields['emergency_contact']];
+                if ($hasContactEmail) {
+                    $sql .= ' contact_email = ?,';
+                    $params[] = $fields['contact_email'];
+                }
+                $sql .= ' house_name_number = ?, landmark = ?, city = ?,
                     post_office = ?, pin_code = ?, district = ?, state = ?, country = ?,
                     wfh_latitude = ?, wfh_longitude = ?,
                     aadhaar_number = ?, aadhaar_file_path = ?, pan_number = ?, pan_file_path = ?,
@@ -121,8 +136,8 @@ class SubmitOnboardingAPI extends BaseAPI
                     account_holder_name = ?, bank_name = ?, account_number = ?, ifsc_code = ?,
                     branch_name = ?, account_type = ?, upi_id = ?, upi_linked_phone = ?
                     WHERE user_id = ?';
-                $params = [
-                    $fields['emergency_contact'], $fields['house_name_number'], $fields['landmark'],
+                $params = array_merge($params, [
+                    $fields['house_name_number'], $fields['landmark'],
                     $fields['city'], $fields['post_office'], $fields['pin_code'], $fields['district'],
                     $fields['state'], $fields['country'], $fields['wfh_latitude'], $fields['wfh_longitude'],
                     $fields['aadhaar_number'], $aadhaarPath, $fields['pan_number'], $panPath,
@@ -130,29 +145,53 @@ class SubmitOnboardingAPI extends BaseAPI
                     $fields['account_holder_name'], $fields['bank_name'], $fields['account_number'],
                     $fields['ifsc_code'], $fields['branch_name'], $fields['account_type'],
                     $fields['upi_id'], $fields['upi_linked_phone'], $userId,
-                ];
+                ]);
             } else {
-                $sql = 'INSERT INTO user_onboarding_details (
-                    user_id, emergency_contact, house_name_number, landmark, city, post_office,
-                    pin_code, district, state, country, wfh_latitude, wfh_longitude,
-                    aadhaar_number, aadhaar_file_path, pan_number, pan_file_path,
-                    offer_letter_path,
-                    account_holder_name, bank_name, account_number, ifsc_code, branch_name,
-                    account_type, upi_id, upi_linked_phone
-                ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-                )';
-                $params = [
-                    $userId,
-                    $fields['emergency_contact'], $fields['house_name_number'], $fields['landmark'],
-                    $fields['city'], $fields['post_office'], $fields['pin_code'], $fields['district'],
-                    $fields['state'], $fields['country'], $fields['wfh_latitude'], $fields['wfh_longitude'],
-                    $fields['aadhaar_number'], $aadhaarPath, $fields['pan_number'], $panPath,
-                    $offerPath,
-                    $fields['account_holder_name'], $fields['bank_name'], $fields['account_number'],
-                    $fields['ifsc_code'], $fields['branch_name'], $fields['account_type'],
-                    $fields['upi_id'], $fields['upi_linked_phone'],
-                ];
+                if ($hasContactEmail) {
+                    $sql = 'INSERT INTO user_onboarding_details (
+                        user_id, emergency_contact, contact_email, house_name_number, landmark, city, post_office,
+                        pin_code, district, state, country, wfh_latitude, wfh_longitude,
+                        aadhaar_number, aadhaar_file_path, pan_number, pan_file_path,
+                        offer_letter_path,
+                        account_holder_name, bank_name, account_number, ifsc_code, branch_name,
+                        account_type, upi_id, upi_linked_phone
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    )';
+                    $params = [
+                        $userId,
+                        $fields['emergency_contact'], $fields['contact_email'], $fields['house_name_number'], $fields['landmark'],
+                        $fields['city'], $fields['post_office'], $fields['pin_code'], $fields['district'],
+                        $fields['state'], $fields['country'], $fields['wfh_latitude'], $fields['wfh_longitude'],
+                        $fields['aadhaar_number'], $aadhaarPath, $fields['pan_number'], $panPath,
+                        $offerPath,
+                        $fields['account_holder_name'], $fields['bank_name'], $fields['account_number'],
+                        $fields['ifsc_code'], $fields['branch_name'], $fields['account_type'],
+                        $fields['upi_id'], $fields['upi_linked_phone'],
+                    ];
+                } else {
+                    $sql = 'INSERT INTO user_onboarding_details (
+                        user_id, emergency_contact, house_name_number, landmark, city, post_office,
+                        pin_code, district, state, country, wfh_latitude, wfh_longitude,
+                        aadhaar_number, aadhaar_file_path, pan_number, pan_file_path,
+                        offer_letter_path,
+                        account_holder_name, bank_name, account_number, ifsc_code, branch_name,
+                        account_type, upi_id, upi_linked_phone
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    )';
+                    $params = [
+                        $userId,
+                        $fields['emergency_contact'], $fields['house_name_number'], $fields['landmark'],
+                        $fields['city'], $fields['post_office'], $fields['pin_code'], $fields['district'],
+                        $fields['state'], $fields['country'], $fields['wfh_latitude'], $fields['wfh_longitude'],
+                        $fields['aadhaar_number'], $aadhaarPath, $fields['pan_number'], $panPath,
+                        $offerPath,
+                        $fields['account_holder_name'], $fields['bank_name'], $fields['account_number'],
+                        $fields['ifsc_code'], $fields['branch_name'], $fields['account_type'],
+                        $fields['upi_id'], $fields['upi_linked_phone'],
+                    ];
+                }
             }
 
             $stmt = $this->conn->prepare($sql);
@@ -279,6 +318,7 @@ class SubmitOnboardingAPI extends BaseAPI
 
         return [
             'emergency_contact' => $this->digitsOnly((string) ($post['emergency_contact'] ?? ''), 15),
+            'contact_email' => strtolower($this->clamp((string) ($post['contact_email'] ?? ''), 150)),
             'house_name_number' => $this->clamp((string) ($post['house_name_number'] ?? ''), 150),
             'landmark' => $this->clamp((string) ($post['landmark'] ?? ''), 200),
             'city' => $this->clamp((string) ($post['city'] ?? ''), 100),
@@ -310,6 +350,7 @@ class SubmitOnboardingAPI extends BaseAPI
     {
         $required = [
             'emergency_contact',
+            'contact_email',
             'house_name_number',
             'city',
             'pin_code',
@@ -329,6 +370,9 @@ class SubmitOnboardingAPI extends BaseAPI
             if (!isset($fields[$key]) || trim((string) $fields[$key]) === '') {
                 $missing[] = $key;
             }
+        }
+        if (!empty($fields['contact_email']) && !filter_var((string) $fields['contact_email'], FILTER_VALIDATE_EMAIL)) {
+            $missing[] = 'contact_email(invalid)';
         }
         if (!empty($fields['aadhaar_number']) && strlen((string) $fields['aadhaar_number']) !== 12) {
             $missing[] = 'aadhaar_number(must be 12 digits)';

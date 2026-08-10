@@ -6,7 +6,7 @@ header('Content-Type: application/json');
 
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../config/composer_autoload.php';
-require_once __DIR__ . '/../../utils/send_email.php';
+require_once __DIR__ . '/../../utils/email.php';
 
 class SendContactEmailOtpAPI extends BaseAPI
 {
@@ -84,19 +84,13 @@ class SendContactEmailOtpAPI extends BaseAPI
     <span>Sent from <b>BugRicer</b> onboarding</span>
   </div>
 </div>';
+            $text = "Your BugRicer onboarding email OTP is: {$otp}. Valid for 5 minutes.";
 
-            // Prefer richer HTML via PHPMailer helper used for login OTP.
-            $sent = sendOtpEmail($email, $otp);
+            $sent = sendEmail($email, 'BugRicer — verify your contact email', $html, $text);
             if (!$sent) {
-                // Fallback: still attempt a custom body through the same helper path
-                error_log('send_contact_email_otp: sendOtpEmail returned false for ' . $email);
                 $this->sendJsonResponse(502, 'Could not send verification email. Try again.');
                 return;
             }
-
-            // Optionally ignore unused $html if sendOtpEmail uses simple body — improve sendOtpEmail call
-            // by sending custom HTML below if we expose a better helper later.
-            unset($html);
 
             $parts = explode('@', $email);
             $local = $parts[0] ?? '';
