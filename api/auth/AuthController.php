@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../config/fcm_config.php';
+require_once __DIR__ . '/../../utils/user_avatar.php';
 
 class AuthController extends BaseAPI {
     protected $pdo;
@@ -135,6 +136,7 @@ class AuthController extends BaseAPI {
             
             // Remove password from user data
             unset($user['password']);
+            $user = br_user_with_resolved_avatar($user);
             
             $this->sendJsonResponse(200, "Login successful", [
                 "token" => $token,
@@ -201,6 +203,7 @@ class AuthController extends BaseAPI {
             }
             if (password_verify(trim($password), $user['password'])) {
                 unset($user['password']);
+                $user = br_user_with_resolved_avatar($user);
                 $token = Utils::generateJWT($user['id'], $username, $user['role']);
                 return [
                     'success' => true,
