@@ -719,6 +719,9 @@ class UpdateController extends BaseAPI
                     'expected_time' => $update['expected_time'] ?? null,
                     'calculated_hours' => $update['calculated_hours'] ?? null,
                     'update_priority' => $update['update_priority'] ?? null,
+                    'approved_at' => $update['approved_at'] ?? null,
+                    'declined_at' => $update['declined_at'] ?? null,
+                    'completed_at' => $update['completed_at'] ?? null,
                 ];
             }, $updates);
             $this->sendJsonResponse(200, "Updates retrieved successfully", $result);
@@ -778,6 +781,9 @@ class UpdateController extends BaseAPI
                     'expected_time' => $update['expected_time'] ?? null,
                     'calculated_hours' => $update['calculated_hours'] ?? null,
                     'update_priority' => $update['update_priority'] ?? null,
+                    'approved_at' => $update['approved_at'] ?? null,
+                    'declined_at' => $update['declined_at'] ?? null,
+                    'completed_at' => $update['completed_at'] ?? null,
                 ];
             }, $updates);
 
