@@ -2110,6 +2110,37 @@ function sendWfhRequestDecisionWhatsApp($userPhone, $username, $date, $status, $
 }
 
 /**
+ * Why: Notify the employee on WhatsApp when an admin unmarks a late check-in.
+ *
+ * @param list<string>|string $dateOrDates
+ */
+function sendLateForgivenWhatsApp($userPhone, $username, $dateOrDates, $adminNote = null, $adminName = null)
+{
+    require_once __DIR__ . '/attendance_messages.php';
+    $dates = is_array($dateOrDates) ? $dateOrDates : [(string)$dateOrDates];
+    $copy = br_late_forgiven_copy(
+        (string)$username,
+        $dates,
+        $adminNote !== null ? (string)$adminNote : null,
+        $adminName !== null ? (string)$adminName : null
+    );
+
+    $note = !empty($copy['note']) ? "\nAdmin note: " . $copy['note'] : '';
+    $by = !empty($copy['admin_name']) ? "\nUnmarked by: *" . $copy['admin_name'] . "*" : '';
+    $message = "✅ *LATE UNMARKED*\n"
+        . "━━━━━━━━━━━━━━━━━━━━\n\n"
+        . "Hi {$copy['username']},\n\n"
+        . "📅 *{$copy['date_label']}*\n"
+        . $copy['summary']
+        . $note
+        . $by
+        . "\n\n━━━━━━━━━━━━━━━━━━━━\n"
+        . "🐞 BugRicer · Attendance · Asia/Kolkata";
+
+    return sendWhatsAppMessage($userPhone, $message);
+}
+
+/**
  * Why: Alert admins on WhatsApp when onboarding docs await verification.
  */
 function sendOnboardingSubmittedAdminWhatsApp($adminPhone, $username)

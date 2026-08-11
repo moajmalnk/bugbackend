@@ -1199,6 +1199,53 @@ class NotificationManager extends BaseAPI {
     }
 
     /**
+     * Why: Tell the employee when an admin unmarks a late check-in so strikes / Office-only stay fair.
+     *
+     * @param string|list<string> $dateOrDates
+     */
+    public function notifyLateForgiven($userId, $dateOrDates, $adminNote = null, $adminName = null)
+    {
+        $userId = (string)$userId;
+        $dates = is_array($dateOrDates) ? $dateOrDates : [(string)$dateOrDates];
+        $dates = array_values(array_filter(array_map('strval', $dates)));
+        if ($dates === []) {
+            return false;
+        }
+
+        require_once __DIR__ . '/../utils/attendance_messages.php';
+        $copy = br_late_forgiven_copy(
+            $this->getUserName($userId),
+            $dates,
+            $adminNote !== null ? (string)$adminNote : null,
+            $adminName !== null ? (string)$adminName : null
+        );
+
+        $notificationType = $this->getValidNotificationType('late_forgiven', 'status_change');
+        $entityId = $userId . ':late_forgiven:' . implode(',', $copy['dates']);
+
+        $message = (string)$copy['summary'];
+        if (!empty($copy['note'])) {
+            $snippet = mb_substr(trim((string)$copy['note']), 0, 120);
+            if ($snippet !== '') {
+                $message .= " — {$snippet}";
+            }
+        }
+
+        return $this->createNotification(
+            $notificationType,
+            (string)$copy['headline'],
+            $message,
+            [$userId],
+            [
+                'entity_type' => 'late_forgiven',
+                'entity_id' => $entityId,
+                'dates' => $copy['dates'],
+                'url' => '/daily-update',
+            ]
+        );
+    }
+
+    /**
      * Why: Admins must review statutory/banking docs after wizard submit.
      */
     public function notifyOnboardingSubmitted($userId, $username = null)

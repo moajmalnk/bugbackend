@@ -1328,6 +1328,56 @@ function sendWfhRequestDecisionEmail($userEmail, $username, $date, $status, $adm
 }
 
 /**
+ * Why: Tell the employee when an admin unmarks a late check-in (push companion channels).
+ *
+ * @param list<string>|string $dateOrDates
+ */
+function sendLateForgivenEmail($userEmail, $username, $dateOrDates, $adminNote = null, $adminName = null)
+{
+    require_once __DIR__ . '/attendance_messages.php';
+    $dates = is_array($dateOrDates) ? $dateOrDates : [(string)$dateOrDates];
+    $copy = br_late_forgiven_copy(
+        (string)$username,
+        $dates,
+        $adminNote !== null ? (string)$adminNote : null,
+        $adminName !== null ? (string)$adminName : null
+    );
+
+    $safeName = htmlspecialchars((string)$copy['username'], ENT_QUOTES, 'UTF-8');
+    $safeSummary = htmlspecialchars((string)$copy['summary'], ENT_QUOTES, 'UTF-8');
+    $safeDate = htmlspecialchars((string)$copy['date_label'], ENT_QUOTES, 'UTF-8');
+    $noteHtml = !empty($copy['note'])
+        ? '<p style="margin:12px 0 0;"><strong>Admin note:</strong> '
+            . htmlspecialchars((string)$copy['note'], ENT_QUOTES, 'UTF-8') . '</p>'
+        : '';
+    $byHtml = !empty($copy['admin_name'])
+        ? '<p style="margin:8px 0 0;color:#64748b;font-size:13px;">Unmarked by '
+            . htmlspecialchars((string)$copy['admin_name'], ENT_QUOTES, 'UTF-8') . '</p>'
+        : '';
+    $noteText = !empty($copy['note']) ? "\nAdmin note: {$copy['note']}\n" : '';
+    $byText = !empty($copy['admin_name']) ? "\nUnmarked by: {$copy['admin_name']}\n" : '';
+
+    $html_body = "
+    <div style=\"font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto;\">
+      <div style=\"background: #10b981; padding: 20px; border-radius: 12px 12px 0 0;\">
+        <h2 style=\"margin:0;color:#fff;\">" . htmlspecialchars((string)$copy['headline'], ENT_QUOTES, 'UTF-8') . "</h2>
+      </div>
+      <div style=\"border:1px solid #e5e7eb;border-top:0;padding:20px;border-radius:0 0 12px 12px;\">
+        <p>Hi {$safeName},</p>
+        <p>Date: <strong>{$safeDate}</strong></p>
+        <p>{$safeSummary}</p>
+        {$noteHtml}
+        {$byHtml}
+        <p style=\"margin-top:16px;color:#64748b;font-size:13px;\">Open BugUpdate to see your updated attendance status.</p>
+      </div>
+    </div>";
+
+    $text_body = "{$copy['headline']} — BugRicer\n\nDate: {$copy['date_label']}\n{$copy['summary']}{$noteText}{$byText}\n";
+
+    return sendEmail($userEmail, (string)$copy['subject'], $html_body, $text_body);
+}
+
+/**
  * Why: Alert admins when an employee finishes onboarding and awaits HR verification.
  */
 function sendOnboardingSubmittedAdminEmail($adminEmail, $username)

@@ -43,6 +43,71 @@ class AttendanceExceptionController extends BaseAPI
         return br_normalize_ymd_dates($dates);
     }
 
+    private function usernameFor($userId): string
+    {
+        try {
+            $stmt = $this->conn->prepare('SELECT username FROM users WHERE id = ? LIMIT 1');
+            $stmt->execute([(string)$userId]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            $name = trim((string)($row['username'] ?? ''));
+            return $name !== '' ? $name : ('user #' . $userId);
+        } catch (Throwable $e) {
+            return 'user #' . $userId;
+        }
+    }
+
+    /**
+     * Why: Employee should learn immediately when a late strike is cleared (push + email + WhatsApp).
+     *
+     * @param list<string> $dates
+     */
+    private function notifyUserLateForgiven(
+        string $userId,
+        array $dates,
+        ?string $adminNote,
+        string $adminId
+    ): void {
+        if ($dates === []) {
+            return;
+        }
+
+        $adminName = $this->usernameFor($adminId);
+
+        try {
+            require_once __DIR__ . '/../NotificationManager.php';
+            NotificationManager::getInstance()->notifyLateForgiven(
+                $userId,
+                $dates,
+                $adminNote,
+                $adminName
+            );
+        } catch (Throwable $e) {
+            error_log('AttendanceExceptionController late forgive push: ' . $e->getMessage());
+        }
+
+        try {
+            $stmt = $this->conn->prepare(
+                'SELECT email, phone, username FROM users WHERE id = ? LIMIT 1'
+            );
+            $stmt->execute([$userId]);
+            $user = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+            $email = trim((string)($user['email'] ?? ''));
+            $phone = trim((string)($user['phone'] ?? ''));
+            $username = trim((string)($user['username'] ?? '')) ?: $this->usernameFor($userId);
+
+            if ($email !== '') {
+                require_once __DIR__ . '/../../utils/email.php';
+                sendLateForgivenEmail($email, $username, $dates, $adminNote, $adminName);
+            }
+            if ($phone !== '') {
+                require_once __DIR__ . '/../../utils/whatsapp.php';
+                sendLateForgivenWhatsApp($phone, $username, $dates, $adminNote, $adminName);
+            }
+        } catch (Throwable $e) {
+            error_log('AttendanceExceptionController late forgive mail/wa: ' . $e->getMessage());
+        }
+    }
+
     /**
      * GET — list exceptions + recent late days for a user.
      * Omit user_id (or pass scope=all) for the admin overview across everyone.
@@ -475,7 +540,7 @@ class AttendanceExceptionController extends BaseAPI
                     );
                 }
             }
-            $this->sendJsonResponse(200, $result['message'], [
+            $payload = [
                 'dates' => $dates,
                 'exception' => count($dates) === 1
                     ? br_day_exception($this->conn, $userId, $dates[0])
@@ -486,7 +551,16 @@ class AttendanceExceptionController extends BaseAPI
                 ),
                 'recalc' => $result['recalc'] ?? null,
                 'policy' => br_checkin_policy_status($this->conn, $userId, $today),
-            ]);
+            ];
+            $adminId = (string)$decoded->user_id;
+            $this->sendJsonThen(
+                function () use ($userId, $dates, $adminNote, $adminId) {
+                    $this->notifyUserLateForgiven($userId, $dates, $adminNote, $adminId);
+                },
+                200,
+                $result['message'],
+                $payload
+            );
             return;
         }
 
@@ -500,6 +574,7 @@ class AttendanceExceptionController extends BaseAPI
 
         $savedExceptions = [];
         $errors = [];
+        $forgivenDates = [];
         foreach ($dates as $date) {
             $saved = br_upsert_day_exception(
                 $this->conn,
@@ -524,6 +599,7 @@ class AttendanceExceptionController extends BaseAPI
                          WHERE user_id = ? AND submission_date = ?'
                     );
                     $upd->execute([(string)$userId, $date]);
+                    $forgivenDates[] = $date;
                 } catch (Throwable $e) {
                     error_log('AttendanceExceptionController::save forgive flag: ' . $e->getMessage());
                 }
@@ -548,7 +624,7 @@ class AttendanceExceptionController extends BaseAPI
             ? ($savedExceptions[0] ? 'Exception saved.' : 'Save failed.')
             : (count($savedExceptions) . ' of ' . count($dates) . ' exceptions saved.');
 
-        $this->sendJsonResponse(200, $msg, [
+        $payload = [
             'dates' => $dates,
             'saved_count' => count($savedExceptions),
             'errors' => $errors,
@@ -556,6 +632,21 @@ class AttendanceExceptionController extends BaseAPI
             'exceptions' => $savedExceptions,
             'recalc' => $recalc,
             'policy' => br_checkin_policy_status($this->conn, $userId, $today),
-        ]);
+        ];
+
+        if ($forgivenDates !== []) {
+            $adminId = (string)$decoded->user_id;
+            $this->sendJsonThen(
+                function () use ($userId, $forgivenDates, $adminNote, $adminId) {
+                    $this->notifyUserLateForgiven($userId, $forgivenDates, $adminNote, $adminId);
+                },
+                200,
+                $msg,
+                $payload
+            );
+            return;
+        }
+
+        $this->sendJsonResponse(200, $msg, $payload);
     }
 }

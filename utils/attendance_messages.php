@@ -228,6 +228,54 @@ function br_wfh_request_copy(string $username, string $date, ?string $userNote =
 }
 
 /**
+ * Shared copy when an admin unmarks / forgives a late check-in.
+ *
+ * @param list<string> $dates YYYY-MM-DD
+ */
+function br_late_forgiven_copy(string $username, array $dates, ?string $adminNote = null, ?string $adminName = null): array
+{
+    $normalized = [];
+    foreach ($dates as $d) {
+        $d = trim((string)$d);
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) {
+            $normalized[] = $d;
+        }
+    }
+    $normalized = array_values(array_unique($normalized));
+    sort($normalized);
+
+    $labels = array_map(
+        static fn($d) => date('D, M j, Y', strtotime($d)),
+        $normalized
+    );
+    $dateLine = $labels === []
+        ? 'the selected day'
+        : (count($labels) === 1
+            ? $labels[0]
+            : implode(', ', array_slice($labels, 0, -1)) . ' and ' . $labels[count($labels) - 1]);
+
+    $note = $adminNote !== null ? trim((string)$adminNote) : '';
+    $by = $adminName !== null ? trim((string)$adminName) : '';
+
+    return [
+        'subject' => count($normalized) <= 1
+            ? "Late check-in unmarked · {$dateLine}"
+            : 'Late check-ins unmarked · ' . count($normalized) . ' days',
+        'headline' => count($normalized) <= 1
+            ? 'Late check-in unmarked'
+            : 'Late check-ins unmarked',
+        'summary' => count($normalized) <= 1
+            ? "An admin unmarked your late check-in for {$dateLine}. It no longer counts toward your late limit or Office-only week."
+            : "An admin unmarked your late check-ins for {$dateLine}. Those days no longer count toward your late limit or Office-only week.",
+        'note' => $note !== '' ? $note : null,
+        'admin_name' => $by !== '' ? $by : null,
+        'username' => $username,
+        'date_label' => $dateLine,
+        'dates' => $normalized,
+    ];
+}
+
+/**
  * Shared copy when a WFH request is approved or rejected.
  */
 function br_wfh_request_decision_copy(string $username, string $date, string $status, ?string $adminNote = null): array
