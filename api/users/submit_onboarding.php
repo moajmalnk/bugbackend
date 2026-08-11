@@ -651,30 +651,6 @@ class SubmitOnboardingAPI extends BaseAPI
         ];
     }
 
-    private function sanitizeGitUsername($raw): ?string
-    {
-        $v = trim((string) ($raw ?? ''));
-        if ($v === '') {
-            return null;
-        }
-        $v = preg_replace('/\s+/', '', $v) ?? $v;
-        $v = ltrim($v, '@');
-        $v = $this->clamp($v, 100);
-        return $v !== '' ? $v : null;
-    }
-
-    private function sanitizeGitEmail($raw): ?string
-    {
-        $v = strtolower($this->clamp((string) ($raw ?? ''), 150));
-        if ($v === '') {
-            return null;
-        }
-        if (!filter_var($v, FILTER_VALIDATE_EMAIL)) {
-            return null;
-        }
-        return $v;
-    }
-
     /**
      * @param 'github'|'linkedin' $kind
      */
