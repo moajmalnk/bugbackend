@@ -6,6 +6,7 @@
 header('Content-Type: application/json');
 
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../PermissionManager.php';
 require_once __DIR__ . '/../../utils/validation.php';
 require_once __DIR__ . '/../../utils/user_avatar.php';
 require_once __DIR__ . '/../../utils/onboarding_contact_unique.php';
@@ -33,10 +34,29 @@ class SubmitOnboardingAPI extends BaseAPI
 
         try {
             $decoded = $this->validateToken();
-            $userId = (string) ($decoded->user_id ?? '');
-            if ($userId === '') {
+            $requesterId = (string) ($decoded->user_id ?? '');
+            $legacyRole = isset($decoded->role) ? (string) $decoded->role : null;
+            if ($requesterId === '') {
                 $this->sendJsonResponse(401, 'Invalid token');
                 return;
+            }
+
+            // Why: Admins may complete/edit employee onboarding before HR verify,
+            // without employee OTP — target via for_user_id.
+            $forUserId = trim((string) ($_POST['for_user_id'] ?? $_POST['user_id'] ?? ''));
+            $isAdminProxy = false;
+            $userId = $requesterId;
+            if ($forUserId !== '' && !hash_equals($forUserId, $requesterId)) {
+                $pm = PermissionManager::getInstance();
+                $isAdmin = $pm->hasPermissionOrAdmin($requesterId, 'USERS_EDIT', $legacyRole)
+                    || $pm->hasPermissionOrAdmin($requesterId, 'USERS_VIEW', $legacyRole)
+                    || strtolower((string) $legacyRole) === 'admin';
+                if (!$isAdmin) {
+                    $this->sendJsonResponse(403, 'Only admins can submit onboarding for another user');
+                    return;
+                }
+                $isAdminProxy = true;
+                $userId = $forUserId;
             }
 
             $cols = $this->usersColumnSet();
@@ -55,9 +75,10 @@ class SubmitOnboardingAPI extends BaseAPI
                 return;
             }
 
-            /** Why: Profile "Edit" reuses this endpoint; keep existing files when omitted. */
-            $isUpdate = (int) ($row['onboarding_completed'] ?? 0) === 1;
-            $existingDetails = $isUpdate ? $this->fetchDetails($userId) : null;
+            /** Why: Profile "Edit" / admin proxy keep existing files when omitted. */
+            $existingDetails = $this->fetchDetails($userId);
+            $isUpdate = (int) ($row['onboarding_completed'] ?? 0) === 1
+                || ($isAdminProxy && !empty($existingDetails));
 
             $termsAccepted = $this->truthy($_POST['terms_accepted'] ?? '');
             $privacyAccepted = $this->truthy($_POST['privacy_accepted'] ?? '');
@@ -68,8 +89,9 @@ class SubmitOnboardingAPI extends BaseAPI
 
             $mustSetPassword = in_array('must_set_password', $cols, true);
             $needsPassword = false;
-            // Password is only required on first-time onboarding for new hires.
-            if (!$isUpdate && $mustSetPassword) {
+            // Password is only required on first-time self-onboarding for new hires.
+            // Admin proxy never forces password — employee sets it later if needed.
+            if (!$isUpdate && !$isAdminProxy && $mustSetPassword) {
                 $flagStmt = $this->conn->prepare(
                     'SELECT must_set_password FROM users WHERE id = ? LIMIT 1'
                 );
@@ -96,6 +118,18 @@ class SubmitOnboardingAPI extends BaseAPI
             }
 
             $fields = $this->sanitizePayload($_POST);
+
+            // Why: Admin-attested contacts skip employee WhatsApp/email OTP.
+            if ($isAdminProxy) {
+                $nowIso = gmdate('c');
+                if (trim((string) ($fields['emergency_contact_verified_at'] ?? '')) === '') {
+                    $fields['emergency_contact_verified_at'] = $nowIso;
+                }
+                if (trim((string) ($fields['contact_email_verified_at'] ?? '')) === '') {
+                    $fields['contact_email_verified_at'] = $nowIso;
+                }
+            }
+
             $detailColsEarly = [];
             $colResEarly = $this->conn->query('SHOW COLUMNS FROM user_onboarding_details');
             if ($colResEarly) {
