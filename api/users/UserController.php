@@ -1102,7 +1102,7 @@ class UserController extends BaseAPI {
                     $params[] = null;
                 } else {
                     $ct = strtolower(trim((string) $ct));
-                    $allowedCt = ['full_time', 'remote', 'part_time', 'contract', 'intern', 'other'];
+                    $allowedCt = ['full_time', 'remote', 'part_time', 'contract', 'intern', 'probation', 'other'];
                     if (!in_array($ct, $allowedCt, true)) {
                         $this->sendJsonResponse(400, "Invalid contract_type");
                         return;
