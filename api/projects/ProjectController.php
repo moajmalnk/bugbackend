@@ -181,14 +181,31 @@ class ProjectController extends BaseAPI
 
         $this->attachClientToProject($project);
 
+        require_once __DIR__ . '/../../utils/user_avatar.php';
+        $userCols = [];
+        $colRes = $this->conn->query('SHOW COLUMNS FROM users');
+        if ($colRes) {
+            while ($row = $colRes->fetch(PDO::FETCH_ASSOC)) {
+                $userCols[] = $row['Field'];
+            }
+        }
+        $memberSelect = ['pm.user_id', 'pm.role', 'u.username', 'u.email'];
+        foreach (['avatar', 'profile_picture', 'profile_picture_url'] as $col) {
+            if (in_array($col, $userCols, true)) {
+                $memberSelect[] = 'u.`' . $col . '`';
+            }
+        }
         $stmt = $this->conn->prepare(
-            "SELECT pm.user_id, pm.role, u.username, u.email
+            'SELECT ' . implode(', ', $memberSelect) . '
              FROM project_members pm
              INNER JOIN users u ON u.id = pm.user_id
-             WHERE pm.project_id = ?"
+             WHERE pm.project_id = ?'
         );
         $stmt->execute([$project['id']]);
-        $project['members_detail'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $project['members_detail'] = array_map(
+            'br_user_with_resolved_avatar',
+            $stmt->fetchAll(PDO::FETCH_ASSOC) ?: []
+        );
         $project['attachments'] = $this->getProjectAttachments($project['id']);
 
         $complianceController = new ProjectComplianceController();
@@ -258,16 +275,32 @@ class ProjectController extends BaseAPI
             }
 
             // Add members, client, and compliance summary to each project
-            $complianceController = new ProjectComplianceController();
-            foreach ($projects as &$project) {
-                $stmt2 = $this->conn->prepare(
-                    "SELECT pm.user_id, pm.role, u.username, u.email
+            require_once __DIR__ . '/../../utils/user_avatar.php';
+            $userCols = [];
+            $colRes = $this->conn->query('SHOW COLUMNS FROM users');
+            if ($colRes) {
+                while ($row = $colRes->fetch(PDO::FETCH_ASSOC)) {
+                    $userCols[] = $row['Field'];
+                }
+            }
+            $memberSelect = ['pm.user_id', 'pm.role', 'u.username', 'u.email'];
+            foreach (['avatar', 'profile_picture', 'profile_picture_url'] as $col) {
+                if (in_array($col, $userCols, true)) {
+                    $memberSelect[] = 'u.`' . $col . '`';
+                }
+            }
+            $memberSql = 'SELECT ' . implode(', ', $memberSelect) . '
                      FROM project_members pm
                      INNER JOIN users u ON u.id = pm.user_id
-                     WHERE pm.project_id = ?"
-                );
+                     WHERE pm.project_id = ?';
+            $complianceController = new ProjectComplianceController();
+            foreach ($projects as &$project) {
+                $stmt2 = $this->conn->prepare($memberSql);
                 $stmt2->execute([$project['id']]);
-                $membersDetail = $stmt2->fetchAll(PDO::FETCH_ASSOC) ?: [];
+                $membersDetail = array_map(
+                    'br_user_with_resolved_avatar',
+                    $stmt2->fetchAll(PDO::FETCH_ASSOC) ?: []
+                );
                 $project['members_detail'] = $membersDetail;
                 $project['members'] = array_values(array_map(
                     static function ($row) {
