@@ -20,8 +20,8 @@ class UserStatsController extends BaseAPI {
                 throw new Exception('User ID is required');
             }
 
-            // Check cache first
-            $cacheKey = 'user_stats_' . $userId;
+            // Check cache first (v2: fixed_by-aware fix counts)
+            $cacheKey = 'user_stats_v2_' . $userId;
             $cachedStats = $this->getCache($cacheKey);
             
             if ($cachedStats !== null) {
@@ -62,14 +62,38 @@ class UserStatsController extends BaseAPI {
                 600
             )['total_bugs'] ?? 0;
             
+            // Why: Profile FIXES must match Fixes page fixer identity —
+            // prefer fixed_by, else updated_by; include fixed + rejected (resolved).
+            $bugCols = [];
+            try {
+                $colRes = $this->conn->query('SHOW COLUMNS FROM bugs');
+                if ($colRes) {
+                    while ($row = $colRes->fetch(PDO::FETCH_ASSOC)) {
+                        $bugCols[] = $row['Field'];
+                    }
+                }
+            } catch (Exception $e) {
+                $bugCols = [];
+            }
+            $hasFixedBy = in_array('fixed_by', $bugCols, true);
+            $fixerExpr = $hasFixedBy
+                ? "COALESCE(NULLIF(TRIM(fixed_by), ''), updated_by)"
+                : 'updated_by';
+
             $totalFixes = $this->fetchSingleCached(
-                "SELECT COUNT(id) as total_fixes FROM bugs WHERE updated_by = ? AND status = 'fixed'",
+                "SELECT COUNT(id) as total_fixes FROM bugs
+                 WHERE {$fixerExpr} = ?
+                   AND status IN ('fixed', 'rejected')",
                 [$userId],
-                'user_fixes_count_' . $userId,
+                'user_fixes_count_v2_' . $userId,
                 600
             )['total_fixes'] ?? 0;
 
             // Optimized recent activity query using single query with UNION ALL
+            $fixActivityWhere = $hasFixedBy
+                ? "COALESCE(NULLIF(TRIM(fixed_by), ''), updated_by) = ? AND status IN ('fixed', 'rejected')"
+                : "updated_by = ? AND status IN ('fixed', 'rejected')";
+
             $activityQuery = "
                 (SELECT 'bug' as type, title, created_at, id
                  FROM bugs 
@@ -79,7 +103,7 @@ class UserStatsController extends BaseAPI {
                 UNION ALL
                 (SELECT 'fix' as type, CONCAT('Fixed: ', title) as title, updated_at as created_at, id
                  FROM bugs 
-                 WHERE updated_by = ? AND status = 'fixed'
+                 WHERE {$fixActivityWhere}
                  ORDER BY updated_at DESC
                  LIMIT 3)
                 UNION ALL
@@ -96,7 +120,7 @@ class UserStatsController extends BaseAPI {
             $activityResult = $this->fetchCached(
                 $activityQuery, 
                 [$userId, $userId, $userId],
-                'user_activity_' . $userId,
+                'user_activity_v2_' . $userId,
                 300 // Cache for 5 minutes
             );
 
