@@ -1535,7 +1535,7 @@ class NotificationManager extends BaseAPI {
         if ($fromName === '') {
             $fromName = 'A teammate';
         }
-        $notificationType = $this->getValidNotificationType('birthday_wish', 'info');
+        $notificationType = $this->getValidNotificationType('birthday_wish', 'user_registered');
 
         return $this->createNotification(
             $notificationType,
