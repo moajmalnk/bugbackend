@@ -52,7 +52,8 @@ class VerifyOnboardingAPI extends BaseAPI
                 return;
             }
 
-            $reasonCode = trim((string) ($data['rejection_reason'] ?? $data['reason'] ?? ''));
+            // Prefer multi-select array; keep string / comma-separated for older clients.
+            $reasonCodes = $data['rejection_reasons'] ?? $data['rejection_reason'] ?? $data['reason'] ?? [];
             $reasonNote = trim((string) ($data['rejection_note'] ?? $data['note'] ?? ''));
             if (mb_strlen($reasonNote) > 500) {
                 $reasonNote = mb_substr($reasonNote, 0, 500);
@@ -60,11 +61,11 @@ class VerifyOnboardingAPI extends BaseAPI
 
             $resolvedReason = null;
             if ($action === 'reject') {
-                $resolvedReason = br_resolve_onboarding_rejection_reason($reasonCode, $reasonNote);
+                $resolvedReason = br_resolve_onboarding_rejection_reason($reasonCodes, $reasonNote);
                 if ($resolvedReason === null) {
                     $this->sendJsonResponse(
                         400,
-                        'Select a rejection reason. For “Other”, add a short note for the employee.'
+                        'Select at least one rejection reason. For “Other”, add a short note for the employee.'
                     );
                     return;
                 }
