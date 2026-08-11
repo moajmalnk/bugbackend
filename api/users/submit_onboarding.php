@@ -295,6 +295,7 @@ class SubmitOnboardingAPI extends BaseAPI
 
             $this->stampDetailVerifiedAts($userId, $fields, $detailCols);
             $this->persistDemographics($userId, $fields, $detailCols);
+            $this->persistSocialProfiles($userId, $fields, $detailCols);
 
             try {
                 br_ensure_employee_code($this->conn, $userId);
@@ -518,6 +519,42 @@ class SubmitOnboardingAPI extends BaseAPI
         $stmt->execute($params);
     }
 
+    /**
+     * Why: Git/LinkedIn columns are additive (071) — persist only when present.
+     *
+     * @param array<string, mixed> $fields
+     * @param list<string> $detailCols
+     */
+    private function persistSocialProfiles(string $userId, array $fields, array $detailCols): void
+    {
+        $sets = [];
+        $params = [];
+        if (in_array('git_username', $detailCols, true)) {
+            $sets[] = 'git_username = ?';
+            $params[] = $fields['git_username'] ?? null;
+        }
+        if (in_array('git_email', $detailCols, true)) {
+            $sets[] = 'git_email = ?';
+            $params[] = $fields['git_email'] ?? null;
+        }
+        if (in_array('github_url', $detailCols, true)) {
+            $sets[] = 'github_url = ?';
+            $params[] = $fields['github_url'] ?? null;
+        }
+        if (in_array('linkedin_url', $detailCols, true)) {
+            $sets[] = 'linkedin_url = ?';
+            $params[] = $fields['linkedin_url'] ?? null;
+        }
+        if (empty($sets)) {
+            return;
+        }
+        $params[] = $userId;
+        $stmt = $this->conn->prepare(
+            'UPDATE user_onboarding_details SET ' . implode(', ', $sets) . ' WHERE user_id = ?'
+        );
+        $stmt->execute($params);
+    }
+
     private function parseClientTimestamp($raw): ?string
     {
         if ($raw === null) {
@@ -617,7 +654,68 @@ class SubmitOnboardingAPI extends BaseAPI
             'date_of_birth' => $this->sanitizeDate($post['date_of_birth'] ?? null),
             'gender' => $this->sanitizeGender($post['gender'] ?? null),
             'marital_status' => $this->sanitizeMaritalStatus($post['marital_status'] ?? null),
+            'git_username' => $this->sanitizeGitUsername($post['git_username'] ?? null),
+            'git_email' => $this->sanitizeGitEmail($post['git_email'] ?? null),
+            'github_url' => $this->sanitizeProfileUrl($post['github_url'] ?? null, 'github'),
+            'linkedin_url' => $this->sanitizeProfileUrl($post['linkedin_url'] ?? null, 'linkedin'),
         ];
+    }
+
+    private function sanitizeGitUsername($raw): ?string
+    {
+        $v = trim((string) ($raw ?? ''));
+        if ($v === '') {
+            return null;
+        }
+        $v = preg_replace('/\s+/', '', $v) ?? $v;
+        $v = ltrim($v, '@');
+        $v = $this->clamp($v, 100);
+        return $v !== '' ? $v : null;
+    }
+
+    private function sanitizeGitEmail($raw): ?string
+    {
+        $v = strtolower($this->clamp((string) ($raw ?? ''), 150));
+        if ($v === '') {
+            return null;
+        }
+        if (!filter_var($v, FILTER_VALIDATE_EMAIL)) {
+            return null;
+        }
+        return $v;
+    }
+
+    /**
+     * @param 'github'|'linkedin' $kind
+     */
+    private function sanitizeProfileUrl($raw, string $kind): ?string
+    {
+        $v = trim((string) ($raw ?? ''));
+        if ($v === '') {
+            return null;
+        }
+        if (!preg_match('#^https?://#i', $v)) {
+            $v = 'https://' . $v;
+        }
+        $v = $this->clamp($v, 255);
+        if (!filter_var($v, FILTER_VALIDATE_URL)) {
+            return null;
+        }
+        $host = strtolower((string) (parse_url($v, PHP_URL_HOST) ?? ''));
+        if ($kind === 'github') {
+            if ($host !== 'github.com' && $host !== 'www.github.com') {
+                return null;
+            }
+        } elseif ($kind === 'linkedin') {
+            if (
+                $host !== 'linkedin.com'
+                && $host !== 'www.linkedin.com'
+                && !str_ends_with($host, '.linkedin.com')
+            ) {
+                return null;
+            }
+        }
+        return $v;
     }
 
     private function sanitizeDate($raw): ?string
@@ -703,6 +801,21 @@ class SubmitOnboardingAPI extends BaseAPI
         }
         if (in_array('marital_status', $detailCols, true) && empty($fields['marital_status'])) {
             $missing[] = 'marital_status';
+        }
+        if (in_array('git_username', $detailCols, true) && empty($fields['git_username'])) {
+            $missing[] = 'git_username';
+        }
+        if (in_array('git_email', $detailCols, true) && empty($fields['git_email'])) {
+            $missing[] = 'git_email';
+        }
+        if (!empty($fields['git_email']) && !filter_var((string) $fields['git_email'], FILTER_VALIDATE_EMAIL)) {
+            $missing[] = 'git_email(invalid)';
+        }
+        if (!empty($fields['github_url']) && empty($this->sanitizeProfileUrl($fields['github_url'], 'github'))) {
+            $missing[] = 'github_url(invalid)';
+        }
+        if (!empty($fields['linkedin_url']) && empty($this->sanitizeProfileUrl($fields['linkedin_url'], 'linkedin'))) {
+            $missing[] = 'linkedin_url(invalid)';
         }
         return $missing;
     }
