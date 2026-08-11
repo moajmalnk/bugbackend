@@ -19,7 +19,9 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../../config/utils.php';
 require_once __DIR__ . '/../../utils/user_avatar.php';
+require_once __DIR__ . '/../../utils/onboarding_contact_unique.php';
 
 try {
     $api = new BaseAPI();
@@ -41,7 +43,10 @@ try {
         }
     }
 
-    $currentStmt = $conn->prepare('SELECT id, username, phone FROM users WHERE id = ? LIMIT 1');
+    // Why: JWT user_id and DB id may differ by type/casing — always use the canonical row id.
+    $currentStmt = $conn->prepare(
+        'SELECT id, username, phone FROM users WHERE CAST(id AS CHAR) = CAST(? AS CHAR) LIMIT 1'
+    );
     $currentStmt->execute([$userId]);
     $currentUser = $currentStmt->fetch(PDO::FETCH_ASSOC);
     if (!$currentUser) {
@@ -50,6 +55,7 @@ try {
         exit;
     }
 
+    $userId = (string) ($currentUser['id'] ?? $userId);
     $currentUsername = trim((string) ($currentUser['username'] ?? ''));
     $currentPhone = trim((string) ($currentUser['phone'] ?? ''));
 
@@ -76,7 +82,10 @@ try {
         // Why: Saving without changing username must not collide with the user's own row.
         if (strcasecmp($username, $currentUsername) !== 0) {
             $dup = $conn->prepare(
-                'SELECT id FROM users WHERE username = ? AND CAST(id AS CHAR) <> CAST(? AS CHAR) LIMIT 1'
+                'SELECT id FROM users
+                 WHERE LOWER(TRIM(username)) = LOWER(?)
+                   AND CAST(id AS CHAR) <> CAST(? AS CHAR)
+                 LIMIT 1'
             );
             $dup->execute([$username, $userId]);
             if ($dup->fetch(PDO::FETCH_ASSOC)) {
@@ -94,24 +103,33 @@ try {
         if ($digits !== '' && strlen($digits) > 15) {
             $digits = substr($digits, 0, 15);
         }
-        $phone = $digits === '' ? null : ('+' . ltrim($digits, '+'));
-        $normalizedCurrentPhone = preg_replace('/\D/', '', $currentPhone) ?? '';
-        $normalizedNewPhone = preg_replace('/\D/', '', (string) $phone) ?? '';
+        $phone = $digits === '' ? null : Utils::normalizePhone($digits);
+        $currentPhoneLast10 = br_onboarding_phone_last10($currentPhone);
+        $newPhoneLast10 = br_onboarding_phone_last10($phoneRaw);
 
-        if ($phone !== null && $normalizedNewPhone !== $normalizedCurrentPhone) {
-            $dup = $conn->prepare(
-                'SELECT id FROM users WHERE phone = ? AND CAST(id AS CHAR) <> CAST(? AS CHAR) LIMIT 1'
-            );
-            $dup->execute([$phone, $userId]);
-            if ($dup->fetch(PDO::FETCH_ASSOC)) {
-                http_response_code(409);
-                echo json_encode(['success' => false, 'message' => 'Phone number already exists for another user.']);
-                exit;
+        if ($newPhoneLast10 !== $currentPhoneLast10) {
+            if ($newPhoneLast10 !== '') {
+                $dup = $conn->prepare(
+                    "SELECT id FROM users
+                     WHERE phone IS NOT NULL AND phone <> ''
+                       AND RIGHT(REPLACE(REPLACE(REPLACE(phone, '+', ''), ' ', ''), '-', ''), 10) = ?
+                       AND CAST(id AS CHAR) <> CAST(? AS CHAR)
+                     LIMIT 1"
+                );
+                $dup->execute([$newPhoneLast10, $userId]);
+                if ($dup->fetch(PDO::FETCH_ASSOC)) {
+                    http_response_code(409);
+                    echo json_encode([
+                        'success' => false,
+                        'message' => 'Phone number already exists for another user.',
+                    ]);
+                    exit;
+                }
             }
-        }
-        if (in_array('phone', $cols, true) && $normalizedNewPhone !== $normalizedCurrentPhone) {
-            $fields[] = 'phone = ?';
-            $params[] = $phone;
+            if (in_array('phone', $cols, true)) {
+                $fields[] = 'phone = ?';
+                $params[] = $phone;
+            }
         }
     }
 
@@ -173,7 +191,7 @@ try {
     }
 
     $params[] = $userId;
-    $sql = 'UPDATE users SET ' . implode(', ', $fields) . ' WHERE id = ?';
+    $sql = 'UPDATE users SET ' . implode(', ', $fields) . ' WHERE CAST(id AS CHAR) = CAST(? AS CHAR)';
     $stmt = $conn->prepare($sql);
     if (!$stmt->execute($params)) {
         http_response_code(500);
