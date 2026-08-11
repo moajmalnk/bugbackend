@@ -41,6 +41,18 @@ try {
         }
     }
 
+    $currentStmt = $conn->prepare('SELECT id, username, phone FROM users WHERE id = ? LIMIT 1');
+    $currentStmt->execute([$userId]);
+    $currentUser = $currentStmt->fetch(PDO::FETCH_ASSOC);
+    if (!$currentUser) {
+        http_response_code(404);
+        echo json_encode(['success' => false, 'message' => 'User not found.']);
+        exit;
+    }
+
+    $currentUsername = trim((string) ($currentUser['username'] ?? ''));
+    $currentPhone = trim((string) ($currentUser['phone'] ?? ''));
+
     $username = isset($_POST['username']) ? trim((string) $_POST['username']) : null;
     $phoneRaw = isset($_POST['phone']) ? trim((string) $_POST['phone']) : null;
 
@@ -61,15 +73,20 @@ try {
             ]);
             exit;
         }
-        $dup = $conn->prepare('SELECT id FROM users WHERE username = ? AND id != ? LIMIT 1');
-        $dup->execute([$username, $userId]);
-        if ($dup->fetch(PDO::FETCH_ASSOC)) {
-            http_response_code(409);
-            echo json_encode(['success' => false, 'message' => 'Username is already taken.']);
-            exit;
+        // Why: Saving without changing username must not collide with the user's own row.
+        if (strcasecmp($username, $currentUsername) !== 0) {
+            $dup = $conn->prepare(
+                'SELECT id FROM users WHERE username = ? AND CAST(id AS CHAR) <> CAST(? AS CHAR) LIMIT 1'
+            );
+            $dup->execute([$username, $userId]);
+            if ($dup->fetch(PDO::FETCH_ASSOC)) {
+                http_response_code(409);
+                echo json_encode(['success' => false, 'message' => 'Username is already taken.']);
+                exit;
+            }
+            $fields[] = 'username = ?';
+            $params[] = $username;
         }
-        $fields[] = 'username = ?';
-        $params[] = $username;
     }
 
     if ($phoneRaw !== null) {
@@ -78,8 +95,13 @@ try {
             $digits = substr($digits, 0, 15);
         }
         $phone = $digits === '' ? null : ('+' . ltrim($digits, '+'));
-        if ($phone !== null) {
-            $dup = $conn->prepare('SELECT id FROM users WHERE phone = ? AND id != ? LIMIT 1');
+        $normalizedCurrentPhone = preg_replace('/\D/', '', $currentPhone) ?? '';
+        $normalizedNewPhone = preg_replace('/\D/', '', (string) $phone) ?? '';
+
+        if ($phone !== null && $normalizedNewPhone !== $normalizedCurrentPhone) {
+            $dup = $conn->prepare(
+                'SELECT id FROM users WHERE phone = ? AND CAST(id AS CHAR) <> CAST(? AS CHAR) LIMIT 1'
+            );
             $dup->execute([$phone, $userId]);
             if ($dup->fetch(PDO::FETCH_ASSOC)) {
                 http_response_code(409);
@@ -87,7 +109,7 @@ try {
                 exit;
             }
         }
-        if (in_array('phone', $cols, true)) {
+        if (in_array('phone', $cols, true) && $normalizedNewPhone !== $normalizedCurrentPhone) {
             $fields[] = 'phone = ?';
             $params[] = $phone;
         }
