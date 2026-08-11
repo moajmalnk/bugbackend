@@ -57,6 +57,15 @@ class MeController extends BaseAPI {
             if (in_array('onboarding_verified_at', $cols, true)) {
                 $select[] = 'onboarding_verified_at';
             }
+            if (in_array('onboarding_rejection_reason', $cols, true)) {
+                $select[] = 'onboarding_rejection_reason';
+            }
+            if (in_array('onboarding_rejection_note', $cols, true)) {
+                $select[] = 'onboarding_rejection_note';
+            }
+            if (in_array('onboarding_rejection_action', $cols, true)) {
+                $select[] = 'onboarding_rejection_action';
+            }
             $stmt = $this->conn->prepare(
                 'SELECT ' . implode(', ', $select) . ' FROM users WHERE id = ?'
             );

@@ -9,6 +9,7 @@ require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../utils/validation.php';
 require_once __DIR__ . '/../../utils/user_avatar.php';
 require_once __DIR__ . '/../../utils/onboarding_contact_unique.php';
+require_once __DIR__ . '/../../utils/employee_id.php';
 
 class SubmitOnboardingAPI extends BaseAPI
 {
@@ -95,7 +96,14 @@ class SubmitOnboardingAPI extends BaseAPI
             }
 
             $fields = $this->sanitizePayload($_POST);
-            $missing = $this->validateRequired($fields);
+            $detailColsEarly = [];
+            $colResEarly = $this->conn->query('SHOW COLUMNS FROM user_onboarding_details');
+            if ($colResEarly) {
+                while ($c = $colResEarly->fetch(PDO::FETCH_ASSOC)) {
+                    $detailColsEarly[] = $c['Field'];
+                }
+            }
+            $missing = $this->validateRequired($fields, $detailColsEarly);
             if (!empty($missing)) {
                 $this->sendJsonResponse(400, 'Missing required fields: ' . implode(', ', $missing));
                 return;
@@ -252,6 +260,13 @@ class SubmitOnboardingAPI extends BaseAPI
             $stmt->execute($params);
 
             $this->stampDetailVerifiedAts($userId, $fields, $detailCols);
+            $this->persistDemographics($userId, $fields, $detailCols);
+
+            try {
+                br_ensure_employee_code($this->conn, $userId);
+            } catch (Throwable $e) {
+                error_log('submit_onboarding employee_code: ' . $e->getMessage());
+            }
 
             $termsAt = $this->parseClientTimestamp($_POST['terms_accepted_at'] ?? null)
                 ?? date('Y-m-d H:i:s');
@@ -292,6 +307,15 @@ class SubmitOnboardingAPI extends BaseAPI
             }
             if (in_array('onboarding_verified_by', $cols, true)) {
                 $updateSql .= ', onboarding_verified_by = NULL';
+            }
+            if (in_array('onboarding_rejection_reason', $cols, true)) {
+                $updateSql .= ', onboarding_rejection_reason = NULL';
+            }
+            if (in_array('onboarding_rejection_note', $cols, true)) {
+                $updateSql .= ', onboarding_rejection_note = NULL';
+            }
+            if (in_array('onboarding_rejection_action', $cols, true)) {
+                $updateSql .= ', onboarding_rejection_action = NULL';
             }
             if ($hashedNewPassword !== null) {
                 $updateSql .= ', password = ?';
@@ -427,6 +451,39 @@ class SubmitOnboardingAPI extends BaseAPI
         $stmt->execute($params);
     }
 
+    /**
+     * Why: Persist DOB/gender/marital after the main details upsert so older DBs
+     * without migration 066 still accept onboarding without failing the INSERT shape.
+     *
+     * @param array<string, mixed> $fields
+     * @param list<string> $detailCols
+     */
+    private function persistDemographics(string $userId, array $fields, array $detailCols): void
+    {
+        $sets = [];
+        $params = [];
+        if (in_array('date_of_birth', $detailCols, true)) {
+            $sets[] = 'date_of_birth = ?';
+            $params[] = $fields['date_of_birth'] ?? null;
+        }
+        if (in_array('gender', $detailCols, true)) {
+            $sets[] = 'gender = ?';
+            $params[] = $fields['gender'] ?? null;
+        }
+        if (in_array('marital_status', $detailCols, true)) {
+            $sets[] = 'marital_status = ?';
+            $params[] = $fields['marital_status'] ?? null;
+        }
+        if (empty($sets)) {
+            return;
+        }
+        $params[] = $userId;
+        $stmt = $this->conn->prepare(
+            'UPDATE user_onboarding_details SET ' . implode(', ', $sets) . ' WHERE user_id = ?'
+        );
+        $stmt->execute($params);
+    }
+
     private function parseClientTimestamp($raw): ?string
     {
         if ($raw === null) {
@@ -523,14 +580,57 @@ class SubmitOnboardingAPI extends BaseAPI
             'account_type' => $this->clamp((string) ($post['account_type'] ?? ''), 40),
             'upi_id' => $this->clamp((string) ($post['upi_id'] ?? ''), 100),
             'upi_linked_phone' => $this->digitsOnly((string) ($post['upi_linked_phone'] ?? ''), 15),
+            'date_of_birth' => $this->sanitizeDate($post['date_of_birth'] ?? null),
+            'gender' => $this->sanitizeGender($post['gender'] ?? null),
+            'marital_status' => $this->sanitizeMaritalStatus($post['marital_status'] ?? null),
         ];
+    }
+
+    private function sanitizeDate($raw): ?string
+    {
+        if ($raw === null || $raw === '') {
+            return null;
+        }
+        $value = trim((string) $raw);
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $value)) {
+            return null;
+        }
+        $parts = explode('-', $value);
+        if (!checkdate((int) $parts[1], (int) $parts[2], (int) $parts[0])) {
+            return null;
+        }
+        // Must be in the past and reasonable age range (14–100 years)
+        $ts = strtotime($value);
+        if ($ts === false) {
+            return null;
+        }
+        $age = (int) floor((time() - $ts) / (365.25 * 24 * 60 * 60));
+        if ($age < 14 || $age > 100) {
+            return null;
+        }
+        return $value;
+    }
+
+    private function sanitizeGender($raw): ?string
+    {
+        $v = strtolower(trim((string) ($raw ?? '')));
+        $allowed = ['male', 'female', 'other', 'prefer_not_to_say'];
+        return in_array($v, $allowed, true) ? $v : null;
+    }
+
+    private function sanitizeMaritalStatus($raw): ?string
+    {
+        $v = strtolower(trim((string) ($raw ?? '')));
+        $allowed = ['single', 'married', 'divorced', 'widowed', 'other'];
+        return in_array($v, $allowed, true) ? $v : null;
     }
 
     /**
      * @param array<string, mixed> $fields
+     * @param list<string> $detailCols
      * @return string[]
      */
-    private function validateRequired(array $fields): array
+    private function validateRequired(array $fields, array $detailCols = []): array
     {
         $required = [
             'emergency_contact',
@@ -560,6 +660,15 @@ class SubmitOnboardingAPI extends BaseAPI
         }
         if (!empty($fields['aadhaar_number']) && strlen((string) $fields['aadhaar_number']) !== 12) {
             $missing[] = 'aadhaar_number(must be 12 digits)';
+        }
+        if (in_array('date_of_birth', $detailCols, true) && empty($fields['date_of_birth'])) {
+            $missing[] = 'date_of_birth';
+        }
+        if (in_array('gender', $detailCols, true) && empty($fields['gender'])) {
+            $missing[] = 'gender';
+        }
+        if (in_array('marital_status', $detailCols, true) && empty($fields['marital_status'])) {
+            $missing[] = 'marital_status';
         }
         return $missing;
     }

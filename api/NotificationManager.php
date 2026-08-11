@@ -1274,9 +1274,16 @@ class NotificationManager extends BaseAPI {
      * Why: Tell the employee when HR verifies or rejects their documents.
      *
      * @param string $status verified|rejected
+     * @param string|null $reasonLabel Human-readable rejection reason
+     * @param string|null $reasonAction What the employee should do next
      */
-    public function notifyOnboardingVerificationDecision($userId, $status, $adminUsername = null)
-    {
+    public function notifyOnboardingVerificationDecision(
+        $userId,
+        $status,
+        $adminUsername = null,
+        $reasonLabel = null,
+        $reasonAction = null
+    ) {
         $userId = (string) $userId;
         $verified = strtolower((string) $status) === 'verified';
         $notificationType = $this->getValidNotificationType(
@@ -1285,9 +1292,19 @@ class NotificationManager extends BaseAPI {
         );
 
         $title = $verified ? 'Onboarding verified' : 'Onboarding rejected';
-        $message = $verified
-            ? 'Your onboarding documents were verified by HR. You are all set.'
-            : 'Your onboarding documents were rejected. Please contact HR for next steps.';
+        if ($verified) {
+            $message = 'Your onboarding documents were verified by HR. You are all set.';
+        } else {
+            $label = trim((string) $reasonLabel);
+            $action = trim((string) $reasonAction);
+            if ($label !== '' && $action !== '') {
+                $message = "Reason: {$label}. Next: {$action}";
+            } elseif ($label !== '') {
+                $message = "Reason: {$label}. Please update and resubmit from your profile.";
+            } else {
+                $message = 'Your onboarding documents were rejected. Please check your profile for next steps.';
+            }
+        }
         if ($adminUsername) {
             $message .= ' (' . trim((string) $adminUsername) . ')';
         }
@@ -1302,6 +1319,8 @@ class NotificationManager extends BaseAPI {
                 'entity_id' => $userId,
                 'status' => $verified ? 'verified' : 'rejected',
                 'url' => '/profile',
+                'rejection_reason' => $reasonLabel,
+                'rejection_action' => $reasonAction,
             ]
         );
     }

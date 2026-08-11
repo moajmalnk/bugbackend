@@ -88,24 +88,31 @@ function br_notify_admins_onboarding_updated(PDO $conn, string $userId, ?string 
  * Alert the employee when HR verifies or rejects their onboarding documents.
  *
  * @param 'verified'|'rejected' $status
+ * @param array{code?: string, label?: string, action?: string}|null $rejectionReason
  */
 function br_notify_employee_onboarding_decision(
     PDO $conn,
     string $userId,
     string $status,
-    ?string $adminUsername = null
+    ?string $adminUsername = null,
+    ?array $rejectionReason = null
 ): void {
     $status = strtolower(trim($status));
     if (!in_array($status, ['verified', 'rejected'], true)) {
         return;
     }
 
+    $reasonLabel = $rejectionReason['label'] ?? null;
+    $reasonAction = $rejectionReason['action'] ?? null;
+
     try {
         require_once __DIR__ . '/../api/NotificationManager.php';
         NotificationManager::getInstance()->notifyOnboardingVerificationDecision(
             $userId,
             $status,
-            $adminUsername
+            $adminUsername,
+            $reasonLabel,
+            $reasonAction
         );
     } catch (Throwable $e) {
         error_log('onboarding decision push: ' . $e->getMessage());
@@ -121,13 +128,46 @@ function br_notify_employee_onboarding_decision(
         $phone = trim((string) ($user['phone'] ?? ''));
         $username = trim((string) ($user['username'] ?? '')) ?: 'teammate';
 
+        // Prefer onboarding contact email / emergency phone when set.
+        try {
+            $od = $conn->prepare(
+                'SELECT contact_email, emergency_contact FROM user_onboarding_details WHERE user_id = ? LIMIT 1'
+            );
+            $od->execute([$userId]);
+            $details = $od->fetch(PDO::FETCH_ASSOC) ?: [];
+            $contactEmail = trim((string) ($details['contact_email'] ?? ''));
+            $emergency = trim((string) ($details['emergency_contact'] ?? ''));
+            if ($contactEmail !== '' && filter_var($contactEmail, FILTER_VALIDATE_EMAIL)) {
+                $email = $contactEmail;
+            }
+            if ($emergency !== '') {
+                $phone = $emergency;
+            }
+        } catch (Throwable $e) {
+            // Table/columns may be missing on older DBs — fall back to users.*.
+        }
+
         if ($email !== '') {
             require_once __DIR__ . '/email.php';
-            sendOnboardingVerificationDecisionEmail($email, $username, $status, $adminUsername);
+            sendOnboardingVerificationDecisionEmail(
+                $email,
+                $username,
+                $status,
+                $adminUsername,
+                $reasonLabel,
+                $reasonAction
+            );
         }
         if ($phone !== '') {
             require_once __DIR__ . '/whatsapp.php';
-            sendOnboardingVerificationDecisionWhatsApp($phone, $username, $status, $adminUsername);
+            sendOnboardingVerificationDecisionWhatsApp(
+                $phone,
+                $username,
+                $status,
+                $adminUsername,
+                $reasonLabel,
+                $reasonAction
+            );
         }
     } catch (Throwable $e) {
         error_log('onboarding decision mail/wa: ' . $e->getMessage());

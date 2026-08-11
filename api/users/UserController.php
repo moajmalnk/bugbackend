@@ -3,6 +3,7 @@ require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../ActivityLogger.php';
 require_once __DIR__ . '/../../utils/activity_sessions_schema.php';
 require_once __DIR__ . '/../../utils/user_avatar.php';
+require_once __DIR__ . '/../../utils/employee_id.php';
 
 class UserController extends BaseAPI {
     public function getUsers() {
@@ -38,6 +39,9 @@ class UserController extends BaseAPI {
             $hasOnboardingVerification = in_array('onboarding_verification_status', $cols, true);
             $hasOnboardingVerifiedAt = in_array('onboarding_verified_at', $cols, true);
             $hasOnboardingCompletedAt = in_array('onboarding_completed_at', $cols, true);
+            $hasRejectionReason = in_array('onboarding_rejection_reason', $cols, true);
+            $hasRejectionNote = in_array('onboarding_rejection_note', $cols, true);
+            $hasRejectionAction = in_array('onboarding_rejection_action', $cols, true);
 
             $select = ['id', 'username', 'email', 'role', 'role_id', 'created_at', 'updated_at'];
             if ($hasPhone) $select[] = 'phone';
@@ -47,7 +51,11 @@ class UserController extends BaseAPI {
             if ($hasOnboardingVerification) $select[] = 'onboarding_verification_status';
             if ($hasOnboardingVerifiedAt) $select[] = 'onboarding_verified_at';
             if ($hasOnboardingCompletedAt) $select[] = 'onboarding_completed_at';
+            if ($hasRejectionReason) $select[] = 'onboarding_rejection_reason';
+            if ($hasRejectionNote) $select[] = 'onboarding_rejection_note';
+            if ($hasRejectionAction) $select[] = 'onboarding_rejection_action';
             $select = br_user_avatar_select_cols($select, $cols);
+            $select = br_user_hr_select_cols($select, $cols);
             if ($hasLastActive) {
                 $select[] = 'last_active_at';
                 $select[] = "(CASE WHEN last_active_at IS NULL THEN 'offline' WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 120 THEN 'active' WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 900 THEN 'idle' ELSE 'offline' END) as status";
@@ -231,7 +239,17 @@ class UserController extends BaseAPI {
             if (in_array('onboarding_verified_at', $cols, true)) {
                 $select[] = 'onboarding_verified_at';
             }
+            if (in_array('onboarding_rejection_reason', $cols, true)) {
+                $select[] = 'onboarding_rejection_reason';
+            }
+            if (in_array('onboarding_rejection_note', $cols, true)) {
+                $select[] = 'onboarding_rejection_note';
+            }
+            if (in_array('onboarding_rejection_action', $cols, true)) {
+                $select[] = 'onboarding_rejection_action';
+            }
             $select = br_user_avatar_select_cols($select, $cols);
+            $select = br_user_hr_select_cols($select, $cols);
 
             $query = "SELECT " . implode(', ', $select) . " FROM users WHERE id = ?";
             $stmt = $this->conn->prepare($query);
@@ -260,7 +278,9 @@ class UserController extends BaseAPI {
                 return;
             }
 
-            $this->sendJsonResponse(200, "User retrieved successfully", br_user_with_resolved_avatar($user));
+            $user = br_user_with_resolved_avatar($user);
+            $user = br_user_with_reports_to_name($this->conn, $user);
+            $this->sendJsonResponse(200, "User retrieved successfully", $user);
         } catch (PDOException $e) {
             error_log("Database error in getUser: " . $e->getMessage());
             $this->sendJsonResponse(500, "Database error occurred");
@@ -294,6 +314,13 @@ class UserController extends BaseAPI {
                 ['id', 'username', 'email', 'phone', 'role', 'role_id', 'created_at', 'updated_at'],
                 $cols
             );
+            $select = br_user_hr_select_cols($select, $cols);
+            if (in_array('joining_date', $cols, true) && !in_array('joining_date', $select, true)) {
+                $select[] = 'joining_date';
+            }
+            if (in_array('account_active', $cols, true) && !in_array('account_active', $select, true)) {
+                $select[] = 'account_active';
+            }
             $query = 'SELECT ' . implode(', ', $select) . '
                      FROM users
                      ORDER BY created_at DESC
@@ -950,6 +977,10 @@ class UserController extends BaseAPI {
                 if ($activeVal === 0) {
                     $deactivatingAccount = true;
                 }
+                if (in_array('employment_status', $userCols, true) && !array_key_exists('employment_status', $data)) {
+                    $fields[] = 'employment_status = ?';
+                    $params[] = $activeVal === 1 ? 'active' : 'inactive';
+                }
             }
 
             if (array_key_exists('joining_date', $data) && $hasJoiningDateCol) {
@@ -973,15 +1004,192 @@ class UserController extends BaseAPI {
                 }
             }
 
-            if (empty($fields)) {
+            // Admin HR employment profile fields
+            $hrKeys = [
+                'employee_code',
+                'job_title',
+                'job_level',
+                'department',
+                'reports_to_user_id',
+                'contract_type',
+                'offer_letter_issued',
+                'probation_end_date',
+                'employment_status',
+                'regenerate_employee_code',
+            ];
+            $wantsHr = false;
+            foreach ($hrKeys as $hk) {
+                if (array_key_exists($hk, $data)) {
+                    $wantsHr = true;
+                    break;
+                }
+            }
+            if ($wantsHr) {
+                $actor = $this->validateToken();
+                $pm = PermissionManager::getInstance();
+                $isAdmin = isset($actor->role) && strtolower((string) $actor->role) === 'admin';
+                if (
+                    !$isAdmin
+                    && !$pm->hasPermissionOrAdmin($actor->user_id ?? '', 'USERS_EDIT', $actor->role ?? null)
+                ) {
+                    $this->sendJsonResponse(403, "USERS_EDIT permission required to update HR fields");
+                    return;
+                }
+            }
+
+            if (array_key_exists('job_title', $data) && in_array('job_title', $userCols, true)) {
+                $jt = $data['job_title'];
+                $fields[] = 'job_title = ?';
+                $params[] = ($jt === null || $jt === '')
+                    ? null
+                    : substr(strip_tags(trim((string) $jt)), 0, 200);
+            }
+            if (array_key_exists('job_level', $data) && in_array('job_level', $userCols, true)) {
+                $jl = $data['job_level'];
+                $fields[] = 'job_level = ?';
+                $params[] = ($jl === null || $jl === '')
+                    ? null
+                    : substr(strip_tags(trim((string) $jl)), 0, 80);
+            }
+            if (array_key_exists('department', $data) && in_array('department', $userCols, true)) {
+                $dep = $data['department'];
+                $fields[] = 'department = ?';
+                $params[] = ($dep === null || $dep === '')
+                    ? null
+                    : substr(strip_tags(trim((string) $dep)), 0, 150);
+            }
+            if (array_key_exists('reports_to_user_id', $data) && in_array('reports_to_user_id', $userCols, true)) {
+                $mgr = $data['reports_to_user_id'];
+                if ($mgr === null || $mgr === '') {
+                    $fields[] = 'reports_to_user_id = ?';
+                    $params[] = null;
+                } else {
+                    $mgr = trim((string) $mgr);
+                    if ($mgr === $id) {
+                        $this->sendJsonResponse(400, "User cannot report to themselves");
+                        return;
+                    }
+                    $mgrStmt = $conn->prepare('SELECT id FROM users WHERE id = ? LIMIT 1');
+                    $mgrStmt->execute([$mgr]);
+                    if (!$mgrStmt->fetchColumn()) {
+                        $this->sendJsonResponse(400, "reports_to_user_id must reference an existing user");
+                        return;
+                    }
+                    $fields[] = 'reports_to_user_id = ?';
+                    $params[] = $mgr;
+                }
+            }
+            if (array_key_exists('contract_type', $data) && in_array('contract_type', $userCols, true)) {
+                $ct = $data['contract_type'];
+                if ($ct === null || $ct === '') {
+                    $fields[] = 'contract_type = ?';
+                    $params[] = null;
+                } else {
+                    $ct = strtolower(trim((string) $ct));
+                    $allowedCt = ['full_time', 'remote', 'part_time', 'contract', 'intern', 'other'];
+                    if (!in_array($ct, $allowedCt, true)) {
+                        $this->sendJsonResponse(400, "Invalid contract_type");
+                        return;
+                    }
+                    $fields[] = 'contract_type = ?';
+                    $params[] = $ct;
+                }
+            }
+            if (array_key_exists('offer_letter_issued', $data) && in_array('offer_letter_issued', $userCols, true)) {
+                $v = $data['offer_letter_issued'];
+                $fields[] = 'offer_letter_issued = ?';
+                $params[] = ($v === true || $v === 1 || $v === '1' || $v === 'true' || $v === 'yes') ? 1 : 0;
+            }
+            if (array_key_exists('probation_end_date', $data) && in_array('probation_end_date', $userCols, true)) {
+                $ped = $data['probation_end_date'];
+                if ($ped === null || $ped === '') {
+                    $fields[] = 'probation_end_date = ?';
+                    $params[] = null;
+                } else {
+                    $ped = trim((string) $ped);
+                    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $ped)) {
+                        $this->sendJsonResponse(400, "probation_end_date must be YYYY-MM-DD");
+                        return;
+                    }
+                    $fields[] = 'probation_end_date = ?';
+                    $params[] = $ped;
+                }
+            }
+            if (array_key_exists('employment_status', $data) && in_array('employment_status', $userCols, true)) {
+                $es = strtolower(trim((string) $data['employment_status']));
+                if (!in_array($es, ['active', 'inactive'], true)) {
+                    $this->sendJsonResponse(400, "employment_status must be active or inactive");
+                    return;
+                }
+                $fields[] = 'employment_status = ?';
+                $params[] = $es;
+                if ($hasAccountActiveCol && !array_key_exists('account_active', $data)) {
+                    $fields[] = 'account_active = ?';
+                    $params[] = $es === 'active' ? 1 : 0;
+                    if ($es === 'inactive') {
+                        $deactivatingAccount = true;
+                    }
+                }
+            }
+            if (array_key_exists('employee_code', $data) && in_array('employee_code', $userCols, true)) {
+                $rawCode = $data['employee_code'];
+                if ($rawCode === null || $rawCode === '') {
+                    $fields[] = 'employee_code = ?';
+                    $params[] = null;
+                } else {
+                    $norm = br_normalize_employee_code((string) $rawCode);
+                    if ($norm === null) {
+                        $this->sendJsonResponse(
+                            400,
+                            "employee_code must look like CODO-XXXX-XXXX (optional -A suffix)"
+                        );
+                        return;
+                    }
+                    if (br_employee_code_exists($conn, $norm, $id)) {
+                        $this->sendJsonResponse(409, "employee_code already in use");
+                        return;
+                    }
+                    $fields[] = 'employee_code = ?';
+                    $params[] = $norm;
+                }
+            }
+
+            $shouldRegenerate = !empty($data['regenerate_employee_code']);
+
+            if (empty($fields) && !$shouldRegenerate) {
                 $this->sendJsonResponse(400, "No fields to update");
                 return;
             }
 
-            $params[] = $id;
-            $sql = "UPDATE users SET " . implode(", ", $fields) . " WHERE id = ?";
-            $stmt = $conn->prepare($sql);
-            if ($stmt->execute($params)) {
+            if (!empty($fields)) {
+                $params[] = $id;
+                $sql = "UPDATE users SET " . implode(", ", $fields) . " WHERE id = ?";
+                $stmt = $conn->prepare($sql);
+                if (!$stmt->execute($params)) {
+                    $this->sendJsonResponse(500, "Failed to update user");
+                    return;
+                }
+            }
+
+            if ($shouldRegenerate && in_array('employee_code', $userCols, true)) {
+                $newCode = br_regenerate_employee_code($conn, $id);
+                if ($newCode === null) {
+                    $this->sendJsonResponse(
+                        400,
+                        "Cannot regenerate employee_code — joining_date and date_of_birth are required"
+                    );
+                    return;
+                }
+            } elseif (in_array('employee_code', $userCols, true)) {
+                // Auto-fill when empty after joining_date / HR updates
+                try {
+                    br_ensure_employee_code($conn, $id);
+                } catch (Exception $e) {
+                    error_log('ensure employee_code: ' . $e->getMessage());
+                }
+            }
+
+            {
                 // Revoke push tokens so deactivated users cannot receive FCM
                 if ($deactivatingAccount) {
                     try {
@@ -1049,6 +1257,7 @@ class UserController extends BaseAPI {
                     $selectParts[] = 'joining_date';
                 }
                 $selectParts = br_user_avatar_select_cols($selectParts, $userCols);
+                $selectParts = br_user_hr_select_cols($selectParts, $userCols);
                 $selectSql = implode(",\n                        ", $selectParts) . ",
                         COALESCE(
                             (SELECT username FROM users WHERE id = ?),
@@ -1064,16 +1273,16 @@ class UserController extends BaseAPI {
                 $updatedUser = $fetchStmt->fetch(PDO::FETCH_ASSOC);
                 
                 if ($updatedUser) {
+                    $updatedUser = br_user_with_resolved_avatar($updatedUser);
+                    $updatedUser = br_user_with_reports_to_name($conn, $updatedUser);
                     $this->sendJsonResponse(
                         200,
                         "User updated successfully",
-                        br_user_with_resolved_avatar($updatedUser)
+                        $updatedUser
                     );
                 } else {
                     $this->sendJsonResponse(200, "User updated successfully");
                 }
-            } else {
-                $this->sendJsonResponse(500, "Failed to update user");
             }
         } catch (Exception $e) {
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());

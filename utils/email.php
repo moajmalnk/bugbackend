@@ -1419,16 +1419,41 @@ function sendOnboardingSubmittedAdminEmail($adminEmail, $username)
  * Why: Tell the employee when HR verifies or rejects onboarding documents.
  *
  * @param 'verified'|'rejected'|string $status
+ * @param string|null $reasonLabel
+ * @param string|null $reasonAction
  */
-function sendOnboardingVerificationDecisionEmail($userEmail, $username, $status, $adminUsername = null)
-{
+function sendOnboardingVerificationDecisionEmail(
+    $userEmail,
+    $username,
+    $status,
+    $adminUsername = null,
+    $reasonLabel = null,
+    $reasonAction = null
+) {
     $verified = strtolower((string) $status) === 'verified';
     $safeName = htmlspecialchars((string) $username, ENT_QUOTES, 'UTF-8');
     $subject = $verified ? 'Onboarding verified · BugRicer' : 'Onboarding rejected · BugRicer';
     $headline = $verified ? 'Your documents were verified' : 'Your documents were rejected';
     $bodyLine = $verified
         ? 'HR has verified your onboarding documents. You are cleared to continue in BugRicer.'
-        : 'HR rejected your onboarding documents. Please contact your administrator for next steps.';
+        : 'HR rejected your onboarding documents. Please follow the next steps below.';
+    $reasonHtml = '';
+    $reasonText = '';
+    if (!$verified) {
+        $label = trim((string) $reasonLabel);
+        $action = trim((string) $reasonAction);
+        if ($label !== '') {
+            $safeLabel = htmlspecialchars($label, ENT_QUOTES, 'UTF-8');
+            $reasonHtml .= '<p style="margin:16px 0 0;"><strong>Reason:</strong> ' . $safeLabel . '</p>';
+            $reasonText .= "\nReason: {$label}\n";
+        }
+        if ($action !== '') {
+            $safeAction = htmlspecialchars($action, ENT_QUOTES, 'UTF-8');
+            $reasonHtml .= '<p style="margin:8px 0 0;padding:12px;background:#fef2f2;border-radius:12px;color:#9f1239;">'
+                . '<strong>Next step:</strong> ' . $safeAction . '</p>';
+            $reasonText .= "Next step: {$action}\n";
+        }
+    }
     $adminHtml = $adminUsername
         ? '<p style="margin:12px 0 0;color:#64748b;font-size:13px;">Reviewed by ' . htmlspecialchars((string) $adminUsername, ENT_QUOTES, 'UTF-8') . '.</p>'
         : '';
@@ -1443,12 +1468,13 @@ function sendOnboardingVerificationDecisionEmail($userEmail, $username, $status,
       <div style=\"border:1px solid #e5e7eb;border-top:0;padding:20px;border-radius:0 0 12px 12px;\">
         <p>Hi {$safeName},</p>
         <p>{$bodyLine}</p>
+        {$reasonHtml}
         {$adminHtml}
         <p style=\"margin-top:16px;color:#64748b;font-size:13px;\">You can also check status on your BugRicer profile.</p>
       </div>
     </div>";
 
-    $text_body = "{$headline} — BugRicer\n\nHi {$username},\n{$bodyLine}{$adminText}\nCheck your BugRicer profile for status.\n";
+    $text_body = "{$headline} — BugRicer\n\nHi {$username},\n{$bodyLine}{$reasonText}{$adminText}\nCheck your BugRicer profile for status.\n";
 
     return sendEmail($userEmail, $subject, $html_body, $text_body);
 }

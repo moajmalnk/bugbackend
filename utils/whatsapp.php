@@ -2160,16 +2160,35 @@ function sendOnboardingSubmittedAdminWhatsApp($adminPhone, $username)
  * Why: Notify the employee on WhatsApp after verify/reject.
  *
  * @param 'verified'|'rejected'|string $status
+ * @param string|null $reasonLabel
+ * @param string|null $reasonAction
  */
-function sendOnboardingVerificationDecisionWhatsApp($userPhone, $username, $status, $adminUsername = null)
-{
+function sendOnboardingVerificationDecisionWhatsApp(
+    $userPhone,
+    $username,
+    $status,
+    $adminUsername = null,
+    $reasonLabel = null,
+    $reasonAction = null
+) {
     $verified = strtolower((string) $status) === 'verified';
     $headline = $verified ? '✅ *Onboarding verified*' : '❌ *Onboarding rejected*';
     $body = $verified
         ? 'HR verified your documents. You are all set in BugRicer.'
-        : 'HR rejected your onboarding documents. Please contact your administrator.';
+        : 'HR rejected your onboarding documents.';
+    $reasonBlock = '';
+    if (!$verified) {
+        $label = trim((string) $reasonLabel);
+        $action = trim((string) $reasonAction);
+        if ($label !== '') {
+            $reasonBlock .= "\n\n*Reason:* {$label}";
+        }
+        if ($action !== '') {
+            $reasonBlock .= "\n*Next step:* {$action}";
+        }
+    }
     $note = $adminUsername ? "\nReviewed by: *{$adminUsername}*" : '';
-    $message = "{$headline}\n\nHi {$username},\n{$body}{$note}\n\nCheck your BugRicer profile for status.";
+    $message = "{$headline}\n\nHi {$username},\n{$body}{$reasonBlock}{$note}\n\nOpen BugRicer → Profile to update.";
     return sendWhatsAppMessage($userPhone, $message);
 }
 ?>

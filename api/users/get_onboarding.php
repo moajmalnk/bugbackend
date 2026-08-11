@@ -7,6 +7,7 @@ header('Content-Type: application/json');
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../PermissionManager.php';
 require_once __DIR__ . '/../../utils/user_avatar.php';
+require_once __DIR__ . '/../../utils/employee_id.php';
 
 class GetOnboardingAPI extends BaseAPI
 {
@@ -59,6 +60,7 @@ class GetOnboardingAPI extends BaseAPI
             if (in_array('joining_date', $cols, true)) {
                 $select[] = 'joining_date';
             }
+            $select = br_user_hr_select_cols($select, $cols);
             if (in_array('onboarding_completed', $cols, true)) {
                 $select[] = 'onboarding_completed';
             }
@@ -83,6 +85,15 @@ class GetOnboardingAPI extends BaseAPI
             if (in_array('onboarding_verified_by', $cols, true)) {
                 $select[] = 'onboarding_verified_by';
             }
+            if (in_array('onboarding_rejection_reason', $cols, true)) {
+                $select[] = 'onboarding_rejection_reason';
+            }
+            if (in_array('onboarding_rejection_note', $cols, true)) {
+                $select[] = 'onboarding_rejection_note';
+            }
+            if (in_array('onboarding_rejection_action', $cols, true)) {
+                $select[] = 'onboarding_rejection_action';
+            }
 
             $userStmt = $this->conn->prepare(
                 'SELECT ' . implode(', ', $select) . ' FROM users WHERE id = ? LIMIT 1'
@@ -94,6 +105,7 @@ class GetOnboardingAPI extends BaseAPI
                 return;
             }
             $user = br_user_with_resolved_avatar($user);
+            $user = br_user_with_reports_to_name($this->conn, $user);
 
             $detailsStmt = $this->conn->prepare(
                 'SELECT * FROM user_onboarding_details WHERE user_id = ? LIMIT 1'
@@ -119,6 +131,9 @@ class GetOnboardingAPI extends BaseAPI
                     : 0,
                 'onboarding_verification_status' => $user['onboarding_verification_status'] ?? 'none',
                 'onboarding_verified_at' => $user['onboarding_verified_at'] ?? null,
+                'onboarding_rejection_reason' => $user['onboarding_rejection_reason'] ?? null,
+                'onboarding_rejection_note' => $user['onboarding_rejection_note'] ?? null,
+                'onboarding_rejection_action' => $user['onboarding_rejection_action'] ?? null,
                 'onboarding_completed_at' => $user['onboarding_completed_at'] ?? null,
                 'terms_accepted_at' => $user['terms_accepted_at'] ?? null,
                 'privacy_accepted_at' => $user['privacy_accepted_at'] ?? null,
