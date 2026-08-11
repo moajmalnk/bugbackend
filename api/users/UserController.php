@@ -1190,9 +1190,10 @@ class UserController extends BaseAPI {
             if ($shouldRegenerate && in_array('employee_code', $userCols, true)) {
                 $newCode = br_regenerate_employee_code($conn, $id);
                 if ($newCode === null) {
+                    $pre = br_employee_code_prerequisites($conn, $id);
                     $this->sendJsonResponse(
                         400,
-                        "Cannot regenerate employee_code — joining_date and date_of_birth are required"
+                        $pre['message'] ?? 'Cannot regenerate employee_code — joining_date and date_of_birth are required'
                     );
                     return;
                 }

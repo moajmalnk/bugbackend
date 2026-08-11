@@ -251,25 +251,77 @@ function br_user_with_reports_to_name(PDO $pdo, array $user): array
 }
 
 /**
+ * Why: Tell admins exactly which inputs are missing so Employee ID regenerate
+ * fails with a clear fix path (join date and/or DOB).
+ *
+ * @return array{ready:bool,has_joining_date:bool,has_date_of_birth:bool,missing:string[],message:string}
+ */
+function br_employee_code_prerequisites(PDO $pdo, string $userId): array
+{
+    $hasJoining = false;
+    $hasDob = false;
+
+    $stmt = $pdo->prepare('SELECT joining_date FROM users WHERE id = ? LIMIT 1');
+    $stmt->execute([$userId]);
+    $joining = $stmt->fetchColumn();
+    if ($joining && preg_match('/^\d{4}-\d{2}-\d{2}/', (string) $joining)) {
+        $hasJoining = true;
+    }
+
+    try {
+        $dobStmt = $pdo->prepare(
+            'SELECT date_of_birth FROM user_onboarding_details WHERE user_id = ? LIMIT 1'
+        );
+        $dobStmt->execute([$userId]);
+        $dob = $dobStmt->fetchColumn();
+        if ($dob && preg_match('/^\d{4}-\d{2}-\d{2}/', (string) $dob)) {
+            $hasDob = true;
+        }
+    } catch (Throwable $e) {
+        // Column/table may be missing on older DBs
+    }
+
+    $missing = [];
+    if (!$hasJoining) {
+        $missing[] = 'Join date';
+    }
+    if (!$hasDob) {
+        $missing[] = 'Date of birth';
+    }
+
+    $ready = $hasJoining && $hasDob;
+    $message = $ready
+        ? 'Join date and date of birth are set.'
+        : ('Cannot create Employee ID — missing: ' . implode(' and ', $missing) . '. Set them, then regenerate.');
+
+    return [
+        'ready' => $ready,
+        'has_joining_date' => $hasJoining,
+        'has_date_of_birth' => $hasDob,
+        'missing' => $missing,
+        'message' => $message,
+    ];
+}
+
+/**
  * Force-regenerate employee_code from joining_date + DOB (admin action).
  */
 function br_regenerate_employee_code(PDO $pdo, string $userId): ?string
 {
+    $pre = br_employee_code_prerequisites($pdo, $userId);
+    if (empty($pre['ready'])) {
+        return null;
+    }
+
     $stmt = $pdo->prepare('SELECT joining_date FROM users WHERE id = ? LIMIT 1');
     $stmt->execute([$userId]);
     $joining = $stmt->fetchColumn();
-    if (!$joining) {
-        return null;
-    }
 
     $dobStmt = $pdo->prepare(
         'SELECT date_of_birth FROM user_onboarding_details WHERE user_id = ? LIMIT 1'
     );
     $dobStmt->execute([$userId]);
     $dob = $dobStmt->fetchColumn();
-    if (!$dob) {
-        return null;
-    }
 
     $code = br_generate_employee_code($pdo, (string) $joining, (string) $dob, $userId);
     if ($code === null) {
