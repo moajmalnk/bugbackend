@@ -1557,6 +1557,59 @@ class NotificationManager extends BaseAPI {
     }
 
     /**
+     * Why: Developers moving bugs to projects they are not on need admin /
+     * project-member approval — alert everyone who can grant access.
+     */
+    public function notifyProjectAccessRequest(
+        $requesterId,
+        $projectId,
+        $projectName,
+        $bugId,
+        $bugTitle,
+        $intent = 'move',
+        $note = null
+    ) {
+        $requesterId = (string) $requesterId;
+        $requesterName = $this->getUserName($requesterId);
+        $intentLabel = strtolower((string) $intent) === 'to_update' ? 'convert to update' : 'move bug';
+        $notificationType = $this->getValidNotificationType('project_access_request', 'new_update');
+
+        $adminIds = $this->resolveAdminRecipients($requesterId);
+        $memberIds = $this->getProjectMembersByRole($projectId, null);
+        $userIds = $this->filterActiveUserIds(array_unique(array_merge($adminIds, $memberIds)));
+        $userIds = array_values(array_filter($userIds, fn($id) => (string) $id !== $requesterId));
+
+        if (empty($userIds)) {
+            $userIds = $adminIds;
+        }
+
+        $message = "{$requesterName} requested project access to {$intentLabel} \"{$bugTitle}\" into {$projectName}";
+        if ($note) {
+            $snippet = mb_substr(trim((string) $note), 0, 120);
+            if ($snippet !== '') {
+                $message .= " — {$snippet}";
+            }
+        }
+
+        return $this->createNotification(
+            $notificationType,
+            "Project access: {$requesterName}",
+            $message,
+            $userIds,
+            [
+                'entity_type' => 'project_access_request',
+                'entity_id' => $bugId,
+                'bug_id' => $bugId,
+                'bug_title' => $bugTitle,
+                'project_id' => $projectId,
+                'created_by' => $requesterName,
+                'intent' => $intentLabel,
+                'url' => '/admin/projects/' . $projectId,
+            ]
+        );
+    }
+
+    /**
      * Get user name by user ID
      * 
      * @param string $userId User ID

@@ -2191,5 +2191,28 @@ function sendOnboardingVerificationDecisionWhatsApp(
     $message = "{$headline}\n\nHi {$username},\n{$body}{$reasonBlock}{$note}\n\nOpen BugRicer → Profile to update.";
     return sendWhatsAppMessage($userPhone, $message);
 }
+
+/**
+ * Why: Alert admins / project members on WhatsApp when access is needed for bug conversion.
+ */
+function sendProjectAccessRequestWhatsApp(
+    $phone,
+    $requesterName,
+    $projectName,
+    $bugTitle,
+    $intentLabel,
+    $reviewUrl,
+    $userNote = null
+) {
+    $note = $userNote ? "\nNote: " . trim((string) $userNote) : '';
+    $message = "🔐 *Project access request*\n\n"
+        . "*{$requesterName}* wants to *{$intentLabel}*:\n"
+        . "• Bug: *{$bugTitle}*\n"
+        . "• Project: *{$projectName}*"
+        . $note
+        . "\n\nAdd them to the project in BugRicer, then they can complete the move.\n\n"
+        . "{$reviewUrl}";
+    return sendWhatsAppMessage($phone, $message);
+}
 ?>
 

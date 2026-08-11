@@ -1478,4 +1478,50 @@ function sendOnboardingVerificationDecisionEmail(
 
     return sendEmail($userEmail, $subject, $html_body, $text_body);
 }
+
+/**
+ * Why: Alert admins / project members when a developer requests access to move or convert a bug.
+ */
+function sendProjectAccessRequestEmail(
+    $recipientEmail,
+    $requesterName,
+    $projectName,
+    $bugTitle,
+    $intentLabel,
+    $reviewUrl,
+    $userNote = null
+) {
+    $subject = "Project access request · {$requesterName} · {$projectName}";
+    $noteHtml = $userNote
+        ? '<p style="margin:12px 0 0;"><strong>Note:</strong> ' . htmlspecialchars((string) $userNote, ENT_QUOTES, 'UTF-8') . '</p>'
+        : '';
+    $noteText = $userNote ? "\nNote: {$userNote}\n" : '';
+    $safeUrl = htmlspecialchars((string) $reviewUrl, ENT_QUOTES, 'UTF-8');
+    $safeRequester = htmlspecialchars((string) $requesterName, ENT_QUOTES, 'UTF-8');
+    $safeProject = htmlspecialchars((string) $projectName, ENT_QUOTES, 'UTF-8');
+    $safeBug = htmlspecialchars((string) $bugTitle, ENT_QUOTES, 'UTF-8');
+    $safeIntent = htmlspecialchars((string) $intentLabel, ENT_QUOTES, 'UTF-8');
+
+    $html_body = "
+    <div style=\"font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto;\">
+      <div style=\"background: linear-gradient(135deg,#6366f1,#0ea5e9); padding: 20px; border-radius: 12px 12px 0 0;\">
+        <h2 style=\"margin:0;color:#fff;\">Project access request</h2>
+      </div>
+      <div style=\"border:1px solid #e5e7eb;border-top:0;padding:20px;border-radius:0 0 12px 12px;\">
+        <p><strong>{$safeRequester}</strong> wants to <strong>{$safeIntent}</strong> for project <strong>{$safeProject}</strong>.</p>
+        <p style=\"margin:8px 0 0;\">Bug: <strong>{$safeBug}</strong></p>
+        {$noteHtml}
+        <p style=\"margin-top:16px;\">
+          <a href=\"{$safeUrl}\" style=\"display:inline-block;background:#6366f1;color:#fff;text-decoration:none;padding:10px 16px;border-radius:10px;font-weight:600;\">
+            Open project
+          </a>
+        </p>
+        <p style=\"margin-top:12px;color:#64748b;font-size:12px;word-break:break-all;\">{$safeUrl}</p>
+      </div>
+    </div>";
+
+    $text_body = "Project access request — BugRicer\n\n{$requesterName} wants to {$intentLabel} \"{$bugTitle}\" into {$projectName}.{$noteText}\nOpen the project to add them as a member:\n\n{$reviewUrl}\n";
+
+    return sendEmail($recipientEmail, $subject, $html_body, $text_body);
+}
 ?>
