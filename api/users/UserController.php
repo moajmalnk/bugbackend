@@ -1013,6 +1013,7 @@ class UserController extends BaseAPI {
                 'reports_to_user_id',
                 'contract_type',
                 'offer_letter_issued',
+                'offer_letter_shared_date',
                 'probation_end_date',
                 'employment_status',
                 'regenerate_employee_code',
@@ -1099,6 +1100,21 @@ class UserController extends BaseAPI {
                 $v = $data['offer_letter_issued'];
                 $fields[] = 'offer_letter_issued = ?';
                 $params[] = ($v === true || $v === 1 || $v === '1' || $v === 'true' || $v === 'yes') ? 1 : 0;
+            }
+            if (array_key_exists('offer_letter_shared_date', $data) && in_array('offer_letter_shared_date', $userCols, true)) {
+                $osd = $data['offer_letter_shared_date'];
+                if ($osd === null || $osd === '') {
+                    $fields[] = 'offer_letter_shared_date = ?';
+                    $params[] = null;
+                } else {
+                    $osd = trim((string) $osd);
+                    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $osd)) {
+                        $this->sendJsonResponse(400, "offer_letter_shared_date must be YYYY-MM-DD");
+                        return;
+                    }
+                    $fields[] = 'offer_letter_shared_date = ?';
+                    $params[] = $osd;
+                }
             }
             if (array_key_exists('probation_end_date', $data) && in_array('probation_end_date', $userCols, true)) {
                 $ped = $data['probation_end_date'];

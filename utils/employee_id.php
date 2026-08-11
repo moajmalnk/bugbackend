@@ -218,6 +218,7 @@ function br_user_hr_select_cols(array $select, array $cols): array
         'reports_to_user_id',
         'contract_type',
         'offer_letter_issued',
+        'offer_letter_shared_date',
         'probation_end_date',
         'employment_status',
     ];
