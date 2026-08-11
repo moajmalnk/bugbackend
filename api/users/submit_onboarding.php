@@ -529,14 +529,6 @@ class SubmitOnboardingAPI extends BaseAPI
     {
         $sets = [];
         $params = [];
-        if (in_array('git_username', $detailCols, true)) {
-            $sets[] = 'git_username = ?';
-            $params[] = $fields['git_username'] ?? null;
-        }
-        if (in_array('git_email', $detailCols, true)) {
-            $sets[] = 'git_email = ?';
-            $params[] = $fields['git_email'] ?? null;
-        }
         if (in_array('github_url', $detailCols, true)) {
             $sets[] = 'github_url = ?';
             $params[] = $fields['github_url'] ?? null;
@@ -654,8 +646,6 @@ class SubmitOnboardingAPI extends BaseAPI
             'date_of_birth' => $this->sanitizeDate($post['date_of_birth'] ?? null),
             'gender' => $this->sanitizeGender($post['gender'] ?? null),
             'marital_status' => $this->sanitizeMaritalStatus($post['marital_status'] ?? null),
-            'git_username' => $this->sanitizeGitUsername($post['git_username'] ?? null),
-            'git_email' => $this->sanitizeGitEmail($post['git_email'] ?? null),
             'github_url' => $this->sanitizeProfileUrl($post['github_url'] ?? null, 'github'),
             'linkedin_url' => $this->sanitizeProfileUrl($post['linkedin_url'] ?? null, 'linkedin'),
         ];
@@ -801,15 +791,6 @@ class SubmitOnboardingAPI extends BaseAPI
         }
         if (in_array('marital_status', $detailCols, true) && empty($fields['marital_status'])) {
             $missing[] = 'marital_status';
-        }
-        if (in_array('git_username', $detailCols, true) && empty($fields['git_username'])) {
-            $missing[] = 'git_username';
-        }
-        if (in_array('git_email', $detailCols, true) && empty($fields['git_email'])) {
-            $missing[] = 'git_email';
-        }
-        if (!empty($fields['git_email']) && !filter_var((string) $fields['git_email'], FILTER_VALIDATE_EMAIL)) {
-            $missing[] = 'git_email(invalid)';
         }
         if (!empty($fields['github_url']) && empty($this->sanitizeProfileUrl($fields['github_url'], 'github'))) {
             $missing[] = 'github_url(invalid)';
