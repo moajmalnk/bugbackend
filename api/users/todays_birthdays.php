@@ -39,7 +39,8 @@ try {
     $wishedIds = [];
     try {
         $t = $conn->query("SHOW TABLES LIKE 'birthday_wishes'");
-        if ($t && $t->rowCount() > 0 && count($birthdays) > 0) {
+        $hasWishTable = $t && $t->fetch(PDO::FETCH_NUM);
+        if ($hasWishTable && count($birthdays) > 0) {
             $stmt = $conn->prepare(
                 'SELECT to_user_id FROM birthday_wishes
                  WHERE from_user_id = ? AND wish_date = ?'
@@ -50,7 +51,7 @@ try {
             }
         }
     } catch (Throwable $e) {
-        // Table may not exist until migration 069 runs.
+        // Table may not exist until migration 069 runs / auto-create on send.
     }
 
     $payload = array_map(static function (array $person) use ($viewerId, $wishedIds) {

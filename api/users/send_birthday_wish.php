@@ -23,6 +23,41 @@ require_once __DIR__ . '/../NotificationManager.php';
 require_once __DIR__ . '/../../config/utils.php';
 require_once __DIR__ . '/../../utils/todays_birthdays.php';
 
+/**
+ * Why: PDO MySQL rowCount() is unreliable for SHOW TABLES — use fetch().
+ * Auto-create matches migration 069 so Send wish works before manual migrate.
+ */
+function br_ensure_birthday_wishes_table(PDO $conn): bool
+{
+    try {
+        $t = $conn->query("SHOW TABLES LIKE 'birthday_wishes'");
+        if ($t && $t->fetch(PDO::FETCH_NUM)) {
+            return true;
+        }
+    } catch (Throwable $e) {
+        // fall through to create
+    }
+
+    try {
+        $conn->exec(
+            "CREATE TABLE IF NOT EXISTS `birthday_wishes` (
+              `id` CHAR(36) NOT NULL,
+              `from_user_id` VARCHAR(64) NOT NULL,
+              `to_user_id` VARCHAR(64) NOT NULL,
+              `wish_date` DATE NOT NULL,
+              `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              PRIMARY KEY (`id`),
+              UNIQUE KEY `uq_birthday_wish_day` (`from_user_id`, `to_user_id`, `wish_date`),
+              KEY `idx_birthday_wishes_to_date` (`to_user_id`, `wish_date`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci"
+        );
+        return true;
+    } catch (Throwable $e) {
+        error_log('br_ensure_birthday_wishes_table: ' . $e->getMessage());
+        return false;
+    }
+}
+
 try {
     $api = new BaseAPI();
     $decoded = $api->validateToken();
@@ -62,15 +97,7 @@ try {
         exit;
     }
 
-    $hasTable = false;
-    try {
-        $t = $conn->query("SHOW TABLES LIKE 'birthday_wishes'");
-        $hasTable = $t && $t->rowCount() > 0;
-    } catch (Throwable $e) {
-        $hasTable = false;
-    }
-
-    if (!$hasTable) {
+    if (!br_ensure_birthday_wishes_table($conn)) {
         http_response_code(500);
         echo json_encode([
             'success' => false,
@@ -122,8 +149,13 @@ try {
         exit;
     }
 
-    $nm = new NotificationManager();
-    $nm->notifyBirthdayWish($toUserId, $fromUserId, $fromUsername);
+    // Why: Wish is already persisted — never fail the HTTP response on notify/push.
+    try {
+        $nm = new NotificationManager();
+        $nm->notifyBirthdayWish($toUserId, $fromUserId, $fromUsername);
+    } catch (Throwable $notifyErr) {
+        error_log('send_birthday_wish notify: ' . $notifyErr->getMessage());
+    }
 
     http_response_code(200);
     echo json_encode([
@@ -131,8 +163,12 @@ try {
         'message' => 'Birthday wish sent.',
         'data' => ['already_wished' => true],
     ]);
-} catch (Exception $e) {
+} catch (Throwable $e) {
     error_log('send_birthday_wish: ' . $e->getMessage());
     http_response_code(500);
-    echo json_encode(['success' => false, 'message' => 'Failed to send birthday wish.']);
+    echo json_encode([
+        'success' => false,
+        'message' => 'Failed to send birthday wish.',
+        'error' => $e->getMessage(),
+    ]);
 }
