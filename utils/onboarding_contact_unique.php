@@ -1,8 +1,11 @@
 <?php
 /**
- * Why: Onboarding contact email / emergency WhatsApp must not reuse any
- * existing account credentials or another employee's onboarding contacts.
+ * Why: Onboarding contact email / emergency WhatsApp may match the *current*
+ * user's own account, but must not belong to any other BugRicer account or
+ * another employee's onboarding contacts.
  */
+
+
 
 /**
  * Normalize to last 10 digits for Indian mobile uniqueness checks.
@@ -20,7 +23,7 @@ function br_onboarding_phone_last10(string $raw): string
 }
 
 /**
- * @return string|null Error message when taken, null when available
+ * @return string|null Error message when taken by someone else, null when OK
  */
 function br_onboarding_contact_email_conflict(PDO $conn, string $email, string $excludeUserId): ?string
 {
@@ -29,12 +32,16 @@ function br_onboarding_contact_email_conflict(PDO $conn, string $email, string $
         return 'Enter a valid email address';
     }
 
+    // Allow current user's own login email; block other accounts.
     $stmt = $conn->prepare(
-        'SELECT id FROM users WHERE LOWER(TRIM(email)) = ? LIMIT 1'
+        'SELECT id FROM users
+         WHERE LOWER(TRIM(email)) = ?
+           AND id <> ?
+         LIMIT 1'
     );
-    $stmt->execute([$email]);
+    $stmt->execute([$email, $excludeUserId]);
     if ($stmt->fetch(PDO::FETCH_ASSOC)) {
-        return 'This email is already registered on BugRicer. Use a different contact email.';
+        return 'This email is already registered to another BugRicer account. Use a different contact email.';
     }
 
     $hasTable = false;
@@ -75,7 +82,7 @@ function br_onboarding_contact_email_conflict(PDO $conn, string $email, string $
 }
 
 /**
- * @return string|null Error message when taken, null when available
+ * @return string|null Error message when taken by someone else, null when OK
  */
 function br_onboarding_emergency_phone_conflict(PDO $conn, string $phoneRaw, string $excludeUserId): ?string
 {
@@ -84,16 +91,17 @@ function br_onboarding_emergency_phone_conflict(PDO $conn, string $phoneRaw, str
         return 'Enter a valid 10-digit Indian mobile number';
     }
 
-    // users.phone may be stored as +91… / 91… / 10 digits
+    // Allow current user's own account phone; block other accounts.
     $stmt = $conn->prepare(
         "SELECT id FROM users
          WHERE phone IS NOT NULL AND phone <> ''
            AND RIGHT(REPLACE(REPLACE(REPLACE(phone, '+', ''), ' ', ''), '-', ''), 10) = ?
+           AND id <> ?
          LIMIT 1"
     );
-    $stmt->execute([$last10]);
+    $stmt->execute([$last10, $excludeUserId]);
     if ($stmt->fetch(PDO::FETCH_ASSOC)) {
-        return 'This WhatsApp number is already registered on BugRicer. Use a different emergency mobile.';
+        return 'This WhatsApp number is already registered to another BugRicer account. Use a different emergency mobile.';
     }
 
     $hasTable = false;
