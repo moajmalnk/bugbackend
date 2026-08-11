@@ -334,14 +334,29 @@ class SubmitOnboardingAPI extends BaseAPI
             if (!$isUpdate && in_array('onboarding_completed_at', $cols, true)) {
                 $updateSql .= ', onboarding_completed_at = NOW()';
             }
-            if (in_array('onboarding_verification_status', $cols, true)) {
-                $updateSql .= ", onboarding_verification_status = 'pending'";
-            }
-            if (in_array('onboarding_verified_at', $cols, true)) {
-                $updateSql .= ', onboarding_verified_at = NULL';
-            }
-            if (in_array('onboarding_verified_by', $cols, true)) {
-                $updateSql .= ', onboarding_verified_by = NULL';
+            // Why: Admin fill/edit is HR-attested — no separate verification queue.
+            // Employee self-submit/update still lands in pending for Review & decide.
+            if ($isAdminProxy) {
+                if (in_array('onboarding_verification_status', $cols, true)) {
+                    $updateSql .= ", onboarding_verification_status = 'verified'";
+                }
+                if (in_array('onboarding_verified_at', $cols, true)) {
+                    $updateSql .= ', onboarding_verified_at = NOW()';
+                }
+                if (in_array('onboarding_verified_by', $cols, true)) {
+                    $updateSql .= ', onboarding_verified_by = ?';
+                    $updateParams[] = $requesterId;
+                }
+            } else {
+                if (in_array('onboarding_verification_status', $cols, true)) {
+                    $updateSql .= ", onboarding_verification_status = 'pending'";
+                }
+                if (in_array('onboarding_verified_at', $cols, true)) {
+                    $updateSql .= ', onboarding_verified_at = NULL';
+                }
+                if (in_array('onboarding_verified_by', $cols, true)) {
+                    $updateSql .= ', onboarding_verified_by = NULL';
+                }
             }
             if (in_array('onboarding_rejection_reason', $cols, true)) {
                 $updateSql .= ', onboarding_rejection_reason = NULL';
@@ -407,8 +422,12 @@ class SubmitOnboardingAPI extends BaseAPI
             ];
 
             // Why: Flush JSON to the client before email/WhatsApp so Save feels instant.
+            // Admin proxy updates are already reviewed — skip "needs verification" admin noise.
             $this->sendJsonThen(
-                function () use ($isUpdate, $userId, $user) {
+                function () use ($isUpdate, $isAdminProxy, $userId, $user) {
+                    if ($isAdminProxy) {
+                        return;
+                    }
                     try {
                         require_once __DIR__ . '/../../utils/onboarding_notifications.php';
                         if ($isUpdate) {
