@@ -278,6 +278,21 @@ class UserController extends BaseAPI {
                 return;
             }
 
+            // Why: Surface Employee ID on user details once join date + DOB exist.
+            if (in_array('employee_code', $cols, true)) {
+                $existingCode = isset($user['employee_code']) ? trim((string) $user['employee_code']) : '';
+                if ($existingCode === '') {
+                    try {
+                        $ensured = br_ensure_employee_code($this->conn, (string) $userId);
+                        if ($ensured) {
+                            $user['employee_code'] = $ensured;
+                        }
+                    } catch (Throwable $e) {
+                        error_log('getUser ensure employee_code: ' . $e->getMessage());
+                    }
+                }
+            }
+
             $user = br_user_with_resolved_avatar($user);
             $user = br_user_with_reports_to_name($this->conn, $user);
             $this->sendJsonResponse(200, "User retrieved successfully", $user);
