@@ -82,15 +82,32 @@ class ProjectMemberController extends BaseAPI {
      */
     public function getProjectMembers($projectId) {
         try {
-            $query = "SELECT pm.user_id, pm.role, u.username, u.email, u.role as user_role
+            require_once __DIR__ . '/../../utils/user_avatar.php';
+            $userCols = [];
+            $colRes = $this->conn->query('SHOW COLUMNS FROM users');
+            if ($colRes) {
+                while ($row = $colRes->fetch(PDO::FETCH_ASSOC)) {
+                    $userCols[] = $row['Field'];
+                }
+            }
+            $select = ['pm.user_id', 'pm.role', 'u.username', 'u.email', 'u.role as user_role'];
+            foreach (['avatar', 'profile_picture', 'profile_picture_url'] as $col) {
+                if (in_array($col, $userCols, true)) {
+                    $select[] = 'u.`' . $col . '`';
+                }
+            }
+            $query = 'SELECT ' . implode(', ', $select) . '
                      FROM project_members pm
                      JOIN users u ON pm.user_id = u.id
-                     WHERE pm.project_id = ?";
+                     WHERE pm.project_id = ?';
             
             $stmt = $this->conn->prepare($query);
             $stmt->execute([$projectId]);
             
-            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+            return array_map(
+                'br_user_with_resolved_avatar',
+                $stmt->fetchAll(PDO::FETCH_ASSOC) ?: []
+            );
         } catch (Exception $e) {
             error_log("Error getting project members: " . $e->getMessage());
             return [];

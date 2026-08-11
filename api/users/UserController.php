@@ -2,6 +2,7 @@
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../ActivityLogger.php';
 require_once __DIR__ . '/../../utils/activity_sessions_schema.php';
+require_once __DIR__ . '/../../utils/user_avatar.php';
 
 class UserController extends BaseAPI {
     public function getUsers() {
@@ -46,6 +47,7 @@ class UserController extends BaseAPI {
             if ($hasOnboardingVerification) $select[] = 'onboarding_verification_status';
             if ($hasOnboardingVerifiedAt) $select[] = 'onboarding_verified_at';
             if ($hasOnboardingCompletedAt) $select[] = 'onboarding_completed_at';
+            $select = br_user_avatar_select_cols($select, $cols);
             if ($hasLastActive) {
                 $select[] = 'last_active_at';
                 $select[] = "(CASE WHEN last_active_at IS NULL THEN 'offline' WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 120 THEN 'active' WHEN TIMESTAMPDIFF(SECOND, last_active_at, NOW()) < 900 THEN 'idle' ELSE 'offline' END) as status";
@@ -157,6 +159,7 @@ class UserController extends BaseAPI {
             
             // Add name field and ensure phone field exists
             foreach ($users as &$user) {
+                $user = br_user_with_resolved_avatar($user);
                 $user['name'] = $user['username']; // Use username as name
                 if (!isset($user['phone'])) {
                     $user['phone'] = null; // Set phone to null if column doesn't exist
@@ -228,6 +231,7 @@ class UserController extends BaseAPI {
             if (in_array('onboarding_verified_at', $cols, true)) {
                 $select[] = 'onboarding_verified_at';
             }
+            $select = br_user_avatar_select_cols($select, $cols);
 
             $query = "SELECT " . implode(', ', $select) . " FROM users WHERE id = ?";
             $stmt = $this->conn->prepare($query);
@@ -256,7 +260,7 @@ class UserController extends BaseAPI {
                 return;
             }
 
-            $this->sendJsonResponse(200, "User retrieved successfully", $user);
+            $this->sendJsonResponse(200, "User retrieved successfully", br_user_with_resolved_avatar($user));
         } catch (PDOException $e) {
             error_log("Database error in getUser: " . $e->getMessage());
             $this->sendJsonResponse(500, "Database error occurred");
@@ -279,14 +283,28 @@ class UserController extends BaseAPI {
             $totalUsers = $countStmt->fetch(PDO::FETCH_ASSOC)['total'];
 
             // Get users with pagination
-            $query = "SELECT id, username, email, phone, role, role_id, created_at, updated_at 
-                     FROM users 
-                     ORDER BY created_at DESC 
-                     LIMIT ? OFFSET ?";
+            $cols = [];
+            $colRes = $this->conn->query('SHOW COLUMNS FROM users');
+            if ($colRes) {
+                while ($row = $colRes->fetch(PDO::FETCH_ASSOC)) {
+                    $cols[] = $row['Field'];
+                }
+            }
+            $select = br_user_avatar_select_cols(
+                ['id', 'username', 'email', 'phone', 'role', 'role_id', 'created_at', 'updated_at'],
+                $cols
+            );
+            $query = 'SELECT ' . implode(', ', $select) . '
+                     FROM users
+                     ORDER BY created_at DESC
+                     LIMIT ? OFFSET ?';
             
             $stmt = $this->conn->prepare($query);
             $stmt->execute([$limit, $offset]);
-            $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $users = array_map(
+                'br_user_with_resolved_avatar',
+                $stmt->fetchAll(PDO::FETCH_ASSOC) ?: []
+            );
 
             $response = [
                 'users' => $users,
@@ -1030,6 +1048,7 @@ class UserController extends BaseAPI {
                 if ($hasJoiningDateCol) {
                     $selectParts[] = 'joining_date';
                 }
+                $selectParts = br_user_avatar_select_cols($selectParts, $userCols);
                 $selectSql = implode(",\n                        ", $selectParts) . ",
                         COALESCE(
                             (SELECT username FROM users WHERE id = ?),
@@ -1045,7 +1064,11 @@ class UserController extends BaseAPI {
                 $updatedUser = $fetchStmt->fetch(PDO::FETCH_ASSOC);
                 
                 if ($updatedUser) {
-                    $this->sendJsonResponse(200, "User updated successfully", $updatedUser);
+                    $this->sendJsonResponse(
+                        200,
+                        "User updated successfully",
+                        br_user_with_resolved_avatar($updatedUser)
+                    );
                 } else {
                     $this->sendJsonResponse(200, "User updated successfully");
                 }

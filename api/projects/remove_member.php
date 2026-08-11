@@ -35,6 +35,12 @@ try {
         // Clear related cache
         $api->clearCache('project_members_' . $project_id);
         $api->clearCache('project_members_list_' . $project_id);
+        $api->clearCache('project_members_v2_' . $project_id);
+        $api->clearCache('project_members_v3_' . $project_id);
+        $api->clearCache('project_members_list_v2_' . $project_id);
+        $api->clearCache('project_members_list_v3_' . $project_id);
+        $api->clearCache('admin_users');
+        $api->clearCache('admin_users_v3');
         $api->clearCache('user_projects_' . $user_id);
         $api->clearCache('user_assigned_projects_' . $user_id);
         

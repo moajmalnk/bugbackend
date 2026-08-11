@@ -2,6 +2,7 @@
 require_once __DIR__ . '/../../config/cors.php';
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/ProjectMemberController.php';
+require_once __DIR__ . '/../../utils/user_avatar.php';
 
 // Handle preflight requests
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
@@ -18,8 +19,8 @@ try {
         exit;
     }
 
-    // Create cache key for this project's members
-    $cacheKey = 'project_members_v2_' . $project_id;
+    // Why: v3 includes avatar so old cached payloads without photos are not reused.
+    $cacheKey = 'project_members_v3_' . $project_id;
     $cachedResult = $api->getCache($cacheKey);
     
     if ($cachedResult !== null) {
@@ -27,26 +28,42 @@ try {
         exit;
     }
 
-    // Get admins with caching
+    $userCols = [];
+    $colRes = $api->getConnection()->query('SHOW COLUMNS FROM users');
+    if ($colRes) {
+        while ($row = $colRes->fetch(PDO::FETCH_ASSOC)) {
+            $userCols[] = $row['Field'];
+        }
+    }
+
+    $adminSelect = br_user_avatar_select_cols(['id', 'username', 'email', 'role'], $userCols);
+
+    $memberSelect = ['u.id', 'u.username', 'u.email', 'u.role AS user_role', 'pm.role AS member_role'];
+    foreach (['avatar', 'profile_picture', 'profile_picture_url'] as $col) {
+        if (in_array($col, $userCols, true)) {
+            $memberSelect[] = 'u.`' . $col . '`';
+        }
+    }
+
     $admins = $api->fetchCached(
-        "SELECT id, username, email, role FROM users WHERE role = 'admin'",
+        'SELECT ' . implode(', ', $adminSelect) . " FROM users WHERE role = 'admin'",
         [],
-        'admin_users',
-        600 // Cache for 10 minutes
+        'admin_users_v3',
+        600
     );
+    $admins = array_map('br_user_with_resolved_avatar', $admins ?: []);
 
-    // Get project members using optimized query
     $members = $api->fetchCached(
-        "SELECT u.id, u.username, u.email, u.role AS user_role, pm.role AS member_role
-         FROM project_members pm 
-         JOIN users u ON pm.user_id = u.id 
-         WHERE pm.project_id = ?",
+        'SELECT ' . implode(', ', $memberSelect) . '
+         FROM project_members pm
+         JOIN users u ON pm.user_id = u.id
+         WHERE pm.project_id = ?',
         [$project_id],
-        'project_members_list_v2_' . $project_id,
-        300 // Cache for 5 minutes
+        'project_members_list_v3_' . $project_id,
+        300
     );
+    $members = array_map('br_user_with_resolved_avatar', $members ?: []);
 
-    // Back-compat: keep `role` as project membership role
     foreach ($members as &$m) {
         if (!isset($m['role']) && isset($m['member_role'])) {
             $m['role'] = $m['member_role'];
@@ -56,12 +73,10 @@ try {
 
     $result = [
         'admins' => $admins,
-        'members' => $members
+        'members' => $members,
     ];
 
-    // Cache the complete result
     $api->setCache($cacheKey, $result, 300);
-
     $api->sendJsonResponse(200, 'Project members retrieved successfully', $result);
 
 } catch (Exception $e) {
