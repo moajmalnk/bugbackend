@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/WorkSubmissionController.php';
+require_once __DIR__ . '/../../utils/user_onboarding.php';
 
 class OwnWorkSubmissionController extends WorkSubmissionController {
     public function submitOwnWork($payload) {
@@ -11,7 +12,13 @@ class OwnWorkSubmissionController extends WorkSubmissionController {
         $impersonationInfo = isset($decoded->impersonated) && $decoded->impersonated ? " (IMPERSONATED)" : "";
         $adminInfo = isset($decoded->admin_id) ? " Admin: " . $decoded->admin_id : "";
         error_log("🔍 OwnWorkSubmissionController::submitOwnWork - User ID: " . $userId . ", Username: " . ($decoded->username ?? 'unknown') . $impersonationInfo . $adminInfo . ", Date: " . ($payload['submission_date'] ?? 'no date'));
-        
+
+        $onboardingGate = br_assert_onboarding_allows_attendance($this->conn, (string)$userId);
+        if (empty($onboardingGate['ok'])) {
+            $this->sendJsonResponse(403, $onboardingGate['message'] ?? 'Checkout blocked until onboarding is verified.');
+            return null;
+        }
+
         $date = $payload['submission_date'] ?? date('Y-m-d');
         $resolvedDate = $this->resolveAttendanceDateOrFail($decoded, $date, 'submit');
         if ($resolvedDate === null) {

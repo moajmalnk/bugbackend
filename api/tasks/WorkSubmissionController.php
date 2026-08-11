@@ -2,6 +2,7 @@
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../utils/work_period.php';
 require_once __DIR__ . '/../../utils/leave_attendance.php';
+require_once __DIR__ . '/../../utils/user_onboarding.php';
 
 class WorkSubmissionController extends BaseAPI {
     public function submit($payload) {
@@ -22,6 +23,12 @@ class WorkSubmissionController extends BaseAPI {
             $leaveGate = br_assert_attendance_allowed($this->conn, (string)$userId, (string)$date, 'submit');
             if (empty($leaveGate['ok'])) {
                 $this->sendJsonResponse(400, $leaveGate['message'] ?? 'Attendance not allowed for this date.');
+                return null;
+            }
+
+            $onboardingGate = br_assert_onboarding_allows_attendance($this->conn, (string)$userId);
+            if (empty($onboardingGate['ok'])) {
+                $this->sendJsonResponse(403, $onboardingGate['message'] ?? 'Checkout blocked until onboarding is verified.');
                 return null;
             }
             $start = isset($payload['start_time']) && trim($payload['start_time']) !== '' ? $payload['start_time'] : null; // empty string -> NULL for TIME column

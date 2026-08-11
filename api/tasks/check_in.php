@@ -14,6 +14,7 @@ require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../utils/work_period.php';
 require_once __DIR__ . '/../../utils/leave_attendance.php';
 require_once __DIR__ . '/../../utils/checkin_policy.php';
+require_once __DIR__ . '/../../utils/user_onboarding.php';
 
 error_log("🚀 check_in.php - BaseAPI.php loaded");
 
@@ -80,6 +81,12 @@ class CheckInController extends BaseAPI {
             $leaveGate = br_assert_attendance_allowed($this->conn, (string)$userId, (string)$submissionDate, 'check_in');
             if (empty($leaveGate['ok'])) {
                 $this->sendJsonResponse(400, $leaveGate['message'] ?? 'Check-in not allowed for this date.');
+                return;
+            }
+
+            $onboardingGate = br_assert_onboarding_allows_attendance($this->conn, (string)$userId);
+            if (empty($onboardingGate['ok'])) {
+                $this->sendJsonResponse(403, $onboardingGate['message'] ?? 'Check-in blocked until onboarding is verified.');
                 return;
             }
 
