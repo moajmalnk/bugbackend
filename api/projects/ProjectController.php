@@ -34,6 +34,8 @@ class ProjectController extends BaseAPI
         'testing_end_date',
         'frontend_finish_date',
         'backend_finish_date',
+        'tester_compliance_complete_date',
+        'developer_compliance_complete_date',
     ];
 
     public function __construct()

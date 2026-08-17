@@ -21,6 +21,8 @@ function deadlineReminderMilestones(): array
         'testing_end_date' => 'Testing End',
         'frontend_finish_date' => 'Frontend Finish',
         'backend_finish_date' => 'Backend Finish',
+        'tester_compliance_complete_date' => 'Tester Compliance Complete',
+        'developer_compliance_complete_date' => 'Developer Compliance Complete',
     ];
 }
 
@@ -124,6 +126,8 @@ function ensureProjectTimelineColumns(PDO $conn): void
         'testing_end_date' => 'DATE DEFAULT NULL',
         'frontend_finish_date' => 'DATE DEFAULT NULL',
         'backend_finish_date' => 'DATE DEFAULT NULL',
+        'tester_compliance_complete_date' => 'DATE DEFAULT NULL',
+        'developer_compliance_complete_date' => 'DATE DEFAULT NULL',
     ];
 
     foreach ($columns as $name => $definition) {
