@@ -126,8 +126,8 @@ function ensureProjectTimelineColumns(PDO $conn): void
         'testing_end_date' => 'DATE DEFAULT NULL',
         'frontend_finish_date' => 'DATE DEFAULT NULL',
         'backend_finish_date' => 'DATE DEFAULT NULL',
-        'tester_compliance_complete_date' => 'DATE DEFAULT NULL',
-        'developer_compliance_complete_date' => 'DATE DEFAULT NULL',
+        'tester_compliance_complete_date' => 'DATETIME DEFAULT NULL',
+        'developer_compliance_complete_date' => 'DATETIME DEFAULT NULL',
     ];
 
     foreach ($columns as $name => $definition) {

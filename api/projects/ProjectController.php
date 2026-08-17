@@ -96,17 +96,24 @@ class ProjectController extends BaseAPI
                 );
             }
 
-            // Why: Compliance completing dates are timeline fields; create if missing so form saves work pre-migration.
-            if (!in_array('tester_compliance_complete_date', $cols, true)) {
-                $this->conn->exec(
-                    "ALTER TABLE projects ADD COLUMN tester_compliance_complete_date DATE DEFAULT NULL AFTER backend_finish_date"
-                );
-                $cols[] = 'tester_compliance_complete_date';
-            }
-            if (!in_array('developer_compliance_complete_date', $cols, true)) {
-                $this->conn->exec(
-                    "ALTER TABLE projects ADD COLUMN developer_compliance_complete_date DATE DEFAULT NULL AFTER tester_compliance_complete_date"
-                );
+            // Why: Compliance completing timestamps; create or widen DATE → DATETIME.
+            $datetimeCols = [
+                'tester_compliance_complete_date' => 'backend_finish_date',
+                'developer_compliance_complete_date' => 'tester_compliance_complete_date',
+            ];
+            foreach ($datetimeCols as $name => $after) {
+                if (!in_array($name, $cols, true)) {
+                    $this->conn->exec(
+                        "ALTER TABLE projects ADD COLUMN `{$name}` DATETIME DEFAULT NULL AFTER `{$after}`"
+                    );
+                    $cols[] = $name;
+                    continue;
+                }
+                try {
+                    $this->conn->exec("ALTER TABLE projects MODIFY COLUMN `{$name}` DATETIME DEFAULT NULL");
+                } catch (Exception $e) {
+                    error_log("ensure {$name} DATETIME: " . $e->getMessage());
+                }
             }
         } catch (Exception $e) {
             error_log('ensureProjectCategoryColumns: ' . $e->getMessage());
@@ -119,6 +126,35 @@ class ProjectController extends BaseAPI
             return null;
         }
         return $value;
+    }
+
+    /**
+     * Why: Compliance completing fields store date + time; empty date-only values default to 09:00.
+     */
+    private function normalizeDateTimeField($value)
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+        $raw = trim(str_replace('T', ' ', (string) $value));
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $raw)) {
+            return $raw . ' 09:00:00';
+        }
+        if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/', $raw)) {
+            return $raw . ':00';
+        }
+        if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $raw)) {
+            return $raw;
+        }
+        return $raw;
+    }
+
+    private function isDateTimeField(string $field): bool
+    {
+        return in_array($field, [
+            'tester_compliance_complete_date',
+            'developer_compliance_complete_date',
+        ], true);
     }
 
     /**
@@ -397,7 +433,9 @@ class ProjectController extends BaseAPI
                 if (array_key_exists($field, $data)) {
                     $columns[] = $field;
                     $placeholders[] = '?';
-                    $values[] = $this->normalizeDateField($data[$field]);
+                    $values[] = $this->isDateTimeField($field)
+                        ? $this->normalizeDateTimeField($data[$field])
+                        : $this->normalizeDateField($data[$field]);
                 }
             }
 
@@ -535,7 +573,9 @@ class ProjectController extends BaseAPI
             foreach (self::$EXTENDED_FIELDS as $field) {
                 if (array_key_exists($field, $data)) {
                     $updateFields[] = "$field = ?";
-                    $values[] = $this->normalizeDateField($data[$field]);
+                    $values[] = $this->isDateTimeField($field)
+                        ? $this->normalizeDateTimeField($data[$field])
+                        : $this->normalizeDateField($data[$field]);
                 }
             }
 
