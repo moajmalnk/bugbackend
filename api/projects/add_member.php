@@ -28,14 +28,14 @@ try {
         exit;
     }
 
-    // Check if already assigned
+    // Same person may hold another role (e.g. lead + developer); block only duplicate role.
     $existing = $api->fetchSingleCached(
-        "SELECT * FROM project_members WHERE project_id = ? AND user_id = ?",
-        [$project_id, $user_id]
+        "SELECT * FROM project_members WHERE project_id = ? AND user_id = ? AND role = ?",
+        [$project_id, $user_id, $role]
     );
     
     if ($existing) {
-        $api->sendJsonResponse(400, 'User already assigned to this project');
+        $api->sendJsonResponse(400, 'User already assigned to this project in that role');
         exit;
     }
 

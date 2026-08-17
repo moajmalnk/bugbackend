@@ -42,6 +42,7 @@ class ProjectController extends BaseAPI
     {
         parent::__construct();
         $this->ensureProjectCategoryColumns();
+        $this->ensureProjectMembersMultiRole();
     }
 
     private function ensureProjectCategoryColumns(): void
@@ -120,6 +121,35 @@ class ProjectController extends BaseAPI
         return $value;
     }
 
+    /**
+     * Why: A project lead can also be a developer; uniqueness is per role, not per user.
+     */
+    private function ensureProjectMembersMultiRole(): void
+    {
+        static $done = false;
+        if ($done || !$this->conn) {
+            return;
+        }
+        $done = true;
+        try {
+            $pkCols = [];
+            $res = $this->conn->query("SHOW KEYS FROM project_members WHERE Key_name = 'PRIMARY'");
+            if ($res) {
+                while ($row = $res->fetch(PDO::FETCH_ASSOC)) {
+                    $pkCols[] = $row['Column_name'];
+                }
+            }
+            if (in_array('role', $pkCols, true)) {
+                return;
+            }
+            $this->conn->exec(
+                'ALTER TABLE project_members DROP PRIMARY KEY, ADD PRIMARY KEY (project_id, user_id, role)'
+            );
+        } catch (Exception $e) {
+            error_log('ensureProjectMembersMultiRole: ' . $e->getMessage());
+        }
+    }
+
     private function addMembersFromPayload($projectId, $members)
     {
         if (!is_array($members)) {
@@ -129,6 +159,9 @@ class ProjectController extends BaseAPI
         $allowedRoles = ['manager', 'developer', 'tester'];
         $stmt = $this->conn->prepare(
             "INSERT INTO project_members (project_id, user_id, role, joined_at) VALUES (?, ?, ?, NOW())"
+        );
+        $check = $this->conn->prepare(
+            "SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ? AND role = ? LIMIT 1"
         );
 
         foreach ($members as $member) {
@@ -140,10 +173,7 @@ class ProjectController extends BaseAPI
                 continue;
             }
 
-            $check = $this->conn->prepare(
-                "SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ? LIMIT 1"
-            );
-            $check->execute([$projectId, $member['user_id']]);
+            $check->execute([$projectId, $member['user_id'], $role]);
             if ($check->fetch()) {
                 continue;
             }

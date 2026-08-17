@@ -152,7 +152,7 @@ function buildProjectStatsBundle(PDO $conn, array $projectIds, int $user_id, boo
 
     $memberStmt = $conn->prepare(
         "SELECT project_id,
-                COUNT(*) AS total,
+                COUNT(DISTINCT user_id) AS total,
                 SUM(CASE WHEN role = 'developer' THEN 1 ELSE 0 END) AS developers,
                 SUM(CASE WHEN role = 'tester' THEN 1 ELSE 0 END) AS testers
          FROM project_members
