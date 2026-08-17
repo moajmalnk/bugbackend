@@ -119,25 +119,31 @@ function ensureProjectTimelineColumns(PDO $conn): void
     }
 
     $columns = [
-        'start_date' => 'DATE DEFAULT NULL',
-        'deadline_date' => 'DATE DEFAULT NULL',
-        'expected_publish_date' => 'DATE DEFAULT NULL',
-        'testing_start_date' => 'DATE DEFAULT NULL',
-        'testing_end_date' => 'DATE DEFAULT NULL',
-        'frontend_finish_date' => 'DATE DEFAULT NULL',
-        'backend_finish_date' => 'DATE DEFAULT NULL',
+        'start_date' => 'DATETIME DEFAULT NULL',
+        'deadline_date' => 'DATETIME DEFAULT NULL',
+        'expected_publish_date' => 'DATETIME DEFAULT NULL',
+        'testing_start_date' => 'DATETIME DEFAULT NULL',
+        'testing_end_date' => 'DATETIME DEFAULT NULL',
+        'frontend_finish_date' => 'DATETIME DEFAULT NULL',
+        'backend_finish_date' => 'DATETIME DEFAULT NULL',
         'tester_compliance_complete_date' => 'DATETIME DEFAULT NULL',
         'developer_compliance_complete_date' => 'DATETIME DEFAULT NULL',
     ];
 
     foreach ($columns as $name => $definition) {
-        if (in_array($name, $existing, true)) {
+        if (!in_array($name, $existing, true)) {
+            try {
+                $conn->exec("ALTER TABLE projects ADD COLUMN `{$name}` {$definition}");
+                $existing[] = $name;
+            } catch (Throwable $e) {
+                error_log("ensureProjectTimelineColumns skipped {$name}: " . $e->getMessage());
+            }
             continue;
         }
         try {
-            $conn->exec("ALTER TABLE projects ADD COLUMN `{$name}` {$definition}");
+            $conn->exec("ALTER TABLE projects MODIFY COLUMN `{$name}` DATETIME DEFAULT NULL");
         } catch (Throwable $e) {
-            error_log("ensureProjectTimelineColumns skipped {$name}: " . $e->getMessage());
+            error_log("ensureProjectTimelineColumns modify {$name}: " . $e->getMessage());
         }
     }
 }

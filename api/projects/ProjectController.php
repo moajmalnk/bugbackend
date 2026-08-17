@@ -103,7 +103,7 @@ class ProjectController extends BaseAPI
     }
 
     /**
-     * Why: Compliance completing timestamps must exist before create/update or the values are dropped.
+     * Why: Timeline date+time columns must exist as DATETIME before create/update or values are dropped.
      */
     private function listProjectColumns(): array
     {
@@ -127,6 +127,13 @@ class ProjectController extends BaseAPI
         }
         $cols = $this->listProjectColumns();
         $needed = [
+            'start_date' => 'technology_stack',
+            'deadline_date' => 'start_date',
+            'expected_publish_date' => 'deadline_date',
+            'testing_start_date' => 'expected_publish_date',
+            'testing_end_date' => 'testing_start_date',
+            'frontend_finish_date' => 'testing_end_date',
+            'backend_finish_date' => 'frontend_finish_date',
             'tester_compliance_complete_date' => 'backend_finish_date',
             'developer_compliance_complete_date' => 'tester_compliance_complete_date',
         ];
@@ -165,7 +172,7 @@ class ProjectController extends BaseAPI
     }
 
     /**
-     * Why: Compliance completing fields store date + time; empty date-only values default to 09:00.
+     * Why: Timeline fields store date + time; date-only values default to 09:00.
      */
     private function normalizeDateTimeField($value)
     {
@@ -198,10 +205,7 @@ class ProjectController extends BaseAPI
 
     private function isDateTimeField(string $field): bool
     {
-        return in_array($field, [
-            'tester_compliance_complete_date',
-            'developer_compliance_complete_date',
-        ], true);
+        return substr($field, -5) === '_date';
     }
 
     /**
