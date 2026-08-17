@@ -1,13 +1,6 @@
-# Ensure API preflight (OPTIONS) reaches PHP so cors.php can respond.
-# Do not rewrite to another file — LiteSpeed will loop and 403 the whole /api folder.
+# Pass Authorization header to PHP (some Apache/LiteSpeed setups strip it)
 <IfModule mod_rewrite.c>
   RewriteEngine On
-  RewriteCond %{REQUEST_METHOD} =OPTIONS
-  RewriteRule ^ - [L]
-</IfModule>
-
-# Pass Authorization header to PHP (some Apache setups strip it)
-<IfModule mod_rewrite.c>
   RewriteCond %{HTTP:Authorization} .
   RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
 </IfModule>
@@ -20,19 +13,12 @@
   RewriteRule ^v1/integrations/finbro/hours/?$ v1/integrations/finbro/index.php?finbro_route=hours [L,QSA]
 </IfModule>
 
-# Emit CORS on every response (including LiteSpeed/Apache errors) so browsers
-# do not mis-report origin blocks as "No Access-Control-Allow-Origin".
-# PHP cors.php still handles the precise allow-list for successful requests.
+# CORS on every LiteSpeed response, including 403 error pages (browsers otherwise
+# report "No Access-Control-Allow-Origin" instead of the real 403).
 <IfModule mod_headers.c>
-  # Localhost (any port)
-  SetEnvIf Origin "^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$" ALLOWED_ORIGIN=$0
-  # Production frontends
-  SetEnvIf Origin "^https://(bugs\.bugricer\.com|bugricer\.com|www\.bugricer\.com|bugs\.moajmalnk\.in|bugracers\.vercel\.app)$" ALLOWED_ORIGIN=$0
-
-  Header always set Access-Control-Allow-Origin "%{ALLOWED_ORIGIN}e" env=ALLOWED_ORIGIN
-  Header always set Access-Control-Allow-Credentials "true" env=ALLOWED_ORIGIN
-  Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" env=ALLOWED_ORIGIN
-  Header always set Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Impersonate-User, X-User-Id, Cache-Control, Pragma" env=ALLOWED_ORIGIN
-  Header always set Access-Control-Max-Age "86400" env=ALLOWED_ORIGIN
+  Header always set Access-Control-Allow-Origin "https://bugs.bugricer.com"
+  Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+  Header always set Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Impersonate-User, X-User-Id, Cache-Control, Pragma"
+  Header always set Access-Control-Max-Age "86400"
   Header always set Vary "Origin"
 </IfModule>
