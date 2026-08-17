@@ -95,28 +95,64 @@ class ProjectController extends BaseAPI
                     "ALTER TABLE project_attachments ADD COLUMN folder VARCHAR(100) DEFAULT NULL AFTER category"
                 );
             }
-
-            // Why: Compliance completing timestamps; create or widen DATE → DATETIME.
-            $datetimeCols = [
-                'tester_compliance_complete_date' => 'backend_finish_date',
-                'developer_compliance_complete_date' => 'tester_compliance_complete_date',
-            ];
-            foreach ($datetimeCols as $name => $after) {
-                if (!in_array($name, $cols, true)) {
-                    $this->conn->exec(
-                        "ALTER TABLE projects ADD COLUMN `{$name}` DATETIME DEFAULT NULL AFTER `{$after}`"
-                    );
-                    $cols[] = $name;
-                    continue;
-                }
-                try {
-                    $this->conn->exec("ALTER TABLE projects MODIFY COLUMN `{$name}` DATETIME DEFAULT NULL");
-                } catch (Exception $e) {
-                    error_log("ensure {$name} DATETIME: " . $e->getMessage());
-                }
-            }
         } catch (Exception $e) {
             error_log('ensureProjectCategoryColumns: ' . $e->getMessage());
+        }
+
+        $this->ensureComplianceCompleteColumns();
+    }
+
+    /**
+     * Why: Compliance completing timestamps must exist before create/update or the values are dropped.
+     */
+    private function listProjectColumns(): array
+    {
+        $cols = [];
+        if (!$this->conn) {
+            return $cols;
+        }
+        $res = $this->conn->query('SHOW COLUMNS FROM projects');
+        if ($res) {
+            while ($row = $res->fetch(PDO::FETCH_ASSOC)) {
+                $cols[] = $row['Field'];
+            }
+        }
+        return $cols;
+    }
+
+    private function ensureComplianceCompleteColumns(): void
+    {
+        if (!$this->conn) {
+            return;
+        }
+        $cols = $this->listProjectColumns();
+        $needed = [
+            'tester_compliance_complete_date' => 'backend_finish_date',
+            'developer_compliance_complete_date' => 'tester_compliance_complete_date',
+        ];
+        foreach ($needed as $name => $after) {
+            if (!in_array($name, $cols, true)) {
+                try {
+                    if (in_array($after, $cols, true)) {
+                        $this->conn->exec(
+                            "ALTER TABLE projects ADD COLUMN `{$name}` DATETIME DEFAULT NULL AFTER `{$after}`"
+                        );
+                    } else {
+                        $this->conn->exec(
+                            "ALTER TABLE projects ADD COLUMN `{$name}` DATETIME DEFAULT NULL"
+                        );
+                    }
+                    $cols[] = $name;
+                } catch (Exception $e) {
+                    error_log("ensureComplianceCompleteColumns add {$name}: " . $e->getMessage());
+                }
+                continue;
+            }
+            try {
+                $this->conn->exec("ALTER TABLE projects MODIFY COLUMN `{$name}` DATETIME DEFAULT NULL");
+            } catch (Exception $e) {
+                error_log("ensureComplianceCompleteColumns modify {$name}: " . $e->getMessage());
+            }
         }
     }
 
@@ -146,7 +182,18 @@ class ProjectController extends BaseAPI
         if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $raw)) {
             return $raw;
         }
+        $ts = strtotime($raw);
+        if ($ts) {
+            return date('Y-m-d H:i:s', $ts);
+        }
         return $raw;
+    }
+
+    private function normalizeExtendedField(string $field, $value)
+    {
+        return $this->isDateTimeField($field)
+            ? $this->normalizeDateTimeField($value)
+            : $this->normalizeDateField($value);
     }
 
     private function isDateTimeField(string $field): bool
@@ -422,21 +469,23 @@ class ProjectController extends BaseAPI
                 return;
             }
 
+            $this->ensureComplianceCompleteColumns();
+
             $id = Utils::generateUUID();
             $status = isset($data['status']) ? $data['status'] : 'active';
 
             $columns = ['id', 'name', 'description', 'status', 'created_by'];
             $placeholders = ['?', '?', '?', '?', '?'];
             $values = [$id, $data['name'], $data['description'], $status, $decoded->user_id];
+            $projectCols = $this->listProjectColumns();
 
             foreach (self::$EXTENDED_FIELDS as $field) {
-                if (array_key_exists($field, $data)) {
-                    $columns[] = $field;
-                    $placeholders[] = '?';
-                    $values[] = $this->isDateTimeField($field)
-                        ? $this->normalizeDateTimeField($data[$field])
-                        : $this->normalizeDateField($data[$field]);
+                if (!array_key_exists($field, $data) || !in_array($field, $projectCols, true)) {
+                    continue;
                 }
+                $columns[] = $field;
+                $placeholders[] = '?';
+                $values[] = $this->normalizeExtendedField($field, $data[$field]);
             }
 
             if (array_key_exists('client_id', $data)) {
@@ -532,6 +581,7 @@ class ProjectController extends BaseAPI
         try {
             $decoded = $this->validateToken();
             $data = $this->getRequestData();
+            $this->ensureComplianceCompleteColumns();
 
             $updateFields = [];
             $values = [];
@@ -570,13 +620,13 @@ class ProjectController extends BaseAPI
                 $values[] = $newStatus;
             }
 
+            $projectCols = $this->listProjectColumns();
             foreach (self::$EXTENDED_FIELDS as $field) {
-                if (array_key_exists($field, $data)) {
-                    $updateFields[] = "$field = ?";
-                    $values[] = $this->isDateTimeField($field)
-                        ? $this->normalizeDateTimeField($data[$field])
-                        : $this->normalizeDateField($data[$field]);
+                if (!array_key_exists($field, $data) || !in_array($field, $projectCols, true)) {
+                    continue;
                 }
+                $updateFields[] = "$field = ?";
+                $values[] = $this->normalizeExtendedField($field, $data[$field]);
             }
 
             if (array_key_exists('client_id', $data)) {
