@@ -94,6 +94,19 @@ class ProjectController extends BaseAPI
                     "ALTER TABLE project_attachments ADD COLUMN folder VARCHAR(100) DEFAULT NULL AFTER category"
                 );
             }
+
+            // Why: Compliance completing dates are timeline fields; create if missing so form saves work pre-migration.
+            if (!in_array('tester_compliance_complete_date', $cols, true)) {
+                $this->conn->exec(
+                    "ALTER TABLE projects ADD COLUMN tester_compliance_complete_date DATE DEFAULT NULL AFTER backend_finish_date"
+                );
+                $cols[] = 'tester_compliance_complete_date';
+            }
+            if (!in_array('developer_compliance_complete_date', $cols, true)) {
+                $this->conn->exec(
+                    "ALTER TABLE projects ADD COLUMN developer_compliance_complete_date DATE DEFAULT NULL AFTER tester_compliance_complete_date"
+                );
+            }
         } catch (Exception $e) {
             error_log('ensureProjectCategoryColumns: ' . $e->getMessage());
         }
