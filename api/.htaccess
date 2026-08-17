@@ -1,8 +1,9 @@
-# OPTIONS always hits a tiny PHP file (never login/DB) so preflight cannot 500.
+# Ensure API preflight (OPTIONS) reaches PHP so cors.php can respond.
+# Do not rewrite to another file — LiteSpeed will loop and 403 the whole /api folder.
 <IfModule mod_rewrite.c>
   RewriteEngine On
   RewriteCond %{REQUEST_METHOD} =OPTIONS
-  RewriteRule ^ preflight.php [L]
+  RewriteRule ^ - [L]
 </IfModule>
 
 # Pass Authorization header to PHP (some Apache setups strip it)
