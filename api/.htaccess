@@ -1,8 +1,8 @@
-# Ensure API preflight (OPTIONS) reaches PHP so cors.php can respond
+# OPTIONS always hits a tiny PHP file (never login/DB) so preflight cannot 500.
 <IfModule mod_rewrite.c>
   RewriteEngine On
   RewriteCond %{REQUEST_METHOD} =OPTIONS
-  RewriteRule ^ - [L]
+  RewriteRule ^ preflight.php [L]
 </IfModule>
 
 # Pass Authorization header to PHP (some Apache setups strip it)
@@ -31,7 +31,7 @@
   Header always set Access-Control-Allow-Origin "%{ALLOWED_ORIGIN}e" env=ALLOWED_ORIGIN
   Header always set Access-Control-Allow-Credentials "true" env=ALLOWED_ORIGIN
   Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" env=ALLOWED_ORIGIN
-  Header always set Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Impersonate-User, X-User-Id" env=ALLOWED_ORIGIN
-  Header always set Access-Control-Max-Age "3600" env=ALLOWED_ORIGIN
+  Header always set Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Impersonate-User, X-User-Id, Cache-Control, Pragma" env=ALLOWED_ORIGIN
+  Header always set Access-Control-Max-Age "86400" env=ALLOWED_ORIGIN
   Header always set Vary "Origin"
 </IfModule>
