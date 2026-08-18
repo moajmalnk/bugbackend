@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/BaseAPI.php';
+require_once __DIR__ . '/projects/projectTimelineHistoryHelper.php';
 
 /**
  * Centralized Activity Logger
@@ -273,6 +274,38 @@ class ActivityLogger extends BaseAPI {
             "Project updated: {$projectName}", 
             $projectId, 
             array_merge($metadata, ['action' => 'update'])
+        );
+    }
+
+    /**
+     * Why: Timeline reschedules need a readable activity row in addition to the audit table.
+     */
+    public function logProjectTimelineUpdated($userId, $projectId, array $changes, $metadata = [])
+    {
+        if (empty($changes)) {
+            return false;
+        }
+        $parts = [];
+        foreach ($changes as $change) {
+            $label = $change['field_label'] ?? $change['field_key'] ?? 'Date';
+            $from = ProjectTimelineHistoryHelper::formatHuman($change['old_value'] ?? null);
+            $to = ProjectTimelineHistoryHelper::formatHuman($change['new_value'] ?? null);
+            $parts[] = "{$label}: {$from} → {$to}";
+        }
+        $summary = implode('; ', $parts);
+        if (strlen($summary) > 480) {
+            $summary = count($changes) . ' timeline date(s) updated';
+        }
+        return $this->logActivity(
+            $userId,
+            $projectId,
+            'project_timeline_updated',
+            'Timeline updated — ' . $summary,
+            $projectId,
+            array_merge($metadata, [
+                'action' => 'timeline_update',
+                'changes' => $changes,
+            ])
         );
     }
 

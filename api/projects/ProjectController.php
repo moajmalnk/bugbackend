@@ -2,6 +2,7 @@
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../ActivityLogger.php';
 require_once __DIR__ . '/ProjectComplianceController.php';
+require_once __DIR__ . '/projectTimelineHistoryHelper.php';
 
 class ProjectController extends BaseAPI
 {
@@ -345,6 +346,11 @@ class ProjectController extends BaseAPI
         if ($summary) {
             $project['compliance'] = $summary;
         }
+
+        $project['timeline_history'] = ProjectTimelineHistoryHelper::fetchForProject(
+            $this->conn,
+            (string) $project['id']
+        );
     }
 
     public function handleError($status, $message)
@@ -586,9 +592,23 @@ class ProjectController extends BaseAPI
             $decoded = $this->validateToken();
             $data = $this->getRequestData();
             $this->ensureComplianceCompleteColumns();
+            ProjectTimelineHistoryHelper::ensureTable($this->conn);
+
+            $timelineKeys = array_keys(ProjectTimelineHistoryHelper::FIELD_LABELS);
+            $timelineSelect = implode(', ', array_map(static function ($col) {
+                return '`' . $col . '`';
+            }, $timelineKeys));
+            $beforeStmt = $this->conn->prepare("SELECT {$timelineSelect} FROM projects WHERE id = ?");
+            $beforeStmt->execute([$id]);
+            $beforeRow = $beforeStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$beforeRow) {
+                $this->sendJsonResponse(404, "Project not found");
+                return;
+            }
 
             $updateFields = [];
             $values = [];
+            $afterTimeline = [];
 
             if (isset($data['name'])) {
                 $updateFields[] = "name = ?";
@@ -629,8 +649,12 @@ class ProjectController extends BaseAPI
                 if (!array_key_exists($field, $data) || !in_array($field, $projectCols, true)) {
                     continue;
                 }
+                $normalized = $this->normalizeExtendedField($field, $data[$field]);
                 $updateFields[] = "$field = ?";
-                $values[] = $this->normalizeExtendedField($field, $data[$field]);
+                $values[] = $normalized;
+                if (isset(ProjectTimelineHistoryHelper::FIELD_LABELS[$field])) {
+                    $afterTimeline[$field] = $normalized;
+                }
             }
 
             if (array_key_exists('client_id', $data)) {
@@ -673,6 +697,30 @@ class ProjectController extends BaseAPI
                 if (!$checkStmt->fetch()) {
                     $this->sendJsonResponse(404, "Project not found");
                     return;
+                }
+            }
+
+            $timelineChanges = [];
+            if (!empty($afterTimeline)) {
+                $timelineChanges = ProjectTimelineHistoryHelper::recordChanges(
+                    $this->conn,
+                    (string) $id,
+                    (string) $decoded->user_id,
+                    $beforeRow,
+                    $afterTimeline
+                );
+            }
+
+            if (!empty($timelineChanges)) {
+                try {
+                    $logger = ActivityLogger::getInstance();
+                    $logger->logProjectTimelineUpdated(
+                        $decoded->user_id,
+                        $id,
+                        $timelineChanges
+                    );
+                } catch (Exception $e) {
+                    error_log("Failed to log timeline history activity: " . $e->getMessage());
                 }
             }
 
