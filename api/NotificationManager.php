@@ -606,6 +606,71 @@ class NotificationManager extends BaseAPI {
     }
 
     /**
+     * Why: Tell the reporter someone asked a doubt on their bug (in-app + FCM).
+     */
+    public function notifyBugDoubt($bugId, $bugTitle, $projectId, $askedBy, $reportedBy) {
+        $bugId = (string) $bugId;
+        $projectId = $projectId ? (string) $projectId : null;
+        $askedBy = (string) $askedBy;
+        $reportedBy = (string) $reportedBy;
+        if ($reportedBy === '' || $reportedBy === $askedBy) {
+            return false;
+        }
+        $askerName = $this->getUserName($askedBy);
+        $type = $this->getValidNotificationType('bug_doubt', 'info');
+        return $this->createNotification(
+            $type,
+            'Doubt on your bug',
+            $askerName . ' asked a doubt on "' . $bugTitle . '".',
+            [$reportedBy],
+            [
+                'entity_type' => 'bug',
+                'entity_id' => $bugId,
+                'project_id' => $projectId,
+                'bug_id' => $bugId,
+                'bug_title' => $bugTitle,
+                'created_by' => $askerName,
+            ]
+        );
+    }
+
+    /**
+     * Why: Notify reporter and original asker when someone replies on a doubt thread.
+     */
+    public function notifyBugDoubtReply($bugId, $bugTitle, $projectId, $repliedBy, $reportedBy, $askedBy) {
+        $bugId = (string) $bugId;
+        $projectId = $projectId ? (string) $projectId : null;
+        $repliedBy = (string) $repliedBy;
+        $userIds = [];
+        foreach ([$reportedBy, $askedBy] as $uid) {
+            $uid = (string) $uid;
+            if ($uid !== '' && $uid !== $repliedBy) {
+                $userIds[] = $uid;
+            }
+        }
+        $userIds = array_values(array_unique($userIds));
+        if (empty($userIds)) {
+            return false;
+        }
+        $replierName = $this->getUserName($repliedBy);
+        $type = $this->getValidNotificationType('bug_doubt_reply', 'info');
+        return $this->createNotification(
+            $type,
+            'Doubt reply',
+            $replierName . ' replied on a doubt for "' . $bugTitle . '".',
+            $userIds,
+            [
+                'entity_type' => 'bug',
+                'entity_id' => $bugId,
+                'project_id' => $projectId,
+                'bug_id' => $bugId,
+                'bug_title' => $bugTitle,
+                'created_by' => $replierName,
+            ]
+        );
+    }
+
+    /**
      * Get a valid notification type, using fallback if preferred type is not in ENUM
      * 
      * @param string $preferredType The preferred notification type
