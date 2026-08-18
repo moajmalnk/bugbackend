@@ -1,7 +1,7 @@
 <?php
 
 /**
- * Attach members, bug_stats, and member_stats to each project in one batch.
+ * Attach members, bug_stats, member_stats, and compliance counts to each project in one batch.
  */
 function attachProjectListStats(PDO $conn, array &$projects): void
 {
@@ -99,6 +99,72 @@ function attachProjectListStats(PDO $conn, array &$projects): void
         error_log('attachProjectListStats update_stats: ' . $e->getMessage());
     }
 
+    $complianceByProject = [];
+    $defaultCompliance = [
+        'pipeline_stage' => 'developer_unverified',
+        'developer_verified' => 0,
+        'developer_total' => 0,
+        'tester_verified' => 0,
+        'tester_total' => 0,
+        'project_verified' => 0,
+        'project_total' => 0,
+        'emergency_bypass' => false,
+    ];
+    try {
+        $metaStmt = $conn->prepare(
+            "SELECT project_id, pipeline_stage, emergency_bypass
+             FROM project_compliance
+             WHERE project_id IN ($placeholders)
+             ORDER BY project_id DESC"
+        );
+        $metaStmt->execute($projectIds);
+        foreach ($metaStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $pid = (string) $row['project_id'];
+            $complianceByProject[$pid] = [
+                'pipeline_stage' => $row['pipeline_stage'] ?: 'developer_unverified',
+                'developer_verified' => 0,
+                'developer_total' => 0,
+                'tester_verified' => 0,
+                'tester_total' => 0,
+                'project_verified' => 0,
+                'project_total' => 0,
+                'emergency_bypass' => (bool) $row['emergency_bypass'],
+            ];
+        }
+
+        $checkStmt = $conn->prepare(
+            "SELECT project_id, phase,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN verified = 1 THEN 1 ELSE 0 END) AS verified_count
+             FROM project_compliance_checks
+             WHERE project_id IN ($placeholders)
+             GROUP BY project_id, phase
+             ORDER BY project_id DESC"
+        );
+        $checkStmt->execute($projectIds);
+        foreach ($checkStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $pid = (string) $row['project_id'];
+            if (!isset($complianceByProject[$pid])) {
+                $complianceByProject[$pid] = $defaultCompliance;
+            }
+            $phase = (string) $row['phase'];
+            $verified = (int) $row['verified_count'];
+            $total = (int) $row['total'];
+            if ($phase === 'developer') {
+                $complianceByProject[$pid]['developer_verified'] = $verified;
+                $complianceByProject[$pid]['developer_total'] = $total;
+            } elseif ($phase === 'tester') {
+                $complianceByProject[$pid]['tester_verified'] = $verified;
+                $complianceByProject[$pid]['tester_total'] = $total;
+            } elseif ($phase === 'project') {
+                $complianceByProject[$pid]['project_verified'] = $verified;
+                $complianceByProject[$pid]['project_total'] = $total;
+            }
+        }
+    } catch (Throwable $e) {
+        error_log('attachProjectListStats compliance: ' . $e->getMessage());
+    }
+
     $defaultBug = ['total' => 0, 'open' => 0, 'fixed' => 0];
     $defaultUpdate = ['total' => 0, 'open' => 0, 'approved' => 0, 'completed' => 0];
     $defaultMember = ['total' => 0, 'developers' => 0, 'testers' => 0];
@@ -110,6 +176,7 @@ function attachProjectListStats(PDO $conn, array &$projects): void
         $project['bug_stats'] = $bugStatsByProject[$pid] ?? $defaultBug;
         $project['update_stats'] = $updateStatsByProject[$pid] ?? $defaultUpdate;
         $project['member_stats'] = $memberStatsByProject[$pid] ?? $defaultMember;
+        $project['compliance'] = $complianceByProject[$pid] ?? $defaultCompliance;
     }
     unset($project);
 }
