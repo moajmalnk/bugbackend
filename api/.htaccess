@@ -13,15 +13,12 @@
   RewriteRule ^v1/integrations/finbro/hours/?$ v1/integrations/finbro/index.php?finbro_route=hours [L,QSA]
 </IfModule>
 
-# CORS on every LiteSpeed response, including 403 error pages (browsers otherwise
-# report "No Access-Control-Allow-Origin" instead of the real 403).
+# CORS fallback on LiteSpeed responses (including 403 pages). If PHP already
+# set CORS headers (via backend/config/cors.php), do not overwrite them.
 <IfModule mod_headers.c>
-  SetEnvIfNoCase Origin "^https://bugs\.bugricer\.com$" CORS_ORIGIN=$0
-  SetEnvIfNoCase Origin "^http://(localhost|127\.0\.0\.1)(:[0-9]+)?$" CORS_ORIGIN=$0
-  Header always set Access-Control-Allow-Origin "%{CORS_ORIGIN}e" env=CORS_ORIGIN
-  Header always set Access-Control-Allow-Origin "https://bugs.bugricer.com" env=!CORS_ORIGIN
-  Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
-  Header always set Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Impersonate-User, X-User-Id, Cache-Control, Pragma"
-  Header always set Access-Control-Max-Age "86400"
+  Header always set Access-Control-Allow-Origin "https://bugs.bugricer.com" "expr=-z %{resp:Access-Control-Allow-Origin}"
+  Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" "expr=-z %{resp:Access-Control-Allow-Methods}"
+  Header always set Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Impersonate-User, X-User-Id, Cache-Control, Pragma" "expr=-z %{resp:Access-Control-Allow-Headers}"
+  Header always set Access-Control-Max-Age "86400" "expr=-z %{resp:Access-Control-Max-Age}"
   Header always set Vary "Origin"
 </IfModule>
