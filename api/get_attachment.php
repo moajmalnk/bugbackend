@@ -142,9 +142,34 @@ try {
     finfo_close($finfo);
     
     // Output the file with appropriate headers
-    header('Content-Type: ' . $mime_type);
-    header('Content-Disposition: inline; filename="' . basename($filename) . '"');
+    $forceDownload = isset($_GET['download']) && (string) $_GET['download'] !== '0';
+    $safeName = str_replace(["\r", "\n", '"'], '', basename((string) $filename));
+    if ($safeName === '') {
+        $safeName = 'download';
+    }
+    $isAudio = is_string($mime_type) && (
+        strpos($mime_type, 'audio/') === 0
+        || $mime_type === 'video/webm'
+        || preg_match('/\.(webm|wav|mp3|m4a|ogg)$/i', $safeName)
+    );
+
+    if ($forceDownload) {
+        // octet-stream + attachment stops browsers from playing voice notes inline
+        header('Content-Type: application/octet-stream');
+        header(
+            'Content-Disposition: attachment; filename="' . $safeName . '"; filename*=UTF-8\'\'' . rawurlencode($safeName)
+        );
+    } else {
+        header('Content-Type: ' . $mime_type);
+        header(
+            'Content-Disposition: inline; filename="' . $safeName . '"; filename*=UTF-8\'\'' . rawurlencode($safeName)
+        );
+    }
     header('Content-Length: ' . filesize($file_path));
+    header('X-Content-Type-Options: nosniff');
+    if ($isAudio && !$forceDownload) {
+        header('Accept-Ranges: bytes');
+    }
     
     // Disable output buffering to handle large files better
     if (ob_get_level()) {
