@@ -435,6 +435,96 @@ class BugController extends BaseAPI {
     }
 
     /**
+     * @param array<int, array{id?:string,name?:string}> $types
+     */
+    private function formatBugTypesLabel(array $types): string
+    {
+        $names = [];
+        foreach ($types as $type) {
+            $name = trim((string) ($type['name'] ?? ''));
+            if ($name !== '') {
+                $names[] = $name;
+            }
+        }
+        return empty($names) ? 'None' : implode(', ', $names);
+    }
+
+    /**
+     * @param array<int, array{id?:string}> $types
+     */
+    private function bugTypeIdSignature(array $types): string
+    {
+        $ids = [];
+        foreach ($types as $type) {
+            $id = (string) ($type['id'] ?? '');
+            if ($id !== '') {
+                $ids[] = $id;
+            }
+        }
+        sort($ids);
+        return implode(',', $ids);
+    }
+
+    /**
+     * Why: Status journey needs explicit from→to hops for classification fields
+     * (level, type, already raised, priority), not only status changes.
+     *
+     * @param array<string, mixed> $existingBug
+     * @param array<string, mixed> $updatedBug
+     * @param array<int, array{id?:string,name?:string}> $oldTypes
+     * @param array<int, array{id?:string,name?:string}> $newTypes
+     * @return array<int, array{field:string,from:string,to:string}>
+     */
+    private function collectBugMetaChanges(array $existingBug, array $updatedBug, array $oldTypes, array $newTypes): array
+    {
+        $changes = [];
+
+        if ($this->bugsTableHasBugLevelColumn()) {
+            $fromLevel = $this->parseBugLevel($existingBug['bug_level'] ?? 'normal');
+            $toLevel = $this->parseBugLevel($updatedBug['bug_level'] ?? 'normal');
+            if ($fromLevel !== $toLevel) {
+                $changes[] = [
+                    'field' => 'bug_level',
+                    'from' => $fromLevel,
+                    'to' => $toLevel,
+                ];
+            }
+        }
+
+        if ($this->bugsTableHasAlreadyRaisedColumn()) {
+            $fromRaised = $this->parseAlreadyRaisedFlag($existingBug['already_raised'] ?? 0);
+            $toRaised = $this->parseAlreadyRaisedFlag($updatedBug['already_raised'] ?? 0);
+            if ($fromRaised !== $toRaised) {
+                $changes[] = [
+                    'field' => 'already_raised',
+                    'from' => $fromRaised ? '1' : '0',
+                    'to' => $toRaised ? '1' : '0',
+                ];
+            }
+        }
+
+        $fromPriority = strtolower(trim((string) ($existingBug['priority'] ?? '')));
+        $toPriority = strtolower(trim((string) ($updatedBug['priority'] ?? '')));
+        if ($fromPriority !== '' && $toPriority !== '' && $fromPriority !== $toPriority) {
+            $changes[] = [
+                'field' => 'priority',
+                'from' => $fromPriority,
+                'to' => $toPriority,
+            ];
+        }
+
+        if ($this->bugTypesTablesExist() && $this->bugTypeIdSignature($oldTypes) !== $this->bugTypeIdSignature($newTypes)) {
+            $changes[] = [
+                'field' => 'bug_types',
+                'from' => $this->formatBugTypesLabel($oldTypes),
+                'to' => $this->formatBugTypesLabel($newTypes),
+            ];
+        }
+
+        return $changes;
+    }
+
+    /**
      * Public wrapper so list endpoints can attach bug_types after custom queries.
      * @param array<int, array<string, mixed>> $bugs
      */
@@ -1387,7 +1477,7 @@ class BugController extends BaseAPI {
                  LEFT JOIN users u ON u.id = pa.user_id
                  WHERE CAST(pa.related_id AS CHAR) = CAST(? AS CHAR)
                    AND pa.activity_type IN (
-                     'bug_created','bug_reported','bug_updated','bug_fixed','bug_status_changed','bug_assigned'
+                     'bug_created','bug_reported','bug_updated','bug_fixed','bug_status_changed','bug_assigned','bug_meta_changed'
                    )
                  ORDER BY pa.created_at ASC
                  LIMIT 500"
@@ -1442,6 +1532,7 @@ class BugController extends BaseAPI {
             $nowTs = time();
 
             $events = [];
+            $metaEvents = [];
             $seq = 0;
             $raisedTs = $parseTs($raisedAt);
             if ($raisedTs !== null) {
@@ -1472,6 +1563,45 @@ class BugController extends BaseAPI {
                 $at = $activity['created_at'] ?? null;
                 $atTs = $parseTs($at);
                 if ($atTs === null) {
+                    continue;
+                }
+
+                $changeList = [];
+                if ($type === 'bug_meta_changed' || ($type === 'bug_updated' && !empty($meta['changes']))) {
+                    $changeList = is_array($meta['changes'] ?? null) ? $meta['changes'] : [];
+                }
+                foreach ($changeList as $change) {
+                    if (!is_array($change)) {
+                        continue;
+                    }
+                    $field = (string) ($change['field'] ?? '');
+                    if (!in_array($field, ['bug_level', 'already_raised', 'bug_types', 'priority'], true)) {
+                        continue;
+                    }
+                    $fromVal = isset($change['from']) ? (string) $change['from'] : '';
+                    $toVal = isset($change['to']) ? (string) $change['to'] : '';
+                    if ($fromVal === $toVal) {
+                        continue;
+                    }
+                    $metaEvents[] = [
+                        'kind' => 'meta',
+                        'status' => 'meta',
+                        'field' => $field,
+                        'from_value' => $fromVal,
+                        'to_value' => $toVal,
+                        'from_status' => null,
+                        'entered_at' => $at,
+                        'exited_at' => null,
+                        'duration_seconds' => 0,
+                        'duration_label' => null,
+                        'is_current' => false,
+                        'source' => $type ?: 'activity',
+                        'actor_name' => $activity['actor_name'] ?? null,
+                        'event_label' => $field . '_changed',
+                        'reason' => null,
+                    ];
+                }
+                if ($type === 'bug_meta_changed') {
                     continue;
                 }
 
@@ -1599,6 +1729,7 @@ class BugController extends BaseAPI {
                     : null;
 
                 $timeline[] = [
+                    'kind' => 'status',
                     'status' => $stepStatus,
                     'from_status' => $deduped[$i]['from_status'] ?? null,
                     'entered_at' => $enteredAt,
@@ -1615,6 +1746,7 @@ class BugController extends BaseAPI {
 
             if (empty($timeline)) {
                 $timeline[] = [
+                    'kind' => 'status',
                     'status' => $status,
                     'from_status' => null,
                     'entered_at' => $raisedAt,
@@ -1676,6 +1808,10 @@ class BugController extends BaseAPI {
                 : null;
 
             $ageSeconds = $raisedTs !== null ? max(0, $nowTs - $raisedTs) : null;
+
+            foreach ($metaEvents as $metaEvent) {
+                $timeline[] = $metaEvent;
+            }
 
             $this->handleSuccess("Bug lifecycle retrieved successfully", [
                 'bug_id' => $bug['id'],
@@ -2757,8 +2893,8 @@ class BugController extends BaseAPI {
 
             $this->conn->beginTransaction();
 
-            // Check if bug exists and capture previous status for notification gating
-            $checkStmt = $this->conn->prepare("SELECT id, status, reported_by FROM bugs WHERE id = ?");
+            // Check if bug exists and capture previous status + classification for journey logging
+            $checkStmt = $this->conn->prepare("SELECT * FROM bugs WHERE id = ?");
             $checkStmt->execute([$data['id']]);
             $existingBug = $checkStmt->fetch(PDO::FETCH_ASSOC);
             
@@ -2766,6 +2902,7 @@ class BugController extends BaseAPI {
                 throw new Exception("Bug not found");
             }
             $previousStatus = (string) ($existingBug['status'] ?? '');
+            $oldTypes = $this->getBugTypesForBug((string) $data['id']);
             $reopenedAfterFailedVerification = $this->applyFailedVerificationReopen($data, $previousStatus);
 
             // Build update query
@@ -2964,6 +3101,22 @@ class BugController extends BaseAPI {
                         $statusMeta
                     );
                 }
+
+                $metaChanges = $this->collectBugMetaChanges(
+                    $existingBug,
+                    $updatedBug,
+                    $oldTypes,
+                    is_array($updatedBug['bug_types'] ?? null) ? $updatedBug['bug_types'] : []
+                );
+                if (!empty($metaChanges)) {
+                    $logger->logBugMetaChanged(
+                        $actorForLog,
+                        $data['project_id'] ?? $updatedBug['project_id'],
+                        $data['id'],
+                        $updatedBug['title'],
+                        $metaChanges
+                    );
+                }
             } catch (Exception $e) {
                 error_log("Failed to log bug update activity: " . $e->getMessage());
             }
@@ -3011,13 +3164,14 @@ class BugController extends BaseAPI {
                 throw new Exception("Bug ID is required");
             }
 
-            $existingStmt = $this->conn->prepare("SELECT status, reported_by FROM bugs WHERE id = ?");
+            $existingStmt = $this->conn->prepare("SELECT * FROM bugs WHERE id = ?");
             $existingStmt->execute([$data['id']]);
             $existingBug = $existingStmt->fetch(PDO::FETCH_ASSOC);
             if (!$existingBug) {
                 throw new Exception("Bug not found");
             }
             $previousStatus = (string) ($existingBug['status'] ?? '');
+            $oldTypes = $this->getBugTypesForBug((string) $data['id']);
             $reopenedAfterFailedVerification = $this->applyFailedVerificationReopen($data, $previousStatus);
 
             // Build update query for bug fields only
@@ -3392,6 +3546,22 @@ class BugController extends BaseAPI {
                         $previousStatus,
                         $newStatus,
                         $statusMeta
+                    );
+                }
+
+                $metaChanges = $this->collectBugMetaChanges(
+                    $existingBug,
+                    $updatedBug,
+                    $oldTypes,
+                    is_array($updatedBug['bug_types'] ?? null) ? $updatedBug['bug_types'] : []
+                );
+                if (!empty($metaChanges)) {
+                    $logger->logBugMetaChanged(
+                        $actorForLog,
+                        $projectIdForLog,
+                        $data['id'],
+                        $titleForLog,
+                        $metaChanges
                     );
                 }
             } catch (Exception $e) {

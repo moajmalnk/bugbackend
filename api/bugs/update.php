@@ -223,10 +223,27 @@ try {
         }
     }
     
+    if (
+        array_key_exists('bug_types', $data)
+        || array_key_exists('bug_type_ids', $data)
+        || array_key_exists('bug_type_ids[]', $data)
+    ) {
+        $fieldsBeingChanged[] = 'bug_types';
+        $fieldsBeingChanged = array_values(array_unique($fieldsBeingChanged));
+    }
+
     // Check if only status-related fields are being changed
     // Allow: status, status + fix_description, status + fixed_by, status + fix_description + fixed_by
     // Developers can update status and fix_description together (common in FixBug page)
-    $allowedDeveloperFields = ['status', 'fix_description', 'fixed_by'];
+    $allowedDeveloperFields = [
+        'status',
+        'fix_description',
+        'fixed_by',
+        'priority',
+        'bug_level',
+        'already_raised',
+        'bug_types',
+    ];
     $allowedTesterRetestFields = [
         'tester_retested',
         'tester_issue_fixed',
@@ -248,7 +265,14 @@ try {
     $isStatusUpdate = $hasOnlyAllowedFields &&
                       (
                           $hasStatusChange
-                          || !empty(array_intersect($fieldsBeingChanged, ['fix_description', 'fixed_by']))
+                          || !empty(array_intersect($fieldsBeingChanged, [
+                              'fix_description',
+                              'fixed_by',
+                              'priority',
+                              'bug_level',
+                              'already_raised',
+                              'bug_types',
+                          ]))
                           || empty($fieldsBeingChanged)
                       ) &&
                       (!isset($data['attachments_to_delete']) || $data['attachments_to_delete'] === '' || $data['attachments_to_delete'] === '[]');
@@ -313,7 +337,7 @@ try {
     } else {
         // For other cases, determine specific error message
         if ($isDeveloper && !$isStatusUpdate) {
-            $errorMessage = 'You do not have permission to edit this bug. Developers can only update the status and fix description fields.';
+            $errorMessage = 'You do not have permission to edit this bug. Developers can only update status, priority, bug level, bug type, already raised, and fix description.';
         } elseif ($isDeveloper && !$isProjectMember) {
             $errorMessage = 'You do not have permission to edit this bug. You must be a member of the project to update bug status.';
         } elseif ($isTester && !$isRetestUpdate) {

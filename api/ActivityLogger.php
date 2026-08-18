@@ -130,6 +130,33 @@ class ActivityLogger extends BaseAPI {
         );
     }
 
+    /**
+     * Why: Level, type, already-raised, and priority hops need their own activity
+     * type so the status journey can render them without treating `from`/`to` as statuses.
+     * @param array<int, array{field:string,from:string,to:string}> $changes
+     */
+    public function logBugMetaChanged($userId, $projectId, $bugId, $bugTitle, array $changes, $metadata = []) {
+        $fields = [];
+        foreach ($changes as $change) {
+            $field = (string) ($change['field'] ?? '');
+            if ($field !== '') {
+                $fields[] = $field;
+            }
+        }
+        $label = empty($fields) ? 'details' : implode(', ', $fields);
+        return $this->logActivity(
+            $userId,
+            $projectId,
+            'bug_meta_changed',
+            "Bug {$label} changed: {$bugTitle}",
+            $bugId,
+            array_merge($metadata, [
+                'action' => 'meta_change',
+                'changes' => $changes,
+            ])
+        );
+    }
+
     // ===== TASK ACTIVITIES =====
     public function logTaskCreated($userId, $projectId, $taskId, $taskTitle, $metadata = []) {
         return $this->logActivity(

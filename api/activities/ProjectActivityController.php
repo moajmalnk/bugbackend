@@ -607,6 +607,7 @@ class ProjectActivityController extends BaseAPI {
             'bug_assigned' => 'assigned bug',
             'bug_deleted' => 'deleted bug',
             'bug_status_changed' => 'changed status for bug',
+            'bug_meta_changed' => 'changed bug details for',
             'task_created' => 'created task',
             'task_updated' => 'updated task',
             'task_completed' => 'completed task',
