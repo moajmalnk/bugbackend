@@ -16,7 +16,10 @@
 # CORS on every LiteSpeed response, including 403 error pages (browsers otherwise
 # report "No Access-Control-Allow-Origin" instead of the real 403).
 <IfModule mod_headers.c>
-  Header always set Access-Control-Allow-Origin "https://bugs.bugricer.com"
+  SetEnvIf Origin "^https://bugs\.bugricer\.com$" CORS_ORIGIN=$0
+  SetEnvIf Origin "^http://(localhost|127\.0\.0\.1)(:[0-9]+)?$" CORS_ORIGIN=$0
+  Header always set Access-Control-Allow-Origin %{CORS_ORIGIN}e env=CORS_ORIGIN
+  Header always set Access-Control-Allow-Origin "https://bugs.bugricer.com" env=!CORS_ORIGIN
   Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
   Header always set Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Impersonate-User, X-User-Id, Cache-Control, Pragma"
   Header always set Access-Control-Max-Age "86400"
