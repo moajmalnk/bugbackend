@@ -283,6 +283,11 @@ if ($session['current_step'] !== STEP_IDLE) {
 // ── Load user by phone ────────────────────────────────────────────────────────
 $user = getUserByPhone($db, $phone);
 
+// Persist the resolved user on the active WA session for traceability/debugging.
+if ($user !== null) {
+    $db->prepare("UPDATE wa_sessions SET user_id=? WHERE phone=?")->execute([$user['id'], $phone]);
+}
+
 // ── Unregistered phone guard ──────────────────────────────────────────────────
 // Any unrecognised number gets a single, clear denial before we touch the state
 // machine. We use $fromRaw (the un-normalised number from the payload) so the
@@ -779,12 +784,16 @@ function resetSession(PDO $db, string $phone): void
 
 function getUserByPhone(PDO $db, string $phone): ?array
 {
-    // Try digits-only, digits with +, and the Utils normalised form
-    $variants = array_unique([
-        $phone,
-        '+' . $phone,
-        preg_replace('/\D/', '', $phone),
-    ]);
+    $digits = preg_replace('/\D/', '', $phone);
+    $variants = array_unique(array_filter([
+        $digits,
+        '+' . $digits,
+        // Local variant without country code, useful when user saved as 10-digit.
+        (strlen($digits) > 10) ? substr($digits, -10) : $digits,
+        // India E.164-like fallback for 10-digit mobile numbers.
+        (strlen($digits) === 10) ? ('91' . $digits) : null,
+    ]));
+
     foreach ($variants as $v) {
         $stmt = $db->prepare(
             "SELECT id,
@@ -794,7 +803,7 @@ function getUserByPhone(PDO $db, string $phone): ?array
                      is_wa_verified,
                      wa_verified_at
              FROM users
-             WHERE REPLACE(REPLACE(phone,'+',''),'-','') = ?
+             WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone,'+',''),'-',''),' ',''),'(',''),')','') = ?
              LIMIT 1"
         );
         $stmt->execute([preg_replace('/\D/', '', $v)]);
@@ -803,6 +812,7 @@ function getUserByPhone(PDO $db, string $phone): ?array
             return $row;
         }
     }
+    error_log('[WA Webhook] User not found for phone variants: ' . json_encode($variants));
     return null;
 }
 
