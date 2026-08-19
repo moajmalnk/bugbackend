@@ -733,8 +733,15 @@ function getUserByPhone(PDO $db, string $phone): ?array
     ]);
     foreach ($variants as $v) {
         $stmt = $db->prepare(
-            "SELECT id, name, email, phone, is_wa_verified, wa_verified_at, role
-             FROM users WHERE REPLACE(REPLACE(phone,'+',''),'-','') = ? LIMIT 1"
+            "SELECT id,
+                     username AS name,
+                     email,
+                     phone,
+                     is_wa_verified,
+                     wa_verified_at
+             FROM users
+             WHERE REPLACE(REPLACE(phone,'+',''),'-','') = ?
+             LIMIT 1"
         );
         $stmt->execute([preg_replace('/\D/', '', $v)]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
