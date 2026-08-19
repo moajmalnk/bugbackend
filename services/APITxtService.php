@@ -28,12 +28,15 @@ class APITxtService
 {
     private string $authKey;
     private string $projectRefId;
+    private string $waNumber;
 
     /** Send free-form WhatsApp messages (non-template) */
     private const SEND_WA_MESSAGE_URL = 'https://apitxt.com/api/sendWAMessage';
 
     /** Send approved WhatsApp templates */
     private const SEND_WA_TEMPLATE_URL = 'https://apitxt.com/api/sendWA';
+    /** Legacy APITxt chat endpoint (GET query params) */
+    private const LEGACY_CHAT_URL = 'https://apitxt.com/api/whatsapp_chat';
 
     public function __construct()
     {
@@ -41,9 +44,11 @@ class APITxtService
         if (class_exists('Environment')) {
             $this->authKey  = Environment::get('APITXT_AUTH_KEY', '');
             $this->projectRefId = Environment::get('APITXT_PROJECT_REF_ID', '');
+            $this->waNumber = Environment::get('APITXT_WA_NUMBER', '');
         } else {
             $this->authKey  = '';
             $this->projectRefId = '';
+            $this->waNumber = '';
         }
 
         // 2. Fall back to $_ENV / $_SERVER / getenv()
@@ -53,9 +58,12 @@ class APITxtService
         if ($this->projectRefId === '') {
             $this->projectRefId = $_ENV['APITXT_PROJECT_REF_ID'] ?? $_SERVER['APITXT_PROJECT_REF_ID'] ?? getenv('APITXT_PROJECT_REF_ID') ?: '';
         }
+        if ($this->waNumber === '') {
+            $this->waNumber = $_ENV['APITXT_WA_NUMBER'] ?? $_SERVER['APITXT_WA_NUMBER'] ?? getenv('APITXT_WA_NUMBER') ?: '';
+        }
 
         // 3. Last resort: parse .env file directly
-        if ($this->authKey === '' || $this->projectRefId === '') {
+        if ($this->authKey === '' || ($this->projectRefId === '' && $this->waNumber === '')) {
             $envPaths = [
                 __DIR__ . '/../.env',
                 __DIR__ . '/../../.env',
@@ -73,8 +81,9 @@ class APITxtService
                     $v = trim($v, " \t\n\r\0\x0B\"'");
                     if ($k === 'APITXT_AUTH_KEY'  && $this->authKey  === '') $this->authKey  = $v;
                     if ($k === 'APITXT_PROJECT_REF_ID' && $this->projectRefId === '') $this->projectRefId = $v;
+                    if ($k === 'APITXT_WA_NUMBER' && $this->waNumber === '') $this->waNumber = $v;
                 }
-                if ($this->authKey !== '' && $this->projectRefId !== '') break;
+                if ($this->authKey !== '' && ($this->projectRefId !== '' || $this->waNumber !== '')) break;
             }
         }
     }
@@ -82,7 +91,7 @@ class APITxtService
     /** Whether the service has been configured via .env */
     public function isConfigured(): bool
     {
-        return $this->authKey !== '' && $this->projectRefId !== '';
+        return $this->authKey !== '' && ($this->projectRefId !== '' || $this->waNumber !== '');
     }
 
     // ----------------------------------------------------------------
@@ -98,7 +107,7 @@ class APITxtService
     public function sendText(string $to, string $text): array
     {
         if (!$this->isConfigured()) {
-            error_log('[APITxtService] Not configured — missing authKey or project_ref_id');
+            error_log('[APITxtService] Not configured — missing authKey and/or sender config');
             return ['success' => false, 'error' => 'APITxtService not configured'];
         }
 
@@ -108,8 +117,12 @@ class APITxtService
             'authkey' => $this->authKey,
             'project_ref_id' => $this->projectRefId,
             'to' => $cleanPhone,
+            'phone' => $cleanPhone,
+            'mobile' => $cleanPhone,
             'type' => 'text',
-            'text' => $text,
+            'message' => $text,
+            // Keep both forms for APITxt compatibility across account modes.
+            'text' => ['body' => $text],
         ];
 
         $ch = curl_init(self::SEND_WA_MESSAGE_URL);
@@ -138,16 +151,47 @@ class APITxtService
         error_log("APITxt sendWAMessage(text) to {$cleanPhone} [HTTP {$httpCode}]: " . $response . ($curlErr ? " (err: {$curlErr})" : ''));
 
         $decoded = json_decode((string) $response, true);
-        if (is_array($decoded)) {
-            $decoded['http_code'] = $httpCode;
-            return $decoded;
-        }
-        return [
+        $postResult = [
             'success' => false,
             'raw' => $response,
             'http_code' => $httpCode,
             'error' => $curlErr ?: null,
         ];
+        if (is_array($decoded)) {
+            $decoded['http_code'] = $httpCode;
+            $postResult = $decoded;
+        }
+
+        $isPostSuccess = $httpCode >= 200
+            && $httpCode < 300
+            && !(
+                is_array($postResult)
+                && (
+                    (($postResult['status'] ?? '') === 'error')
+                    || (($postResult['success'] ?? null) === false)
+                )
+            );
+
+        if ($isPostSuccess) {
+            return $postResult;
+        }
+
+        // Compatibility fallback for accounts still wired to legacy GET chat API.
+        if ($this->waNumber === '') {
+            error_log('[APITxtService] sendText POST failed and APITXT_WA_NUMBER missing, cannot fallback to legacy endpoint');
+            return $postResult;
+        }
+
+        $legacy = $this->get(self::LEGACY_CHAT_URL, [
+            'authkey' => $this->authKey,
+            'wa_number' => $this->waNumber,
+            'mobile' => $cleanPhone,
+            'body_type' => 'text',
+            'meta' => $text,
+        ]);
+        $legacy['transport'] = 'legacy_get_chat';
+        $legacy['post_attempt_http_code'] = $httpCode;
+        return $legacy;
     }
 
     /**
