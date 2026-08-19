@@ -177,6 +177,39 @@ if (isset($payload['entry'][0]['changes'][0]['value']['messages'][0])) {
         $mediaMime = $msg[$msgType]['mime_type'] ?? 'application/octet-stream';
         $msgText   = trim($msg[$msgType]['caption'] ?? '');
     }
+} elseif (isset($payload['entry'][0]['changes'][0]['value'])) {
+    // ── APITxt "value-level" format (no messages[0] wrapper) ──────────────────
+    // Example from APITxt UI:
+    // entry[0].changes[0].value = { field: "messages", from: "...", type: "text", text: "..." }
+    $value   = $payload['entry'][0]['changes'][0]['value'];
+    $fromRaw = (string) ($value['from'] ?? $value['sender'] ?? '');
+    $msgType = strtolower($value['type'] ?? 'text');
+
+    if ($msgType === 'text') {
+        $msgText = trim(
+            $value['text']['body'] ??
+            (is_string($value['text'] ?? null) ? $value['text'] : '') ??
+            ($value['message'] ?? '')
+        );
+    } elseif ($msgType === 'interactive') {
+        $interactiveId = $value['interactive']['button_reply']['id']
+                      ?? $value['interactive']['list_reply']['id']
+                      ?? $value['button_reply']['id']
+                      ?? $value['list_reply']['id']
+                      ?? null;
+        $msgText = trim(
+            $value['interactive']['button_reply']['title'] ??
+            $value['interactive']['list_reply']['title']   ??
+            ''
+        );
+    } elseif (isset($value[$msgType]) && is_array($value[$msgType])) {
+        $mediaUrl  = $value[$msgType]['url'] ?? $value[$msgType]['link'] ?? null;
+        $mediaMime = $value[$msgType]['mime_type'] ?? 'application/octet-stream';
+        $msgText   = trim($value[$msgType]['caption'] ?? '');
+    } else {
+        $mediaUrl  = $value['media']['url'] ?? null;
+        $mediaMime = $value['media']['mime_type'] ?? 'application/octet-stream';
+    }
 } elseif (isset($payload['from'])) {
     // ── Direct / flat APITxt format ───────────────────────────────────────────
     $fromRaw = (string) ($payload['from'] ?? $payload['sender'] ?? '');
@@ -215,6 +248,7 @@ $phone    = normaliseIncomingPhone($fromRaw);
 $mediaExt = mimeToExt($mediaMime);
 
 if ($phone === '') {
+    error_log('[WA Webhook] Skip no_phone. Payload=' . json_encode($payload));
     http_response_code(200); // Return 200 to APITxt — it's a malformed event
     echo json_encode(['ok' => false, 'skip' => 'no_phone']);
     exit;
