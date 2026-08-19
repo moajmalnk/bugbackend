@@ -128,19 +128,85 @@ if (!is_array($payload)) {
 }
 
 // ── DB + service setup ───────────────────────────────────────────────────────
-$db   = Database::getInstance()->getConnection();
+$db     = Database::getInstance()->getConnection();
 $apitxt = new APITxtService();
 
-// ── Extract event fields ──────────────────────────────────────────────────────
-$phone       = normaliseIncomingPhone($payload['from'] ?? ($payload['sender'] ?? ''));
-$msgType     = strtolower($payload['type']     ?? 'text');
-$msgText     = trim($payload['text']['body']   ?? ($payload['message'] ?? ''));
-$interactiveId = $payload['interactive']['button_reply']['id']
-              ?? $payload['interactive']['list_reply']['id']
-              ?? null;
-$mediaUrl    = $payload['media']['url']        ?? null;
-$mediaMime   = $payload['media']['mime_type']  ?? 'application/octet-stream';
-$mediaExt    = mimeToExt($mediaMime);
+// ── Normalise payload — support both APITxt flat and Meta/nested formats ──────
+//
+// Meta Business API (and some APITxt relay modes) wraps everything in:
+//   entry[0].changes[0].value.messages[0]
+//
+// Direct APITxt flat format uses top-level keys:
+//   { from, type, text: { body }, interactive: { button_reply/list_reply }, media: { url, mime_type } }
+//
+// We normalise both into a single set of local variables so the state machine
+// below doesn't have to branch on format.
+
+$fromRaw     = '';
+$msgType     = 'text';
+$msgText     = '';
+$interactiveId = null;
+$mediaUrl    = null;
+$mediaMime   = 'application/octet-stream';
+
+if (isset($payload['entry'][0]['changes'][0]['value']['messages'][0])) {
+    // ── Meta / nested APITxt relay format ────────────────────────────────────
+    $msg     = $payload['entry'][0]['changes'][0]['value']['messages'][0];
+    $fromRaw = (string) ($msg['from'] ?? '');
+    $msgType = strtolower($msg['type'] ?? 'text');
+
+    if ($msgType === 'text') {
+        $msgText = trim($msg['text']['body'] ?? '');
+    } elseif ($msgType === 'interactive') {
+        $interactiveId = $msg['interactive']['button_reply']['id']
+                      ?? $msg['interactive']['list_reply']['id']
+                      ?? null;
+        $msgText = trim(
+            $msg['interactive']['button_reply']['title'] ??
+            $msg['interactive']['list_reply']['title']   ??
+            ''
+        );
+    } elseif (isset($msg[$msgType]) && is_array($msg[$msgType])) {
+        $mediaUrl  = $msg[$msgType]['url']  ?? $msg[$msgType]['link'] ?? null;
+        $mediaMime = $msg[$msgType]['mime_type'] ?? 'application/octet-stream';
+        $msgText   = trim($msg[$msgType]['caption'] ?? '');
+    }
+} elseif (isset($payload['from'])) {
+    // ── Direct / flat APITxt format ───────────────────────────────────────────
+    $fromRaw = (string) ($payload['from'] ?? $payload['sender'] ?? '');
+    $msgType = strtolower($payload['type'] ?? 'text');
+
+    if ($msgType === 'text') {
+        $msgText = trim(
+            $payload['text']['body'] ??
+            (is_string($payload['text'] ?? null) ? $payload['text'] : '') ??
+            ($payload['message'] ?? '')
+        );
+    } elseif ($msgType === 'interactive') {
+        $interactiveId = $payload['interactive']['button_reply']['id']
+                      ?? $payload['interactive']['list_reply']['id']
+                      ?? $payload['button_reply']['id']
+                      ?? $payload['list_reply']['id']
+                      ?? null;
+        $msgText = trim(
+            $payload['interactive']['button_reply']['title'] ??
+            $payload['interactive']['list_reply']['title']   ??
+            ''
+        );
+    } elseif (isset($payload[$msgType]) && is_array($payload[$msgType])) {
+        $mediaUrl  = $payload[$msgType]['url']  ?? $payload[$msgType]['link'] ?? null;
+        $mediaMime = $payload[$msgType]['mime_type'] ?? 'application/octet-stream';
+        $msgText   = trim($payload[$msgType]['caption'] ?? '');
+    } else {
+        // Flat media keys: payload['media']['url'] or payload['media']['mime_type']
+        $mediaUrl  = $payload['media']['url']       ?? null;
+        $mediaMime = $payload['media']['mime_type'] ?? 'application/octet-stream';
+        $msgText   = trim($payload['message'] ?? '');
+    }
+}
+
+$phone    = normaliseIncomingPhone($fromRaw);
+$mediaExt = mimeToExt($mediaMime);
 
 if ($phone === '') {
     http_response_code(200); // Return 200 to APITxt — it's a malformed event
