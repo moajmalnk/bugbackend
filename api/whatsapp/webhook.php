@@ -348,6 +348,13 @@ switch ($step) {
             $projectId = substr($interactiveId, 5);
         }
 
+        // Fallback for text-based selection (when project picker is sent
+        // as a numbered text menu): allow the user to type the project token
+        // shown in brackets, e.g. "proj_<uuid>".
+        if ($projectId === null && $msgText && str_starts_with($msgText, 'proj_')) {
+            $projectId = substr($msgText, 5);
+        }
+
         if ($projectId === null) {
             $apitxt->sendText($phone, "Please use the project list above to select a project. 👇");
             sendProjectPicker($db, $apitxt, $phone, $user);

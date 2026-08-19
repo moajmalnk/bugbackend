@@ -47,8 +47,8 @@ class Environment {
             'DEADLINE_REMINDER_SECRET',
             'FINBRO_INTEGRATION_TOKEN',
             'APITXT_AUTH_KEY',
-            'APITXT_WA_NUMBER',
             'APITXT_WEBHOOK_SECRET',
+            'APITXT_PROJECT_REF_ID',
             'APP_BASE_URL',
         ];
         

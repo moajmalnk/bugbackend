@@ -27,38 +27,35 @@ require_once __DIR__ . '/../config/environment.php';
 class APITxtService
 {
     private string $authKey;
-    private string $waNumber;
+    private string $projectRefId;
 
-    /** Base URL for chat (free-form) messages */
-    private const CHAT_URL = 'https://apitxt.com/api/whatsapp_chat';
+    /** Send free-form WhatsApp messages (non-template) */
+    private const SEND_WA_MESSAGE_URL = 'https://apitxt.com/api/sendWAMessage';
 
-    /** Base URL for broadcast (template) messages */
-    private const BROADCAST_URL = 'https://apitxt.com/api/WhatsApp';
+    /** Send approved WhatsApp templates */
+    private const SEND_WA_TEMPLATE_URL = 'https://apitxt.com/api/sendWA';
 
     public function __construct()
     {
         // 1. Try the Environment helper (.env parser)
         if (class_exists('Environment')) {
             $this->authKey  = Environment::get('APITXT_AUTH_KEY', '');
-            $this->waNumber = Environment::get('APITXT_WA_NUMBER', '');
+            $this->projectRefId = Environment::get('APITXT_PROJECT_REF_ID', '');
         } else {
             $this->authKey  = '';
-            $this->waNumber = '';
+            $this->projectRefId = '';
         }
 
         // 2. Fall back to $_ENV / $_SERVER / getenv()
         if ($this->authKey === '') {
             $this->authKey = $_ENV['APITXT_AUTH_KEY'] ?? $_SERVER['APITXT_AUTH_KEY'] ?? getenv('APITXT_AUTH_KEY') ?: '';
         }
-        if ($this->waNumber === '') {
-            $this->waNumber = $_ENV['APITXT_WA_NUMBER'] ?? $_SERVER['APITXT_WA_NUMBER'] ?? getenv('APITXT_WA_NUMBER') ?: '';
+        if ($this->projectRefId === '') {
+            $this->projectRefId = $_ENV['APITXT_PROJECT_REF_ID'] ?? $_SERVER['APITXT_PROJECT_REF_ID'] ?? getenv('APITXT_PROJECT_REF_ID') ?: '';
         }
 
-        // APITxt expects wa_number/mobile as digits-only.
-        $this->waNumber = preg_replace('/\D+/', '', (string)$this->waNumber);
-
         // 3. Last resort: parse .env file directly
-        if ($this->authKey === '' || $this->waNumber === '') {
+        if ($this->authKey === '' || $this->projectRefId === '') {
             $envPaths = [
                 __DIR__ . '/../.env',
                 __DIR__ . '/../../.env',
@@ -75,9 +72,9 @@ class APITxtService
                     $k = trim($k);
                     $v = trim($v, " \t\n\r\0\x0B\"'");
                     if ($k === 'APITXT_AUTH_KEY'  && $this->authKey  === '') $this->authKey  = $v;
-                    if ($k === 'APITXT_WA_NUMBER' && $this->waNumber === '') $this->waNumber = $v;
+                    if ($k === 'APITXT_PROJECT_REF_ID' && $this->projectRefId === '') $this->projectRefId = $v;
                 }
-                if ($this->authKey !== '' && $this->waNumber !== '') break;
+                if ($this->authKey !== '' && $this->projectRefId !== '') break;
             }
         }
     }
@@ -85,7 +82,7 @@ class APITxtService
     /** Whether the service has been configured via .env */
     public function isConfigured(): bool
     {
-        return $this->authKey !== '' && $this->waNumber !== '';
+        return $this->authKey !== '' && $this->projectRefId !== '';
     }
 
     // ----------------------------------------------------------------
@@ -101,53 +98,36 @@ class APITxtService
     public function sendText(string $to, string $text): array
     {
         if (!$this->isConfigured()) {
-            error_log('[APITxtService] Not configured — missing authKey or waNumber');
+            error_log('[APITxtService] Not configured — missing authKey or project_ref_id');
             return ['success' => false, 'error' => 'APITxtService not configured'];
         }
 
         $cleanPhone = preg_replace('/\D+/', '', (string)$to);
 
-        // Build query safely to preserve emojis/spaces/newlines.
-        // Note: APITxt docs use `mobile`, but we also send `phone` for
-        // compatibility with some gateway configurations.
-        $params = [
-            'authkey'   => $this->authKey,
-            'wa_number' => $this->waNumber,
-            'body_type' => 'text',
-            'mobile'    => $cleanPhone,
-            'phone'     => $cleanPhone,
-            'meta'      => $text,
+        $payload = [
+            'authkey' => $this->authKey,
+            'project_ref_id' => $this->projectRefId,
+            'to' => $cleanPhone,
+            'type' => 'text',
+            'text' => $text,
         ];
 
-        $url = self::CHAT_URL . '?' . http_build_query($params);
-
-        $ch = curl_init($url);
-        $baseHeaders = [
-            'Accept: application/json, text/plain, */*',
-            'Accept-Language: en-US,en;q=0.9',
-            'Cache-Control: no-cache',
-            'Pragma: no-cache',
-        ];
-        $fullHeaders = array_merge($baseHeaders, [
-            'Connection: keep-alive',
-            'Upgrade-Insecure-Requests: 1',
-            'Sec-Fetch-Dest: empty',
-            'Sec-Fetch-Mode: cors',
-            'Sec-Fetch-Site: same-origin',
-            'Sec-CH-UA: "Not/A)Brand";v="99", "Google Chrome";v="126", "Chromium";v="126"',
-            'Sec-CH-UA-Mobile: ?0',
-            'Sec-CH-UA-Platform: "macOS"',
-        ]);
-
-        $curlHeaders = $baseHeaders;
+        $ch = curl_init(self::SEND_WA_MESSAGE_URL);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT        => 10,
+            CURLOPT_POST           => true,
+            CURLOPT_TIMEOUT        => 20,
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_SSL_VERIFYHOST => 2,
-            CURLOPT_HTTPGET        => true,
-            CURLOPT_USERAGENT      => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-            CURLOPT_HTTPHEADER     => $curlHeaders,
+            CURLOPT_HTTPHEADER     => [
+                'Content-Type: application/json',
+                'Accept: application/json, text/plain, */*',
+                'Accept-Language: en-US,en;q=0.9',
+                'Cache-Control: no-cache',
+                'Pragma: no-cache',
+                'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+            ],
+            CURLOPT_POSTFIELDS => json_encode($payload),
         ]);
 
         $response = curl_exec($ch);
@@ -155,41 +135,19 @@ class APITxtService
         $curlErr  = curl_error($ch);
         curl_close($ch);
 
-        error_log("APITxt sendText to {$cleanPhone} [HTTP {$httpCode}]: " . $response . ($curlErr ? " (err: {$curlErr})" : ''));
+        error_log("APITxt sendWAMessage(text) to {$cleanPhone} [HTTP {$httpCode}]: " . $response . ($curlErr ? " (err: {$curlErr})" : ''));
 
         $decoded = json_decode((string) $response, true);
-        if (
-            is_array($decoded)
-            && ($decoded['status'] ?? '') === 'error'
-            && (($decoded['reason'] ?? '') === 'MISSING_BROWSER_HEADERS')
-        ) {
-            // Some APITxt WAF checks appear inconsistent. Retry once with a
-            // fuller browser header set to satisfy the WAF when the first
-            // attempt fails the browser-header check.
-            $ch2 = curl_init($url);
-            curl_setopt_array($ch2, [
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_TIMEOUT        => 10,
-                CURLOPT_SSL_VERIFYPEER => true,
-                CURLOPT_SSL_VERIFYHOST => 2,
-                CURLOPT_HTTPGET        => true,
-                CURLOPT_USERAGENT      => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-                CURLOPT_HTTPHEADER     => $fullHeaders,
-            ]);
-            $response2 = curl_exec($ch2);
-            $httpCode2 = curl_getinfo($ch2, CURLINFO_HTTP_CODE);
-            $curlErr2  = curl_error($ch2);
-            curl_close($ch2);
-
-            error_log("APITxt sendText retry(full headers) to {$cleanPhone} [HTTP {$httpCode2}]: " . $response2 . ($curlErr2 ? " (err: {$curlErr2})" : ''));
-
-            $decoded2 = json_decode((string) $response2, true);
-            return is_array($decoded2) ? $decoded2 : ['success' => false, 'raw' => $response2, 'http_code' => $httpCode2];
+        if (is_array($decoded)) {
+            $decoded['http_code'] = $httpCode;
+            return $decoded;
         }
-
-        return is_array($decoded)
-            ? $decoded
-            : ['success' => false, 'raw' => $response, 'http_code' => $httpCode];
+        return [
+            'success' => false,
+            'raw' => $response,
+            'http_code' => $httpCode,
+            'error' => $curlErr ?: null,
+        ];
     }
 
     /**
@@ -213,20 +171,69 @@ class APITxtService
         array  $buttons,
         string $footer = ''
     ): array {
-        // Build a text fallback that clearly shows the options when the
-        // interactive button format is unsupported by the account tier.
-        $optionLines = implode("\n", array_map(
-            fn($b, $i) => ($i + 1) . '. ' . $b['title'],
-            array_slice($buttons, 0, 3),
-            range(0, 2)
-        ));
+        if (!$this->isConfigured()) {
+            error_log('[APITxtService] Not configured — missing authkey or project_ref_id');
+            return ['success' => false, 'error' => 'APITxtService not configured'];
+        }
 
-        $fullText = ($header !== '' ? "*{$header}*\n\n" : '')
-            . $body
-            . "\n\n{$optionLines}"
-            . ($footer !== '' ? "\n\n_{$footer}_" : '');
+        $cleanTo = preg_replace('/\D+/', '', (string) $to);
 
-        return $this->sendText($to, $fullText);
+        $buttonItems = array_map(function ($b) {
+            return [
+                'id' => (string) ($b['id'] ?? ''),
+                // APITxt limits button title length
+                'title' => mb_substr((string) ($b['title'] ?? ''), 0, 20),
+            ];
+        }, array_slice($buttons, 0, 3));
+
+        $payload = [
+            'authkey' => $this->authKey,
+            'project_ref_id' => $this->projectRefId,
+            'to' => $cleanTo,
+            'type' => 'button',
+            'header_text' => $header,
+            'body_text' => $body,
+            'footer_text' => $footer,
+            'buttons' => $buttonItems,
+        ];
+
+        $ch = curl_init(self::SEND_WA_MESSAGE_URL);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST           => true,
+            CURLOPT_TIMEOUT        => 20,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
+            CURLOPT_HTTPHEADER     => [
+                'Content-Type: application/json',
+                'Accept: application/json, text/plain, */*',
+                'Accept-Language: en-US,en;q=0.9',
+                'Cache-Control: no-cache',
+                'Pragma: no-cache',
+                'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+            ],
+            CURLOPT_POSTFIELDS => json_encode($payload),
+        ]);
+
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlErr  = curl_error($ch);
+        curl_close($ch);
+
+        error_log("APITxt sendWAMessage(button) to {$cleanTo} [HTTP {$httpCode}]: " . $response . ($curlErr ? " (err: {$curlErr})" : ''));
+
+        $decoded = json_decode((string) $response, true);
+        if (is_array($decoded)) {
+            $decoded['http_code'] = $httpCode;
+            return $decoded;
+        }
+
+        return [
+            'success' => false,
+            'raw' => $response,
+            'http_code' => $httpCode,
+            'error' => $curlErr ?: null,
+        ];
     }
 
     /**
@@ -257,7 +264,12 @@ class APITxtService
                 $lines[] = "*{$section['title']}*";
             }
             foreach ($section['rows'] ?? [] as $row) {
-                $lines[] = "{$idx}. {$row['title']}" . (!empty($row['description']) ? " — {$row['description']}" : '');
+                $rowId = isset($row['id']) ? (string) $row['id'] : '';
+                $rowTitle = (string) ($row['title'] ?? '');
+                $rowDesc = isset($row['description']) ? (string) $row['description'] : '';
+                $idPart = $rowId !== '' ? " [{$rowId}]" : '';
+                $descPart = $rowDesc !== '' ? " — {$rowDesc}" : '';
+                $lines[] = "{$idx}. {$rowTitle}{$idPart}{$descPart}";
                 $idx++;
             }
         }
@@ -292,31 +304,80 @@ class APITxtService
         string $templateName,
         array  $bodyParams,
         array  $urlButtons = [],
-        string $language   = 'en'
+        string $language   = 'en_US'
     ): array {
-        $mobile = $this->normalisePhone($to);
+        $cleanPhone = preg_replace('/\D+/', '', (string) $to);
 
-        $params = [
-            'authkey'       => $this->authKey,
-            'wa_number'     => $this->waNumber,
-            'mobile'        => $mobile,
+        $urlButtonsArray = [];
+        if (!empty($urlButtons)) {
+            // Convert our ['url_button_0' => 'X'] map into url_buttons: ['X', ...]
+            foreach ($urlButtons as $k => $v) {
+                if (is_string($k) && str_starts_with($k, 'url_button_')) {
+                    $idx = (int) substr($k, strlen('url_button_'));
+                    $urlButtonsArray[$idx] = (string) $v;
+                } elseif (is_numeric($k)) {
+                    $urlButtonsArray[(int) $k] = (string) $v;
+                } else {
+                    $urlButtonsArray[] = (string) $v;
+                }
+            }
+            if (!empty($urlButtonsArray) && array_keys($urlButtonsArray) !== range(0, count($urlButtonsArray) - 1)) {
+                ksort($urlButtonsArray);
+                $urlButtonsArray = array_values($urlButtonsArray);
+            }
+        }
+
+        $payload = [
+            'authkey' => $this->authKey,
             'template_name' => $templateName,
+            'project_ref_id' => $this->projectRefId,
+            'mobiles' => $cleanPhone,
+            'language' => $language,
         ];
 
-        // Map body_params to body_1, body_2, …
-        foreach (array_values($bodyParams) as $i => $value) {
-            $params['body_' . ($i + 1)] = (string) $value;
+        if (!empty($bodyParams)) {
+            $payload['body_params'] = array_values($bodyParams);
+        }
+        if (!empty($urlButtonsArray)) {
+            $payload['url_buttons'] = $urlButtonsArray;
         }
 
-        // Map url_button_0 → web_url_1, url_button_1 → web_url_2, …
-        foreach ($urlButtons as $key => $value) {
-            // Extract trailing integer from key (e.g. 'url_button_0' → 0)
-            preg_match('/(\d+)$/', $key, $m);
-            $n = isset($m[1]) ? ((int)$m[1] + 1) : 1;
-            $params['web_url_' . $n] = (string) $value;
-        }
+        $ch = curl_init(self::SEND_WA_TEMPLATE_URL);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST           => true,
+            CURLOPT_TIMEOUT        => 20,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
+            CURLOPT_HTTPHEADER     => [
+                'Content-Type: application/json',
+                'Accept: application/json, text/plain, */*',
+                'Accept-Language: en-US,en;q=0.9',
+                'Cache-Control: no-cache',
+                'Pragma: no-cache',
+                'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+            ],
+            CURLOPT_POSTFIELDS => json_encode($payload),
+        ]);
 
-        return $this->get(self::BROADCAST_URL, $params);
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlErr  = curl_error($ch);
+        curl_close($ch);
+
+        error_log("APITxt sendWA(template) {$templateName} to {$cleanPhone} [HTTP {$httpCode}]: " . $response . ($curlErr ? " (err: {$curlErr})" : ''));
+
+        $decoded = json_decode((string) $response, true);
+        if (is_array($decoded)) {
+            $decoded['http_code'] = $httpCode;
+            return $decoded;
+        }
+        return [
+            'success' => false,
+            'raw' => $response,
+            'http_code' => $httpCode,
+            'error' => $curlErr ?: null,
+        ];
     }
 
     // ----------------------------------------------------------------
@@ -404,7 +465,7 @@ class APITxtService
     private function get(string $url, array $params): array
     {
         if (!$this->isConfigured()) {
-            error_log('[APITxtService] Not configured — set APITXT_AUTH_KEY and APITXT_WA_NUMBER in .env');
+            error_log('[APITxtService] Not configured — set APITXT_AUTH_KEY and APITXT_PROJECT_REF_ID in .env');
             return ['success' => false, 'error' => 'APITxtService not configured'];
         }
 
