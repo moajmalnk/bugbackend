@@ -122,6 +122,24 @@ class APITxtService
         $url = self::CHAT_URL . '?' . http_build_query($params);
 
         $ch = curl_init($url);
+        $baseHeaders = [
+            'Accept: application/json, text/plain, */*',
+            'Accept-Language: en-US,en;q=0.9',
+            'Cache-Control: no-cache',
+            'Pragma: no-cache',
+        ];
+        $fullHeaders = array_merge($baseHeaders, [
+            'Connection: keep-alive',
+            'Upgrade-Insecure-Requests: 1',
+            'Sec-Fetch-Dest: empty',
+            'Sec-Fetch-Mode: cors',
+            'Sec-Fetch-Site: same-origin',
+            'Sec-CH-UA: "Not/A)Brand";v="99", "Google Chrome";v="126", "Chromium";v="126"',
+            'Sec-CH-UA-Mobile: ?0',
+            'Sec-CH-UA-Platform: "macOS"',
+        ]);
+
+        $curlHeaders = $baseHeaders;
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT        => 10,
@@ -129,20 +147,7 @@ class APITxtService
             CURLOPT_SSL_VERIFYHOST => 2,
             CURLOPT_HTTPGET        => true,
             CURLOPT_USERAGENT      => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-            CURLOPT_HTTPHEADER     => [
-                'Accept: application/json, text/plain, */*',
-                'Accept-Language: en-US,en;q=0.9',
-                'Cache-Control: no-cache',
-                'Connection: keep-alive',
-                'Pragma: no-cache',
-                'Upgrade-Insecure-Requests: 1',
-                'Sec-Fetch-Dest: empty',
-                'Sec-Fetch-Mode: cors',
-                'Sec-Fetch-Site: same-origin',
-                'Sec-CH-UA: "Not/A)Brand";v="99", "Google Chrome";v="126", "Chromium";v="126"',
-                'Sec-CH-UA-Mobile: ?0',
-                'Sec-CH-UA-Platform: "macOS"',
-            ],
+            CURLOPT_HTTPHEADER     => $curlHeaders,
         ]);
 
         $response = curl_exec($ch);
@@ -153,7 +158,38 @@ class APITxtService
         error_log("APITxt sendText to {$cleanPhone} [HTTP {$httpCode}]: " . $response . ($curlErr ? " (err: {$curlErr})" : ''));
 
         $decoded = json_decode((string) $response, true);
-        return is_array($decoded) ? $decoded : ['success' => false, 'raw' => $response, 'http_code' => $httpCode];
+        if (
+            is_array($decoded)
+            && ($decoded['status'] ?? '') === 'error'
+            && (($decoded['reason'] ?? '') === 'MISSING_BROWSER_HEADERS')
+        ) {
+            // Some APITxt WAF checks appear inconsistent. Retry once with a
+            // fuller browser header set to satisfy the WAF when the first
+            // attempt fails the browser-header check.
+            $ch2 = curl_init($url);
+            curl_setopt_array($ch2, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT        => 10,
+                CURLOPT_SSL_VERIFYPEER => true,
+                CURLOPT_SSL_VERIFYHOST => 2,
+                CURLOPT_HTTPGET        => true,
+                CURLOPT_USERAGENT      => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+                CURLOPT_HTTPHEADER     => $fullHeaders,
+            ]);
+            $response2 = curl_exec($ch2);
+            $httpCode2 = curl_getinfo($ch2, CURLINFO_HTTP_CODE);
+            $curlErr2  = curl_error($ch2);
+            curl_close($ch2);
+
+            error_log("APITxt sendText retry(full headers) to {$cleanPhone} [HTTP {$httpCode2}]: " . $response2 . ($curlErr2 ? " (err: {$curlErr2})" : ''));
+
+            $decoded2 = json_decode((string) $response2, true);
+            return is_array($decoded2) ? $decoded2 : ['success' => false, 'raw' => $response2, 'http_code' => $httpCode2];
+        }
+
+        return is_array($decoded)
+            ? $decoded
+            : ['success' => false, 'raw' => $response, 'http_code' => $httpCode];
     }
 
     /**
@@ -373,26 +409,31 @@ class APITxtService
         }
 
         $fullUrl = $url . '?' . http_build_query($params);
+
+        $baseHeaders = [
+            'Accept: application/json, text/plain, */*',
+            'Accept-Language: en-US,en;q=0.9',
+            'Cache-Control: no-cache',
+            'Pragma: no-cache',
+        ];
+        $fullHeaders = array_merge($baseHeaders, [
+            'Connection: keep-alive',
+            'Upgrade-Insecure-Requests: 1',
+            'Sec-Fetch-Dest: empty',
+            'Sec-Fetch-Mode: cors',
+            'Sec-Fetch-Site: same-origin',
+            'Sec-CH-UA: "Not/A)Brand";v="99", "Google Chrome";v="126", "Chromium";v="126"',
+            'Sec-CH-UA-Mobile: ?0',
+            'Sec-CH-UA-Platform: "macOS"',
+        ]);
+
         $ch = curl_init($fullUrl);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_HTTPGET        => true,
             CURLOPT_TIMEOUT        => 15,
             CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_HTTPHEADER     => [
-                'Accept: application/json, text/plain, */*',
-                'Accept-Language: en-US,en;q=0.9',
-                'Cache-Control: no-cache',
-                'Connection: keep-alive',
-                'Pragma: no-cache',
-                'Upgrade-Insecure-Requests: 1',
-                'Sec-Fetch-Dest: empty',
-                'Sec-Fetch-Mode: cors',
-                'Sec-Fetch-Site: same-origin',
-                'Sec-CH-UA: "Not/A)Brand";v="99", "Google Chrome";v="126", "Chromium";v="126"',
-                'Sec-CH-UA-Mobile: ?0',
-                'Sec-CH-UA-Platform: "macOS"',
-            ],
+            CURLOPT_HTTPHEADER     => $baseHeaders,
             CURLOPT_USERAGENT      => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
         ]);
 
@@ -414,6 +455,37 @@ class APITxtService
         }
 
         $decoded['http_code'] = $code;
+
+        if (
+            ($decoded['status'] ?? '') === 'error'
+            && (($decoded['reason'] ?? '') === 'MISSING_BROWSER_HEADERS')
+        ) {
+            // Retry once with a fuller browser header set.
+            $ch2 = curl_init($fullUrl);
+            curl_setopt_array($ch2, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_HTTPGET        => true,
+                CURLOPT_TIMEOUT        => 15,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_HTTPHEADER     => $fullHeaders,
+                CURLOPT_USERAGENT      => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+            ]);
+
+            $raw2  = curl_exec($ch2);
+            $code2 = curl_getinfo($ch2, CURLINFO_HTTP_CODE);
+            $err2  = curl_error($ch2);
+            curl_close($ch2);
+
+            error_log(\"[APITxtService] GET retry(full headers) {$url} [{$code2}]: {$raw2}\" . ($err2 ? \" cURL err: {$err2}\" : ''));
+
+            $decoded2 = json_decode($raw2, true);
+            if (!is_array($decoded2)) {
+                return ['success' => true, 'raw' => $raw2, 'http_code' => $code2];
+            }
+            $decoded2['http_code'] = $code2;
+            return $decoded2;
+        }
+
         return $decoded;
     }
 
