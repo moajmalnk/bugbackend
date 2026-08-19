@@ -37,8 +37,46 @@ class APITxtService
 
     public function __construct()
     {
-        $this->authKey  = Environment::get('APITXT_AUTH_KEY', '');
-        $this->waNumber = Environment::get('APITXT_WA_NUMBER', '');
+        // 1. Try the Environment helper (.env parser)
+        if (class_exists('Environment')) {
+            $this->authKey  = Environment::get('APITXT_AUTH_KEY', '');
+            $this->waNumber = Environment::get('APITXT_WA_NUMBER', '');
+        } else {
+            $this->authKey  = '';
+            $this->waNumber = '';
+        }
+
+        // 2. Fall back to $_ENV / $_SERVER / getenv()
+        if ($this->authKey === '') {
+            $this->authKey = $_ENV['APITXT_AUTH_KEY'] ?? $_SERVER['APITXT_AUTH_KEY'] ?? getenv('APITXT_AUTH_KEY') ?: '';
+        }
+        if ($this->waNumber === '') {
+            $this->waNumber = $_ENV['APITXT_WA_NUMBER'] ?? $_SERVER['APITXT_WA_NUMBER'] ?? getenv('APITXT_WA_NUMBER') ?: '';
+        }
+
+        // 3. Last resort: parse .env file directly
+        if ($this->authKey === '' || $this->waNumber === '') {
+            $envPaths = [
+                __DIR__ . '/../.env',
+                __DIR__ . '/../../.env',
+                dirname(__DIR__, 2) . '/.env',
+            ];
+            foreach ($envPaths as $path) {
+                if (!file_exists($path)) continue;
+                $lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+                foreach ($lines as $line) {
+                    $line = trim($line);
+                    if ($line === '' || str_starts_with($line, '#')) continue;
+                    if (!str_contains($line, '=')) continue;
+                    [$k, $v] = explode('=', $line, 2);
+                    $k = trim($k);
+                    $v = trim($v, " \t\n\r\0\x0B\"'");
+                    if ($k === 'APITXT_AUTH_KEY'  && $this->authKey  === '') $this->authKey  = $v;
+                    if ($k === 'APITXT_WA_NUMBER' && $this->waNumber === '') $this->waNumber = $v;
+                }
+                if ($this->authKey !== '' && $this->waNumber !== '') break;
+            }
+        }
     }
 
     /** Whether the service has been configured via .env */
