@@ -513,6 +513,86 @@ try {
         }
     }
 
+    // ── WhatsApp outbound status template ────────────────────────────────────
+    // Send the approved 'bug_update' template whenever a bug status changes to
+    // fixed, in_progress (→ Testing), or declined/rejected (→ Closed),
+    // but only when the reporter has verified their WhatsApp number.
+    if ($notificationData && isset($notificationData['status'])) {
+        $newStatus = $notificationData['status'];
+        $triggerStatuses = ['fixed', 'in_progress', 'declined', 'rejected', 'closed', 'testing'];
+        if (in_array($newStatus, $triggerStatuses, true)) {
+            try {
+                require_once __DIR__ . '/../../services/APITxtService.php';
+                require_once __DIR__ . '/../../config/environment.php';
+                $apitxt = new APITxtService();
+
+                if ($apitxt->isConfigured()) {
+                    $conn = $controller->getConnection();
+
+                    // Load reporter's phone + WA verification flag
+                    $rStmt = $conn->prepare(
+                        "SELECT u.name, u.phone, u.is_wa_verified
+                         FROM users u WHERE u.id = ? LIMIT 1"
+                    );
+                    $rStmt->execute([$notificationData['reported_by'] ?? '']);
+                    $reporter = $rStmt->fetch(PDO::FETCH_ASSOC);
+
+                    // Load project name
+                    $pStmt = $conn->prepare("SELECT name FROM projects WHERE id = ? LIMIT 1");
+                    $pStmt->execute([$notificationData['project_id'] ?? '']);
+                    $project = $pStmt->fetch(PDO::FETCH_ASSOC);
+
+                    if (
+                        $reporter
+                        && !empty($reporter['is_wa_verified'])
+                        && !empty($reporter['phone'])
+                    ) {
+                        // Normalise phone to digits only (E.164 without '+')
+                        $recipientPhone = preg_replace('/\D/', '', $reporter['phone']);
+
+                        // Map internal status to a human-readable label
+                        $statusLabels = [
+                            'fixed'       => 'Fixed',
+                            'in_progress' => 'In Testing',
+                            'testing'     => 'In Testing',
+                            'declined'    => 'Closed',
+                            'rejected'    => 'Closed',
+                            'closed'      => 'Closed',
+                        ];
+                        $statusLabel = $statusLabels[$newStatus] ?? ucfirst($newStatus);
+
+                        $bugTitle    = $notificationData['bug_title']   ?? 'Bug';
+                        $projectName = $project['name']                  ?? 'Your Project';
+                        $bugIdShort  = $notificationData['bug_id']       ?? '';
+
+                        // Template body_params: {{1}} name, {{2}} ticket id,
+                        //   {{3}} project name, {{4}} issue title, {{5}} status
+                        $bodyParams = [
+                            $reporter['name'],
+                            $bugIdShort,
+                            $projectName,
+                            $bugTitle,
+                            $statusLabel,
+                        ];
+
+                        // URL button dynamic suffix is the bug ID
+                        $urlButtons = ['url_button_0' => $bugIdShort];
+
+                        $apitxt->sendTemplate(
+                            $recipientPhone,
+                            'bug_update',
+                            $bodyParams,
+                            $urlButtons
+                        );
+                        error_log("BUG UPDATE: WA bug_update template sent to {$recipientPhone} for bug {$bugIdShort}");
+                    }
+                }
+            } catch (Throwable $e) {
+                error_log("BUG UPDATE: WA template failed: " . $e->getMessage());
+            }
+        }
+    }
+
 } catch (Exception $e) {
     error_log("Bug update error: " . $e->getMessage());
     
