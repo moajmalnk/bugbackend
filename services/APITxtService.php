@@ -54,6 +54,9 @@ class APITxtService
             $this->waNumber = $_ENV['APITXT_WA_NUMBER'] ?? $_SERVER['APITXT_WA_NUMBER'] ?? getenv('APITXT_WA_NUMBER') ?: '';
         }
 
+        // APITxt expects wa_number/mobile as digits-only.
+        $this->waNumber = preg_replace('/\D+/', '', (string)$this->waNumber);
+
         // 3. Last resort: parse .env file directly
         if ($this->authKey === '' || $this->waNumber === '') {
             $envPaths = [
