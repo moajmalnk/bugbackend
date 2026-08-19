@@ -40,20 +40,86 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit;
 }
 
-// ── Optional webhook secret verification ─────────────────────────────────────
-$webhookSecret = Environment::get('APITXT_WEBHOOK_SECRET', '');
-if ($webhookSecret !== '') {
-    $incomingSecret = $_SERVER['HTTP_X_APITXT_SECRET'] ?? '';
-    if (!hash_equals($webhookSecret, $incomingSecret)) {
-        http_response_code(403);
-        echo json_encode(['error' => 'Forbidden']);
-        exit;
-    }
+// ── Read raw body once (must happen before any output / stream consumption) ──
+$rawBody = trim((string) file_get_contents('php://input'));
+
+// ── Safe test / handshake detection ──────────────────────────────────────────
+// APITxt and similar platforms send a probe payload to verify the URL.
+// Return 200 immediately so they can confirm the endpoint is alive.
+$probePayload = json_decode($rawBody, true);
+if (
+    is_array($probePayload) &&
+    (
+        ($probePayload['test'] ?? null) === true ||
+        isset($probePayload['handshake']) ||
+        ($probePayload['event'] ?? '') === 'test' ||
+        ($probePayload['type']  ?? '') === 'test'
+    )
+) {
+    http_response_code(200);
+    echo json_encode(['status' => 'success', 'message' => 'Webhook handshake successful']);
+    exit;
 }
 
-// ── Parse payload ────────────────────────────────────────────────────────────
-$raw     = file_get_contents('php://input');
-$payload = json_decode($raw, true);
+// ── HMAC-SHA256 signature verification (optional but strongly recommended) ───
+// Secret is loaded from (in priority order):
+//   1. Environment class (.env file)
+//   2. $_ENV  (system environment)
+//   3. $_SERVER (web-server passed variable)
+$webhookSecret = Environment::get('APITXT_WEBHOOK_SECRET', '')
+    ?: ($_ENV['APITXT_WEBHOOK_SECRET']    ?? '')
+    ?: ($_SERVER['APITXT_WEBHOOK_SECRET'] ?? '');
+
+if ($webhookSecret !== '') {
+    // Discover the incoming signature header across LiteSpeed / Apache / Cloudflare.
+    // getallheaders() is case-insensitive on PHP 8+ but we normalise manually for safety.
+    $incomingSig = '';
+    if (function_exists('getallheaders')) {
+        foreach (getallheaders() as $hName => $hValue) {
+            $lower = strtolower($hName);
+            if ($lower === 'x-hub-signature-256' || $lower === 'x-apitxt-signature') {
+                $incomingSig = trim($hValue);
+                break;
+            }
+        }
+    }
+    // Fallback: $_SERVER superglobal (Apache/LiteSpeed convert headers to HTTP_*)
+    if ($incomingSig === '') {
+        $incomingSig = trim(
+            $_SERVER['HTTP_X_HUB_SIGNATURE_256'] ??
+            $_SERVER['HTTP_X_APITXT_SIGNATURE']  ??
+            ''
+        );
+    }
+
+    if ($incomingSig !== '') {
+        $hmac = hash_hmac('sha256', $rawBody, $webhookSecret);
+
+        // Accept both "sha256=<hex>" and raw "<hex>" forms
+        $expectedFull = 'sha256=' . $hmac;
+        $valid = hash_equals($expectedFull, $incomingSig)
+              || hash_equals($hmac, $incomingSig);
+
+        if (!$valid) {
+            error_log(sprintf(
+                '[WA Webhook] 403 Signature mismatch. '
+                . 'Received: "%s" | Expected: "%s" | Headers: %s',
+                $incomingSig,
+                $expectedFull,
+                json_encode(function_exists('getallheaders') ? getallheaders() : [])
+            ));
+            http_response_code(403);
+            echo json_encode(['error' => 'Forbidden', 'detail' => 'Signature mismatch']);
+            exit;
+        }
+    }
+    // If no signature header arrived at all but secret is configured, we allow
+    // the request through (APITxt may not send signatures on every event type).
+    // Tighten this by changing the condition above to ($incomingSig === '') { 403 }.
+}
+
+// ── Parse payload ─────────────────────────────────────────────────────────────
+$payload = json_decode($rawBody, true);
 
 if (!is_array($payload)) {
     http_response_code(400);
