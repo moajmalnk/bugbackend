@@ -233,6 +233,25 @@ if ($session['current_step'] !== STEP_IDLE) {
 // ── Load user by phone ────────────────────────────────────────────────────────
 $user = getUserByPhone($db, $phone);
 
+// ── Unregistered phone guard ──────────────────────────────────────────────────
+// Any unrecognised number gets a single, clear denial before we touch the state
+// machine. We use $fromRaw (the un-normalised number from the payload) so the
+// user sees exactly what we received — helpful when they've saved the wrong format.
+if ($user === null) {
+    $appUrl = rtrim(Environment::get('APP_BASE_URL', 'https://bugs.bugricer.com'), '/');
+    $apitxt->sendText(
+        $phone,
+        "❌ *Access Denied*\n\n"
+        . "Your number (*{$fromRaw}*) is not registered on BugRicer.\n\n"
+        . "Please add this number to your profile at:\n"
+        . "{$appUrl}\n\n"
+        . "Contact your project admin if you need help."
+    );
+    http_response_code(200);
+    echo json_encode(['status' => 'unregistered_user', 'phone' => $fromRaw]);
+    exit;
+}
+
 // ── STATE MACHINE ─────────────────────────────────────────────────────────────
 $step = $session['current_step'];
 
@@ -240,14 +259,6 @@ switch ($step) {
 
     // ── IDLE / Entry point ───────────────────────────────────────────────────
     case STEP_IDLE:
-        if ($user === null) {
-            $apitxt->sendText($phone,
-                "👋 Hi! I'm the *BugRicer* bot.\n\n"
-                . "Your number is not registered in BugRicer. "
-                . "Please contact your project admin to get access."
-            );
-            break;
-        }
 
         // If already WA-verified, go straight to project selection
         if (!empty($user['is_wa_verified'])) {
@@ -261,12 +272,6 @@ switch ($step) {
 
     // ── OTP verification ─────────────────────────────────────────────────────
     case STEP_WAITING_OTP:
-        if ($user === null) {
-            $apitxt->sendText($phone, "❌ Account not found. Please contact your admin.");
-            resetSession($db, $phone);
-            break;
-        }
-
         $otp     = $session['otp_code'];
         $expiry  = strtotime($session['otp_expires_at'] ?? '1970-01-01');
         $attempts = (int)$session['otp_attempts'];
@@ -495,12 +500,6 @@ switch ($step) {
         }
 
         // ── Create the bug ────────────────────────────────────────────────────
-        if ($user === null) {
-            $apitxt->sendText($phone, "❌ Could not identify your account. Session reset.");
-            resetSession($db, $phone);
-            break;
-        }
-
         $sess = getOrCreateSession($db, $phone);
         $projectId = $sess['selected_project_id'];
 
