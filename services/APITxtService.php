@@ -97,14 +97,45 @@ class APITxtService
      */
     public function sendText(string $to, string $text): array
     {
-        $mobile = $this->normalisePhone($to);
-        return $this->get(self::CHAT_URL, [
+        if (!$this->isConfigured()) {
+            error_log('[APITxtService] Not configured — missing authKey or waNumber');
+            return ['success' => false, 'error' => 'APITxtService not configured'];
+        }
+
+        $cleanPhone = preg_replace('/\D+/', '', (string)$to);
+
+        // Build query safely to preserve emojis/spaces/newlines.
+        // Note: APITxt docs use `mobile`, but we also send `phone` for
+        // compatibility with some gateway configurations.
+        $params = [
             'authkey'   => $this->authKey,
             'wa_number' => $this->waNumber,
-            'mobile'    => $mobile,
             'body_type' => 'text',
+            'mobile'    => $cleanPhone,
+            'phone'     => $cleanPhone,
             'meta'      => $text,
+        ];
+
+        $url = self::CHAT_URL . '?' . http_build_query($params);
+
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 10,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
+            CURLOPT_HTTPGET        => true,
         ]);
+
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlErr  = curl_error($ch);
+        curl_close($ch);
+
+        error_log("APITxt sendText to {$cleanPhone} [HTTP {$httpCode}]: " . $response . ($curlErr ? " (err: {$curlErr})" : ''));
+
+        $decoded = json_decode((string) $response, true);
+        return is_array($decoded) ? $decoded : ['success' => false, 'raw' => $response, 'http_code' => $httpCode];
     }
 
     /**
