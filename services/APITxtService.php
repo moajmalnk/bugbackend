@@ -162,15 +162,19 @@ class APITxtService
             $postResult = $decoded;
         }
 
+        $statusField = $postResult['status'] ?? null;
+        $statusCodeFromBody = is_numeric($statusField) ? (int) $statusField : null;
+        $statusStringFromBody = is_string($statusField) ? strtolower(trim($statusField)) : null;
+
+        $bodySignalsFailure = (
+            (($postResult['success'] ?? null) === false)
+            || ($statusStringFromBody === 'error')
+            || ($statusCodeFromBody !== null && $statusCodeFromBody !== 200)
+        );
+
         $isPostSuccess = $httpCode >= 200
             && $httpCode < 300
-            && !(
-                is_array($postResult)
-                && (
-                    (($postResult['status'] ?? '') === 'error')
-                    || (($postResult['success'] ?? null) === false)
-                )
-            );
+            && !$bodySignalsFailure;
 
         if ($isPostSuccess) {
             return $postResult;
