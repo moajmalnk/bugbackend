@@ -650,7 +650,10 @@ echo json_encode(['ok' => true]);
         $phone ?? 'unknown',
         $session['current_step'] ?? 'unknown'
     ));
-    http_response_code(500);
+    // Always return 200 to the webhook platform so deliveries aren't marked as
+    // failed due to transient app errors. The JSON body still contains the
+    // diagnostic details for debugging.
+    http_response_code(200);
     echo json_encode([
         'ok'    => false,
         'error' => $e->getMessage(),
