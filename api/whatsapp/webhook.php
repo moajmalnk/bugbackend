@@ -127,6 +127,12 @@ if (!is_array($payload)) {
     exit;
 }
 
+// ── Top-level error fence ─────────────────────────────────────────────────────
+// Catches any uncaught exception or fatal error in the processing block and
+// returns a clean JSON diagnostic instead of an empty 500 page.
+// Helper functions are defined outside this block so they are always available.
+try {
+
 // ── DB + service setup ───────────────────────────────────────────────────────
 $db     = Database::getInstance()->getConnection();
 $apitxt = new APITxtService();
@@ -627,6 +633,25 @@ $db->prepare("UPDATE wa_sessions SET last_interaction=NOW() WHERE phone=?")->exe
 
 http_response_code(200);
 echo json_encode(['ok' => true]);
+
+} catch (\Throwable $e) {
+    error_log(sprintf(
+        '[WA Webhook] Fatal error: %s in %s:%d | Phone: %s | Step: %s',
+        $e->getMessage(),
+        $e->getFile(),
+        $e->getLine(),
+        $phone ?? 'unknown',
+        $session['current_step'] ?? 'unknown'
+    ));
+    http_response_code(500);
+    echo json_encode([
+        'ok'    => false,
+        'error' => $e->getMessage(),
+        'file'  => basename($e->getFile()),
+        'line'  => $e->getLine(),
+    ]);
+    exit;
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Helper functions
