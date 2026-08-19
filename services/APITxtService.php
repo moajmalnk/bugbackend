@@ -537,7 +537,7 @@ class APITxtService
             $err2  = curl_error($ch2);
             curl_close($ch2);
 
-            error_log(\"[APITxtService] GET retry(full headers) {$url} [{$code2}]: {$raw2}\" . ($err2 ? \" cURL err: {$err2}\" : ''));
+            error_log("[APITxtService] GET retry(full headers) {$url} [{$code2}]: {$raw2}" . ($err2 ? " cURL err: {$err2}" : ''));
 
             $decoded2 = json_decode($raw2, true);
             if (!is_array($decoded2)) {
