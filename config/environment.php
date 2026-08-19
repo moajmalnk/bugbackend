@@ -46,6 +46,10 @@ class Environment {
             'FIREBASE_SERVICE_ACCOUNT_PATH',
             'DEADLINE_REMINDER_SECRET',
             'FINBRO_INTEGRATION_TOKEN',
+            'APITXT_AUTH_KEY',
+            'APITXT_WA_NUMBER',
+            'APITXT_WEBHOOK_SECRET',
+            'APP_BASE_URL',
         ];
         
         foreach ($envVars as $var) {

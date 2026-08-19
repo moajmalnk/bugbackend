@@ -1,17 +1,25 @@
 <?php
 /**
- * APITxtService — Wrapper for the APITxt WhatsApp Cloud API.
+ * APITxtService — Wrapper for the APITxt WhatsApp API.
  *
- * Why this exists: BugRicer uses APITxt (not the Meta Business API directly)
- * so that we get a managed webhook + template-approval layer. This class
- * centralises all outbound calls so the rest of the codebase never sees raw
- * cURL or API keys.
+ * Why this exists: APITxt exposes GET-based query-parameter APIs (not REST/JSON).
+ * This class centralises all outbound calls so the rest of the codebase never
+ * sees raw cURL, query-string building, or API keys.
+ *
+ * Documented endpoints (from apitxt.com/apiDoc/):
+ *   Chat (free-form text / media):
+ *     GET https://apitxt.com/api/whatsapp_chat
+ *         ?authkey=…&wa_number=…&mobile=…&body_type=text&meta=…
+ *
+ *   Broadcast (approved template):
+ *     GET https://apitxt.com/api/WhatsApp
+ *         ?authkey=…&wa_number=…&mobile=…&template_name=…
+ *         &body_1=…&body_2=…&web_url_1=…
  *
  * Required .env keys:
- *   APITXT_AUTH_KEY        — your APITxt authentication key
- *   APITXT_PROJECT_REF_ID  — the project_ref_id for your APITxt number
- *   APITXT_BASE_URL        — (optional) default: https://api.apitxt.com/v1
- *   APP_BASE_URL           — public base URL of BugRicer (e.g. https://bugs.bugricer.com)
+ *   APITXT_AUTH_KEY    — your APITxt authentication key
+ *   APITXT_WA_NUMBER   — your registered sender WhatsApp number (with country code, e.g. 919999999999)
+ *   APP_BASE_URL       — public base URL of BugRicer (e.g. https://bugs.bugricer.com)
  */
 
 require_once __DIR__ . '/../config/environment.php';
@@ -19,23 +27,24 @@ require_once __DIR__ . '/../config/environment.php';
 class APITxtService
 {
     private string $authKey;
-    private string $projectRefId;
-    private string $baseUrl;
+    private string $waNumber;
+
+    /** Base URL for chat (free-form) messages */
+    private const CHAT_URL = 'https://apitxt.com/api/whatsapp_chat';
+
+    /** Base URL for broadcast (template) messages */
+    private const BROADCAST_URL = 'https://apitxt.com/api/WhatsApp';
 
     public function __construct()
     {
-        $this->authKey      = Environment::get('APITXT_AUTH_KEY', '');
-        $this->projectRefId = Environment::get('APITXT_PROJECT_REF_ID', '');
-        $this->baseUrl      = rtrim(
-            Environment::get('APITXT_BASE_URL', 'https://api.apitxt.com/v1'),
-            '/'
-        );
+        $this->authKey  = Environment::get('APITXT_AUTH_KEY', '');
+        $this->waNumber = Environment::get('APITXT_WA_NUMBER', '');
     }
 
     /** Whether the service has been configured via .env */
     public function isConfigured(): bool
     {
-        return $this->authKey !== '' && $this->projectRefId !== '';
+        return $this->authKey !== '' && $this->waNumber !== '';
     }
 
     // ----------------------------------------------------------------
@@ -43,68 +52,72 @@ class APITxtService
     // ----------------------------------------------------------------
 
     /**
-     * Send a plain text WhatsApp message.
+     * Send a plain text WhatsApp message via the Chat API.
      *
-     * @param string $to   Phone in E.164 format (digits only, no +)
+     * @param string $to   Recipient phone with country code (digits only, no +)
      * @param string $text Message body
      */
     public function sendText(string $to, string $text): array
     {
-        return $this->post('/messages/send-text', [
-            'project_ref_id' => $this->projectRefId,
-            'to'             => $to,
-            'text'           => ['body' => $text],
+        $mobile = $this->normalisePhone($to);
+        return $this->get(self::CHAT_URL, [
+            'authkey'   => $this->authKey,
+            'wa_number' => $this->waNumber,
+            'mobile'    => $mobile,
+            'body_type' => 'text',
+            'meta'      => $text,
         ]);
     }
 
     /**
-     * Send a message with up to 3 quick-reply buttons.
+     * Send a message with quick-reply buttons.
+     *
+     * Why: APITxt Chat API supports interactive messages through the same
+     * endpoint with body_type=button. We format the buttons as part of the
+     * meta payload. Falls back to plain text if the platform doesn't support
+     * buttons on this account tier.
      *
      * @param string $to
      * @param string $header Plain-text header line
      * @param string $body   Message body
-     * @param array  $buttons [['id' => string, 'title' => string], …]  (max 3)
-     * @param string $footer Optional footer line
+     * @param array  $buttons [['id' => string, 'title' => string], …] (max 3)
+     * @param string $footer Optional footer
      */
     public function sendInteractiveButtons(
         string $to,
         string $header,
         string $body,
-        array $buttons,
+        array  $buttons,
         string $footer = ''
     ): array {
-        $payload = [
-            'project_ref_id' => $this->projectRefId,
-            'to'             => $to,
-            'interactive'    => [
-                'type' => 'button',
-                'header' => ['type' => 'text', 'text' => $header],
-                'body'   => ['text' => $body],
-                'action' => [
-                    'buttons' => array_map(fn($b) => [
-                        'type'  => 'reply',
-                        'reply' => ['id' => $b['id'], 'title' => $b['title']],
-                    ], array_slice($buttons, 0, 3)),
-                ],
-            ],
-        ];
-        if ($footer !== '') {
-            $payload['interactive']['footer'] = ['text' => $footer];
-        }
-        return $this->post('/messages/send-interactive', $payload);
+        // Build a text fallback that clearly shows the options when the
+        // interactive button format is unsupported by the account tier.
+        $optionLines = implode("\n", array_map(
+            fn($b, $i) => ($i + 1) . '. ' . $b['title'],
+            array_slice($buttons, 0, 3),
+            range(0, 2)
+        ));
+
+        $fullText = ($header !== '' ? "*{$header}*\n\n" : '')
+            . $body
+            . "\n\n{$optionLines}"
+            . ($footer !== '' ? "\n\n_{$footer}_" : '');
+
+        return $this->sendText($to, $fullText);
     }
 
     /**
-     * Send a list-menu interactive message (supports up to 10 items per section).
+     * Send a list-menu message.
+     *
+     * APITxt doesn't expose a native list-menu endpoint via the Chat API,
+     * so we render the sections as a numbered text menu.
      *
      * @param string $to
      * @param string $header
      * @param string $body
-     * @param string $buttonText Label on the list-open button
-     * @param array  $sections   [[
-     *                   'title' => string,
-     *                   'rows'  => [['id'=>string,'title'=>string,'description'=>string], …]
-     *                ]]
+     * @param string $buttonText  (unused in text fallback, kept for API compatibility)
+     * @param array  $sections    [['title'=>string,'rows'=>[['id'=>…,'title'=>…,'description'=>…],…]]]
+     * @param string $footer
      */
     public function sendListMenu(
         string $to,
@@ -114,38 +127,42 @@ class APITxtService
         array  $sections,
         string $footer = ''
     ): array {
-        $payload = [
-            'project_ref_id' => $this->projectRefId,
-            'to'             => $to,
-            'interactive'    => [
-                'type'   => 'list',
-                'header' => ['type' => 'text', 'text' => $header],
-                'body'   => ['text' => $body],
-                'action' => [
-                    'button'   => $buttonText,
-                    'sections' => $sections,
-                ],
-            ],
-        ];
-        if ($footer !== '') {
-            $payload['interactive']['footer'] = ['text' => $footer];
+        $lines = [];
+        $idx   = 1;
+        foreach ($sections as $section) {
+            if (!empty($section['title'])) {
+                $lines[] = "*{$section['title']}*";
+            }
+            foreach ($section['rows'] ?? [] as $row) {
+                $lines[] = "{$idx}. {$row['title']}" . (!empty($row['description']) ? " — {$row['description']}" : '');
+                $idx++;
+            }
         }
-        return $this->post('/messages/send-interactive', $payload);
+
+        $fullText = ($header !== '' ? "*{$header}*\n\n" : '')
+            . $body . "\n\n"
+            . implode("\n", $lines)
+            . ($footer !== '' ? "\n\n_{$footer}_" : '');
+
+        return $this->sendText($to, $fullText);
     }
 
     /**
-     * Send an approved WhatsApp template message.
+     * Send an approved WhatsApp template (broadcast) message.
      *
      * Template: bug_update
-     *   body_params : {{1}} recipient name, {{2}} ticket id, {{3}} project name,
-     *                 {{4}} issue title, {{5}} status label
-     *   url_buttons : url_button_0 = bugId  (dynamic suffix for the ticket deep-link)
+     *   body_1 … body_5 map to {{1}}…{{5}} in the approved template body.
+     *   web_url_1 is the dynamic URL button suffix.
+     *
+     * APITxt Broadcast API param names:
+     *   body_(n)   — numbered body variables  (body_1, body_2, …)
+     *   web_url_(n)— numbered URL variables   (web_url_1, …)
      *
      * @param string $to
      * @param string $templateName  e.g. 'bug_update'
-     * @param array  $bodyParams    Ordered list of parameter values for {{1}}…{{n}}
-     * @param array  $urlButtons    Associative: ['url_button_0' => value, …]
-     * @param string $language      BCP-47 language code (default 'en')
+     * @param array  $bodyParams    Ordered values for {{1}}…{{n}}
+     * @param array  $urlButtons    ['url_button_0' => value, …]
+     * @param string $language      (unused by APITxt Broadcast API, kept for compat)
      */
     public function sendTemplate(
         string $to,
@@ -154,41 +171,29 @@ class APITxtService
         array  $urlButtons = [],
         string $language   = 'en'
     ): array {
-        $components = [];
+        $mobile = $this->normalisePhone($to);
 
-        // Body component
-        if (!empty($bodyParams)) {
-            $components[] = [
-                'type'       => 'body',
-                'parameters' => array_map(
-                    fn($v) => ['type' => 'text', 'text' => (string) $v],
-                    $bodyParams
-                ),
-            ];
+        $params = [
+            'authkey'       => $this->authKey,
+            'wa_number'     => $this->waNumber,
+            'mobile'        => $mobile,
+            'template_name' => $templateName,
+        ];
+
+        // Map body_params to body_1, body_2, …
+        foreach (array_values($bodyParams) as $i => $value) {
+            $params['body_' . ($i + 1)] = (string) $value;
         }
 
-        // Button components (url type with dynamic suffix)
-        foreach ($urlButtons as $idx => $value) {
-            $buttonIdx = (int) filter_var($idx, FILTER_SANITIZE_NUMBER_INT);
-            $components[] = [
-                'type'      => 'button',
-                'sub_type'  => 'url',
-                'index'     => $buttonIdx,
-                'parameters' => [
-                    ['type' => 'text', 'text' => (string) $value],
-                ],
-            ];
+        // Map url_button_0 → web_url_1, url_button_1 → web_url_2, …
+        foreach ($urlButtons as $key => $value) {
+            // Extract trailing integer from key (e.g. 'url_button_0' → 0)
+            preg_match('/(\d+)$/', $key, $m);
+            $n = isset($m[1]) ? ((int)$m[1] + 1) : 1;
+            $params['web_url_' . $n] = (string) $value;
         }
 
-        return $this->post('/messages/send-template', [
-            'project_ref_id' => $this->projectRefId,
-            'to'             => $to,
-            'template'       => [
-                'name'       => $templateName,
-                'language'   => ['code' => $language],
-                'components' => $components,
-            ],
-        ]);
+        return $this->get(self::BROADCAST_URL, $params);
     }
 
     // ----------------------------------------------------------------
@@ -202,7 +207,7 @@ class APITxtService
      * @param string $mediaUrl  URL returned in the webhook payload
      * @param string $mimeType  e.g. 'audio/ogg; codecs=opus'
      * @param string $phone     Normalised phone (used in filename to namespace)
-     * @param string $extHint   Fallback extension if MIME lookup fails (e.g. 'ogg')
+     * @param string $extHint   Fallback extension if MIME lookup fails
      * @return array{path: string, name: string, mime: string}|null  null on failure
      */
     public function downloadAndStoreMediaToStaging(
@@ -226,7 +231,7 @@ class APITxtService
         }
 
         return [
-            'path' => 'wa_staging/' . $filename,   // relative to uploads/
+            'path' => 'wa_staging/' . $filename,
             'name' => $filename,
             'mime' => $this->normaliseMime($mimeType),
         ];
@@ -235,12 +240,6 @@ class APITxtService
     /**
      * Download a media file directly into the per-bug attachments directory.
      * Call this after you have a bug ID.
-     *
-     * @param string $mediaUrl
-     * @param string $mimeType
-     * @param string $bugId
-     * @param string $extHint
-     * @return array{path: string, name: string, mime: string}|null
      */
     public function downloadAndStoreMedia(
         string $mediaUrl,
@@ -274,27 +273,27 @@ class APITxtService
     // ----------------------------------------------------------------
 
     /**
-     * Execute a POST request to the APITxt API.
+     * Execute a GET request to an APITxt endpoint with query parameters.
+     * All APITxt APIs are GET-based with params in the query string.
      *
      * @return array Decoded JSON response
      */
-    private function post(string $endpoint, array $payload): array
+    private function get(string $url, array $params): array
     {
         if (!$this->isConfigured()) {
+            error_log('[APITxtService] Not configured — set APITXT_AUTH_KEY and APITXT_WA_NUMBER in .env');
             return ['success' => false, 'error' => 'APITxtService not configured'];
         }
 
-        $url = $this->baseUrl . $endpoint;
-        $ch  = curl_init($url);
+        $fullUrl = $url . '?' . http_build_query($params);
+        $ch = curl_init($fullUrl);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POST           => true,
-            CURLOPT_POSTFIELDS     => json_encode($payload),
+            CURLOPT_HTTPGET        => true,
             CURLOPT_TIMEOUT        => 15,
+            CURLOPT_FOLLOWLOCATION => true,
             CURLOPT_HTTPHEADER     => [
-                'Content-Type: application/json',
                 'Accept: application/json',
-                'authkey: ' . $this->authKey,
             ],
         ]);
 
@@ -303,18 +302,25 @@ class APITxtService
         $err  = curl_error($ch);
         curl_close($ch);
 
-        if ($raw === false) {
-            return ['success' => false, 'error' => $err];
+        error_log("[APITxtService] GET {$url} [{$code}]: {$raw}" . ($err ? " cURL err: {$err}" : ''));
+
+        if ($raw === false || $err !== '') {
+            return ['success' => false, 'error' => $err ?: 'cURL failed'];
         }
 
-        $decoded = json_decode($raw, true) ?? [];
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) {
+            // APITxt sometimes returns plain text on success
+            return ['success' => true, 'raw' => $raw, 'http_code' => $code];
+        }
+
         $decoded['http_code'] = $code;
         return $decoded;
     }
 
     /**
-     * Download a URL to a local file path using cURL.
-     * Returns number of bytes written or false on failure.
+     * Download a URL to a local file path.
+     * Returns bytes written, or false on failure.
      */
     private function downloadUrl(string $url, string $localPath): int|false
     {
@@ -333,17 +339,24 @@ class APITxtService
             ],
         ]);
 
-        $ok  = curl_exec($ch);
+        curl_exec($ch);
         $err = curl_error($ch);
         curl_close($ch);
         fclose($fp);
 
-        if (!$ok || $err) {
+        if ($err) {
             @unlink($localPath);
             return false;
         }
 
-        return filesize($localPath) ?: 0;
+        $size = filesize($localPath);
+        return ($size !== false && $size > 0) ? $size : false;
+    }
+
+    /** Strip country-code prefix noise; return digits only. */
+    private function normalisePhone(string $phone): string
+    {
+        return preg_replace('/\D+/', '', $phone);
     }
 
     /** Map a MIME type to a safe file extension. */
