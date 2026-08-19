@@ -122,7 +122,7 @@ class APITxtService
             'type' => 'text',
             'message' => $text,
             // Keep both forms for APITxt compatibility across account modes.
-            'text' => ['body' => $text],
+            'text' => $text,
         ];
 
         $ch = curl_init(self::SEND_WA_MESSAGE_URL);
@@ -555,8 +555,12 @@ class APITxtService
 
         $decoded = json_decode($raw, true);
         if (!is_array($decoded)) {
-            // APITxt sometimes returns plain text on success
-            return ['success' => true, 'raw' => $raw, 'http_code' => $code];
+            // Treat non-2xx non-JSON responses as failures, not success.
+            return [
+                'success' => $code >= 200 && $code < 300,
+                'raw' => $raw,
+                'http_code' => $code,
+            ];
         }
 
         $decoded['http_code'] = $code;
@@ -585,7 +589,11 @@ class APITxtService
 
             $decoded2 = json_decode($raw2, true);
             if (!is_array($decoded2)) {
-                return ['success' => true, 'raw' => $raw2, 'http_code' => $code2];
+                return [
+                    'success' => $code2 >= 200 && $code2 < 300,
+                    'raw' => $raw2,
+                    'http_code' => $code2,
+                ];
             }
             $decoded2['http_code'] = $code2;
             return $decoded2;
