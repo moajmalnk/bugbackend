@@ -20,6 +20,9 @@ require_once __DIR__ . '/../../services/APITxtService.php';
 
 header('Content-Type: application/json');
 
+// Use India time consistently for OTP expiry, session timestamps, and logs.
+date_default_timezone_set('Asia/Kolkata');
+
 // ── Constants ────────────────────────────────────────────────────────────────
 define('SESSION_IDLE_SECS',    30 * 60);   // 30 minutes idle timeout
 define('OTP_VALIDITY_SECS',    10 * 60);   // OTP expires in 10 minutes
@@ -136,6 +139,13 @@ try {
 // ── DB + service setup ───────────────────────────────────────────────────────
 $db     = Database::getInstance()->getConnection();
 $apitxt = new APITxtService();
+
+// Keep MySQL session timestamps aligned with PHP (Asia/Kolkata / UTC+05:30).
+try {
+    $db->exec("SET time_zone = '+05:30'");
+} catch (Throwable $e) {
+    error_log('[WA Webhook] Failed to set MySQL session timezone: ' . $e->getMessage());
+}
 
 // ── Normalise payload — support both APITxt flat and Meta/nested formats ──────
 //
