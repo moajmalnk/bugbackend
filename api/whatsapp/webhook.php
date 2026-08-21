@@ -547,25 +547,53 @@ switch ($step) {
             break;
         }
 
+        // Browse menu: letter groups / next page (APITxt has no native list menu).
+        $browseId = (string) ($interactiveId ?? '');
+        if ($browseId === '' && preg_match('/^(A\s*[–-]\s*I|J\s*[–-]\s*R|S\s*[–-]\s*Z|More|Next)$/i', $msgTextNorm)) {
+            $mapBrowse = [
+                'a i' => 'wa_browse_a',
+                'j r' => 'wa_browse_j',
+                's z' => 'wa_browse_s',
+            ];
+            // Normalise en-dash variants already stripped in msgTextNorm.
+            if (preg_match('/^a\s*i$/', $msgTextNorm)) {
+                $browseId = 'wa_browse_a';
+            } elseif (preg_match('/^j\s*r$/', $msgTextNorm)) {
+                $browseId = 'wa_browse_j';
+            } elseif (preg_match('/^s\s*z$/', $msgTextNorm)) {
+                $browseId = 'wa_browse_s';
+            }
+        }
+        if (str_starts_with($browseId, 'wa_browse_') || str_starts_with($browseId, 'wa_more_')) {
+            if (preg_match('/^wa_browse_([ajs])$/i', $browseId, $m)) {
+                sendProjectBrowsePage($db, $apitxt, $phone, $user, strtolower($m[1]), 1);
+                break;
+            }
+            if (preg_match('/^wa_more_([ajs]|all)_(\d+)$/i', $browseId, $m)) {
+                sendProjectBrowsePage($db, $apitxt, $phone, $user, strtolower($m[1]), (int) $m[2]);
+                break;
+            }
+        }
+
         // Load selectable projects (admin = all; developer/tester = assigned only).
         $memberProjects = waLoadSelectableProjects($db, $user);
 
-        // Expect list-reply id = "proj_<uuid>"
+        // Expect list-reply / button id = "proj_<uuid>"
         $projectId = null;
         if ($interactiveId && str_starts_with($interactiveId, 'proj_')) {
             $projectId = substr($interactiveId, 5);
         }
 
-        // Text menu fallbacks:
-        // 1) paste full token: proj_<uuid>
-        // 2) reply with list number: 1 / 2 / 3
-        // 3) reply with exact project name (case-insensitive)
+        // Text: token, number (within current browse page if set), exact/partial name
         if ($projectId === null && $msgText !== '') {
             if (str_starts_with($msgText, 'proj_')) {
                 $projectId = substr($msgText, 5);
             } elseif (preg_match('/^\d{1,2}$/', $msgText)) {
+                $pageIds = waGetPickerPageIds($db, $phone);
                 $idx = ((int) $msgText) - 1;
-                if (isset($memberProjects[$idx])) {
+                if ($pageIds !== null && isset($pageIds[$idx])) {
+                    $projectId = $pageIds[$idx];
+                } elseif ($pageIds === null && isset($memberProjects[$idx])) {
                     $projectId = $memberProjects[$idx]['id'];
                 }
             } else {
@@ -575,11 +603,28 @@ switch ($step) {
                         break;
                     }
                 }
+                // Partial name search → open a filtered menu when multiple match.
+                if ($projectId === null) {
+                    $needle = mb_strtolower(trim($msgText));
+                    $matches = [];
+                    foreach ($memberProjects as $p) {
+                        if (str_contains(mb_strtolower($p['name']), $needle)) {
+                            $matches[] = $p;
+                        }
+                    }
+                    if (count($matches) === 1) {
+                        $projectId = $matches[0]['id'];
+                    } elseif (count($matches) > 1) {
+                        sendProjectMatchMenu($apitxt, $phone, $user, $matches);
+                        waSetPickerPageIds($db, $phone, array_column($matches, 'id'));
+                        break;
+                    }
+                }
             }
         }
 
         if ($projectId === null) {
-            $apitxt->sendText($phone, "Please choose a project from the list.");
+            $apitxt->sendText($phone, "Project not found.\nOpen the menu or type part of the name.");
             sendProjectPicker($db, $apitxt, $phone, $user);
             break;
         }
@@ -599,6 +644,7 @@ switch ($step) {
             break;
         }
 
+        waClearPickerPageIds($db, $phone);
         $db->prepare("UPDATE wa_sessions SET selected_project_id=?, temp_title=NULL, temp_description=NULL WHERE phone=?")
            ->execute([$projectId, $phone]);
         setStep($db, $phone, STEP_AWAITING_CONTENT);
@@ -1540,10 +1586,163 @@ function waIsAdminUser(array $user): bool
     return strtolower(trim((string) ($user['role'] ?? ''))) === 'admin';
 }
 
+/** Persist current on-screen project ids so reply "1"/"2" maps correctly. */
+function waSetPickerPageIds(PDO $db, string $phone, array $ids): void
+{
+    $payload = '__wa_picker__:' . implode(',', array_map('strval', $ids));
+    $db->prepare("UPDATE wa_sessions SET temp_description=? WHERE phone=?")
+       ->execute([$payload, $phone]);
+}
+
+/** @return list<string>|null */
+function waGetPickerPageIds(PDO $db, string $phone): ?array
+{
+    $stmt = $db->prepare("SELECT temp_description FROM wa_sessions WHERE phone=? LIMIT 1");
+    $stmt->execute([$phone]);
+    $raw = (string) ($stmt->fetchColumn() ?: '');
+    if (!str_starts_with($raw, '__wa_picker__:')) {
+        return null;
+    }
+    $ids = array_values(array_filter(explode(',', substr($raw, strlen('__wa_picker__:')))));
+    return $ids === [] ? null : $ids;
+}
+
+function waClearPickerPageIds(PDO $db, string $phone): void
+{
+    $stmt = $db->prepare("SELECT temp_description FROM wa_sessions WHERE phone=? LIMIT 1");
+    $stmt->execute([$phone]);
+    $raw = (string) ($stmt->fetchColumn() ?: '');
+    if (str_starts_with($raw, '__wa_picker__:')) {
+        $db->prepare("UPDATE wa_sessions SET temp_description=NULL WHERE phone=?")->execute([$phone]);
+    }
+}
+
+/**
+ * Filter projects by first-letter browse group.
+ * @param 'a'|'j'|'s'|'all' $group
+ * @param list<array{id:string,name:string,status?:string}> $projects
+ * @return list<array{id:string,name:string,status?:string}>
+ */
+function waFilterProjectsByGroup(array $projects, string $group): array
+{
+    if ($group === 'all') {
+        return $projects;
+    }
+    $out = [];
+    foreach ($projects as $p) {
+        $ch = mb_strtoupper(mb_substr(ltrim($p['name']), 0, 1));
+        if ($ch < 'A' || $ch > 'Z') {
+            // Digits / symbols → put in A–I bucket.
+            if ($group === 'a') {
+                $out[] = $p;
+            }
+            continue;
+        }
+        if ($group === 'a' && $ch >= 'A' && $ch <= 'I') {
+            $out[] = $p;
+        } elseif ($group === 'j' && $ch >= 'J' && $ch <= 'R') {
+            $out[] = $p;
+        } elseif ($group === 's' && $ch >= 'S' && $ch <= 'Z') {
+            $out[] = $p;
+        }
+    }
+    return $out;
+}
+
+function sendProjectMatchMenu(APITxtService $apitxt, string $phone, array $user, array $matches): void
+{
+    $matches = array_values($matches);
+    $slice = array_slice($matches, 0, 8);
+    $lines = [];
+    foreach ($slice as $i => $p) {
+        $lines[] = ($i + 1) . '. ' . $p['name'];
+    }
+    $buttons = [];
+    foreach (array_slice($slice, 0, 2) as $p) {
+        $buttons[] = ['id' => 'proj_' . $p['id'], 'title' => mb_substr($p['name'], 0, 20)];
+    }
+    if (count($matches) > 2) {
+        $buttons[] = ['id' => 'wa_browse_a', 'title' => 'Browse menu'];
+    }
+    while (count($buttons) < 1) {
+        break;
+    }
+    $apitxt->sendInteractiveButtons(
+        $phone,
+        'Projects',
+        "Hi *{$user['name']}*\nMatches (" . count($matches) . "):\n\n"
+        . implode("\n", $lines) . "\n\n"
+        . "Reply with a *number*, or tap below.",
+        $buttons
+    );
+}
+
+function sendProjectBrowsePage(
+    PDO $db,
+    APITxtService $apitxt,
+    string $phone,
+    array $user,
+    string $group,
+    int $page
+): void {
+    $page = max(1, $page);
+    $all = waLoadSelectableProjects($db, $user);
+    $filtered = waFilterProjectsByGroup($all, $group);
+    $perPage = 8;
+    $total = count($filtered);
+    $offset = ($page - 1) * $perPage;
+    $slice = array_slice($filtered, $offset, $perPage);
+
+    if ($slice === []) {
+        $apitxt->sendText($phone, "No projects in this group.");
+        sendProjectPicker($db, $apitxt, $phone, $user);
+        return;
+    }
+
+    $groupLabel = match ($group) {
+        'a' => 'A–I',
+        'j' => 'J–R',
+        's' => 'S–Z',
+        default => 'All',
+    };
+
+    $lines = [];
+    foreach ($slice as $i => $p) {
+        $lines[] = ($i + 1) . '. ' . $p['name'];
+    }
+    waSetPickerPageIds($db, $phone, array_column($slice, 'id'));
+
+    $buttons = [];
+    foreach (array_slice($slice, 0, 2) as $p) {
+        $buttons[] = ['id' => 'proj_' . $p['id'], 'title' => mb_substr($p['name'], 0, 20)];
+    }
+    $hasMore = ($offset + $perPage) < $total;
+    if ($hasMore) {
+        $buttons[] = ['id' => 'wa_more_' . $group . '_' . ($page + 1), 'title' => 'More ›'];
+    } else {
+        $buttons[] = ['id' => 'wa_menu', 'title' => 'Main menu'];
+    }
+    $buttons = array_slice($buttons, 0, 3);
+
+    $pageNote = $total > $perPage
+        ? " · page {$page}/" . (int) ceil($total / $perPage)
+        : '';
+
+    $apitxt->sendInteractiveButtons(
+        $phone,
+        'Projects',
+        "*{$groupLabel}* ({$total}{$pageNote})\n\n"
+        . implode("\n", $lines) . "\n\n"
+        . "Reply *1–" . count($slice) . "*, type a name, or tap below.",
+        $buttons
+    );
+}
+
 function sendProjectPicker(PDO $db, APITxtService $apitxt, string $phone, array $user): void
 {
     $projects = waLoadSelectableProjects($db, $user);
     $isAdmin = waIsAdminUser($user);
+    waClearPickerPageIds($db, $phone);
 
     if (empty($projects)) {
         $apitxt->sendText(
@@ -1556,12 +1755,11 @@ function sendProjectPicker(PDO $db, APITxtService $apitxt, string $phone, array 
         return;
     }
 
-    $scopeLine = $isAdmin
-        ? 'All projects'
-        : 'Your assigned projects';
+    $count = count($projects);
+    $scopeLine = $isAdmin ? 'All projects' : 'Your assigned projects';
 
-    // WhatsApp allows max 3 quick-reply buttons — keep the UI clean (no duplicate list).
-    if (count($projects) <= 3) {
+    // Few projects → direct buttons (clean).
+    if ($count <= 3) {
         $buttons = [];
         foreach ($projects as $p) {
             $buttons[] = [
@@ -1578,27 +1776,23 @@ function sendProjectPicker(PDO $db, APITxtService $apitxt, string $phone, array 
         return;
     }
 
-    $lines = [];
-    foreach ($projects as $i => $p) {
-        $lines[] = ($i + 1) . '. ' . $p['name'];
+    // Medium list → short page (no 40-line dump).
+    if ($count <= 8) {
+        sendProjectBrowsePage($db, $apitxt, $phone, $user, 'all', 1);
+        return;
     }
 
-    // First 3 as buttons for speed; full list by number for the rest.
-    $buttons = [];
-    foreach (array_slice($projects, 0, 3) as $p) {
-        $buttons[] = [
-            'id'    => 'proj_' . $p['id'],
-            'title' => mb_substr($p['name'], 0, 20),
-        ];
-    }
-
+    // Large list → browse menu (APITxt cannot send WhatsApp native list messages).
     $apitxt->sendInteractiveButtons(
         $phone,
         'Projects',
-        "Hi *{$user['name']}*\n*{$scopeLine}* (" . count($projects) . ")\n\n"
-        . implode("\n", $lines) . "\n\n"
-        . "Tap a top project, or reply with a *number*.",
-        $buttons
+        "Hi *{$user['name']}*\n*{$scopeLine}* ({$count})\n\n"
+        . "Open a group, or type part of the project name.",
+        [
+            ['id' => 'wa_browse_a', 'title' => 'A – I'],
+            ['id' => 'wa_browse_j', 'title' => 'J – R'],
+            ['id' => 'wa_browse_s', 'title' => 'S – Z'],
+        ]
     );
 }
 
