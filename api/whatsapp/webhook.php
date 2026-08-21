@@ -308,7 +308,7 @@ if ($session['current_step'] !== STEP_IDLE) {
     if (time() - $lastTouch > SESSION_IDLE_SECS) {
         resetSession($db, $phone);
         $session = getOrCreateSession($db, $phone);
-        $apitxt->sendText($phone, "⏰ Your session timed out due to inactivity. Let's start fresh!\n\nSend any message to begin.");
+        $apitxt->sendText($phone, "Session expired.\n\nSend any message to continue.");
         http_response_code(200);
         echo json_encode(['ok' => true]);
         exit;
@@ -331,11 +331,10 @@ if ($user === null) {
     $appUrl = rtrim(Environment::get('APP_BASE_URL', 'https://bugs.bugricer.com'), '/');
     $apitxt->sendText(
         $phone,
-        "❌ *Access Denied*\n\n"
-        . "Your number (*{$fromRaw}*) is not registered on BugRicer.\n\n"
-        . "Please add this number to your profile at:\n"
-        . "{$appUrl}\n\n"
-        . "Contact your project admin if you need help."
+        "Access denied\n\n"
+        . "This WhatsApp number is not linked to a BugRicer account.\n\n"
+        . "Add your phone in Profile:\n{$appUrl}\n\n"
+        . "Then message us again."
     );
     http_response_code(200);
     echo json_encode(['status' => 'unregistered_user', 'phone' => $fromRaw]);
@@ -343,42 +342,52 @@ if ($user === null) {
 }
 
 // ── Anytime commands (available in any step after verified) ───────────────────
-// Why: users should always be able to reopen the project menu without
-// knowing the internal state machine step.
+// Why: users should always reopen the project menu without knowing bot state.
 $cmd = strtolower(trim($msgText));
-if (!empty($user['is_wa_verified']) && in_array($cmd, ['menu', 'help', 'projects', 'start'], true)) {
-    if ($cmd === 'help') {
-        $apitxt->sendText($phone,
-            "*BugRicer WhatsApp Help*\n\n"
-            . "• Type *menu* — open project list anytime\n"
-            . "• Type *1* / *2* / *3* — pick a project\n"
-            . "• Type *cancel* — discard current bug draft\n"
-            . "• Type *SUBMIT* — file the bug when ready"
-        );
+$isMenuButton = in_array((string) $interactiveId, ['wa_menu', 'menu', 'projects'], true);
+$isHelpButton = in_array((string) $interactiveId, ['wa_help', 'help'], true);
+$isCancelAnytime = in_array((string) $interactiveId, ['cancel_bug', 'cancel'], true)
+    || $msgTextNorm === 'cancel';
+$isAnytimeMenu = $isMenuButton
+    || in_array($cmd, ['menu', 'projects', 'start', 'hi', 'hello', 'hey'], true);
+$isAnytimeHelp = $isHelpButton || $cmd === 'help';
+
+if (!empty($user['is_wa_verified']) && ($isAnytimeMenu || $isAnytimeHelp || $isCancelAnytime)) {
+    // Don't hijack a typed bug title that happens to be "hi" once drafting started.
+    $draftStarted = in_array($session['current_step'], [STEP_AWAITING_CONTENT, STEP_CONFIRM], true)
+        && (!empty($session['temp_title']) || !empty($session['selected_project_id']));
+    $isGreetingOnly = in_array($cmd, ['hi', 'hello', 'hey'], true);
+
+    if ($isAnytimeHelp) {
+        sendHelpMessage($apitxt, $phone, $user);
         http_response_code(200);
         echo json_encode(['ok' => true, 'cmd' => 'help']);
         exit;
     }
 
-    // menu / projects / start → soft-reset back to project picker
-    cleanUpStagedAttachments($db, $phone);
-    $db->prepare(
-        "UPDATE wa_sessions SET
-           current_step=?,
-           selected_project_id=NULL,
-           otp_code=NULL,
-           otp_expires_at=NULL,
-           otp_attempts=0,
-           otp_first_attempt_at=NULL,
-           temp_title=NULL,
-           temp_description=NULL,
-           last_interaction=NOW()
-         WHERE phone=?"
-    )->execute([STEP_SELECT_PROJECT, $phone]);
-    sendProjectPicker($db, $apitxt, $phone, $user);
-    http_response_code(200);
-    echo json_encode(['ok' => true, 'cmd' => $cmd]);
-    exit;
+    if ($isCancelAnytime && $draftStarted) {
+        cleanUpStagedAttachments($db, $phone);
+        resetSession($db, $phone);
+        $apitxt->sendInteractiveButtons(
+            $phone,
+            'Cancelled',
+            "Draft discarded.\nTap below to start again.",
+            [
+                ['id' => 'wa_menu', 'title' => 'New bug'],
+                ['id' => 'wa_help', 'title' => 'Help'],
+            ]
+        );
+        http_response_code(200);
+        echo json_encode(['ok' => true, 'cmd' => 'cancel']);
+        exit;
+    }
+
+    if ($isAnytimeMenu && (!$isGreetingOnly || !$draftStarted)) {
+        openProjectMenu($db, $apitxt, $phone, $user);
+        http_response_code(200);
+        echo json_encode(['ok' => true, 'cmd' => 'menu']);
+        exit;
+    }
 }
 
 // ── STATE MACHINE ─────────────────────────────────────────────────────────────
@@ -409,7 +418,7 @@ switch ($step) {
         // Rate limit
         if ($attempts >= OTP_MAX_ATTEMPTS && (time() - $windowStart) < OTP_RATE_WINDOW_SECS) {
             $waitMins = ceil((OTP_RATE_WINDOW_SECS - (time() - $windowStart)) / 60);
-            $apitxt->sendText($phone, "🔒 Too many attempts. Please wait {$waitMins} minute(s) and try again.");
+            $apitxt->sendText($phone, "Too many attempts.\nPlease wait {$waitMins} minute(s), then try again.");
             break;
         }
 
@@ -421,9 +430,9 @@ switch ($step) {
         // Expired
         if (time() > $expiry) {
             $apitxt->sendInteractiveButtons($phone,
-                'OTP Expired',
-                'Your OTP has expired. Would you like a new one?',
-                [['id' => 'resend_otp', 'title' => '🔄 Resend OTP']]
+                'OTP expired',
+                'Your code has expired. Tap below for a new one.',
+                [['id' => 'resend_otp', 'title' => 'Resend OTP']]
             );
             break;
         }
@@ -444,7 +453,7 @@ switch ($step) {
 
         if ($enteredOtp !== $otp) {
             $remaining = max(0, OTP_MAX_ATTEMPTS - $newAttempts);
-            $apitxt->sendText($phone, "❌ Incorrect OTP. You have {$remaining} attempt(s) left.");
+            $apitxt->sendText($phone, "Incorrect code.\n{$remaining} attempt(s) left.");
             break;
         }
 
@@ -453,7 +462,7 @@ switch ($step) {
            ->execute([$user['id']]);
         $user['is_wa_verified'] = 1;
 
-        $apitxt->sendText($phone, "✅ Phone verified! Welcome to BugRicer, *{$user['name']}*.");
+        $apitxt->sendText($phone, "Verified. Welcome, *{$user['name']}*.");
         sendProjectPicker($db, $apitxt, $phone, $user);
         setStep($db, $phone, STEP_SELECT_PROJECT);
         break;
@@ -476,6 +485,11 @@ switch ($step) {
         );
         $stmt->execute([$user['id']]);
         $memberProjects = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $uniqueProjects = [];
+        foreach ($memberProjects as $p) {
+            $uniqueProjects[$p['id']] = $p;
+        }
+        $memberProjects = array_values($uniqueProjects);
 
         // Expect list-reply id = "proj_<uuid>"
         $projectId = null;
@@ -506,10 +520,7 @@ switch ($step) {
         }
 
         if ($projectId === null) {
-            $apitxt->sendText($phone,
-                "Please reply with the *number* from the list (e.g. *1*), "
-                . "or paste the `proj_…` token. 👇"
-            );
+            $apitxt->sendText($phone, "Please choose a project.\nTap a button or reply with *1*, *2*, or *3*.");
             sendProjectPicker($db, $apitxt, $phone, $user);
             break;
         }
@@ -524,54 +535,96 @@ switch ($step) {
         }
 
         if (!$project) {
-            $apitxt->sendText($phone, "⚠️ You don't have access to that project. Please choose from the list:");
+            $apitxt->sendText($phone, "You don't have access to that project.");
             sendProjectPicker($db, $apitxt, $phone, $user);
             break;
         }
 
-        $db->prepare("UPDATE wa_sessions SET selected_project_id=? WHERE phone=?")
+        $db->prepare("UPDATE wa_sessions SET selected_project_id=?, temp_title=NULL, temp_description=NULL WHERE phone=?")
            ->execute([$projectId, $phone]);
         setStep($db, $phone, STEP_AWAITING_CONTENT);
+        cleanUpStagedAttachments($db, $phone);
 
-        $apitxt->sendText($phone,
-            "📁 Project: *{$project['name']}*\n\n"
-            . "Please send your bug report now. You can:\n"
-            . "• Send a *title* as your first text message\n"
-            . "• Then a *description*\n"
-            . "• Attach screenshots, videos, voice notes or documents\n\n"
-            . "When done, type *SUBMIT* or use the Submit button."
+        $apitxt->sendInteractiveButtons(
+            $phone,
+            'Report a bug',
+            "Project: *{$project['name']}*\n\n"
+            . "*Step 1/3 — Title*\n"
+            . "Send a short title for the issue.",
+            [
+                ['id' => 'cancel_bug', 'title' => 'Cancel'],
+                ['id' => 'wa_menu', 'title' => 'Change project'],
+            ],
+            'Tip: type help anytime'
         );
         break;
 
     // ── Bug content collection ────────────────────────────────────────────────
     case STEP_AWAITING_CONTENT:
-        // Handle "Submit" trigger (text + button id + button title)
         $isSubmitText   = ($msgTextNorm === 'submit') || str_ends_with($msgTextNorm, ' submit');
         $isSubmitButton = in_array((string) $interactiveId, ['submit_bug', 'confirm_submit'], true);
         $isCancelText   = ($msgTextNorm === 'cancel') || str_ends_with($msgTextNorm, ' cancel');
         $isCancelButton = in_array((string) $interactiveId, ['cancel_bug', 'cancel'], true);
+        $isSkipDesc     = in_array((string) $interactiveId, ['skip_description', 'skip'], true)
+            || $msgTextNorm === 'skip';
 
         if ($isCancelText || $isCancelButton) {
             cleanUpStagedAttachments($db, $phone);
             resetSession($db, $phone);
-            $apitxt->sendText($phone, "🗑️ Bug report cancelled. Send anything to start again.");
+            $apitxt->sendInteractiveButtons(
+                $phone,
+                'Cancelled',
+                "Draft discarded.\nTap below to start again.",
+                [
+                    ['id' => 'wa_menu', 'title' => 'New bug'],
+                    ['id' => 'wa_help', 'title' => 'Help'],
+                ]
+            );
+            break;
+        }
+
+        // Allow skipping description after title is set
+        if ($isSkipDesc) {
+            $currentSession = getOrCreateSession($db, $phone);
+            if (empty($currentSession['temp_title'])) {
+                $apitxt->sendText($phone, "Please send a *title* first.");
+                break;
+            }
+            if (empty($currentSession['temp_description'])) {
+                $db->prepare("UPDATE wa_sessions SET temp_description=? WHERE phone=?")
+                   ->execute(['No description provided.', $phone]);
+            }
+            sendDraftActions(
+                $apitxt,
+                $phone,
+                "Step 3/3 — Attachments (optional)\nSend screenshots, video, or voice notes.\nOr tap *Submit* now."
+            );
             break;
         }
 
         if ($isSubmitText || $isSubmitButton) {
-            // Show confirmation
-            $tempTitle = $session['temp_title'] ?? '(no title)';
-            $tempDesc  = $session['temp_description'] ?? '(no description)';
+            $currentSession = getOrCreateSession($db, $phone);
+            if (empty($currentSession['temp_title'])) {
+                $apitxt->sendText($phone, "Please send a *title* before submitting.");
+                break;
+            }
+
+            $tempTitle = $currentSession['temp_title'];
+            $tempDesc  = $currentSession['temp_description'] ?: 'No description';
             $attachCount = countStagedAttachments($db, $phone);
+            $descPreview = mb_strlen($tempDesc) > 120 ? (mb_substr($tempDesc, 0, 117) . '...') : $tempDesc;
 
             $apitxt->sendInteractiveButtons($phone,
-                '📋 Confirm Bug Report',
-                "*Title:* {$tempTitle}\n*Description:* {$tempDesc}\n*Attachments:* {$attachCount}",
+                'Confirm report',
+                "*Title:* {$tempTitle}\n"
+                . "*Details:* {$descPreview}\n"
+                . "*Files:* {$attachCount}\n\n"
+                . "Tap *Submit* to file this bug.",
                 [
-                    ['id' => 'confirm_submit', 'title' => '✅ Submit'],
-                    ['id' => 'cancel_bug',     'title' => '❌ Cancel'],
+                    ['id' => 'confirm_submit', 'title' => 'Submit'],
+                    ['id' => 'cancel_bug',     'title' => 'Cancel'],
                 ],
-                'Reply Submit to file the bug, or Cancel to discard.'
+                'Or type SUBMIT'
             );
             setStep($db, $phone, STEP_CONFIRM);
             break;
@@ -583,25 +636,30 @@ switch ($step) {
             if (empty($currentSession['temp_title'])) {
                 $db->prepare("UPDATE wa_sessions SET temp_title=? WHERE phone=?")
                    ->execute([mb_substr($msgText, 0, 255), $phone]);
-                $apitxt->sendText($phone,
-                    "✏️ Title saved!\n\n"
-                    . "Now send a *description* of the bug (steps to reproduce, expected vs actual result)."
+                $apitxt->sendInteractiveButtons(
+                    $phone,
+                    'Title saved',
+                    "*Step 2/3 — Description*\n"
+                    . "Describe the issue (steps, expected vs actual).\n"
+                    . "Or skip and attach files.",
+                    [
+                        ['id' => 'skip_description', 'title' => 'Skip'],
+                        ['id' => 'cancel_bug', 'title' => 'Cancel'],
+                    ]
                 );
             } elseif (empty($currentSession['temp_description'])) {
                 $db->prepare("UPDATE wa_sessions SET temp_description=? WHERE phone=?")
                    ->execute([$msgText, $phone]);
-                $apitxt->sendInteractiveButtons($phone,
-                    '📎 Attachments',
-                    "Description saved!\n\nYou can now send screenshots, videos, voice notes, or documents. "
-                    . "When you're done, tap *Submit*.",
-                    [
-                        ['id' => 'submit_bug', 'title' => '✅ Submit'],
-                        ['id' => 'cancel_bug', 'title' => '❌ Cancel'],
-                    ]
+                sendDraftActions(
+                    $apitxt,
+                    $phone,
+                    "Description saved.\n\n*Step 3/3 — Attachments (optional)*\nSend files, or tap *Submit*."
                 );
             } else {
-                $apitxt->sendText($phone,
-                    "Title & description already set. Send attachments now or tap *Submit*."
+                sendDraftActions(
+                    $apitxt,
+                    $phone,
+                    "Title and description are ready.\nSend more files, or tap *Submit*."
                 );
             }
             break;
@@ -609,35 +667,41 @@ switch ($step) {
 
         // Media attachment
         if (in_array($msgType, ['image', 'video', 'audio', 'document', 'sticker'], true) && $mediaUrl) {
+            $currentSession = getOrCreateSession($db, $phone);
+            if (empty($currentSession['temp_title'])) {
+                $db->prepare("UPDATE wa_sessions SET temp_title=? WHERE phone=?")
+                   ->execute(['Bug reported via WhatsApp', $phone]);
+            }
+            if (empty($currentSession['temp_description'])) {
+                $db->prepare("UPDATE wa_sessions SET temp_description=? WHERE phone=?")
+                   ->execute(['No description provided.', $phone]);
+            }
+
             $result = $apitxt->downloadAndStoreMediaToStaging($mediaUrl, $mediaMime, $phone, $mediaExt);
             if ($result === null) {
-                $apitxt->sendText($phone, "⚠️ Could not download that file. Please try again.");
+                $apitxt->sendText($phone, "Could not save that file. Please try again.");
                 break;
             }
 
-            // Detect duration from payload (APITxt may provide it for audio/video)
             $duration = isset($payload['media']['duration']) ? (int)$payload['media']['duration'] : null;
-
             $db->prepare(
                 "INSERT INTO wa_submission_attachments_temp (phone, file_path, file_name, file_type, duration)
                  VALUES (?, ?, ?, ?, ?)"
             )->execute([$phone, $result['path'], $result['name'], $result['mime'], $duration]);
 
             $attachCount = countStagedAttachments($db, $phone);
-            $apitxt->sendInteractiveButtons($phone,
-                '📎 Attachment received',
-                "✅ File saved ({$attachCount} attachment(s) so far). Send more or submit.",
-                [
-                    ['id' => 'submit_bug', 'title' => '✅ Submit'],
-                    ['id' => 'cancel_bug', 'title' => '❌ Cancel'],
-                ]
+            sendDraftActions(
+                $apitxt,
+                $phone,
+                "File saved ({$attachCount}).\nSend more, or tap *Submit*."
             );
             break;
         }
 
-        // Anything else
-        $apitxt->sendText($phone,
-            "📝 Send text, images, videos, audio or documents.\nType *SUBMIT* when done, or *CANCEL* to discard."
+        sendDraftActions(
+            $apitxt,
+            $phone,
+            "Send a title, description, or file.\nWhen ready, tap *Submit*."
         );
         break;
 
@@ -654,18 +718,27 @@ switch ($step) {
         if ($isCancel) {
             cleanUpStagedAttachments($db, $phone);
             resetSession($db, $phone);
-            $apitxt->sendText($phone, "🗑️ Bug report discarded. Send anything to start again.");
+            $apitxt->sendInteractiveButtons(
+                $phone,
+                'Cancelled',
+                "Draft discarded.\nTap below to start again.",
+                [
+                    ['id' => 'wa_menu', 'title' => 'New bug'],
+                    ['id' => 'wa_help', 'title' => 'Help'],
+                ]
+            );
             break;
         }
 
         if (!$isConfirm) {
             $apitxt->sendInteractiveButtons($phone,
-                '📋 Awaiting confirmation',
-                'Please tap *Submit* to file the bug, or *Cancel* to discard.\nYou can also type *SUBMIT*.',
+                'Confirm report',
+                "Tap *Submit* to file the bug, or *Cancel* to discard.",
                 [
-                    ['id' => 'confirm_submit', 'title' => '✅ Submit'],
-                    ['id' => 'cancel_bug',     'title' => '❌ Cancel'],
-                ]
+                    ['id' => 'confirm_submit', 'title' => 'Submit'],
+                    ['id' => 'cancel_bug',     'title' => 'Cancel'],
+                ],
+                'Or type SUBMIT'
             );
             break;
         }
@@ -725,8 +798,7 @@ switch ($step) {
         } catch (Throwable $e) {
             error_log('[WA Webhook] Bug insert failed: ' . $e->getMessage());
             $apitxt->sendText($phone,
-                "⚠️ Could not create the bug (" . mb_substr($e->getMessage(), 0, 120) . ").\n"
-                . "Please type *SUBMIT* again, or *menu* to restart."
+                "Could not create the bug.\nPlease tap *Submit* again, or type *menu*."
             );
             break;
         }
@@ -784,21 +856,27 @@ switch ($step) {
         // Send confirmation with deep link
         $appBaseUrl = rtrim(Environment::get('APP_BASE_URL', 'https://bugs.bugricer.com'), '/');
         $bugUrl     = $appBaseUrl . '/bugs/' . $bugId;
-        $attachText = count($staged) > 0 ? "\n📎 " . count($staged) . " attachment(s)" : '';
+        $shortId    = strtoupper(substr(str_replace('-', '', $bugId), 0, 8));
+        $attachText = count($staged) > 0 ? "\nFiles: " . count($staged) : '';
 
-        $apitxt->sendText($phone,
-            "🎉 Bug filed successfully!\n\n"
-            . "*Ticket:* #{$bugId}\n"
-            . "*Title:* {$title}"
+        $apitxt->sendInteractiveButtons(
+            $phone,
+            'Bug filed',
+            "Ticket: *{$shortId}*\n"
+            . "Title: {$title}"
             . $attachText . "\n\n"
-            . "Track it here:\n{$bugUrl}\n\n"
-            . "Send any message to report another bug."
+            . "Open:\n{$bugUrl}",
+            [
+                ['id' => 'wa_menu', 'title' => 'New bug'],
+                ['id' => 'wa_help', 'title' => 'Help'],
+            ],
+            'Thank you'
         );
         break;
 
     default:
         resetSession($db, $phone);
-        $apitxt->sendText($phone, "Something went wrong. Session reset — please send any message to start.");
+        $apitxt->sendText($phone, "Session reset.\nSend any message to continue.");
         break;
 }
 
@@ -950,9 +1028,62 @@ function sendOtp(PDO $db, APITxtService $apitxt, string $phone, array $user): vo
     )->execute([$otp, $expires, $phone]);
 
     $apitxt->sendText($phone,
-        "👋 Hi *{$user['name']}*! Welcome to BugRicer.\n\n"
-        . "Your OTP is: *{$otp}*\n\n"
-        . "_(Valid for 10 minutes. Do not share this code.)_"
+        "Hi *{$user['name']}*\n\n"
+        . "Your BugRicer verification code:\n"
+        . "*{$otp}*\n\n"
+        . "Valid for 10 minutes."
+    );
+}
+
+function openProjectMenu(PDO $db, APITxtService $apitxt, string $phone, array $user): void
+{
+    cleanUpStagedAttachments($db, $phone);
+    $db->prepare(
+        "UPDATE wa_sessions SET
+           current_step=?,
+           selected_project_id=NULL,
+           otp_code=NULL,
+           otp_expires_at=NULL,
+           otp_attempts=0,
+           otp_first_attempt_at=NULL,
+           temp_title=NULL,
+           temp_description=NULL,
+           last_interaction=NOW()
+         WHERE phone=?"
+    )->execute([STEP_SELECT_PROJECT, $phone]);
+    sendProjectPicker($db, $apitxt, $phone, $user);
+}
+
+function sendHelpMessage(APITxtService $apitxt, string $phone, array $user): void
+{
+    $apitxt->sendInteractiveButtons(
+        $phone,
+        'Help',
+        "Hi *{$user['name']}*\n\n"
+        . "How to report a bug:\n"
+        . "1. Choose a project\n"
+        . "2. Send a title\n"
+        . "3. Add description / files\n"
+        . "4. Tap Submit\n\n"
+        . "Commands: *menu* · *help* · *cancel* · *submit*",
+        [
+            ['id' => 'wa_menu', 'title' => 'Projects'],
+            ['id' => 'cancel_bug', 'title' => 'Cancel draft'],
+        ]
+    );
+}
+
+function sendDraftActions(APITxtService $apitxt, string $phone, string $body): void
+{
+    $apitxt->sendInteractiveButtons(
+        $phone,
+        'Bug draft',
+        $body,
+        [
+            ['id' => 'submit_bug', 'title' => 'Submit'],
+            ['id' => 'cancel_bug', 'title' => 'Cancel'],
+            ['id' => 'wa_menu', 'title' => 'Projects'],
+        ]
     );
 }
 
@@ -969,22 +1100,25 @@ function sendProjectPicker(PDO $db, APITxtService $apitxt, string $phone, array 
     $stmt->execute([$user['id']]);
     $projects = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+    // Deduplicate by project id (membership joins can repeat rows).
+    $unique = [];
+    foreach ($projects as $p) {
+        $unique[$p['id']] = $p;
+    }
+    $projects = array_values($unique);
+
     if (empty($projects)) {
-        $apitxt->sendText($phone, "⚠️ You are not assigned to any projects yet. Please contact your admin.");
+        $apitxt->sendText($phone, "No projects assigned yet.\nPlease contact your admin.");
         resetSession($db, $phone);
         return;
     }
 
-    // Build a clean numbered list (no UUID tokens in the user-facing text).
-    $lines = ["*Your Projects*"];
+    $lines = [];
     foreach ($projects as $i => $p) {
         $lines[] = ($i + 1) . '. ' . $p['name'];
     }
     $listText = implode("\n", $lines);
 
-    // WhatsApp reply-buttons support max 3 options — use them when possible.
-    // Your account already supports buttons (Submit / Cancel), so this is the
-    // simplest tap UX. For 4+ projects, fall back to number reply.
     if (count($projects) <= 3) {
         $buttons = [];
         foreach ($projects as $p) {
@@ -995,22 +1129,23 @@ function sendProjectPicker(PDO $db, APITxtService $apitxt, string $phone, array 
         }
         $apitxt->sendInteractiveButtons(
             $phone,
-            '📁 Select Project',
-            "Hi *{$user['name']}*, tap a project below\n"
-            . "(or reply with *1*, *2*, *3*):\n\n"
+            'Select project',
+            "Hi *{$user['name']}*\n\n"
+            . "Choose a project:\n\n"
             . $listText,
             $buttons,
-            'Anytime: type menu'
+            'Or reply 1 / 2 / 3'
         );
         return;
     }
 
     $apitxt->sendText(
         $phone,
-        "*📁 Select Project*\n\n"
-        . "Hi *{$user['name']}*, reply with the number of the project (e.g. *1*):\n\n"
+        "*Select project*\n\n"
+        . "Hi *{$user['name']}*\n"
+        . "Reply with the number:\n\n"
         . $listText . "\n\n"
-        . "_Anytime: type menu_"
+        . "_Type menu anytime_"
     );
 }
 
