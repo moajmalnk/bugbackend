@@ -391,33 +391,63 @@ switch ($step) {
             break;
         }
 
+        // Load member projects once (used for number/name matching and validation).
+        $stmt = $db->prepare(
+            "SELECT p.id, p.name
+             FROM projects p
+             JOIN project_members pm ON pm.project_id = p.id
+             WHERE pm.user_id = ?
+             ORDER BY p.name ASC
+             LIMIT 10"
+        );
+        $stmt->execute([$user['id']]);
+        $memberProjects = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
         // Expect list-reply id = "proj_<uuid>"
         $projectId = null;
         if ($interactiveId && str_starts_with($interactiveId, 'proj_')) {
             $projectId = substr($interactiveId, 5);
         }
 
-        // Fallback for text-based selection (when project picker is sent
-        // as a numbered text menu): allow the user to type the project token
-        // shown in brackets, e.g. "proj_<uuid>".
-        if ($projectId === null && $msgText && str_starts_with($msgText, 'proj_')) {
-            $projectId = substr($msgText, 5);
+        // Text menu fallbacks:
+        // 1) paste full token: proj_<uuid>
+        // 2) reply with list number: 1 / 2 / 3
+        // 3) reply with exact project name (case-insensitive)
+        if ($projectId === null && $msgText !== '') {
+            if (str_starts_with($msgText, 'proj_')) {
+                $projectId = substr($msgText, 5);
+            } elseif (preg_match('/^\d{1,2}$/', $msgText)) {
+                $idx = ((int) $msgText) - 1;
+                if (isset($memberProjects[$idx])) {
+                    $projectId = $memberProjects[$idx]['id'];
+                }
+            } else {
+                foreach ($memberProjects as $p) {
+                    if (strcasecmp(trim((string) $p['name']), $msgText) === 0) {
+                        $projectId = $p['id'];
+                        break;
+                    }
+                }
+            }
         }
 
         if ($projectId === null) {
-            $apitxt->sendText($phone, "Please use the project list above to select a project. 👇");
+            $apitxt->sendText($phone,
+                "Please reply with the *number* from the list (e.g. *1*), "
+                . "or paste the `proj_…` token. 👇"
+            );
             sendProjectPicker($db, $apitxt, $phone, $user);
             break;
         }
 
         // Verify user is a member
-        $stmt = $db->prepare(
-            "SELECT p.id, p.name FROM projects p
-             JOIN project_members pm ON pm.project_id = p.id
-             WHERE pm.user_id = ? AND p.id = ? LIMIT 1"
-        );
-        $stmt->execute([$user['id'], $projectId]);
-        $project = $stmt->fetch(PDO::FETCH_ASSOC);
+        $project = null;
+        foreach ($memberProjects as $p) {
+            if ($p['id'] === $projectId) {
+                $project = $p;
+                break;
+            }
+        }
 
         if (!$project) {
             $apitxt->sendText($phone, "⚠️ You don't have access to that project. Please choose from the list:");
@@ -865,9 +895,11 @@ function sendProjectPicker(PDO $db, APITxtService $apitxt, string $phone, array 
 
     $apitxt->sendListMenu($phone,
         '📁 Select Project',
-        "Hi *{$user['name']}*, please select the project you want to report a bug for:",
+        "Hi *{$user['name']}*, reply with the *number* of the project "
+        . "(e.g. *1*), or paste the `proj_…` token:",
         'Choose Project',
-        [['title' => 'Your Projects', 'rows' => $rows]]
+        [['title' => 'Your Projects', 'rows' => $rows]],
+        'No tap-menu yet — reply with 1, 2, 3…'
     );
 }
 
