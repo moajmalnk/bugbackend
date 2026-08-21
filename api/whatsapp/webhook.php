@@ -547,22 +547,8 @@ switch ($step) {
             break;
         }
 
-        // Load member projects once (used for number/name matching and validation).
-        $stmt = $db->prepare(
-            "SELECT p.id, p.name
-             FROM projects p
-             JOIN project_members pm ON pm.project_id = p.id
-             WHERE pm.user_id = ?
-             ORDER BY p.name ASC
-             LIMIT 10"
-        );
-        $stmt->execute([$user['id']]);
-        $memberProjects = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        $uniqueProjects = [];
-        foreach ($memberProjects as $p) {
-            $uniqueProjects[$p['id']] = $p;
-        }
-        $memberProjects = array_values($uniqueProjects);
+        // Load selectable projects (admin = all; developer/tester = assigned only).
+        $memberProjects = waLoadSelectableProjects($db, $user);
 
         // Expect list-reply id = "proj_<uuid>"
         $projectId = null;
@@ -593,12 +579,12 @@ switch ($step) {
         }
 
         if ($projectId === null) {
-            $apitxt->sendText($phone, "Please choose a project.\nTap a button or reply with *1*, *2*, or *3*.");
+            $apitxt->sendText($phone, "Please choose a project from the list.");
             sendProjectPicker($db, $apitxt, $phone, $user);
             break;
         }
 
-        // Verify user is a member
+        // Verify access against the same role-aware list.
         $project = null;
         foreach ($memberProjects as $p) {
             if ($p['id'] === $projectId) {
@@ -1406,6 +1392,7 @@ function getUserByPhone(PDO $db, string $phone): ?array
                      username AS name,
                      email,
                      phone,
+                     role,
                      is_wa_verified,
                      wa_verified_at
              FROM users
@@ -1494,38 +1481,86 @@ function sendDraftActions(APITxtService $apitxt, string $phone, string $body): v
     );
 }
 
-function sendProjectPicker(PDO $db, APITxtService $apitxt, string $phone, array $user): void
+/**
+ * Why: Match Projects page visibility — admins see every project; developers
+ * and testers only see projects they are assigned to. Order mirrors the app
+ * picker: Ongoing → Release Ready → Completed → Archived, then name.
+ *
+ * @return list<array{id: string, name: string, status?: string}>
+ */
+function waLoadSelectableProjects(PDO $db, array $user): array
 {
-    $stmt = $db->prepare(
-        "SELECT p.id, p.name
-         FROM projects p
-         JOIN project_members pm ON pm.project_id = p.id
-         WHERE pm.user_id = ?
-         ORDER BY p.name ASC
-         LIMIT 10"
-    );
-    $stmt->execute([$user['id']]);
-    $projects = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $role = strtolower(trim((string) ($user['role'] ?? '')));
+    $isAdmin = ($role === 'admin');
 
-    // Deduplicate by project id (membership joins can repeat rows).
+    $orderSql = "ORDER BY
+        CASE LOWER(COALESCE(p.status, ''))
+            WHEN 'active' THEN 0
+            WHEN 'release_ready' THEN 1
+            WHEN 'completed' THEN 2
+            WHEN 'archived' THEN 3
+            ELSE 4
+        END ASC,
+        p.name ASC";
+
+    if ($isAdmin) {
+        $stmt = $db->query(
+            "SELECT p.id, p.name, p.status
+             FROM projects p
+             {$orderSql}
+             LIMIT 40"
+        );
+        $projects = $stmt ? $stmt->fetchAll(PDO::FETCH_ASSOC) : [];
+    } else {
+        $stmt = $db->prepare(
+            "SELECT DISTINCT p.id, p.name, p.status
+             FROM projects p
+             INNER JOIN project_members pm ON pm.project_id = p.id
+             WHERE pm.user_id = ?
+             {$orderSql}
+             LIMIT 40"
+        );
+        $stmt->execute([(string) $user['id']]);
+        $projects = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
     $unique = [];
     foreach ($projects as $p) {
-        $unique[$p['id']] = $p;
+        $unique[$p['id']] = [
+            'id' => (string) $p['id'],
+            'name' => (string) $p['name'],
+            'status' => (string) ($p['status'] ?? ''),
+        ];
     }
-    $projects = array_values($unique);
+    return array_values($unique);
+}
+
+function waIsAdminUser(array $user): bool
+{
+    return strtolower(trim((string) ($user['role'] ?? ''))) === 'admin';
+}
+
+function sendProjectPicker(PDO $db, APITxtService $apitxt, string $phone, array $user): void
+{
+    $projects = waLoadSelectableProjects($db, $user);
+    $isAdmin = waIsAdminUser($user);
 
     if (empty($projects)) {
-        $apitxt->sendText($phone, "No projects assigned yet.\nPlease contact your admin.");
+        $apitxt->sendText(
+            $phone,
+            $isAdmin
+                ? "No projects found yet."
+                : "No projects assigned to you yet.\nAsk an admin to add you to a project."
+        );
         resetSession($db, $phone);
         return;
     }
 
-    $lines = [];
-    foreach ($projects as $i => $p) {
-        $lines[] = ($i + 1) . '. ' . $p['name'];
-    }
-    $listText = implode("\n", $lines);
+    $scopeLine = $isAdmin
+        ? 'All projects'
+        : 'Your assigned projects';
 
+    // WhatsApp allows max 3 quick-reply buttons — keep the UI clean (no duplicate list).
     if (count($projects) <= 3) {
         $buttons = [];
         foreach ($projects as $p) {
@@ -1536,23 +1571,34 @@ function sendProjectPicker(PDO $db, APITxtService $apitxt, string $phone, array 
         }
         $apitxt->sendInteractiveButtons(
             $phone,
-            'Select project',
-            "Hi *{$user['name']}*\n\n"
-            . "Choose a project:\n\n"
-            . $listText,
-            $buttons,
-            'Or reply 1 / 2 / 3'
+            'Projects',
+            "Hi *{$user['name']}*\n{$scopeLine} — tap one to report a bug.",
+            $buttons
         );
         return;
     }
 
-    $apitxt->sendText(
+    $lines = [];
+    foreach ($projects as $i => $p) {
+        $lines[] = ($i + 1) . '. ' . $p['name'];
+    }
+
+    // First 3 as buttons for speed; full list by number for the rest.
+    $buttons = [];
+    foreach (array_slice($projects, 0, 3) as $p) {
+        $buttons[] = [
+            'id'    => 'proj_' . $p['id'],
+            'title' => mb_substr($p['name'], 0, 20),
+        ];
+    }
+
+    $apitxt->sendInteractiveButtons(
         $phone,
-        "*Select project*\n\n"
-        . "Hi *{$user['name']}*\n"
-        . "Reply with the number:\n\n"
-        . $listText . "\n\n"
-        . "_Type menu anytime_"
+        'Projects',
+        "Hi *{$user['name']}*\n*{$scopeLine}* (" . count($projects) . ")\n\n"
+        . implode("\n", $lines) . "\n\n"
+        . "Tap a top project, or reply with a *number*.",
+        $buttons
     );
 }
 
