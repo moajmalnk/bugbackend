@@ -430,21 +430,75 @@ class APITxtService
     // ----------------------------------------------------------------
 
     /**
-     * Download a media file from APITxt's media URL and save it under
-     * uploads/wa_staging/ for temporary holding before a bug ID exists.
+     * Resolve inbound WhatsApp media (direct URL and/or Meta media id) into staging.
      *
-     * @param string $mediaUrl  URL returned in the webhook payload
-     * @param string $mimeType  e.g. 'audio/ogg; codecs=opus'
-     * @param string $phone     Normalised phone (used in filename to namespace)
-     * @param string $extHint   Fallback extension if MIME lookup fails
-     * @return array{path: string, name: string, mime: string}|null  null on failure
+     * Why: APITxt/Meta webhooks often send only `image.id` / `audio.id` (no URL),
+     * or a top-level `media_url`. Voice notes are type=audio with voice=true.
+     *
+     * @return array{path: string, name: string, mime: string}|null
      */
     public function downloadAndStoreMediaToStaging(
         string $mediaUrl,
         string $mimeType,
         string $phone,
+        string $extHint = 'bin',
+        ?string $mediaId = null
+    ): ?array {
+        $resolvedUrl = trim($mediaUrl);
+        $resolvedMime = $mimeType;
+
+        if ($resolvedUrl === '' && $mediaId) {
+            $resolved = $this->resolveMetaMediaUrl($mediaId);
+            if ($resolved !== null) {
+                $resolvedUrl = $resolved['url'];
+                if (!empty($resolved['mime'])) {
+                    $resolvedMime = $resolved['mime'];
+                }
+            }
+        }
+
+        if ($resolvedUrl === '') {
+            error_log('[APITxtService] Staging download skipped — empty media URL and unresolved media id');
+            return null;
+        }
+
+        $stagingDir = __DIR__ . '/../uploads/wa_staging/';
+        if (!is_dir($stagingDir)) {
+            mkdir($stagingDir, 0755, true);
+        }
+
+        $ext      = $this->mimeToExtension($resolvedMime, $extHint);
+        $filename = 'wa_' . $phone . '_' . uniqid() . '.' . $ext;
+        $fullPath = $stagingDir . $filename;
+
+        $bearer = $this->cloudAccessToken();
+        $bytes = $this->downloadUrl($resolvedUrl, $fullPath, $bearer);
+        if ($bytes === false) {
+            return null;
+        }
+
+        return [
+            'path' => 'wa_staging/' . $filename,
+            'name' => $filename,
+            'mime' => $this->normaliseMime($resolvedMime),
+        ];
+    }
+
+    /**
+     * Write raw bytes (e.g. webhook base64 media) into staging.
+     *
+     * @return array{path: string, name: string, mime: string}|null
+     */
+    public function storeRawMediaToStaging(
+        string $binary,
+        string $mimeType,
+        string $phone,
         string $extHint = 'bin'
     ): ?array {
+        if ($binary === '') {
+            return null;
+        }
+
         $stagingDir = __DIR__ . '/../uploads/wa_staging/';
         if (!is_dir($stagingDir)) {
             mkdir($stagingDir, 0755, true);
@@ -454,8 +508,7 @@ class APITxtService
         $filename = 'wa_' . $phone . '_' . uniqid() . '.' . $ext;
         $fullPath = $stagingDir . $filename;
 
-        $bytes = $this->downloadUrl($mediaUrl, $fullPath);
-        if ($bytes === false) {
+        if (file_put_contents($fullPath, $binary) === false) {
             return null;
         }
 
@@ -604,14 +657,116 @@ class APITxtService
     }
 
     /**
+     * Resolve Meta Cloud API media id → temporary download URL.
+     * Requires WHATSAPP_CLOUD_ACCESS_TOKEN (or META_WA_ACCESS_TOKEN) in .env.
+     *
+     * @return array{url: string, mime: string}|null
+     */
+    private function resolveMetaMediaUrl(string $mediaId): ?array
+    {
+        $token = $this->cloudAccessToken();
+        if ($token === '' || $mediaId === '') {
+            error_log('[APITxtService] Cannot resolve media id — missing WHATSAPP_CLOUD_ACCESS_TOKEN');
+            return null;
+        }
+
+        $url = 'https://graph.facebook.com/v21.0/' . rawurlencode($mediaId);
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 20,
+            CURLOPT_HTTPHEADER     => [
+                'Authorization: Bearer ' . $token,
+                'Accept: application/json',
+            ],
+            CURLOPT_USERAGENT      => 'BugRicer-WA-Bot/1.0',
+        ]);
+        $raw  = curl_exec($ch);
+        $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $err  = curl_error($ch);
+        curl_close($ch);
+
+        error_log("[APITxtService] Meta media resolve [{$code}] id={$mediaId} " . ($err ?: mb_substr((string) $raw, 0, 200)));
+
+        if ($raw === false || $code < 200 || $code >= 300) {
+            return null;
+        }
+        $decoded = json_decode((string) $raw, true);
+        if (!is_array($decoded) || empty($decoded['url'])) {
+            return null;
+        }
+
+        return [
+            'url'  => (string) $decoded['url'],
+            'mime' => (string) ($decoded['mime_type'] ?? ''),
+        ];
+    }
+
+    /** Optional Meta/WhatsApp Cloud token for inbound media download. */
+    private function cloudAccessToken(): string
+    {
+        $keys = [
+            'WHATSAPP_CLOUD_ACCESS_TOKEN',
+            'META_WA_ACCESS_TOKEN',
+            'APITXT_WA_ACCESS_TOKEN',
+        ];
+        foreach ($keys as $key) {
+            $val = '';
+            if (class_exists('Environment')) {
+                $val = (string) Environment::get($key, '');
+            }
+            if ($val === '') {
+                $val = (string) ($_ENV[$key] ?? $_SERVER[$key] ?? getenv($key) ?: '');
+            }
+            if ($val !== '') {
+                return $val;
+            }
+        }
+
+        // Last resort: read from backend/.env directly.
+        $envPath = __DIR__ . '/../.env';
+        if (is_file($envPath)) {
+            foreach (file($envPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
+                $line = trim($line);
+                if ($line === '' || str_starts_with($line, '#') || !str_contains($line, '=')) {
+                    continue;
+                }
+                [$k, $v] = explode('=', $line, 2);
+                $k = trim($k);
+                if (in_array($k, $keys, true)) {
+                    $v = trim($v, " \t\n\r\0\x0B\"'");
+                    if ($v !== '') {
+                        return $v;
+                    }
+                }
+            }
+        }
+
+        return '';
+    }
+
+    /**
      * Download a URL to a local file path.
      * Returns bytes written, or false on failure.
      */
-    private function downloadUrl(string $url, string $localPath): int|false
+    private function downloadUrl(string $url, string $localPath, string $bearerToken = ''): int|false
     {
         $fp = fopen($localPath, 'wb');
         if ($fp === false) {
             return false;
+        }
+
+        $headers = [
+            'Accept: */*',
+            'Cache-Control: no-cache',
+            'Connection: keep-alive',
+        ];
+        if ($this->authKey !== '') {
+            $headers[] = 'authkey: ' . $this->authKey;
+        }
+        // Meta lookaside URLs require the Cloud API bearer token.
+        if ($bearerToken !== '') {
+            $headers[] = 'Authorization: Bearer ' . $bearerToken;
         }
 
         $ch = curl_init($url);
@@ -619,36 +774,37 @@ class APITxtService
             CURLOPT_FILE           => $fp,
             CURLOPT_TIMEOUT        => 60,
             CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_HTTPHEADER     => [
-                'authkey: ' . $this->authKey,
-                'Accept: application/json, text/plain, */*',
-                'Accept-Language: en-US,en;q=0.9',
-                'Cache-Control: no-cache',
-                'Connection: keep-alive',
-                'Pragma: no-cache',
-                'Upgrade-Insecure-Requests: 1',
-                'Sec-Fetch-Dest: empty',
-                'Sec-Fetch-Mode: cors',
-                'Sec-Fetch-Site: same-origin',
-                'Sec-CH-UA: "Not/A)Brand";v="99", "Google Chrome";v="126", "Chromium";v="126"',
-                'Sec-CH-UA-Mobile: ?0',
-                'Sec-CH-UA-Platform: "macOS"',
-            ],
+            CURLOPT_HTTPHEADER     => $headers,
             CURLOPT_USERAGENT      => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
         ]);
 
         curl_exec($ch);
-        $err = curl_error($ch);
+        $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $err  = curl_error($ch);
         curl_close($ch);
         fclose($fp);
 
-        if ($err) {
+        if ($err || $code < 200 || $code >= 300) {
+            error_log("[APITxtService] Media download failed http={$code} err={$err} url=" . mb_substr($url, 0, 120));
             @unlink($localPath);
             return false;
         }
 
         $size = filesize($localPath);
-        return ($size !== false && $size > 0) ? $size : false;
+        if ($size === false || $size <= 0) {
+            @unlink($localPath);
+            return false;
+        }
+
+        // Guard against HTML/JSON error bodies saved as "files".
+        $head = (string) file_get_contents($localPath, false, null, 0, 64);
+        if (preg_match('/^\s*(\{|<|<!DOCTYPE)/i', $head)) {
+            error_log('[APITxtService] Media download looked like HTML/JSON error body — discarding');
+            @unlink($localPath);
+            return false;
+        }
+
+        return $size;
     }
 
     /** Strip country-code prefix noise; return digits only. */

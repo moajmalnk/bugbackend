@@ -163,7 +163,10 @@ $msgType     = 'text';
 $msgText     = '';
 $interactiveId = null;
 $mediaUrl    = null;
+$mediaId     = null;
 $mediaMime   = 'application/octet-stream';
+$mediaBase64 = null;
+$mediaDuration = null;
 
 /**
  * Extract button/list reply id from many APITxt/Meta payload shapes.
@@ -220,9 +223,11 @@ if (isset($payload['entry'][0]['changes'][0]['value']['messages'][0])) {
             $msgText = $interactiveId;
         }
     } elseif (isset($msg[$msgType]) && is_array($msg[$msgType])) {
-        $mediaUrl  = $msg[$msgType]['url']  ?? $msg[$msgType]['link'] ?? null;
+        $mediaUrl  = $msg[$msgType]['url']  ?? $msg[$msgType]['link'] ?? ($msg['media_url'] ?? null);
+        $mediaId   = $msg[$msgType]['id'] ?? ($msg['id'] ?? null);
         $mediaMime = $msg[$msgType]['mime_type'] ?? 'application/octet-stream';
         $msgText   = trim($msg[$msgType]['caption'] ?? '');
+        $mediaDuration = isset($msg[$msgType]['duration']) ? (int) $msg[$msgType]['duration'] : null;
     }
 } elseif (isset($payload['entry'][0]['changes'][0]['value'])) {
     // ── APITxt "value-level" format (no messages[0] wrapper) ──────────────────
@@ -243,11 +248,14 @@ if (isset($payload['entry'][0]['changes'][0]['value']['messages'][0])) {
             $msgText = $interactiveId;
         }
     } elseif (isset($value[$msgType]) && is_array($value[$msgType])) {
-        $mediaUrl  = $value[$msgType]['url'] ?? $value[$msgType]['link'] ?? null;
+        $mediaUrl  = $value[$msgType]['url'] ?? $value[$msgType]['link'] ?? ($value['media_url'] ?? null);
+        $mediaId   = $value[$msgType]['id'] ?? null;
         $mediaMime = $value[$msgType]['mime_type'] ?? 'application/octet-stream';
         $msgText   = trim($value[$msgType]['caption'] ?? '');
+        $mediaDuration = isset($value[$msgType]['duration']) ? (int) $value[$msgType]['duration'] : null;
     } else {
-        $mediaUrl  = $value['media']['url'] ?? null;
+        $mediaUrl  = $value['media']['url'] ?? ($value['media_url'] ?? null);
+        $mediaId   = $value['media']['id'] ?? null;
         $mediaMime = $value['media']['mime_type'] ?? 'application/octet-stream';
     }
 } elseif (isset($payload['from'])) {
@@ -268,14 +276,58 @@ if (isset($payload['entry'][0]['changes'][0]['value']['messages'][0])) {
             $msgText = $interactiveId;
         }
     } elseif (isset($payload[$msgType]) && is_array($payload[$msgType])) {
-        $mediaUrl  = $payload[$msgType]['url']  ?? $payload[$msgType]['link'] ?? null;
+        $mediaUrl  = $payload[$msgType]['url']  ?? $payload[$msgType]['link'] ?? ($payload['media_url'] ?? null);
+        $mediaId   = $payload[$msgType]['id'] ?? null;
         $mediaMime = $payload[$msgType]['mime_type'] ?? 'application/octet-stream';
         $msgText   = trim($payload[$msgType]['caption'] ?? '');
+        $mediaDuration = isset($payload[$msgType]['duration']) ? (int) $payload[$msgType]['duration'] : null;
     } else {
-        $mediaUrl  = $payload['media']['url']       ?? null;
+        $mediaUrl  = $payload['media']['url'] ?? ($payload['media_url'] ?? null);
+        $mediaId   = $payload['media']['id'] ?? null;
         $mediaMime = $payload['media']['mime_type'] ?? 'application/octet-stream';
-        $msgText   = trim($payload['message'] ?? '');
+        $msgText   = trim(is_string($payload['message'] ?? null) ? $payload['message'] : '');
     }
+}
+
+// Deep-extract media fields APITxt may place anywhere (media_url, image.id, base64…).
+$mediaInfo = waExtractInboundMedia($payload);
+$hasMediaAsset = ($mediaInfo['url'] !== null || $mediaInfo['id'] !== null || $mediaInfo['base64'] !== null);
+$isInteractiveType = in_array($msgType, ['interactive', 'button', 'button_reply'], true);
+if (
+    !$isInteractiveType
+    && $hasMediaAsset
+    && $mediaInfo['type'] !== null
+    && in_array($mediaInfo['type'], ['image', 'video', 'audio', 'document', 'sticker'], true)
+) {
+    // Prefer explicit media when a file asset is present (even if type said "text").
+    if ($msgType === 'text' && $msgText !== '' && $mediaInfo['url'] === null && $mediaInfo['id'] === null) {
+        // Keep as text — caption-only false positive.
+    } else {
+        $msgType = $mediaInfo['type'];
+    }
+}
+if (($mediaUrl === null || $mediaUrl === '') && $mediaInfo['url'] !== null) {
+    $mediaUrl = $mediaInfo['url'];
+}
+if (($mediaId === null || $mediaId === '') && $mediaInfo['id'] !== null) {
+    $mediaId = $mediaInfo['id'];
+}
+if (($mediaMime === 'application/octet-stream' || $mediaMime === '') && $mediaInfo['mime'] !== null) {
+    $mediaMime = $mediaInfo['mime'];
+}
+if ($mediaBase64 === null && $mediaInfo['base64'] !== null) {
+    $mediaBase64 = $mediaInfo['base64'];
+}
+if ($mediaDuration === null && $mediaInfo['duration'] !== null) {
+    $mediaDuration = $mediaInfo['duration'];
+}
+if ($msgText === '' && $mediaInfo['caption'] !== null) {
+    $msgText = $mediaInfo['caption'];
+}
+
+// Voice aliases used by some BSPs / clients.
+if (in_array($msgType, ['voice', 'ptt', 'ptv'], true)) {
+    $msgType = ($msgType === 'ptv') ? 'video' : 'audio';
 }
 
 // Normalise button titles like "✅ Submit" → "submit" for text matching.
@@ -298,11 +350,14 @@ if ($msgText === '' && $deepTitle !== '') {
 $waAction = waResolveAction($interactiveId, $msgText, $msgTextNorm);
 
 error_log(sprintf(
-    '[WA Webhook] Parsed msgType=%s interactiveId=%s msgText=%s action=%s',
+    '[WA Webhook] Parsed msgType=%s interactiveId=%s msgText=%s action=%s mediaUrl=%s mediaId=%s mime=%s',
     $msgType,
     $interactiveId ?? 'null',
     mb_substr($msgText, 0, 80),
-    $waAction ?? 'null'
+    $waAction ?? 'null',
+    $mediaUrl ? mb_substr((string) $mediaUrl, 0, 80) : 'null',
+    $mediaId ? mb_substr((string) $mediaId, 0, 40) : 'null',
+    $mediaMime
 ));
 
 $phone    = normaliseIncomingPhone($fromRaw);
@@ -567,13 +622,12 @@ switch ($step) {
             $phone,
             'Report a bug',
             "Project: *{$project['name']}*\n\n"
-            . "*Step 1/3 — Title*\n"
-            . "Send a short title for the issue.",
+            . "Send a *title*, then details, photos, or voice notes.\n"
+            . "Tap *Submit* when ready.",
             [
                 ['id' => 'cancel_bug', 'title' => 'Cancel'],
                 ['id' => 'wa_menu', 'title' => 'Change project'],
-            ],
-            'Tip: type help anytime'
+            ]
         );
         break;
 
@@ -616,7 +670,7 @@ switch ($step) {
             sendDraftActions(
                 $apitxt,
                 $phone,
-                "Step 3/3 — Attachments (optional)\nSend screenshots, video, or voice notes.\nOr tap *Submit* now."
+                "Add screenshots or voice notes (optional).\nOr tap *Submit*."
             );
             break;
         }
@@ -634,16 +688,15 @@ switch ($step) {
             $descPreview = mb_strlen($tempDesc) > 120 ? (mb_substr($tempDesc, 0, 117) . '...') : $tempDesc;
 
             $apitxt->sendInteractiveButtons($phone,
-                'Confirm report',
-                "*Title:* {$tempTitle}\n"
-                . "*Details:* {$descPreview}\n"
-                . "*Files:* {$attachCount}\n\n"
-                . "Tap *Submit* to file this bug.",
+                'Confirm',
+                "*{$tempTitle}*\n"
+                . "{$descPreview}\n"
+                . "Files: *{$attachCount}*\n\n"
+                . "Submit this bug?",
                 [
                     ['id' => 'confirm_submit', 'title' => 'Submit'],
                     ['id' => 'cancel_bug',     'title' => 'Cancel'],
-                ],
-                'Or type SUBMIT'
+                ]
             );
             setStep($db, $phone, STEP_CONFIRM);
             break;
@@ -658,11 +711,9 @@ switch ($step) {
                 $apitxt->sendInteractiveButtons(
                     $phone,
                     'Title saved',
-                    "*Step 2/3 — Description*\n"
-                    . "Describe the issue (steps, expected vs actual).\n"
-                    . "Or skip and attach files.",
+                    "Now send details, a screenshot, or a voice note.\nOr tap *Submit*.",
                     [
-                        ['id' => 'skip_description', 'title' => 'Skip'],
+                        ['id' => 'submit_bug', 'title' => 'Submit'],
                         ['id' => 'cancel_bug', 'title' => 'Cancel'],
                     ]
                 );
@@ -672,47 +723,83 @@ switch ($step) {
                 sendDraftActions(
                     $apitxt,
                     $phone,
-                    "Description saved.\n\n*Step 3/3 — Attachments (optional)*\nSend files, or tap *Submit*."
+                    "Details saved.\nAdd files or voice notes, or tap *Submit*."
                 );
             } else {
+                // Extra text appends to description instead of looping the same prompt.
+                $merged = rtrim((string) $currentSession['temp_description']) . "\n" . $msgText;
+                $db->prepare("UPDATE wa_sessions SET temp_description=? WHERE phone=?")
+                   ->execute([mb_substr($merged, 0, 4000), $phone]);
                 sendDraftActions(
                     $apitxt,
                     $phone,
-                    "Title and description are ready.\nSend more files, or tap *Submit*."
+                    "Details updated.\nAdd more files, or tap *Submit*."
                 );
             }
             break;
         }
 
-        // Media attachment
-        if (in_array($msgType, ['image', 'video', 'audio', 'document', 'sticker'], true) && $mediaUrl) {
+        // Media attachment (image / video / voice / document)
+        $isMediaMsg = in_array($msgType, ['image', 'video', 'audio', 'document', 'sticker'], true);
+        if ($isMediaMsg) {
+            waDebugPersistMediaPayload($payload, $msgType, $mediaUrl, $mediaId);
+
             $currentSession = getOrCreateSession($db, $phone);
             if (empty($currentSession['temp_title'])) {
                 $db->prepare("UPDATE wa_sessions SET temp_title=? WHERE phone=?")
                    ->execute(['Bug reported via WhatsApp', $phone]);
             }
             if (empty($currentSession['temp_description'])) {
+                $caption = $msgText !== '' ? $msgText : 'No description provided.';
                 $db->prepare("UPDATE wa_sessions SET temp_description=? WHERE phone=?")
-                   ->execute(['No description provided.', $phone]);
+                   ->execute([$caption, $phone]);
             }
 
-            $result = $apitxt->downloadAndStoreMediaToStaging($mediaUrl, $mediaMime, $phone, $mediaExt);
+            $result = null;
+            if (is_string($mediaBase64) && $mediaBase64 !== '') {
+                $binary = base64_decode($mediaBase64, true);
+                if ($binary !== false) {
+                    $result = $apitxt->storeRawMediaToStaging($binary, $mediaMime, $phone, $mediaExt);
+                }
+            }
             if ($result === null) {
-                $apitxt->sendText($phone, "Could not save that file. Please try again.");
+                $result = $apitxt->downloadAndStoreMediaToStaging(
+                    (string) ($mediaUrl ?? ''),
+                    $mediaMime,
+                    $phone,
+                    $mediaExt,
+                    $mediaId ? (string) $mediaId : null
+                );
+            }
+
+            if ($result === null) {
+                $apitxt->sendText(
+                    $phone,
+                    "Got your file, but could not download it.\n"
+                    . "Please send it again, or ask admin to set *WHATSAPP_CLOUD_ACCESS_TOKEN*."
+                );
+                sendDraftActions($apitxt, $phone, "You can still add text or tap *Submit*.");
                 break;
             }
 
-            $duration = isset($payload['media']['duration']) ? (int)$payload['media']['duration'] : null;
+            $duration = $mediaDuration;
+            if ($duration === null && isset($payload['media']['duration'])) {
+                $duration = (int) $payload['media']['duration'];
+            }
+
             $db->prepare(
                 "INSERT INTO wa_submission_attachments_temp (phone, file_path, file_name, file_type, duration)
                  VALUES (?, ?, ?, ?, ?)"
             )->execute([$phone, $result['path'], $result['name'], $result['mime'], $duration]);
 
             $attachCount = countStagedAttachments($db, $phone);
+            $kind = str_starts_with($result['mime'], 'audio/')
+                ? 'Voice note'
+                : (str_starts_with($result['mime'], 'image/') ? 'Photo' : 'File');
             sendDraftActions(
                 $apitxt,
                 $phone,
-                "File saved ({$attachCount}).\nSend more, or tap *Submit*."
+                "✅ {$kind} saved (*{$attachCount}* total).\nSend more, or tap *Submit*."
             );
             break;
         }
@@ -720,7 +807,7 @@ switch ($step) {
         sendDraftActions(
             $apitxt,
             $phone,
-            "Send a title, description, or file.\nWhen ready, tap *Submit*."
+            "Send a title, details, photo, or voice note.\nThen tap *Submit*."
         );
         break;
 
@@ -749,16 +836,55 @@ switch ($step) {
             break;
         }
 
+        // Allow adding more files on the confirm screen.
+        $isMediaMsg = in_array($msgType, ['image', 'video', 'audio', 'document', 'sticker'], true);
+        if ($isMediaMsg) {
+            waDebugPersistMediaPayload($payload, $msgType, $mediaUrl, $mediaId);
+            $result = null;
+            if (is_string($mediaBase64) && $mediaBase64 !== '') {
+                $binary = base64_decode($mediaBase64, true);
+                if ($binary !== false) {
+                    $result = $apitxt->storeRawMediaToStaging($binary, $mediaMime, $phone, $mediaExt);
+                }
+            }
+            if ($result === null) {
+                $result = $apitxt->downloadAndStoreMediaToStaging(
+                    (string) ($mediaUrl ?? ''),
+                    $mediaMime,
+                    $phone,
+                    $mediaExt,
+                    $mediaId ? (string) $mediaId : null
+                );
+            }
+            if ($result === null) {
+                $apitxt->sendText($phone, "Could not save that file. Try again, then tap *Submit*.");
+                break;
+            }
+            $db->prepare(
+                "INSERT INTO wa_submission_attachments_temp (phone, file_path, file_name, file_type, duration)
+                 VALUES (?, ?, ?, ?, ?)"
+            )->execute([$phone, $result['path'], $result['name'], $result['mime'], $mediaDuration]);
+            $attachCount = countStagedAttachments($db, $phone);
+            $sess = getOrCreateSession($db, $phone);
+            $apitxt->sendInteractiveButtons(
+                $phone,
+                'Confirm',
+                "*{$sess['temp_title']}*\n"
+                . "Files: *{$attachCount}*\n\n"
+                . "Submit this bug?",
+                [
+                    ['id' => 'confirm_submit', 'title' => 'Submit'],
+                    ['id' => 'cancel_bug', 'title' => 'Cancel'],
+                ]
+            );
+            break;
+        }
+
         if (!$isConfirm) {
             error_log('[WA Webhook] CONFIRM unmatched. payload=' . mb_substr($rawBody, 0, 1500));
-            $apitxt->sendText(
-                $phone,
-                "Please type *SUBMIT* to file the bug, or *CANCEL* to discard.\n"
-                . "(Button taps are being retried automatically.)"
-            );
             $apitxt->sendInteractiveButtons($phone,
-                'Confirm report',
-                "Type *SUBMIT* or *CANCEL*, or tap below.",
+                'Confirm',
+                "Tap *Submit* to file, or *Cancel* to discard.",
                 [
                     ['id' => 'confirm_submit', 'title' => 'Submit'],
                     ['id' => 'cancel_bug',     'title' => 'Cancel'],
@@ -793,11 +919,11 @@ switch ($step) {
         $stagedStmt->execute([$phone]);
         $staged = $stagedStmt->fetchAll(PDO::FETCH_ASSOC);
 
-        // Find first audio for audio_note_url
+        // Find first audio for audio_note_url (final path after move)
         $audioNoteUrl = null;
         foreach ($staged as $att) {
-            if (str_starts_with($att['file_type'], 'audio/')) {
-                $audioNoteUrl = $att['file_path'];
+            if (str_starts_with((string) $att['file_type'], 'audio/')) {
+                $audioNoteUrl = 'bugs/' . $bugId . '/' . $att['file_name'];
                 break;
             }
         }
@@ -996,6 +1122,151 @@ function waDeepFindButtonReply(array $node): array
         $title = $id;
     }
     return [$id, $title];
+}
+
+/**
+ * Deep-scan inbound webhook JSON for media URL / id / mime / base64.
+ * Why: APITxt and Meta shapes differ; attachments were ignored when only `id`
+ * or top-level `media_url` was present (Files: 0 in confirm).
+ *
+ * @return array{
+ *   type: ?string,
+ *   url: ?string,
+ *   id: ?string,
+ *   mime: ?string,
+ *   caption: ?string,
+ *   duration: ?int,
+ *   base64: ?string
+ * }
+ */
+function waExtractInboundMedia(array $payload): array
+{
+    $out = [
+        'type' => null,
+        'url' => null,
+        'id' => null,
+        'mime' => null,
+        'caption' => null,
+        'duration' => null,
+        'base64' => null,
+    ];
+
+    $mediaTypes = ['image', 'video', 'audio', 'document', 'sticker', 'voice', 'ptt', 'ptv'];
+
+    $walk = null;
+    $walk = static function ($node, string $parentKey = '') use (&$walk, &$out, $mediaTypes): void {
+        if (!is_array($node)) {
+            return;
+        }
+
+        foreach ($node as $key => $value) {
+            $k = is_string($key) ? strtolower($key) : '';
+
+            if (is_string($value)) {
+                $v = trim($value);
+                if ($v === '') {
+                    continue;
+                }
+                if (in_array($k, ['media_url', 'mediaurl', 'file_url', 'fileurl', 'download_url', 'downloadurl'], true)
+                    || (($k === 'url' || $k === 'link') && preg_match('#^https?://#i', $v))
+                ) {
+                    if ($out['url'] === null && preg_match('#^https?://#i', $v)) {
+                        $out['url'] = $v;
+                    }
+                }
+                if (in_array($k, ['mime_type', 'mimetype', 'mime', 'content_type', 'contenttype'], true)) {
+                    if ($out['mime'] === null) {
+                        $out['mime'] = $v;
+                    }
+                }
+                if (in_array($k, ['caption', 'filename', 'file_name'], true) && $out['caption'] === null) {
+                    $out['caption'] = $v;
+                }
+                if (in_array($k, ['media_id', 'mediaid'], true) && $out['id'] === null) {
+                    $out['id'] = $v;
+                }
+                if ($k === 'id' && in_array($parentKey, $mediaTypes, true) && $out['id'] === null) {
+                    $out['id'] = $v;
+                }
+                if (in_array($k, ['data', 'base64', 'media_base64', 'file_base64'], true)
+                    && strlen($v) > 64
+                    && $out['base64'] === null
+                ) {
+                    $out['base64'] = preg_replace('#^data:[^;]+;base64,#', '', $v) ?: $v;
+                }
+                if ($k === 'type' && in_array(strtolower($v), $mediaTypes, true) && $out['type'] === null) {
+                    $out['type'] = strtolower($v);
+                }
+                continue;
+            }
+
+            if (is_int($value) || is_float($value)) {
+                if ($k === 'duration' && $out['duration'] === null) {
+                    $out['duration'] = (int) $value;
+                }
+                continue;
+            }
+
+            if (is_array($value)) {
+                if (in_array($k, $mediaTypes, true) && $out['type'] === null) {
+                    $out['type'] = $k;
+                }
+                $walk($value, $k !== '' ? $k : $parentKey);
+            }
+        }
+    };
+
+    $walk($payload);
+
+    if ($out['type'] !== null) {
+        if (in_array($out['type'], ['voice', 'ptt'], true)) {
+            $out['type'] = 'audio';
+        } elseif ($out['type'] === 'ptv') {
+            $out['type'] = 'video';
+        }
+    }
+
+    // Infer type from mime when missing.
+    if ($out['type'] === null && is_string($out['mime'])) {
+        $base = strtolower(explode(';', $out['mime'])[0]);
+        if (str_starts_with($base, 'image/')) {
+            $out['type'] = 'image';
+        } elseif (str_starts_with($base, 'audio/')) {
+            $out['type'] = 'audio';
+        } elseif (str_starts_with($base, 'video/')) {
+            $out['type'] = 'video';
+        } elseif ($base !== '' && $base !== 'application/octet-stream') {
+            $out['type'] = 'document';
+        }
+    }
+
+    // Infer type when URL/id present but type missing.
+    if ($out['type'] === null && ($out['url'] !== null || $out['id'] !== null || $out['base64'] !== null)) {
+        $out['type'] = 'document';
+    }
+
+    return $out;
+}
+
+/** Persist a trimmed media webhook sample for debugging failed downloads. */
+function waDebugPersistMediaPayload(array $payload, string $msgType, $mediaUrl, $mediaId): void
+{
+    $dir = __DIR__ . '/../../uploads/wa_staging/';
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0755, true);
+    }
+    $sample = [
+        'at' => date('c'),
+        'msgType' => $msgType,
+        'mediaUrl' => is_string($mediaUrl) ? mb_substr($mediaUrl, 0, 200) : null,
+        'mediaId' => is_string($mediaId) ? mb_substr($mediaId, 0, 80) : null,
+        'keys' => array_keys($payload),
+        'payload' => $payload,
+    ];
+    @file_put_contents(
+        $dir . 'last_media_payload.json',
+        json_encode($sample, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)
+    );
 }
 
 /**
@@ -1199,12 +1470,10 @@ function sendHelpMessage(APITxtService $apitxt, string $phone, array $user): voi
         $phone,
         'Help',
         "Hi *{$user['name']}*\n\n"
-        . "How to report a bug:\n"
         . "1. Choose a project\n"
-        . "2. Send a title\n"
-        . "3. Add description / files\n"
-        . "4. Tap Submit\n\n"
-        . "Commands: *menu* · *help* · *cancel* · *submit*",
+        . "2. Send title + details / photos / voice\n"
+        . "3. Tap Submit\n\n"
+        . "Commands: *menu* · *cancel* · *submit*",
         [
             ['id' => 'wa_menu', 'title' => 'Projects'],
             ['id' => 'cancel_bug', 'title' => 'Cancel draft'],
@@ -1221,7 +1490,6 @@ function sendDraftActions(APITxtService $apitxt, string $phone, string $body): v
         [
             ['id' => 'submit_bug', 'title' => 'Submit'],
             ['id' => 'cancel_bug', 'title' => 'Cancel'],
-            ['id' => 'wa_menu', 'title' => 'Projects'],
         ]
     );
 }
