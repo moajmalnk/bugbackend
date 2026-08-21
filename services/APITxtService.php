@@ -312,12 +312,9 @@ class APITxtService
                 $lines[] = "*{$section['title']}*";
             }
             foreach ($section['rows'] ?? [] as $row) {
-                $rowId = isset($row['id']) ? (string) $row['id'] : '';
+                // Keep menu simple for users: "1. Project Name" only.
                 $rowTitle = (string) ($row['title'] ?? '');
-                $rowDesc = isset($row['description']) ? (string) $row['description'] : '';
-                $idPart = $rowId !== '' ? " [{$rowId}]" : '';
-                $descPart = $rowDesc !== '' ? " — {$rowDesc}" : '';
-                $lines[] = "{$idx}. {$rowTitle}{$idPart}{$descPart}";
+                $lines[] = "{$idx}. {$rowTitle}";
                 $idx++;
             }
         }

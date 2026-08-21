@@ -307,6 +307,45 @@ if ($user === null) {
     exit;
 }
 
+// ── Anytime commands (available in any step after verified) ───────────────────
+// Why: users should always be able to reopen the project menu without
+// knowing the internal state machine step.
+$cmd = strtolower(trim($msgText));
+if (!empty($user['is_wa_verified']) && in_array($cmd, ['menu', 'help', 'projects', 'start'], true)) {
+    if ($cmd === 'help') {
+        $apitxt->sendText($phone,
+            "*BugRicer WhatsApp Help*\n\n"
+            . "• Type *menu* — open project list anytime\n"
+            . "• Type *1* / *2* / *3* — pick a project\n"
+            . "• Type *cancel* — discard current bug draft\n"
+            . "• Type *SUBMIT* — file the bug when ready"
+        );
+        http_response_code(200);
+        echo json_encode(['ok' => true, 'cmd' => 'help']);
+        exit;
+    }
+
+    // menu / projects / start → soft-reset back to project picker
+    cleanUpStagedAttachments($db, $phone);
+    $db->prepare(
+        "UPDATE wa_sessions SET
+           current_step=?,
+           selected_project_id=NULL,
+           otp_code=NULL,
+           otp_expires_at=NULL,
+           otp_attempts=0,
+           otp_first_attempt_at=NULL,
+           temp_title=NULL,
+           temp_description=NULL,
+           last_interaction=NOW()
+         WHERE phone=?"
+    )->execute([STEP_SELECT_PROJECT, $phone]);
+    sendProjectPicker($db, $apitxt, $phone, $user);
+    http_response_code(200);
+    echo json_encode(['ok' => true, 'cmd' => $cmd]);
+    exit;
+}
+
 // ── STATE MACHINE ─────────────────────────────────────────────────────────────
 $step = $session['current_step'];
 
@@ -887,19 +926,42 @@ function sendProjectPicker(PDO $db, APITxtService $apitxt, string $phone, array 
         return;
     }
 
-    $rows = array_map(fn($p) => [
-        'id'          => 'proj_' . $p['id'],
-        'title'       => mb_substr($p['name'], 0, 24),
-        'description' => 'Select this project',
-    ], $projects);
+    // Build a clean numbered list (no UUID tokens in the user-facing text).
+    $lines = ["*Your Projects*"];
+    foreach ($projects as $i => $p) {
+        $lines[] = ($i + 1) . '. ' . $p['name'];
+    }
+    $listText = implode("\n", $lines);
 
-    $apitxt->sendListMenu($phone,
-        '📁 Select Project',
-        "Hi *{$user['name']}*, reply with the *number* of the project "
-        . "(e.g. *1*), or paste the `proj_…` token:",
-        'Choose Project',
-        [['title' => 'Your Projects', 'rows' => $rows]],
-        'No tap-menu yet — reply with 1, 2, 3…'
+    // WhatsApp reply-buttons support max 3 options — use them when possible.
+    // Your account already supports buttons (Submit / Cancel), so this is the
+    // simplest tap UX. For 4+ projects, fall back to number reply.
+    if (count($projects) <= 3) {
+        $buttons = [];
+        foreach ($projects as $p) {
+            $buttons[] = [
+                'id'    => 'proj_' . $p['id'],
+                'title' => mb_substr($p['name'], 0, 20),
+            ];
+        }
+        $apitxt->sendInteractiveButtons(
+            $phone,
+            '📁 Select Project',
+            "Hi *{$user['name']}*, tap a project below\n"
+            . "(or reply with *1*, *2*, *3*):\n\n"
+            . $listText,
+            $buttons,
+            'Anytime: type menu'
+        );
+        return;
+    }
+
+    $apitxt->sendText(
+        $phone,
+        "*📁 Select Project*\n\n"
+        . "Hi *{$user['name']}*, reply with the number of the project (e.g. *1*):\n\n"
+        . $listText . "\n\n"
+        . "_Anytime: type menu_"
     );
 }
 
