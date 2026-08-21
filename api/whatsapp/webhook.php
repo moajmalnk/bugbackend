@@ -165,6 +165,46 @@ $interactiveId = null;
 $mediaUrl    = null;
 $mediaMime   = 'application/octet-stream';
 
+/**
+ * Extract button/list reply id from many APITxt/Meta payload shapes.
+ * Why: APITxt sometimes sends type=button (not interactive) and omits nested
+ * interactive wrappers; missing this caused Confirm Submit to loop forever.
+ */
+$extractInteractiveId = static function (array $node): ?string {
+    $candidates = [
+        $node['interactive']['button_reply']['id'] ?? null,
+        $node['interactive']['list_reply']['id'] ?? null,
+        $node['button_reply']['id'] ?? null,
+        $node['list_reply']['id'] ?? null,
+        $node['button']['payload'] ?? null,
+        $node['button']['id'] ?? null,
+        $node['button']['text'] ?? null,
+        is_string($node['button'] ?? null) ? $node['button'] : null,
+        $node['interactive']['button_reply']['title'] ?? null,
+        $node['button_reply']['title'] ?? null,
+    ];
+    foreach ($candidates as $c) {
+        if (is_string($c) && trim($c) !== '') {
+            return trim($c);
+        }
+    }
+    return null;
+};
+
+$extractInteractiveTitle = static function (array $node): string {
+    return trim(
+        (string) (
+            $node['interactive']['button_reply']['title'] ??
+            $node['interactive']['list_reply']['title'] ??
+            $node['button_reply']['title'] ??
+            $node['list_reply']['title'] ??
+            $node['button']['text'] ??
+            $node['button']['title'] ??
+            ''
+        )
+    );
+};
+
 if (isset($payload['entry'][0]['changes'][0]['value']['messages'][0])) {
     // ── Meta / nested APITxt relay format ────────────────────────────────────
     $msg     = $payload['entry'][0]['changes'][0]['value']['messages'][0];
@@ -173,15 +213,12 @@ if (isset($payload['entry'][0]['changes'][0]['value']['messages'][0])) {
 
     if ($msgType === 'text') {
         $msgText = trim($msg['text']['body'] ?? '');
-    } elseif ($msgType === 'interactive') {
-        $interactiveId = $msg['interactive']['button_reply']['id']
-                      ?? $msg['interactive']['list_reply']['id']
-                      ?? null;
-        $msgText = trim(
-            $msg['interactive']['button_reply']['title'] ??
-            $msg['interactive']['list_reply']['title']   ??
-            ''
-        );
+    } elseif (in_array($msgType, ['interactive', 'button', 'button_reply'], true)) {
+        $interactiveId = $extractInteractiveId($msg);
+        $msgText = $extractInteractiveTitle($msg);
+        if ($msgText === '' && is_string($interactiveId)) {
+            $msgText = $interactiveId;
+        }
     } elseif (isset($msg[$msgType]) && is_array($msg[$msgType])) {
         $mediaUrl  = $msg[$msgType]['url']  ?? $msg[$msgType]['link'] ?? null;
         $mediaMime = $msg[$msgType]['mime_type'] ?? 'application/octet-stream';
@@ -189,8 +226,6 @@ if (isset($payload['entry'][0]['changes'][0]['value']['messages'][0])) {
     }
 } elseif (isset($payload['entry'][0]['changes'][0]['value'])) {
     // ── APITxt "value-level" format (no messages[0] wrapper) ──────────────────
-    // Example from APITxt UI:
-    // entry[0].changes[0].value = { field: "messages", from: "...", type: "text", text: "..." }
     $value   = $payload['entry'][0]['changes'][0]['value'];
     $fromRaw = (string) ($value['from'] ?? $value['sender'] ?? '');
     $msgType = strtolower($value['type'] ?? 'text');
@@ -201,17 +236,12 @@ if (isset($payload['entry'][0]['changes'][0]['value']['messages'][0])) {
             (is_string($value['text'] ?? null) ? $value['text'] : '') ??
             ($value['message'] ?? '')
         );
-    } elseif ($msgType === 'interactive') {
-        $interactiveId = $value['interactive']['button_reply']['id']
-                      ?? $value['interactive']['list_reply']['id']
-                      ?? $value['button_reply']['id']
-                      ?? $value['list_reply']['id']
-                      ?? null;
-        $msgText = trim(
-            $value['interactive']['button_reply']['title'] ??
-            $value['interactive']['list_reply']['title']   ??
-            ''
-        );
+    } elseif (in_array($msgType, ['interactive', 'button', 'button_reply'], true)) {
+        $interactiveId = $extractInteractiveId($value);
+        $msgText = $extractInteractiveTitle($value);
+        if ($msgText === '' && is_string($interactiveId)) {
+            $msgText = $interactiveId;
+        }
     } elseif (isset($value[$msgType]) && is_array($value[$msgType])) {
         $mediaUrl  = $value[$msgType]['url'] ?? $value[$msgType]['link'] ?? null;
         $mediaMime = $value[$msgType]['mime_type'] ?? 'application/octet-stream';
@@ -231,28 +261,33 @@ if (isset($payload['entry'][0]['changes'][0]['value']['messages'][0])) {
             (is_string($payload['text'] ?? null) ? $payload['text'] : '') ??
             ($payload['message'] ?? '')
         );
-    } elseif ($msgType === 'interactive') {
-        $interactiveId = $payload['interactive']['button_reply']['id']
-                      ?? $payload['interactive']['list_reply']['id']
-                      ?? $payload['button_reply']['id']
-                      ?? $payload['list_reply']['id']
-                      ?? null;
-        $msgText = trim(
-            $payload['interactive']['button_reply']['title'] ??
-            $payload['interactive']['list_reply']['title']   ??
-            ''
-        );
+    } elseif (in_array($msgType, ['interactive', 'button', 'button_reply'], true)) {
+        $interactiveId = $extractInteractiveId($payload);
+        $msgText = $extractInteractiveTitle($payload);
+        if ($msgText === '' && is_string($interactiveId)) {
+            $msgText = $interactiveId;
+        }
     } elseif (isset($payload[$msgType]) && is_array($payload[$msgType])) {
         $mediaUrl  = $payload[$msgType]['url']  ?? $payload[$msgType]['link'] ?? null;
         $mediaMime = $payload[$msgType]['mime_type'] ?? 'application/octet-stream';
         $msgText   = trim($payload[$msgType]['caption'] ?? '');
     } else {
-        // Flat media keys: payload['media']['url'] or payload['media']['mime_type']
         $mediaUrl  = $payload['media']['url']       ?? null;
         $mediaMime = $payload['media']['mime_type'] ?? 'application/octet-stream';
         $msgText   = trim($payload['message'] ?? '');
     }
 }
+
+// Normalise button titles like "✅ Submit" → "submit" for text matching.
+$msgTextNorm = strtolower(trim(preg_replace('/[^\p{L}\p{N}\s]+/u', '', $msgText) ?? $msgText));
+$msgTextNorm = preg_replace('/\s+/', ' ', $msgTextNorm ?? '') ?: '';
+
+error_log(sprintf(
+    '[WA Webhook] Parsed msgType=%s interactiveId=%s msgText=%s',
+    $msgType,
+    $interactiveId ?? 'null',
+    mb_substr($msgText, 0, 80)
+));
 
 $phone    = normaliseIncomingPhone($fromRaw);
 $mediaExt = mimeToExt($mediaMime);
@@ -510,11 +545,11 @@ switch ($step) {
 
     // ── Bug content collection ────────────────────────────────────────────────
     case STEP_AWAITING_CONTENT:
-        // Handle "Submit" trigger
-        $isSubmitText   = strtolower($msgText) === 'submit';
-        $isSubmitButton = $interactiveId === 'submit_bug';
-        $isCancelText   = strtolower($msgText) === 'cancel';
-        $isCancelButton = $interactiveId === 'cancel_bug';
+        // Handle "Submit" trigger (text + button id + button title)
+        $isSubmitText   = ($msgTextNorm === 'submit') || str_ends_with($msgTextNorm, ' submit');
+        $isSubmitButton = in_array((string) $interactiveId, ['submit_bug', 'confirm_submit'], true);
+        $isCancelText   = ($msgTextNorm === 'cancel') || str_ends_with($msgTextNorm, ' cancel');
+        $isCancelButton = in_array((string) $interactiveId, ['cancel_bug', 'cancel'], true);
 
         if ($isCancelText || $isCancelButton) {
             cleanUpStagedAttachments($db, $phone);
@@ -608,8 +643,13 @@ switch ($step) {
 
     // ── Confirm submission ────────────────────────────────────────────────────
     case STEP_CONFIRM:
-        $isConfirm = $interactiveId === 'confirm_submit';
-        $isCancel  = $interactiveId === 'cancel_bug' || strtolower($msgText) === 'cancel';
+        // Accept button ids OR plain/emoji titles ("✅ Submit") OR typed "submit".
+        $isConfirm = in_array((string) $interactiveId, ['confirm_submit', 'submit_bug', 'submit'], true)
+            || $msgTextNorm === 'submit'
+            || str_ends_with($msgTextNorm, ' submit');
+        $isCancel  = in_array((string) $interactiveId, ['cancel_bug', 'cancel'], true)
+            || $msgTextNorm === 'cancel'
+            || str_ends_with($msgTextNorm, ' cancel');
 
         if ($isCancel) {
             cleanUpStagedAttachments($db, $phone);
@@ -621,7 +661,7 @@ switch ($step) {
         if (!$isConfirm) {
             $apitxt->sendInteractiveButtons($phone,
                 '📋 Awaiting confirmation',
-                'Please tap Submit to file the bug, or Cancel to discard.',
+                'Please tap *Submit* to file the bug, or *Cancel* to discard.\nYou can also type *SUBMIT*.',
                 [
                     ['id' => 'confirm_submit', 'title' => '✅ Submit'],
                     ['id' => 'cancel_bug',     'title' => '❌ Cancel'],
@@ -635,7 +675,7 @@ switch ($step) {
         $projectId = $sess['selected_project_id'];
 
         if (!$projectId) {
-            $apitxt->sendText($phone, "⚠️ No project selected. Restarting…");
+            $apitxt->sendText($phone, "⚠️ No project selected. Type *menu* to start again.");
             resetSession($db, $phone);
             break;
         }
@@ -665,9 +705,9 @@ switch ($step) {
             }
         }
 
-        // Build INSERT dynamically
+        // BugRicer uses status='pending' (not 'open') for newly raised bugs.
         $cols   = ['id', 'title', 'description', 'project_id', 'reported_by', 'priority', 'status', 'created_at', 'updated_at'];
-        $vals   = [$bugId, $title, $desc, $projectId, $user['id'], 'medium', 'open', $now, $now];
+        $vals   = [$bugId, $title, $desc, $projectId, $user['id'], 'medium', 'pending', $now, $now];
 
         if ($hasSource) {
             $cols[] = 'source';
@@ -678,9 +718,18 @@ switch ($step) {
             $vals[] = $audioNoteUrl;
         }
 
-        $colList  = implode(', ', $cols);
-        $phList   = implode(', ', array_fill(0, count($vals), '?'));
-        $db->prepare("INSERT INTO bugs ({$colList}) VALUES ({$phList})")->execute($vals);
+        try {
+            $colList  = implode(', ', $cols);
+            $phList   = implode(', ', array_fill(0, count($vals), '?'));
+            $db->prepare("INSERT INTO bugs ({$colList}) VALUES ({$phList})")->execute($vals);
+        } catch (Throwable $e) {
+            error_log('[WA Webhook] Bug insert failed: ' . $e->getMessage());
+            $apitxt->sendText($phone,
+                "⚠️ Could not create the bug (" . mb_substr($e->getMessage(), 0, 120) . ").\n"
+                . "Please type *SUBMIT* again, or *menu* to restart."
+            );
+            break;
+        }
 
         // Move staged attachments to bug_attachments
         // Also move files from wa_staging/ to bugs/<bugId>/
