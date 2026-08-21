@@ -282,11 +282,27 @@ if (isset($payload['entry'][0]['changes'][0]['value']['messages'][0])) {
 $msgTextNorm = strtolower(trim(preg_replace('/[^\p{L}\p{N}\s]+/u', '', $msgText) ?? $msgText));
 $msgTextNorm = preg_replace('/\s+/', ' ', $msgTextNorm ?? '') ?: '';
 
+// Deep-scan the whole payload for button replies. APITxt often delivers taps as
+ // type=text / empty body, with the real title buried in nested keys.
+[$deepId, $deepTitle] = waDeepFindButtonReply($payload);
+if (($interactiveId === null || $interactiveId === '') && $deepId !== null) {
+    $interactiveId = $deepId;
+}
+if ($msgText === '' && $deepTitle !== '') {
+    $msgText = $deepTitle;
+    $msgTextNorm = strtolower(trim(preg_replace('/[^\p{L}\p{N}\s]+/u', '', $msgText) ?? $msgText));
+    $msgTextNorm = preg_replace('/\s+/', ' ', $msgTextNorm ?? '') ?: '';
+}
+
+// Resolve canonical action from id/title (APITxt frequently returns titles, not ids).
+$waAction = waResolveAction($interactiveId, $msgText, $msgTextNorm);
+
 error_log(sprintf(
-    '[WA Webhook] Parsed msgType=%s interactiveId=%s msgText=%s',
+    '[WA Webhook] Parsed msgType=%s interactiveId=%s msgText=%s action=%s',
     $msgType,
     $interactiveId ?? 'null',
-    mb_substr($msgText, 0, 80)
+    mb_substr($msgText, 0, 80),
+    $waAction ?? 'null'
 ));
 
 $phone    = normaliseIncomingPhone($fromRaw);
@@ -341,22 +357,18 @@ if ($user === null) {
     exit;
 }
 
-// ── Anytime commands (available in any step after verified) ───────────────────
-// Why: users should always reopen the project menu without knowing bot state.
+// ── Anytime commands (available in any step for registered users) ─────────────
 $cmd = strtolower(trim($msgText));
-$isMenuButton = in_array((string) $interactiveId, ['wa_menu', 'menu', 'projects'], true);
-$isHelpButton = in_array((string) $interactiveId, ['wa_help', 'help'], true);
-$isCancelAnytime = in_array((string) $interactiveId, ['cancel_bug', 'cancel'], true)
-    || $msgTextNorm === 'cancel';
-$isAnytimeMenu = $isMenuButton
+$isAnytimeMenu = ($waAction === 'menu')
     || in_array($cmd, ['menu', 'projects', 'start', 'hi', 'hello', 'hey'], true);
-$isAnytimeHelp = $isHelpButton || $cmd === 'help';
+$isAnytimeHelp = ($waAction === 'help') || $cmd === 'help';
+$isCancelAnytime = ($waAction === 'cancel');
+$isSubmitAnytime = ($waAction === 'submit');
 
-if (!empty($user['is_wa_verified']) && ($isAnytimeMenu || $isAnytimeHelp || $isCancelAnytime)) {
-    // Don't hijack a typed bug title that happens to be "hi" once drafting started.
+if ($user !== null && ($isAnytimeMenu || $isAnytimeHelp || $isCancelAnytime || $isSubmitAnytime)) {
     $draftStarted = in_array($session['current_step'], [STEP_AWAITING_CONTENT, STEP_CONFIRM], true)
         && (!empty($session['temp_title']) || !empty($session['selected_project_id']));
-    $isGreetingOnly = in_array($cmd, ['hi', 'hello', 'hey'], true);
+    $isGreetingOnly = in_array($cmd, ['hi', 'hello', 'hey'], true) && $waAction === null;
 
     if ($isAnytimeHelp) {
         sendHelpMessage($apitxt, $phone, $user);
@@ -365,7 +377,15 @@ if (!empty($user['is_wa_verified']) && ($isAnytimeMenu || $isAnytimeHelp || $isC
         exit;
     }
 
-    if ($isCancelAnytime && $draftStarted) {
+    // While confirming, Submit must create the bug — handle here so button title
+    // matching cannot fall through and re-prompt forever.
+    if ($isSubmitAnytime && $session['current_step'] === STEP_CONFIRM) {
+        $confirmHandled = true;
+        // Fall through into state machine with a forced confirm id.
+        $interactiveId = 'confirm_submit';
+        $msgTextNorm = 'submit';
+        $waAction = 'submit';
+    } elseif ($isCancelAnytime && $draftStarted) {
         cleanUpStagedAttachments($db, $phone);
         resetSession($db, $phone);
         $apitxt->sendInteractiveButtons(
@@ -380,9 +400,7 @@ if (!empty($user['is_wa_verified']) && ($isAnytimeMenu || $isAnytimeHelp || $isC
         http_response_code(200);
         echo json_encode(['ok' => true, 'cmd' => 'cancel']);
         exit;
-    }
-
-    if ($isAnytimeMenu && (!$isGreetingOnly || !$draftStarted)) {
+    } elseif ($isAnytimeMenu && (!$isGreetingOnly || !$draftStarted)) {
         openProjectMenu($db, $apitxt, $phone, $user);
         http_response_code(200);
         echo json_encode(['ok' => true, 'cmd' => 'menu']);
@@ -561,11 +579,12 @@ switch ($step) {
 
     // ── Bug content collection ────────────────────────────────────────────────
     case STEP_AWAITING_CONTENT:
-        $isSubmitText   = ($msgTextNorm === 'submit') || str_ends_with($msgTextNorm, ' submit');
+        $isSubmitText   = ($waAction === 'submit') || ($msgTextNorm === 'submit');
         $isSubmitButton = in_array((string) $interactiveId, ['submit_bug', 'confirm_submit'], true);
-        $isCancelText   = ($msgTextNorm === 'cancel') || str_ends_with($msgTextNorm, ' cancel');
+        $isCancelText   = ($waAction === 'cancel') || ($msgTextNorm === 'cancel');
         $isCancelButton = in_array((string) $interactiveId, ['cancel_bug', 'cancel'], true);
-        $isSkipDesc     = in_array((string) $interactiveId, ['skip_description', 'skip'], true)
+        $isSkipDesc     = ($waAction === 'skip')
+            || in_array((string) $interactiveId, ['skip_description', 'skip'], true)
             || $msgTextNorm === 'skip';
 
         if ($isCancelText || $isCancelButton) {
@@ -707,13 +726,13 @@ switch ($step) {
 
     // ── Confirm submission ────────────────────────────────────────────────────
     case STEP_CONFIRM:
-        // Accept button ids OR plain/emoji titles ("✅ Submit") OR typed "submit".
-        $isConfirm = in_array((string) $interactiveId, ['confirm_submit', 'submit_bug', 'submit'], true)
-            || $msgTextNorm === 'submit'
-            || str_ends_with($msgTextNorm, ' submit');
-        $isCancel  = in_array((string) $interactiveId, ['cancel_bug', 'cancel'], true)
-            || $msgTextNorm === 'cancel'
-            || str_ends_with($msgTextNorm, ' cancel');
+        // Prefer the resolved action (handles title-only button taps from APITxt).
+        $isConfirm = ($waAction === 'submit')
+            || in_array((string) $interactiveId, ['confirm_submit', 'submit_bug', 'submit'], true)
+            || $msgTextNorm === 'submit';
+        $isCancel  = ($waAction === 'cancel')
+            || in_array((string) $interactiveId, ['cancel_bug', 'cancel'], true)
+            || $msgTextNorm === 'cancel';
 
         if ($isCancel) {
             cleanUpStagedAttachments($db, $phone);
@@ -731,14 +750,19 @@ switch ($step) {
         }
 
         if (!$isConfirm) {
+            error_log('[WA Webhook] CONFIRM unmatched. payload=' . mb_substr($rawBody, 0, 1500));
+            $apitxt->sendText(
+                $phone,
+                "Please type *SUBMIT* to file the bug, or *CANCEL* to discard.\n"
+                . "(Button taps are being retried automatically.)"
+            );
             $apitxt->sendInteractiveButtons($phone,
                 'Confirm report',
-                "Tap *Submit* to file the bug, or *Cancel* to discard.",
+                "Type *SUBMIT* or *CANCEL*, or tap below.",
                 [
                     ['id' => 'confirm_submit', 'title' => 'Submit'],
                     ['id' => 'cancel_bug',     'title' => 'Cancel'],
-                ],
-                'Or type SUBMIT'
+                ]
             );
             break;
         }
@@ -921,6 +945,121 @@ function normaliseIncomingPhone(string $raw): string
         $digits = '91' . $digits;
     }
     return $digits;
+}
+
+/**
+ * Recursively find button/list reply id+title anywhere in the webhook payload.
+ * @return array{0:?string,1:string}
+ */
+function waDeepFindButtonReply(array $node): array
+{
+    $id = null;
+    $title = '';
+
+    $walk = function ($n) use (&$walk, &$id, &$title) {
+        if (!is_array($n)) {
+            return;
+        }
+        foreach (['button_reply', 'list_reply'] as $key) {
+            if (isset($n[$key]) && is_array($n[$key])) {
+                if ($id === null && !empty($n[$key]['id'])) {
+                    $id = trim((string) $n[$key]['id']);
+                }
+                if ($title === '' && !empty($n[$key]['title'])) {
+                    $title = trim((string) $n[$key]['title']);
+                }
+            }
+        }
+        if (isset($n['button']) && is_array($n['button'])) {
+            if ($id === null) {
+                $cand = $n['button']['payload'] ?? $n['button']['id'] ?? null;
+                if (is_string($cand) && trim($cand) !== '') {
+                    $id = trim($cand);
+                }
+            }
+            if ($title === '') {
+                $cand = $n['button']['text'] ?? $n['button']['title'] ?? null;
+                if (is_string($cand) && trim($cand) !== '') {
+                    $title = trim($cand);
+                }
+            }
+        }
+        foreach ($n as $v) {
+            if (is_array($v)) {
+                $walk($v);
+            }
+        }
+    };
+    $walk($node);
+
+    if ($title === '' && is_string($id)) {
+        $title = $id;
+    }
+    return [$id, $title];
+}
+
+/**
+ * Map free-form button titles/ids to a canonical action.
+ * Why: APITxt often echoes the visible button label ("Submit") instead of our id.
+ */
+function waResolveAction(?string $interactiveId, string $msgText, string $msgTextNorm): ?string
+{
+    $idNorm = strtolower(trim(preg_replace('/[^\p{L}\p{N}\s]+/u', '', (string) $interactiveId) ?? (string) $interactiveId));
+    $idNorm = preg_replace('/\s+/', ' ', $idNorm ?? '') ?: '';
+
+    // Prefer exact short replies (actual button taps), not long prompt text.
+    $exact = $msgTextNorm !== '' ? $msgTextNorm : $idNorm;
+    $map = [
+        'submit' => 'submit',
+        'confirm submit' => 'submit',
+        'confirm_submit' => 'submit',
+        'submit bug' => 'submit',
+        'submit_bug' => 'submit',
+        'cancel' => 'cancel',
+        'cancel bug' => 'cancel',
+        'cancel_bug' => 'cancel',
+        'cancel draft' => 'cancel',
+        'projects' => 'menu',
+        'project' => 'menu',
+        'menu' => 'menu',
+        'wa menu' => 'menu',
+        'wa_menu' => 'menu',
+        'change project' => 'menu',
+        'new bug' => 'menu',
+        'help' => 'help',
+        'wa help' => 'help',
+        'wa_help' => 'help',
+        'skip' => 'skip',
+        'skip description' => 'skip',
+        'skip_description' => 'skip',
+        'resend otp' => 'resend_otp',
+        'resend_otp' => 'resend_otp',
+    ];
+    if (isset($map[$exact])) {
+        return $map[$exact];
+    }
+    if (isset($map[$idNorm])) {
+        return $map[$idNorm];
+    }
+
+    // Raw id exact matches (keep underscores).
+    $rawId = strtolower(trim((string) $interactiveId));
+    if (isset($map[$rawId])) {
+        return $map[$rawId];
+    }
+    if (str_starts_with($rawId, 'proj_')) {
+        return 'project';
+    }
+
+    // Last-line heuristic for reply-quoted button taps.
+    $lines = preg_split('/\R/u', trim($msgText)) ?: [];
+    $last = strtolower(trim(preg_replace('/[^\p{L}\p{N}\s]+/u', '', (string) end($lines)) ?? ''));
+    $last = preg_replace('/\s+/', ' ', $last ?? '') ?: '';
+    if (isset($map[$last])) {
+        return $map[$last];
+    }
+
+    return null;
 }
 
 function mimeToExt(string $mime): string
