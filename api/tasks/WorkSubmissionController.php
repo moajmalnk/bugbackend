@@ -770,6 +770,8 @@ class WorkSubmissionController extends BaseAPI {
                 return $this->sendJsonResponse(400, 'id or submission_date is required');
             }
 
+            // Why: Admin deletes go to recycle bin; developers permanently remove their own
+            // daily work update (not recycle-bin soft-delete).
             if ($role === 'admin' && $id) {
                 require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
                 $rb = new RecycleBinService($this->conn);
@@ -784,20 +786,26 @@ class WorkSubmissionController extends BaseAPI {
             }
 
             if ($id) {
-                require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
-                $rb = new RecycleBinService($this->conn);
-                try {
-                    $rb->softDelete('work_submission', (string) $id, $userId);
-                } catch (Throwable $e) {
-                    $this->sendJsonResponse(404, $e->getMessage());
+                $stmt = $this->conn->prepare(
+                    "DELETE FROM work_submissions WHERE id = ? AND user_id = ?"
+                );
+                $stmt->execute([(int) $id, $userId]);
+                if ($stmt->rowCount() < 1) {
+                    $this->sendJsonResponse(404, 'Submission not found');
                     return;
                 }
-                $this->sendJsonResponse(200, 'Submission moved to recycle bin');
+                $this->sendJsonResponse(200, 'Submission deleted');
                 return;
             }
 
-            $stmt = $this->conn->prepare("DELETE FROM work_submissions WHERE submission_date = ? AND user_id = ?");
+            $stmt = $this->conn->prepare(
+                "DELETE FROM work_submissions WHERE submission_date = ? AND user_id = ?"
+            );
             $stmt->execute([$date, $userId]);
+            if ($stmt->rowCount() < 1) {
+                $this->sendJsonResponse(404, 'Submission not found');
+                return;
+            }
 
             $this->sendJsonResponse(200, 'Submission deleted');
         } catch (Exception $e) {
