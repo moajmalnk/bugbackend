@@ -2,6 +2,8 @@
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../projects/ProjectMemberController.php';
 require_once __DIR__ . '/../NotificationManager.php';
+require_once __DIR__ . '/BugController.php';
+require_once __DIR__ . '/../PermissionManager.php';
 
 /**
  * Why: Store bug doubts and replies (text + voice) without overloading bug_attachments.
@@ -29,7 +31,7 @@ class BugDoubtController extends BaseAPI
             $this->sendJsonResponse(404, 'Bug not found');
             return;
         }
-        $this->assertProjectAccess($decoded->user_id, $bug['project_id']);
+        $this->assertBugReadAccess($decoded, $bug);
 
         $this->sendJsonResponse(200, 'OK', ['doubts' => $this->fetchThread($bugId)]);
     }
@@ -207,6 +209,62 @@ class BugDoubtController extends BaseAPI
         if (!$members->hasProjectAccess($userId, $projectId)) {
             $this->sendJsonResponse(403, 'You do not have access to this project');
         }
+    }
+
+    /**
+     * Why: Common Bugs detail is read-only for non-members, but doubt threads
+     * should still be visible as reference context.
+     */
+    private function assertBugReadAccess($decoded, array $bug): void
+    {
+        $userId = (string) ($decoded->user_id ?? '');
+        $projectId = $bug['project_id'] ?? null;
+        if ($userId !== '' && $projectId !== null && $projectId !== '') {
+            $members = new ProjectMemberController();
+            if ($members->hasProjectAccess($userId, $projectId)) {
+                return;
+            }
+        }
+
+        if ($this->canReadCommonBugReference($decoded, (string) ($bug['id'] ?? ''))) {
+            return;
+        }
+
+        $this->sendJsonResponse(403, 'You do not have access to this project');
+    }
+
+    private function canReadCommonBugReference($decoded, string $bugId): bool
+    {
+        if ($bugId === '') {
+            return false;
+        }
+
+        $userId = (string) ($decoded->user_id ?? '');
+        $role = strtolower(trim((string) ($decoded->role ?? '')));
+        $isAdmin = $role === 'admin';
+        $isDeveloper = $role === 'developer';
+        $isTester = $role === 'tester';
+        $hasCommonBugsPermission = false;
+
+        if ($userId !== '') {
+            try {
+                $hasCommonBugsPermission = PermissionManager::getInstance()->hasPermissionOrAdmin(
+                    $userId,
+                    'COMMON_BUGS_VIEW',
+                    $decoded->role ?? null
+                );
+            } catch (Exception $e) {
+                error_log('BugDoubtController common bugs permission: ' . $e->getMessage());
+            }
+        }
+
+        if (!$isAdmin && !$isDeveloper && !$isTester && !$hasCommonBugsPermission) {
+            return false;
+        }
+
+        $controller = new BugController();
+        $meta = $controller->getCommonBugMeta($bugId);
+        return !empty($meta['is_common']);
     }
 
     private function sanitizeBody($raw)
