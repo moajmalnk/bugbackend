@@ -399,19 +399,21 @@ if ($user !== null) {
 // machine. We use $fromRaw (the un-normalised number from the payload) so the
 // user sees exactly what we received — helpful when they've saved the wrong format.
 if ($user === null) {
-    $appUrl = rtrim(Environment::get('APP_BASE_URL', 'https://bugs.bugricer.com'), '/');
     $apitxt->sendText(
         $phone,
-        "Access denied\n\n"
-        . "This number is not on BugRicer yet.\n\n"
-        . "1. Open BugRicer and add your phone in Profile\n"
-        . "2. Message us again here\n\n"
-        . "{$appUrl}"
+        "⛔ *Access denied*\n\n"
+        . "This WhatsApp number is not registered on BugRicer.\n\n"
+        . "For access, contact:\n"
+        . "*Ajmal* — +91 88486 76627\n\n"
+        . "After your number is added in BugRicer Profile, message *hi* here again."
     );
     http_response_code(200);
     echo json_encode(['status' => 'unregistered_user', 'phone' => $fromRaw]);
     exit;
 }
+
+// Phone matched a BugRicer user — no OTP. Auto-verify on first contact.
+ensureWaPhoneVerified($db, $user);
 
 // ── Anytime commands (available in any step for registered users) ─────────────
 $cmd = strtolower(trim($msgText));
@@ -428,7 +430,7 @@ $isNewOtherProject = ($waAction === 'new_other_project')
     || in_array($cmd, ['other project', 'another project', 'new project'], true);
 
 // Same / other project — must run before IDLE (which otherwise opens the full picker).
-if ($user !== null && !empty($user['is_wa_verified']) && ($isNewSameProject || $isNewOtherProject)) {
+if ($user !== null && ($isNewSameProject || $isNewOtherProject)) {
     if ($isNewOtherProject) {
         openProjectMenu($db, $apitxt, $phone, $user);
     } else {
@@ -478,11 +480,7 @@ if ($user !== null && ($isAnytimeMenu || $isAnytimeHelp || $isCancelAnytime || $
         echo json_encode(['ok' => true, 'cmd' => 'cancel']);
         exit;
     } elseif ($isAnytimeMenu && (!$isGreetingOnly || !$draftStarted)) {
-        if (empty($user['is_wa_verified'])) {
-            sendOtpReminder($apitxt, $phone, $user);
-        } else {
-            openProjectMenu($db, $apitxt, $phone, $user);
-        }
+        openProjectMenu($db, $apitxt, $phone, $user);
         http_response_code(200);
         echo json_encode(['ok' => true, 'cmd' => 'menu']);
         exit;
@@ -496,99 +494,20 @@ switch ($step) {
 
     // ── IDLE / Entry point ───────────────────────────────────────────────────
     case STEP_IDLE:
-
-        // If already WA-verified, go straight to project selection
-        if (!empty($user['is_wa_verified'])) {
-            sendProjectPicker($db, $apitxt, $phone, $user);
-            setStep($db, $phone, STEP_SELECT_PROJECT);
-        } else {
-            // Start OTP flow
-            sendOtp($db, $apitxt, $phone, $user);
-        }
+        // Registered phone = verified. No OTP — welcome and open project picker.
+        welcomeVerifiedUser($apitxt, $phone, $user);
+        sendProjectPicker($db, $apitxt, $phone, $user, true);
+        setStep($db, $phone, STEP_SELECT_PROJECT);
         break;
 
-    // ── OTP verification ─────────────────────────────────────────────────────
+    // Legacy OTP sessions: clear and continue like IDLE (OTP removed).
     case STEP_WAITING_OTP:
-        // Resend / help first — even when the previous code expired.
-        if ($waAction === 'resend_otp' || $interactiveId === 'resend_otp') {
-            sendOtp($db, $apitxt, $phone, $user);
-            break;
-        }
-        if ($waAction === 'help' || $interactiveId === 'wa_help') {
-            sendOtpHelpMessage($apitxt, $phone, $user);
-            break;
-        }
-
-        $otp     = $session['otp_code'];
-        $expiry  = strtotime($session['otp_expires_at'] ?? '1970-01-01');
-        $attempts = (int)$session['otp_attempts'];
-        $windowStart = strtotime($session['otp_first_attempt_at'] ?? '1970-01-01');
-
-        // Rate limit
-        if ($attempts >= OTP_MAX_ATTEMPTS && (time() - $windowStart) < OTP_RATE_WINDOW_SECS) {
-            $waitMins = ceil((OTP_RATE_WINDOW_SECS - (time() - $windowStart)) / 60);
-            $apitxt->sendInteractiveButtons(
-                $phone,
-                'Too many tries',
-                "Please wait *{$waitMins} min*, then tap *Resend code*.",
-                [['id' => 'resend_otp', 'title' => 'Resend code']]
-            );
-            break;
-        }
-
-        // Reset attempt counter after rate window expires
-        if ((time() - $windowStart) >= OTP_RATE_WINDOW_SECS) {
-            $attempts = 0;
-        }
-
-        // Expired
-        if (time() > $expiry) {
-            $apitxt->sendInteractiveButtons(
-                $phone,
-                'Code expired',
-                "Your code expired.\nTap *Resend code* to get a new one.",
-                [['id' => 'resend_otp', 'title' => 'Resend code']]
-            );
-            break;
-        }
-
-        // Verify OTP — user must reply with exactly 6 digits (not hi/menu/etc.)
-        $enteredOtp = preg_replace('/\D/', '', $msgText);
-        if (strlen($enteredOtp) !== 6) {
-            sendOtpReminder($apitxt, $phone, $user);
-            break;
-        }
-
-        $newAttempts = $attempts + 1;
-        $firstAttemptAt = ($attempts === 0) ? date('Y-m-d H:i:s') : $session['otp_first_attempt_at'];
-
-        $db->prepare("UPDATE wa_sessions SET otp_attempts=?, otp_first_attempt_at=? WHERE phone=?")
-           ->execute([$newAttempts, $firstAttemptAt, $phone]);
-
-        if ($enteredOtp !== $otp) {
-            $remaining = max(0, OTP_MAX_ATTEMPTS - $newAttempts);
-            $apitxt->sendInteractiveButtons(
-                $phone,
-                'Wrong code',
-                "That code didn't match.\n*{$remaining}* try(s) left.\n\nReply with the 6-digit code from our last message.",
-                [
-                    ['id' => 'resend_otp', 'title' => 'Resend code'],
-                    ['id' => 'wa_help', 'title' => 'Help'],
-                ]
-            );
-            break;
-        }
-
-        // OTP correct — mark verified
-        $db->prepare("UPDATE users SET is_wa_verified=1, wa_verified_at=NOW() WHERE id=?")
-           ->execute([$user['id']]);
-        $user['is_wa_verified'] = 1;
-
-        $apitxt->sendText(
-            $phone,
-            "✅ *Verified!* Welcome, *{$user['name']}*.\n\n"
-            . "Next: choose a project and report a bug."
-        );
+        $db->prepare(
+            "UPDATE wa_sessions SET
+               otp_code=NULL, otp_expires_at=NULL, otp_attempts=0, otp_first_attempt_at=NULL
+             WHERE phone=?"
+        )->execute([$phone]);
+        welcomeVerifiedUser($apitxt, $phone, $user);
         sendProjectPicker($db, $apitxt, $phone, $user, true);
         setStep($db, $phone, STEP_SELECT_PROJECT);
         break;
