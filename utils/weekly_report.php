@@ -8,6 +8,8 @@ require_once __DIR__ . '/work_period.php';
 if (!class_exists('Utils')) {
     require_once __DIR__ . '/../config/utils.php';
 }
+require_once __DIR__ . '/leave_attendance.php';
+require_once __DIR__ . '/work_submission_ot.php';
 
 const BR_WEEKLY_REPORT_FIELD_MAX = 20000;
 
@@ -179,10 +181,282 @@ function br_get_weekly_report(PDO $conn, string $userId, string $weekStart): ?ar
 }
 
 /**
+ * @return string[]
+ */
+function br_weekly_report_week_dates(string $weekStart, string $weekEnd): array
+{
+    $dates = [];
+    $tz = new DateTimeZone('Asia/Kolkata');
+    $cursor = DateTime::createFromFormat('Y-m-d', substr(trim($weekStart), 0, 10), $tz);
+    $end = DateTime::createFromFormat('Y-m-d', substr(trim($weekEnd), 0, 10), $tz);
+    if (!$cursor || !$end) {
+        return $dates;
+    }
+    while ($cursor <= $end) {
+        $dates[] = $cursor->format('Y-m-d');
+        $cursor->modify('+1 day');
+    }
+    return $dates;
+}
+
+function br_weekly_attendance_day_label(string $date): string
+{
+    $tz = new DateTimeZone('Asia/Kolkata');
+    $dt = DateTime::createFromFormat('Y-m-d', substr(trim($date), 0, 10), $tz);
+    return $dt ? $dt->format('D, M j') : $date;
+}
+
+function br_weekly_attendance_format_check_in(?string $checkIn): ?string
+{
+    $raw = trim((string)$checkIn);
+    if ($raw === '') {
+        return null;
+    }
+    try {
+        $tz = new DateTimeZone('Asia/Kolkata');
+        $dt = new DateTime($raw, $tz);
+        return $dt->format('g:i A');
+    } catch (Throwable $e) {
+        return $raw;
+    }
+}
+
+function br_weekly_attendance_break_minutes(array $submission): int
+{
+    $minutes = (int)($submission['total_break_minutes'] ?? 0);
+    if ($minutes > 0) {
+        return $minutes;
+    }
+    $entries = $submission['break_entries'] ?? null;
+    if ($entries === null || $entries === '') {
+        return 0;
+    }
+    if (is_string($entries)) {
+        $decoded = json_decode($entries, true);
+        if (!is_array($decoded)) {
+            return 0;
+        }
+        $entries = $decoded;
+    }
+    if (!is_array($entries)) {
+        return 0;
+    }
+    $sum = 0;
+    foreach ($entries as $entry) {
+        if (!is_array($entry)) {
+            continue;
+        }
+        $sum += (int)($entry['minutes'] ?? $entry['duration_minutes'] ?? 0);
+    }
+    return max(0, $sum);
+}
+
+/**
+ * Why: Weekly report copy/export must list Mon–Sat hours, breaks, leave, check-in, late, office/WFH.
+ *
+ * @return array{summary:array<string,mixed>,days:array<int,array<string,mixed>>}
+ */
+function br_weekly_attendance_summary(PDO $conn, string $userId, string $weekStart, string $weekEnd): array
+{
+    $weekDates = br_weekly_report_week_dates($weekStart, $weekEnd);
+    $leaveMap = br_leave_day_map($conn, $userId, $weekStart, $weekEnd);
+    $submissionsByDate = [];
+
+    try {
+        $stmt = $conn->prepare(
+            'SELECT submission_date, check_in_time, hours_today, total_break_minutes, break_entries,
+                    work_mode, is_late, overtime_hours, requested_extra_hours,
+                    extra_hours_approval_status, extra_hours_approved_amount, approval_reason
+             FROM work_submissions
+             WHERE user_id = ? AND submission_date >= ? AND submission_date <= ?
+             ORDER BY submission_date ASC'
+        );
+        $stmt->execute([$userId, $weekStart, $weekEnd]);
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $submissionsByDate[(string)($row['submission_date'] ?? '')] = $row;
+        }
+    } catch (Throwable $e) {
+        error_log('br_weekly_attendance_summary: ' . $e->getMessage());
+    }
+
+    $days = [];
+    $summary = [
+        'days_worked' => 0,
+        'total_hours' => 0.0,
+        'break_minutes' => 0,
+        'leave_days' => 0,
+        'check_ins' => 0,
+        'office_days' => 0,
+        'wfh_days' => 0,
+        'late_days' => 0,
+        'overtime_hours' => 0.0,
+    ];
+
+    foreach ($weekDates as $date) {
+        $submission = $submissionsByDate[$date] ?? null;
+        $leave = $leaveMap[$date] ?? null;
+        $checkInRaw = $submission['check_in_time'] ?? null;
+        $checkIn = br_weekly_attendance_format_check_in(is_string($checkInRaw) ? $checkInRaw : null);
+        $hours = $submission ? (float)($submission['hours_today'] ?? 0) : 0.0;
+        $breakMinutes = $submission ? br_weekly_attendance_break_minutes($submission) : 0;
+        $workMode = strtolower(trim((string)($submission['work_mode'] ?? '')));
+        if ($workMode !== 'office' && $workMode !== 'wfh') {
+            $workMode = $checkIn ? 'office' : '';
+        }
+        $isLate = $submission ? ((int)($submission['is_late'] ?? 0) === 1) : false;
+        $overtimeHours = $submission ? br_effective_overtime_hours_for_stats($submission) : 0.0;
+
+        if ($leave) {
+            $credited = br_leave_credited_hours($leave['leave_type_code'] ?? null);
+            if ($credited > $hours) {
+                $hours = $credited;
+            }
+            $dayStatus = 'leave';
+            $summary['leave_days'] += 1;
+        } elseif ($submission && ($checkIn || $hours > 0 || $breakMinutes > 0)) {
+            $dayStatus = 'worked';
+        } else {
+            $dayStatus = 'off';
+        }
+
+        if ($dayStatus === 'worked') {
+            if ($checkIn) {
+                $summary['check_ins'] += 1;
+            }
+            if ($hours > 0 || $checkIn) {
+                $summary['days_worked'] += 1;
+            }
+            $summary['total_hours'] += $hours;
+            $summary['break_minutes'] += $breakMinutes;
+            $summary['overtime_hours'] += $overtimeHours;
+            if ($workMode === 'wfh') {
+                $summary['wfh_days'] += 1;
+            } elseif ($workMode === 'office') {
+                $summary['office_days'] += 1;
+            }
+            if ($isLate) {
+                $summary['late_days'] += 1;
+            }
+        } elseif ($dayStatus === 'leave' && $hours > 0) {
+            $summary['total_hours'] += $hours;
+            $summary['days_worked'] += 1;
+        }
+
+        $days[] = [
+            'date' => $date,
+            'date_label' => br_weekly_attendance_day_label($date),
+            'day_status' => $dayStatus,
+            'check_in' => $checkIn,
+            'check_in_raw' => $checkInRaw,
+            'hours' => round($hours, 2),
+            'break_minutes' => $breakMinutes,
+            'work_mode' => $workMode !== '' ? $workMode : null,
+            'is_late' => $isLate,
+            'leave_type_name' => $leave['leave_type_name'] ?? null,
+            'leave_type_code' => $leave['leave_type_code'] ?? null,
+            'overtime_hours' => round($overtimeHours, 2),
+        ];
+    }
+
+    $summary['total_hours'] = round((float)$summary['total_hours'], 2);
+    $summary['overtime_hours'] = round((float)$summary['overtime_hours'], 2);
+
+    return [
+        'summary' => $summary,
+        'days' => $days,
+    ];
+}
+
+function br_weekly_attendance_document_block(array $attendance): string
+{
+    $summary = is_array($attendance['summary'] ?? null) ? $attendance['summary'] : [];
+    $days = is_array($attendance['days'] ?? null) ? $attendance['days'] : [];
+
+    $lines = [
+        'Weekly Attendance Summary',
+        sprintf('Worked days: %d', (int)($summary['days_worked'] ?? 0)),
+        sprintf('Total hours: %.2f h', (float)($summary['total_hours'] ?? 0)),
+        sprintf('Break: %d min', (int)($summary['break_minutes'] ?? 0)),
+        sprintf('Leave days: %d', (int)($summary['leave_days'] ?? 0)),
+        sprintf('Check-ins: %d', (int)($summary['check_ins'] ?? 0)),
+        sprintf('Office days: %d', (int)($summary['office_days'] ?? 0)),
+        sprintf('WFH days: %d', (int)($summary['wfh_days'] ?? 0)),
+        sprintf('Late days: %d', (int)($summary['late_days'] ?? 0)),
+        sprintf('Overtime: %.2f h', (float)($summary['overtime_hours'] ?? 0)),
+        '',
+        'Daily Attendance',
+    ];
+
+    foreach ($days as $day) {
+        if (!is_array($day)) {
+            continue;
+        }
+        $label = (string)($day['date_label'] ?? $day['date'] ?? '');
+        $status = (string)($day['day_status'] ?? 'off');
+        $parts = [$label];
+
+        if ($status === 'leave') {
+            $leaveName = trim((string)($day['leave_type_name'] ?? ''));
+            $parts[] = $leaveName !== '' ? 'Leave (' . $leaveName . ')' : 'Leave';
+            if ((float)($day['hours'] ?? 0) > 0) {
+                $parts[] = sprintf('%.2f h credited', (float)$day['hours']);
+            }
+        } elseif ($status === 'worked') {
+            if (!empty($day['check_in'])) {
+                $parts[] = 'Check-in ' . $day['check_in'];
+            }
+            if ((float)($day['hours'] ?? 0) > 0) {
+                $parts[] = sprintf('%.2f h worked', (float)$day['hours']);
+            }
+            if ((int)($day['break_minutes'] ?? 0) > 0) {
+                $parts[] = (int)$day['break_minutes'] . ' min break';
+            }
+            $mode = strtolower(trim((string)($day['work_mode'] ?? '')));
+            if ($mode === 'wfh') {
+                $parts[] = 'WFH';
+            } elseif ($mode === 'office') {
+                $parts[] = 'Office';
+            }
+            if (!empty($day['is_late'])) {
+                $parts[] = 'Late';
+            }
+            if ((float)($day['overtime_hours'] ?? 0) > 0) {
+                $parts[] = sprintf('%.2f h OT', (float)$day['overtime_hours']);
+            }
+        } else {
+            $parts[] = 'No record';
+        }
+
+        $lines[] = '- ' . implode(' · ', $parts);
+    }
+
+    return implode("\n", $lines);
+}
+
+/**
+ * @param array<string,mixed> $report
+ * @return array<string,mixed>
+ */
+function br_weekly_report_attach_attendance(PDO $conn, array $report): array
+{
+    $userId = trim((string)($report['user_id'] ?? ''));
+    $weekStart = trim((string)($report['week_start'] ?? ''));
+    $weekEnd = trim((string)($report['week_end'] ?? ''));
+    if ($userId === '' || $weekStart === '' || $weekEnd === '') {
+        return $report;
+    }
+
+    $attendance = br_weekly_attendance_summary($conn, $userId, $weekStart, $weekEnd);
+    $report['attendance'] = $attendance;
+    $report['attendance_text'] = br_weekly_attendance_document_block($attendance);
+    return $report;
+}
+
+/**
  * @param array<string,mixed> $row
  * @return array<string,mixed>
  */
-function br_present_weekly_report_row(array $row): array
+function br_present_weekly_report_row(array $row, ?PDO $conn = null): array
 {
     $weekStart = (string)($row['week_start'] ?? '');
     $weekEnd = (string)($row['week_end'] ?? '');
@@ -192,7 +466,7 @@ function br_present_weekly_report_row(array $row): array
     $blockers = trim((string)($row['issues_blockers'] ?? ''));
     $plan = (string)($row['plan_next_week'] ?? '');
 
-    return [
+    $report = [
         'id' => (string)($row['id'] ?? ''),
         'user_id' => (string)($row['user_id'] ?? ''),
         'user_name' => trim((string)($row['username'] ?? $row['user_name'] ?? 'User')) ?: 'User',
@@ -218,6 +492,8 @@ function br_present_weekly_report_row(array $row): array
             'plan' => count(br_weekly_report_split_lines($plan)),
         ],
     ];
+
+    return $conn ? br_weekly_report_attach_attendance($conn, $report) : $report;
 }
 
 /**
@@ -291,7 +567,7 @@ function br_list_weekly_reports(PDO $conn, array $opts): array
     $stmt->execute($params);
     $items = [];
     while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-        $items[] = br_present_weekly_report_row($row);
+        $items[] = br_present_weekly_report_row($row, $conn);
     }
 
     return [
@@ -515,7 +791,7 @@ function br_get_weekly_report_by_id(PDO $conn, string $id): ?array
     );
     $stmt->execute([$id]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    return $row ? br_present_weekly_report_row($row) : null;
+    return $row ? br_present_weekly_report_row($row, $conn) : null;
 }
 
 /**
@@ -622,6 +898,7 @@ function br_send_weekly_report_with_checkout(
     }
 
     $payload = [
+        'user_id' => $userId,
         'user_name' => $userName,
         'user_email' => $userEmail,
         'week_start' => $report['week_start'],
@@ -636,6 +913,7 @@ function br_send_weekly_report_with_checkout(
             : 'No major blockers.',
         'plan_next_week' => (string)$report['plan_next_week'],
     ];
+    $payload = br_weekly_report_attach_attendance($conn, $payload);
 
     $sent = false;
 

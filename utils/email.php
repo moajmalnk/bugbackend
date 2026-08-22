@@ -792,6 +792,12 @@ function sendWeeklyReportEmailToAdmins(array $adminEmails, array $report): array
     $wipHtml = br_weekly_report_email_bullets($report['work_in_progress'] ?? '');
     $blockersHtml = br_weekly_report_email_bullets($report['issues_blockers'] ?? 'No major blockers.');
     $planHtml = br_weekly_report_email_bullets($report['plan_next_week'] ?? '');
+    $attendanceText = trim((string)($report['attendance_text'] ?? ''));
+    $attendanceHtml = $attendanceText !== ''
+        ? '<pre style="margin:0 0 18px 0;padding:12px;background:#f8fafc;border-radius:8px;font-size:13px;white-space:pre-wrap;">'
+            . htmlspecialchars($attendanceText, ENT_QUOTES, 'UTF-8')
+            . '</pre>'
+        : '';
 
     $subject = 'Weekly Report · ' . ($report['user_name'] ?? 'User');
 
@@ -817,7 +823,8 @@ function sendWeeklyReportEmailToAdmins(array $adminEmails, array $report): array
           <ul style=\"margin: 0 0 18px 0; padding-left: 20px;\">{$blockersHtml}</ul>
 
           <h3 style=\"margin: 0 0 8px 0; font-size: 16px; color: #1e293b;\">Plan for Next Week</h3>
-          <ul style=\"margin: 0; padding-left: 20px;\">{$planHtml}</ul>
+          <ul style=\"margin: 0 0 18px 0; padding-left: 20px;\">{$planHtml}</ul>
+          " . ($attendanceHtml !== '' ? "<h3 style=\"margin: 0 0 8px 0; font-size: 16px; color: #1e293b;\">Weekly Attendance Summary</h3>{$attendanceHtml}" : '') . "
         </div>
         <div style=\"padding: 14px 20px; background-color: #f8fafc; color: #64748b; font-size: 12px; text-align: center;\">
           © " . date('Y') . " BugRicer · Weekly Report
@@ -837,7 +844,8 @@ function sendWeeklyReportEmailToAdmins(array $adminEmails, array $report): array
         . "Issues / Blockers\n"
         . br_weekly_report_email_text_block($report['issues_blockers'] ?? 'No major blockers.') . "\n"
         . "Plan for Next Week\n"
-        . br_weekly_report_email_text_block($report['plan_next_week'] ?? '');
+        . br_weekly_report_email_text_block($report['plan_next_week'] ?? '')
+        . ($attendanceText !== '' ? "\n\n" . $attendanceText : '');
 
     $results = [];
     foreach ($adminEmails as $adminEmail) {

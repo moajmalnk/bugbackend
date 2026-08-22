@@ -53,6 +53,13 @@ class WeeklyReportController extends BaseAPI
             $bounds['week_end']
         );
 
+        $attendance = br_weekly_attendance_summary(
+            $this->conn,
+            $userId,
+            $bounds['week_start'],
+            $bounds['week_end']
+        );
+
         $this->sendJsonResponse(200, 'OK', [
             'required' => $isSaturday && !$report,
             'is_saturday' => $isSaturday,
@@ -64,6 +71,8 @@ class WeeklyReportController extends BaseAPI
             'user_name' => br_display_user_name($this->conn, $userId, (string)($decoded->username ?? 'User')),
             'report' => $report,
             'suggestions' => $suggestions,
+            'attendance' => $attendance,
+            'attendance_text' => br_weekly_attendance_document_block($attendance),
         ]);
     }
 

@@ -2247,6 +2247,7 @@ function formatWeeklyReportForWhatsApp(array $report): string
     $wip = br_weekly_report_bullet_block($report['work_in_progress'] ?? '');
     $blockers = br_weekly_report_bullet_block($report['issues_blockers'] ?? 'No major blockers.');
     $plan = br_weekly_report_bullet_block($report['plan_next_week'] ?? '');
+    $attendanceText = trim((string)($report['attendance_text'] ?? ''));
 
     $message = "📋 *WEEKLY REPORT*\n";
     $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
@@ -2257,6 +2258,9 @@ function formatWeeklyReportForWhatsApp(array $report): string
     $message .= "*Work in Progress*\n{$wip}\n\n";
     $message .= "*Issues / Blockers*\n{$blockers}\n\n";
     $message .= "*Plan for Next Week*\n{$plan}";
+    if ($attendanceText !== '') {
+        $message .= "\n\n" . $attendanceText;
+    }
     return $message;
 }
 
