@@ -81,12 +81,16 @@ try {
     $bugTypeId = isset($_GET['bug_type_id']) && $_GET['bug_type_id'] !== '' && $_GET['bug_type_id'] !== 'all'
         ? trim((string)$_GET['bug_type_id'])
         : '';
+    $verificationFilter = isset($_GET['verification']) && $_GET['verification'] !== '' && $_GET['verification'] !== 'all'
+        ? trim((string)$_GET['verification'])
+        : '';
 
     $filters = [
         'search' => $search,
         'priority' => $priority,
         'fixed_by' => $fixedBy,
         'bug_type_id' => $bugTypeId,
+        'verification_filter' => $verificationFilter,
         'facet_user_id' => $user_id,
     ];
 

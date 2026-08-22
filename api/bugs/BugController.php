@@ -602,6 +602,37 @@ class BugController extends BaseAPI {
         }
     }
 
+    /**
+     * Why: Fixes page verification tabs must filter in SQL, not on one paginated page.
+     */
+    private function verificationFilterSql(string $filter): ?string
+    {
+        if (!$this->bugsTableHasTesterRetestColumns()) {
+            return null;
+        }
+
+        $filter = strtolower(trim($filter));
+        $allowed = ['retest_pending', 'not_retested', 'verified_fixed', 'still_broken', 'retested'];
+        if (!in_array($filter, $allowed, true)) {
+            return null;
+        }
+
+        switch ($filter) {
+            case 'retest_pending':
+                return 'b.tester_retested IS NULL';
+            case 'not_retested':
+                return 'b.tester_retested = 0';
+            case 'verified_fixed':
+                return 'b.tester_retested = 1 AND b.tester_issue_fixed = 1';
+            case 'still_broken':
+                return 'b.tester_retested = 1 AND b.tester_issue_fixed = 0';
+            case 'retested':
+                return 'b.tester_retested = 1 AND b.tester_issue_fixed IS NULL';
+            default:
+                return null;
+        }
+    }
+
     private function bugsTableHasTesterVerificationNotesColumn(): bool
     {
         try {
@@ -2517,6 +2548,9 @@ class BugController extends BaseAPI {
             $priority = isset($filters['priority']) ? trim((string) $filters['priority']) : '';
             $fixedBy = isset($filters['fixed_by']) ? trim((string) $filters['fixed_by']) : '';
             $bugTypeId = isset($filters['bug_type_id']) ? trim((string) $filters['bug_type_id']) : '';
+            $verificationFilter = isset($filters['verification_filter'])
+                ? trim((string) $filters['verification_filter'])
+                : '';
             $accessUserId = isset($filters['access_user_id']) ? $filters['access_user_id'] : null;
             $facetUserId = isset($filters['facet_user_id']) ? $filters['facet_user_id'] : null;
 
@@ -2533,9 +2567,9 @@ class BugController extends BaseAPI {
             }
             $statusKey = !empty($statusList) ? implode(',', $statusList) : 'all';
 
-            $cacheKey = 'bugs_v6_' . md5(json_encode([
+            $cacheKey = 'bugs_v7_' . md5(json_encode([
                 $projectId, $page, $limit, $statusKey, $userId,
-                $search, $priority, $fixedBy, $bugTypeId, $accessUserId, $facetUserId,
+                $search, $priority, $fixedBy, $bugTypeId, $verificationFilter, $accessUserId, $facetUserId,
             ]));
             $cachedResult = $this->getCache($cacheKey);
             if ($cachedResult !== null) {
@@ -2604,6 +2638,13 @@ class BugController extends BaseAPI {
                     WHERE j.bug_id = b.id AND j.bug_type_id = ?
                 )";
                 $countParams[] = $bugTypeId;
+            }
+
+            $verificationSql = $verificationFilter !== '' && $verificationFilter !== 'all'
+                ? $this->verificationFilterSql($verificationFilter)
+                : null;
+            if ($verificationSql !== null) {
+                $where[] = $verificationSql;
             }
 
             $whereSql = !empty($where) ? (" WHERE " . implode(" AND ", $where)) : "";
@@ -2724,6 +2765,27 @@ class BugController extends BaseAPI {
                 $myResolvedCount = (int) ($myResolvedStmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
             }
 
+            $this->ensureTesterRetestColumns();
+            $retestPendingStmt = $this->conn->prepare(
+                "SELECT COUNT(*) as total FROM bugs b{$facetSql}" .
+                (!empty($facetWhere) ? " AND " : " WHERE ") .
+                "b.status = 'fixed' AND b.tester_retested IS NULL"
+            );
+            $retestPendingStmt->execute($facetParams);
+            $retestPendingCount = (int) ($retestPendingStmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
+
+            $myRetestPendingCount = 0;
+            if ($facetUserId) {
+                $myRetestPendingStmt = $this->conn->prepare(
+                    "SELECT COUNT(*) as total FROM bugs b{$facetSql}" .
+                    (!empty($facetWhere) ? " AND " : " WHERE ") .
+                    "b.status = 'fixed' AND b.tester_retested IS NULL AND b.reported_by = ?"
+                );
+                $myRetestPendingParams = array_merge($facetParams, [$facetUserId]);
+                $myRetestPendingStmt->execute($myRetestPendingParams);
+                $myRetestPendingCount = (int) ($myRetestPendingStmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
+            }
+
             $response = [
                 'bugs' => $bugs,
                 'pagination' => [
@@ -2737,6 +2799,8 @@ class BugController extends BaseAPI {
                         'resolved' => $resolvedCount,
                         'myOpen' => $myOpenCount,
                         'myResolved' => $myResolvedCount,
+                        'retestPending' => $retestPendingCount,
+                        'myRetestPending' => $myRetestPendingCount,
                     ],
                 ],
             ];
