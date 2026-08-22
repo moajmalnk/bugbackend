@@ -35,6 +35,7 @@ class AdminSidebarCountsController extends BaseAPI
         return [
             'dashboard' => 0,
             'projects' => 0,
+            'compliance' => 0,
             'bugs' => 0,
             'retests' => 0,
             'fixes' => 0,
@@ -150,6 +151,13 @@ class AdminSidebarCountsController extends BaseAPI
                      WHERE pm.user_id = ? AND {$nonArchived}",
                     [$userId]
                 );
+            }
+
+            if (
+                ($isAdmin || $role === 'developer' || $role === 'tester')
+                && $this->dbTableExists('project_compliance')
+            ) {
+                $counts['compliance'] = $this->countIncompleteCompliance($userId, $isAdmin, $nonArchived);
             }
         }
 
@@ -396,6 +404,35 @@ class AdminSidebarCountsController extends BaseAPI
         header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
         header('Pragma: no-cache');
         $this->sendJsonResponse(200, 'OK', $counts);
+    }
+
+    /**
+     * Why: Fallback compliance badge until the client recomputes pending rows from project payloads.
+     */
+    private function countIncompleteCompliance(string $userId, bool $isAdmin, string $nonArchived): int
+    {
+        $incomplete = "COALESCE(pc.emergency_bypass, 0) = 0
+            AND COALESCE(pc.pipeline_stage, 'developer_unverified') != 'admin_ready'";
+
+        if ($isAdmin) {
+            return $this->countOrZero(
+                "SELECT COUNT(*) FROM projects p
+                 LEFT JOIN project_compliance pc ON pc.project_id = p.id
+                 WHERE {$nonArchived} AND {$incomplete}"
+            );
+        }
+
+        if (!$this->dbTableExists('project_members')) {
+            return 0;
+        }
+
+        return $this->countOrZero(
+            "SELECT COUNT(DISTINCT p.id) FROM projects p
+             INNER JOIN project_members pm ON pm.project_id = p.id
+             LEFT JOIN project_compliance pc ON pc.project_id = p.id
+             WHERE pm.user_id = ? AND {$nonArchived} AND {$incomplete}",
+            [$userId]
+        );
     }
 
     /**
