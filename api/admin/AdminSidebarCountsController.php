@@ -324,10 +324,27 @@ class AdminSidebarCountsController extends BaseAPI
         }
 
         if ($can('ACTIVITY_VIEW')) {
-            if ($this->dbTableExists('activities')) {
+            if ($this->dbTableExists('project_activities')) {
+                if ($isAdmin) {
+                    $counts['activities'] = $this->countOrZero(
+                        'SELECT COUNT(*) FROM project_activities'
+                    );
+                } else {
+                    $counts['activities'] = $this->countOrZero(
+                        "SELECT COUNT(*) FROM project_activities pa
+                         WHERE (
+                            pa.project_id IS NULL
+                            OR pa.project_id IN (
+                                SELECT DISTINCT project_id FROM project_members WHERE user_id = ?
+                                UNION
+                                SELECT DISTINCT id FROM projects WHERE created_by = ?
+                            )
+                         )",
+                        [$userId, $userId]
+                    );
+                }
+            } elseif ($this->dbTableExists('activities')) {
                 $counts['activities'] = $this->countOrZero('SELECT COUNT(*) FROM activities');
-            } elseif ($this->dbTableExists('project_activities')) {
-                $counts['activities'] = $this->countOrZero('SELECT COUNT(*) FROM project_activities');
             }
         }
 
