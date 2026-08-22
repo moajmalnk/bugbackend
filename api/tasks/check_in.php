@@ -465,195 +465,164 @@ class CheckInController extends BaseAPI {
                 'office_radius_m' => br_office_radius_m($this->conn),
             ];
 
-            // Notifications before response — sendJsonResponse() exits and skips code below it
-            try {
-                if (!isset($username)) {
-                    $userStmt = $this->conn->prepare("SELECT username FROM users WHERE id = ? LIMIT 1");
-                    $userStmt->execute([$userId]);
-                    $user = $userStmt->fetch(PDO::FETCH_ASSOC);
-                    $username = $user['username'] ?? 'User';
-                }
-                if (!isset($projectNames)) {
-                    $projectNames = [];
-                }
+            // Why: Return check-in success immediately; push / email / WhatsApp run after response.
+            error_log("🔍 CheckInController - Sending success response: " . json_encode($responseData));
+            $conn = $this->conn;
+            $notifyUsername = $username ?? 'User';
+            $notifyProjectNames = isset($projectNames) && is_array($projectNames) ? $projectNames : [];
+            $yesterdayDate = date('Y-m-d', strtotime($submissionDate . ' -1 day'));
+            $this->sendJsonThen(
+                function () use (
+                    $conn,
+                    $userId,
+                    $notifyUsername,
+                    $checkInTime,
+                    $submissionDate,
+                    $plannedWork,
+                    $notifyProjectNames,
+                    $workMode,
+                    $isLate,
+                    $isSunday,
+                    $strikeResult,
+                    $policyStatus,
+                    $checkInDistance,
+                    $yesterdayDate
+                ) {
+                    try {
+                        $username = $notifyUsername;
+                        $projectNames = $notifyProjectNames;
 
-                $yesterdaySummary = [
-                    'has_record' => false,
-                    'date' => date('Y-m-d', strtotime($submissionDate . ' -1 day')),
-                    'check_in_time' => null,
-                    'check_out_time' => null,
-                    'hours_today' => 0,
-                    'overtime_hours' => 0,
-                ];
-                try {
-                    require_once __DIR__ . '/../../utils/work_submission_ot.php';
-                    $yesterdayDate = $yesterdaySummary['date'];
-                    $yCols = [];
-                    $yColRes = $this->conn->query('SHOW COLUMNS FROM work_submissions');
-                    if ($yColRes) {
-                        while ($yCol = $yColRes->fetch(PDO::FETCH_ASSOC)) {
-                            $yCols[] = $yCol['Field'];
+                        $yesterdaySummary = null;
+                        try {
+                            $yStmt = $conn->prepare(
+                                "SELECT * FROM work_submissions WHERE user_id = ? AND submission_date = ? LIMIT 1"
+                            );
+                            $yStmt->execute([$userId, $yesterdayDate]);
+                            $yRow = $yStmt->fetch(PDO::FETCH_ASSOC);
+                            if ($yRow) {
+                                $hoursToday = isset($yRow['hours_today']) ? (float)$yRow['hours_today'] : null;
+                                $checkOutTime = null;
+                                if (!empty($yRow['updated_at']) && $hoursToday !== null && $hoursToday > 0) {
+                                    $updatedAt = strtotime($yRow['updated_at']);
+                                    $checkInAt = !empty($yRow['check_in_time'])
+                                        ? strtotime($yRow['check_in_time'])
+                                        : (!empty($yRow['start_time']) ? strtotime($yesterdayDate . ' ' . $yRow['start_time']) : null);
+                                    if ($updatedAt && (!$checkInAt || $updatedAt > $checkInAt)) {
+                                        $checkOutTime = $yRow['updated_at'];
+                                    }
+                                }
+                                $yesterdaySummary = [
+                                    'has_record' => true,
+                                    'date' => $yRow['submission_date'] ?? $yesterdayDate,
+                                    'check_in_time' => $yRow['check_in_time']
+                                        ?? (!empty($yRow['start_time']) ? ($yesterdayDate . ' ' . $yRow['start_time']) : null),
+                                    'check_out_time' => $checkOutTime,
+                                    'hours_today' => $hoursToday,
+                                    'overtime_hours' => br_effective_overtime_hours_for_stats($yRow),
+                                    'work_mode' => $yRow['work_mode'] ?? null,
+                                    'is_late' => !empty($yRow['is_late']),
+                                ];
+                            }
+                        } catch (Exception $e) {
+                            error_log("⚠️ Deferred yesterday attendance for check-in notice: " . $e->getMessage());
                         }
-                    }
-                    $selectParts = ['submission_date', 'hours_today', 'updated_at', 'created_at'];
-                    foreach ([
-                        'check_in_time',
-                        'start_time',
-                        'overtime_hours',
-                        'requested_extra_hours',
-                        'approval_reason',
-                        'extra_hours_approval_status',
-                        'extra_hours_approved_amount',
-                        'completed_tasks',
-                        'pending_tasks',
-                        'ongoing_tasks',
-                        'notes',
-                        'total_break_minutes',
-                        'work_mode',
-                        'is_late',
-                    ] as $optionalCol) {
-                        if (in_array($optionalCol, $yCols, true)) {
-                            $selectParts[] = $optionalCol;
-                        }
-                    }
-                    $yStmt = $this->conn->prepare(
-                        'SELECT ' . implode(', ', $selectParts) . '
-                         FROM work_submissions
-                         WHERE user_id = ? AND submission_date = ?
-                         LIMIT 1'
-                    );
-                    $yStmt->execute([$userId, $yesterdayDate]);
-                    $yRow = $yStmt->fetch(PDO::FETCH_ASSOC);
-                    if ($yRow) {
-                        $hoursToday = (float)($yRow['hours_today'] ?? 0);
-                        $hasWorkUpdate = $hoursToday > 0
-                            || ((int)($yRow['total_break_minutes'] ?? 0)) > 0
-                            || trim((string)($yRow['completed_tasks'] ?? '')) !== ''
-                            || trim((string)($yRow['pending_tasks'] ?? '')) !== ''
-                            || trim((string)($yRow['ongoing_tasks'] ?? '')) !== ''
-                            || trim((string)($yRow['notes'] ?? '')) !== '';
 
-                        $checkOutTime = null;
-                        if ($hasWorkUpdate && !empty($yRow['updated_at'])) {
-                            $updatedAt = strtotime($yRow['updated_at']);
-                            $checkInAt = !empty($yRow['check_in_time'])
-                                ? strtotime($yRow['check_in_time'])
-                                : (!empty($yRow['start_time']) ? strtotime($yesterdayDate . ' ' . $yRow['start_time']) : null);
-                            if ($updatedAt && (!$checkInAt || $updatedAt > $checkInAt)) {
-                                $checkOutTime = $yRow['updated_at'];
+                        $plannedSummary = $plannedWork;
+                        if (!empty($projectNames)) {
+                            $plannedSummary = implode(', ', $projectNames);
+                            if ($plannedWork) {
+                                $plannedSummary .= ' — ' . $plannedWork;
                             }
                         }
 
-                        $yesterdaySummary = [
-                            'has_record' => true,
-                            'date' => $yRow['submission_date'] ?? $yesterdayDate,
-                            'check_in_time' => $yRow['check_in_time']
-                                ?? (!empty($yRow['start_time']) ? ($yesterdayDate . ' ' . $yRow['start_time']) : null),
-                            'check_out_time' => $checkOutTime,
-                            'hours_today' => $hoursToday,
-                            'overtime_hours' => br_effective_overtime_hours_for_stats($yRow),
-                            'work_mode' => $yRow['work_mode'] ?? null,
-                            'is_late' => !empty($yRow['is_late']),
+                        try {
+                            require_once __DIR__ . '/../NotificationManager.php';
+                            $nm = NotificationManager::getInstance();
+                            $modeLabel = $workMode === 'wfh' ? 'WFH' : 'Office';
+                            $latePrefix = $isLate ? 'LATE · ' : '';
+                            $plannedWithMode = trim($latePrefix . $modeLabel . ($plannedSummary ? ' — ' . $plannedSummary : ''));
+                            $nm->notifyWorkCheckIn($userId, $checkInTime, $submissionDate, $plannedWithMode);
+
+                            if (!empty($strikeResult['restriction_created']) && !empty($strikeResult['office_only_week'])) {
+                                $nm->notifyOfficeOnlyWeek(
+                                    $userId,
+                                    $strikeResult['office_only_week']['week_start'],
+                                    $strikeResult['office_only_week']['week_end']
+                                );
+                            }
+                        } catch (Exception $e) {
+                            error_log("⚠️ Failed in-app/push check-in notification: " . $e->getMessage());
+                        }
+
+                        $adminStmt = $conn->prepare(
+                            "SELECT email, phone FROM users WHERE account_active = 1 AND (role = 'admin' OR role_id = 1) AND (email IS NOT NULL OR phone IS NOT NULL)"
+                        );
+                        $adminStmt->execute();
+                        $adminRows = $adminStmt->fetchAll(PDO::FETCH_ASSOC);
+                        $adminEmails = array_values(array_filter(array_column($adminRows, 'email')));
+                        $adminPhones = array_values(array_filter(array_column($adminRows, 'phone')));
+
+                        $attendanceMeta = [
+                            'work_mode' => $workMode,
+                            'is_late' => (bool)$isLate,
+                            'is_sunday' => (bool)$isSunday,
+                            'late_count' => (int)($strikeResult['late_count'] ?? $policyStatus['late_count'] ?? 0),
+                            'late_limit' => (int)($strikeResult['late_limit'] ?? br_checkin_late_limit()),
+                            'check_in_distance_m' => $checkInDistance,
+                            'office_label' => br_office_label($conn),
+                            'office_only' => !empty($policyStatus['office_only']),
+                            'office_only_week_start' => $policyStatus['office_only_week_start'] ?? null,
+                            'office_only_week_end' => $policyStatus['office_only_week_end'] ?? null,
+                            'upcoming_office_only_week' => $policyStatus['upcoming_office_only_week']
+                                ?? ($strikeResult['office_only_week'] ?? null),
+                            'restriction_created' => !empty($strikeResult['restriction_created']),
+                            'warning' => $strikeResult['warning'] ?? null,
                         ];
+
+                        try {
+                            require_once __DIR__ . '/../../utils/email.php';
+                            foreach ($adminEmails as $adminEmail) {
+                                sendCheckInNotificationEmail(
+                                    $adminEmail,
+                                    $username,
+                                    $checkInTime,
+                                    $submissionDate,
+                                    !empty($projectNames) ? $projectNames : null,
+                                    $plannedWork,
+                                    $yesterdaySummary,
+                                    $attendanceMeta
+                                );
+                            }
+                        } catch (Exception $e) {
+                            error_log("⚠️ Failed to send check-in email notification: " . $e->getMessage());
+                        }
+
+                        try {
+                            require_once __DIR__ . '/../../utils/whatsapp.php';
+                            foreach ($adminPhones as $adminPhone) {
+                                sendCheckInNotificationWhatsApp(
+                                    $adminPhone,
+                                    $username,
+                                    $checkInTime,
+                                    $submissionDate,
+                                    !empty($projectNames) ? $projectNames : null,
+                                    $plannedWork,
+                                    $yesterdaySummary,
+                                    $attendanceMeta
+                                );
+                            }
+                        } catch (Exception $e) {
+                            error_log("⚠️ Failed to send check-in WhatsApp notification: " . $e->getMessage());
+                        }
+                    } catch (Exception $e) {
+                        error_log("⚠️ Error sending deferred check-in notifications: " . $e->getMessage());
                     }
-                } catch (Exception $e) {
-                    error_log("⚠️ Failed to load yesterday attendance for check-in notice: " . $e->getMessage());
-                }
+                },
+                200,
+                "Checked in successfully",
+                $responseData
+            );
 
-                $plannedSummary = $plannedWork;
-                if (!empty($projectNames)) {
-                    $plannedSummary = implode(', ', $projectNames);
-                    if ($plannedWork) {
-                        $plannedSummary .= ' — ' . $plannedWork;
-                    }
-                }
-
-                try {
-                    require_once __DIR__ . '/../NotificationManager.php';
-                    $nm = NotificationManager::getInstance();
-                    $modeLabel = $workMode === 'wfh' ? 'WFH' : 'Office';
-                    $latePrefix = $isLate ? 'LATE · ' : '';
-                    $plannedWithMode = trim($latePrefix . $modeLabel . ($plannedSummary ? ' — ' . $plannedSummary : ''));
-                    $nm->notifyWorkCheckIn($userId, $checkInTime, $submissionDate, $plannedWithMode);
-
-                    if (!empty($strikeResult['restriction_created']) && !empty($strikeResult['office_only_week'])) {
-                        $nm->notifyOfficeOnlyWeek(
-                            $userId,
-                            $strikeResult['office_only_week']['week_start'],
-                            $strikeResult['office_only_week']['week_end']
-                        );
-                    }
-                } catch (Exception $e) {
-                    error_log("⚠️ Failed in-app/push check-in notification: " . $e->getMessage());
-                }
-
-                $adminStmt = $this->conn->prepare(
-                    "SELECT email, phone FROM users WHERE account_active = 1 AND (role = 'admin' OR role_id = 1) AND (email IS NOT NULL OR phone IS NOT NULL)"
-                );
-                $adminStmt->execute();
-                $adminRows = $adminStmt->fetchAll(PDO::FETCH_ASSOC);
-                $adminEmails = array_values(array_filter(array_column($adminRows, 'email')));
-                $adminPhones = array_values(array_filter(array_column($adminRows, 'phone')));
-
-                $attendanceMeta = [
-                    'work_mode' => $workMode,
-                    'is_late' => (bool)$isLate,
-                    'is_sunday' => (bool)$isSunday,
-                    'late_count' => (int)($strikeResult['late_count'] ?? $policyStatus['late_count'] ?? 0),
-                    'late_limit' => (int)($strikeResult['late_limit'] ?? br_checkin_late_limit()),
-                    'check_in_distance_m' => $checkInDistance,
-                    'office_label' => br_office_label($this->conn),
-                    'office_only' => !empty($policyStatus['office_only']),
-                    'office_only_week_start' => $policyStatus['office_only_week_start'] ?? null,
-                    'office_only_week_end' => $policyStatus['office_only_week_end'] ?? null,
-                    'upcoming_office_only_week' => $policyStatus['upcoming_office_only_week']
-                        ?? ($strikeResult['office_only_week'] ?? null),
-                    'restriction_created' => !empty($strikeResult['restriction_created']),
-                    'warning' => $strikeResult['warning'] ?? null,
-                ];
-
-                try {
-                    require_once __DIR__ . '/../../utils/email.php';
-                    foreach ($adminEmails as $adminEmail) {
-                        sendCheckInNotificationEmail(
-                            $adminEmail,
-                            $username,
-                            $checkInTime,
-                            $submissionDate,
-                            !empty($projectNames) ? $projectNames : null,
-                            $plannedWork,
-                            $yesterdaySummary,
-                            $attendanceMeta
-                        );
-                    }
-                } catch (Exception $e) {
-                    error_log("⚠️ Failed to send check-in email notification: " . $e->getMessage());
-                }
-
-                try {
-                    require_once __DIR__ . '/../../utils/whatsapp.php';
-                    foreach ($adminPhones as $adminPhone) {
-                        sendCheckInNotificationWhatsApp(
-                            $adminPhone,
-                            $username,
-                            $checkInTime,
-                            $submissionDate,
-                            !empty($projectNames) ? $projectNames : null,
-                            $plannedWork,
-                            $yesterdaySummary,
-                            $attendanceMeta
-                        );
-                    }
-                } catch (Exception $e) {
-                    error_log("⚠️ Failed to send check-in WhatsApp notification: " . $e->getMessage());
-                }
-            } catch (Exception $e) {
-                error_log("⚠️ Error sending check-in notifications: " . $e->getMessage());
-            }
-
-            error_log("🔍 CheckInController - Sending success response: " . json_encode($responseData));
-            $this->sendJsonResponse(200, "Checked in successfully", $responseData);
-            
             return;
 
         } catch (PDOException $e) {
