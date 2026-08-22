@@ -256,6 +256,9 @@ class UserController extends BaseAPI {
             $select = br_user_hr_select_cols($select, $cols);
 
             $query = "SELECT " . implode(', ', $select) . " FROM users WHERE id = ?";
+            if (in_array('deleted_at', $cols, true)) {
+                $query .= " AND deleted_at IS NULL";
+            }
             $stmt = $this->conn->prepare($query);
             
             if (!$stmt) {
@@ -316,12 +319,6 @@ class UserController extends BaseAPI {
             $limit = max(1, min(100, intval($limit)));
             $offset = ($page - 1) * $limit;
 
-            // Get total count
-            $countQuery = "SELECT COUNT(*) as total FROM users";
-            $countStmt = $this->conn->query($countQuery);
-            $totalUsers = $countStmt->fetch(PDO::FETCH_ASSOC)['total'];
-
-            // Get users with pagination
             $cols = [];
             $colRes = $this->conn->query('SHOW COLUMNS FROM users');
             if ($colRes) {
@@ -329,6 +326,15 @@ class UserController extends BaseAPI {
                     $cols[] = $row['Field'];
                 }
             }
+            $hasDeletedAt = in_array('deleted_at', $cols, true);
+            $liveWhere = $hasDeletedAt ? ' WHERE deleted_at IS NULL' : '';
+
+            // Get total count
+            $countQuery = "SELECT COUNT(*) as total FROM users{$liveWhere}";
+            $countStmt = $this->conn->query($countQuery);
+            $totalUsers = $countStmt->fetch(PDO::FETCH_ASSOC)['total'];
+
+            // Get users with pagination
             $select = br_user_avatar_select_cols(
                 ['id', 'username', 'email', 'phone', 'role', 'role_id', 'created_at', 'updated_at'],
                 $cols
@@ -341,7 +347,7 @@ class UserController extends BaseAPI {
                 $select[] = 'account_active';
             }
             $query = 'SELECT ' . implode(', ', $select) . '
-                     FROM users
+                     FROM users' . $liveWhere . '
                      ORDER BY created_at DESC
                      LIMIT ? OFFSET ?';
             
@@ -483,24 +489,42 @@ class UserController extends BaseAPI {
 
             $decoded = $this->validateToken();
 
-            if (!$permanent) {
-                $checkStmt = $this->conn->prepare("SELECT id, username, email, role, deleted_at FROM users WHERE id = ?");
+            // Normal delete → recycle bin. Force delete → permanent removal.
+            if (!$permanent && !$force) {
+                require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
+                $rb = new RecycleBinService($this->conn);
+                $rb->ensureSchema('user');
+
+                $hasDeletedAt = $rb->columnExists('users', 'deleted_at');
+                $selectCols = 'id, username, email, role';
+                if ($hasDeletedAt) {
+                    $selectCols .= ', deleted_at';
+                }
+                $checkStmt = $this->conn->prepare("SELECT {$selectCols} FROM users WHERE id = ?");
                 $checkStmt->execute([$userId]);
                 $user = $checkStmt->fetch(PDO::FETCH_ASSOC);
                 if (!$user) {
                     $this->sendJsonResponse(404, "User not found");
                     return;
                 }
-                if (!empty($user['deleted_at'])) {
-                    $this->sendJsonResponse(404, "User not found");
+                if ($hasDeletedAt && !empty($user['deleted_at'])) {
+                    $this->sendJsonResponse(200, "User is already in the recycle bin");
                     return;
                 }
-                require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
-                $rb = new RecycleBinService($this->conn);
-                $rb->softDelete('user', $userId, $decoded->user_id, [
-                    'title' => $user['username'],
-                    'subtitle' => $user['email'] ?? $user['role'] ?? null,
-                ]);
+
+                try {
+                    $rb->softDelete('user', $userId, $decoded->user_id, [
+                        'title' => $user['username'],
+                        'subtitle' => $user['email'] ?? $user['role'] ?? null,
+                    ]);
+                } catch (Throwable $e) {
+                    error_log('User soft-delete failed: ' . $e->getMessage());
+                    $this->sendJsonResponse(
+                        500,
+                        'Could not move user to recycle bin. Run migration 081_recycle_bin.sql or contact support.'
+                    );
+                    return;
+                }
                 $this->sendJsonResponse(200, "User moved to recycle bin");
                 return;
             }

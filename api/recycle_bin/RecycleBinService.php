@@ -73,6 +73,65 @@ class RecycleBinService
     }
 
     /**
+     * Why: Soft-delete must work on hosts that have not run migration 081 yet.
+     */
+    public function ensureSchema(string $entityType = 'user'): void
+    {
+        $entityType = strtolower(trim($entityType));
+        if (!isset(self::ENTITY_TYPES[$entityType])) {
+            return;
+        }
+
+        if (!$this->tableExists('recycle_bin_items')) {
+            $this->conn->exec(
+                "CREATE TABLE IF NOT EXISTS `recycle_bin_items` (
+                  `id`          VARCHAR(36)  NOT NULL,
+                  `entity_type` VARCHAR(32)  NOT NULL,
+                  `entity_id`   VARCHAR(64)  NOT NULL,
+                  `title`       VARCHAR(255) NOT NULL,
+                  `subtitle`    VARCHAR(255) NULL DEFAULT NULL,
+                  `project_id`  VARCHAR(36)  NULL DEFAULT NULL,
+                  `metadata`    JSON         NULL DEFAULT NULL,
+                  `deleted_by`  VARCHAR(36)  NOT NULL,
+                  `deleted_at`  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  `restored_at` DATETIME     NULL DEFAULT NULL,
+                  `purged_at`   DATETIME     NULL DEFAULT NULL,
+                  `expires_at`  DATETIME     NULL DEFAULT NULL,
+                  PRIMARY KEY (`id`),
+                  KEY `idx_rb_deleted_at` (`deleted_at` DESC),
+                  KEY `idx_rb_entity_type` (`entity_type`, `deleted_at` DESC),
+                  KEY `idx_rb_active` (`purged_at`, `restored_at`, `deleted_at`),
+                  KEY `idx_rb_entity_lookup` (`entity_type`, `entity_id`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci"
+            );
+        }
+
+        $table = self::ENTITY_TYPES[$entityType]['table'];
+        if (!$this->tableExists($table)) {
+            return;
+        }
+        if (!$this->columnExists($table, 'deleted_at')) {
+            $this->conn->exec("ALTER TABLE `{$table}` ADD COLUMN `deleted_at` DATETIME NULL DEFAULT NULL");
+        }
+        if (!$this->columnExists($table, 'deleted_by')) {
+            $this->conn->exec("ALTER TABLE `{$table}` ADD COLUMN `deleted_by` VARCHAR(36) NULL DEFAULT NULL");
+        }
+        $indexName = 'idx_' . $table . '_deleted_at';
+        try {
+            $idx = $this->conn->prepare(
+                'SELECT COUNT(*) FROM information_schema.STATISTICS
+                 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?'
+            );
+            $idx->execute([$table, $indexName]);
+            if ((int) $idx->fetchColumn() === 0) {
+                $this->conn->exec("CREATE INDEX `{$indexName}` ON `{$table}` (`deleted_at`)");
+            }
+        } catch (Throwable $e) {
+            // Index optional — soft-delete still works without it
+        }
+    }
+
+    /**
      * @param array{title?: string, subtitle?: string, project_id?: string|null, metadata?: array|null} $meta
      */
     public function softDelete(string $entityType, string $entityId, string $deletedBy, array $meta = []): string
