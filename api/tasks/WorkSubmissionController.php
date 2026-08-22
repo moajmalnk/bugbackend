@@ -435,6 +435,8 @@ class WorkSubmissionController extends BaseAPI {
                 'planned_work' => $plannedWorkData,
                 'planned_work_status' => $plannedWorkStatusData,
                 'planned_work_notes' => $plannedWorkNotesData,
+                'project_updates' => is_array($payload['project_updates'] ?? null) ? $payload['project_updates'] : [],
+                'time_allocation' => is_array($payload['time_allocation'] ?? null) ? $payload['time_allocation'] : null,
                 'work_mode' => $attendanceExtras['work_mode'],
                 'is_late' => $attendanceExtras['is_late'],
                 'is_sunday' => $attendanceExtras['is_sunday'],
