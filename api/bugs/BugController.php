@@ -612,7 +612,14 @@ class BugController extends BaseAPI {
         }
 
         $filter = strtolower(trim($filter));
-        $allowed = ['retest_pending', 'not_retested', 'verified_fixed', 'still_broken', 'retested'];
+        $allowed = [
+            'retest_pending',
+            'not_retested',
+            'verified_fixed',
+            'still_broken',
+            'retested',
+            'retest_history',
+        ];
         if (!in_array($filter, $allowed, true)) {
             return null;
         }
@@ -628,6 +635,8 @@ class BugController extends BaseAPI {
                 return 'b.tester_retested = 1 AND b.tester_issue_fixed = 0';
             case 'retested':
                 return 'b.tester_retested = 1 AND b.tester_issue_fixed IS NULL';
+            case 'retest_history':
+                return 'b.tester_retested IS NOT NULL';
             default:
                 return null;
         }
@@ -2527,6 +2536,50 @@ class BugController extends BaseAPI {
             $rejected = (int) ($row['rejected'] ?? 0);
             $open = (int) ($row['open_count'] ?? ($pending + $inProgress));
 
+            $retests = [
+                'pending' => 0,
+                'verified_fixed' => 0,
+                'still_broken' => 0,
+                'not_retested' => 0,
+                'retested' => 0,
+                'total' => 0,
+            ];
+
+            if ($this->bugsTableHasTesterRetestColumns()) {
+                $retestWhere = $where;
+                $retestParams = $params;
+
+                $pendingWhere = array_merge($retestWhere, ["b.status = 'fixed'", 'b.tester_retested IS NULL']);
+                $pendingSql = ' WHERE ' . implode(' AND ', $pendingWhere);
+                $pendingStmt = $this->conn->prepare("SELECT COUNT(*) AS total FROM bugs b{$pendingSql}");
+                $pendingStmt->execute($retestParams);
+                $retests['pending'] = (int) ($pendingStmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
+
+                $historyWhere = array_merge($retestWhere, ['b.tester_retested IS NOT NULL']);
+                if ($from && $to) {
+                    $historyWhere[] = 'DATE(COALESCE(b.tester_verified_at, b.updated_at)) BETWEEN ? AND ?';
+                    $retestParams[] = $from;
+                    $retestParams[] = $to;
+                }
+                $historySql = ' WHERE ' . implode(' AND ', $historyWhere);
+                $historyStmt = $this->conn->prepare(
+                    "SELECT
+                        COUNT(*) AS total,
+                        SUM(CASE WHEN b.tester_retested = 1 AND b.tester_issue_fixed = 1 THEN 1 ELSE 0 END) AS verified_fixed,
+                        SUM(CASE WHEN b.tester_retested = 1 AND b.tester_issue_fixed = 0 THEN 1 ELSE 0 END) AS still_broken,
+                        SUM(CASE WHEN b.tester_retested = 0 THEN 1 ELSE 0 END) AS not_retested,
+                        SUM(CASE WHEN b.tester_retested = 1 AND b.tester_issue_fixed IS NULL THEN 1 ELSE 0 END) AS retested
+                     FROM bugs b{$historySql}"
+                );
+                $historyStmt->execute($retestParams);
+                $historyRow = $historyStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+                $retests['verified_fixed'] = (int) ($historyRow['verified_fixed'] ?? 0);
+                $retests['still_broken'] = (int) ($historyRow['still_broken'] ?? 0);
+                $retests['not_retested'] = (int) ($historyRow['not_retested'] ?? 0);
+                $retests['retested'] = (int) ($historyRow['retested'] ?? 0);
+                $retests['total'] = (int) ($historyRow['total'] ?? 0);
+            }
+
             return [
                 'from' => $from,
                 'to' => $to,
@@ -2543,6 +2596,7 @@ class BugController extends BaseAPI {
                     'medium' => (int) ($row['open_medium'] ?? 0),
                     'low' => (int) ($row['open_low'] ?? 0),
                 ],
+                'retests' => $retests,
             ];
         } catch (Exception $e) {
             error_log('getDashboardStats error: ' . $e->getMessage());
@@ -2579,6 +2633,13 @@ class BugController extends BaseAPI {
             $verificationFilter = isset($filters['verification_filter'])
                 ? trim((string) $filters['verification_filter'])
                 : '';
+            $verifiedFrom = isset($filters['verified_from'])
+                ? trim((string) $filters['verified_from'])
+                : '';
+            $verifiedTo = isset($filters['verified_to'])
+                ? trim((string) $filters['verified_to'])
+                : '';
+            $sort = isset($filters['sort']) ? trim((string) $filters['sort']) : '';
             $accessUserId = isset($filters['access_user_id']) ? $filters['access_user_id'] : null;
             $facetUserId = isset($filters['facet_user_id']) ? $filters['facet_user_id'] : null;
 
@@ -2595,9 +2656,10 @@ class BugController extends BaseAPI {
             }
             $statusKey = !empty($statusList) ? implode(',', $statusList) : 'all';
 
-            $cacheKey = 'bugs_v7_' . md5(json_encode([
+            $cacheKey = 'bugs_v8_' . md5(json_encode([
                 $projectId, $page, $limit, $statusKey, $userId,
-                $search, $priority, $fixedBy, $bugTypeId, $verificationFilter, $accessUserId, $facetUserId,
+                $search, $priority, $fixedBy, $bugTypeId, $verificationFilter,
+                $verifiedFrom, $verifiedTo, $sort, $accessUserId, $facetUserId,
             ]));
             $cachedResult = $this->getCache($cacheKey);
             if ($cachedResult !== null) {
@@ -2675,6 +2737,19 @@ class BugController extends BaseAPI {
                 $where[] = $verificationSql;
             }
 
+            if (
+                $verifiedFrom !== ''
+                && $verifiedTo !== ''
+                && preg_match('/^\d{4}-\d{2}-\d{2}$/', $verifiedFrom)
+                && preg_match('/^\d{4}-\d{2}-\d{2}$/', $verifiedTo)
+            ) {
+                $rangeFrom = $verifiedFrom <= $verifiedTo ? $verifiedFrom : $verifiedTo;
+                $rangeTo = $verifiedFrom <= $verifiedTo ? $verifiedTo : $verifiedFrom;
+                $where[] = "DATE(COALESCE(b.tester_verified_at, b.updated_at)) BETWEEN ? AND ?";
+                $countParams[] = $rangeFrom;
+                $countParams[] = $rangeTo;
+            }
+
             $whereSql = !empty($where) ? (" WHERE " . implode(" AND ", $where)) : "";
             $countQuery .= $whereSql;
 
@@ -2684,7 +2759,10 @@ class BugController extends BaseAPI {
 
             // Why: Paginate unique bug ids FIRST — dedupe-after-LIMIT shrinks pages (1-10 of 73 → 1 row).
             $offset = ($page - 1) * $limit;
-            $idQuery = "SELECT b.id FROM bugs b{$whereSql} ORDER BY b.created_at DESC LIMIT ? OFFSET ?";
+            $orderSql = $sort === 'verified_at'
+                ? 'COALESCE(b.tester_verified_at, b.updated_at) DESC'
+                : 'b.created_at DESC';
+            $idQuery = "SELECT b.id FROM bugs b{$whereSql} ORDER BY {$orderSql} LIMIT ? OFFSET ?";
             $idParams = array_merge($countParams, [(int) $limit, (int) $offset]);
             $idStmt = $this->conn->prepare($idQuery);
             $idStmt->execute($idParams);
@@ -2694,13 +2772,20 @@ class BugController extends BaseAPI {
             if (!empty($pageIds)) {
                 $inPlaceholders = implode(',', array_fill(0, count($pageIds), '?'));
                 $fieldPlaceholders = implode(',', array_fill(0, count($pageIds), '?'));
+                $hasRetest = $this->bugsTableHasTesterRetestColumns();
+                $retesterSelect = $hasRetest ? ', retester.username as tester_verified_by_name' : '';
+                $retesterJoin = $hasRetest
+                    ? 'LEFT JOIN users retester ON b.tester_verified_by = retester.id'
+                    : '';
                 $detailQuery = "SELECT b.*, 
                      " . $this->bugActorUsernameSelectSql('reported_by', 'reporter_name') . ",
                      p.name as project_name,
                      " . $this->bugActorUsernameSelectSql('updated_by', 'updated_by_name') . ",
                      " . $this->bugActorUsernameSelectSql('fixed_by', 'fixed_by_name') . "
+                     {$retesterSelect}
                      FROM bugs b
                      LEFT JOIN projects p ON CAST(b.project_id AS CHAR) = CAST(p.id AS CHAR)
+                     {$retesterJoin}
                      WHERE b.id IN ($inPlaceholders)
                      ORDER BY FIELD(b.id, $fieldPlaceholders)";
                 $detailStmt = $this->conn->prepare($detailQuery);

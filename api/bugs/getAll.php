@@ -84,6 +84,9 @@ try {
     $verificationFilter = isset($_GET['verification']) && $_GET['verification'] !== '' && $_GET['verification'] !== 'all'
         ? trim((string)$_GET['verification'])
         : '';
+    $verifiedFrom = isset($_GET['verified_from']) ? trim((string) $_GET['verified_from']) : '';
+    $verifiedTo = isset($_GET['verified_to']) ? trim((string) $_GET['verified_to']) : '';
+    $sort = isset($_GET['sort']) ? trim((string) $_GET['sort']) : '';
 
     $filters = [
         'search' => $search,
@@ -91,6 +94,9 @@ try {
         'fixed_by' => $fixedBy,
         'bug_type_id' => $bugTypeId,
         'verification_filter' => $verificationFilter,
+        'verified_from' => $verifiedFrom,
+        'verified_to' => $verifiedTo,
+        'sort' => $sort,
         'facet_user_id' => $user_id,
     ];
 
