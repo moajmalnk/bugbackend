@@ -119,7 +119,14 @@ class AdminSidebarCountsController extends BaseAPI
         }
 
         if ($this->dbTableExists('projects')) {
-            $counts['projects'] = $this->countOrZero('SELECT COUNT(*) FROM projects');
+            if ($isAdmin) {
+                $counts['projects'] = $this->countOrZero('SELECT COUNT(*) FROM projects');
+            } elseif ($this->dbTableExists('project_members')) {
+                $counts['projects'] = $this->countOrZero(
+                    'SELECT COUNT(DISTINCT project_id) FROM project_members WHERE user_id = ?',
+                    [$userId]
+                );
+            }
         }
 
         if ($this->dbTableExists('updates')) {
@@ -134,20 +141,28 @@ class AdminSidebarCountsController extends BaseAPI
         }
 
         if (($can('DOCS_VIEW') || $can('DOCS_CREATE')) && $this->dbTableExists('user_documents')) {
-            $archived = $this->dbColumnExists('user_documents', 'is_archived')
-                ? ' WHERE COALESCE(is_archived, 0) = 0'
-                : '';
-            $counts['docs'] = $this->countOrZero("SELECT COUNT(*) FROM user_documents{$archived}");
+            if ($isAdmin) {
+                $archived = $this->dbColumnExists('user_documents', 'is_archived')
+                    ? ' WHERE COALESCE(is_archived, 0) = 0'
+                    : '';
+                $counts['docs'] = $this->countOrZero("SELECT COUNT(*) FROM user_documents{$archived}");
+            } elseif ($role === 'developer' || $role === 'tester') {
+                $counts['docs'] = $this->countSharedDocuments($userId);
+            }
         }
 
         if (
             ($can('SHEETS_VIEW') || $can('SHEETS_MANAGE') || $can('DOCS_VIEW'))
             && $this->dbTableExists('user_sheets')
         ) {
-            $archived = $this->dbColumnExists('user_sheets', 'is_archived')
-                ? ' WHERE COALESCE(is_archived, 0) = 0'
-                : '';
-            $counts['sheets'] = $this->countOrZero("SELECT COUNT(*) FROM user_sheets{$archived}");
+            if ($isAdmin) {
+                $archived = $this->dbColumnExists('user_sheets', 'is_archived')
+                    ? ' WHERE COALESCE(is_archived, 0) = 0'
+                    : '';
+                $counts['sheets'] = $this->countOrZero("SELECT COUNT(*) FROM user_sheets{$archived}");
+            } elseif ($role === 'developer' || $role === 'tester') {
+                $counts['sheets'] = $this->countSharedSheets($userId);
+            }
         }
 
         if (
@@ -168,7 +183,7 @@ class AdminSidebarCountsController extends BaseAPI
             ($can('TASKS_VIEW_ALL') || $can('TASKS_VIEW_ASSIGNED') || $can('TASKS_CREATE'))
             && $this->dbTableExists('shared_tasks')
         ) {
-            if ($isAdmin || $can('TASKS_VIEW_ALL')) {
+            if ($isAdmin) {
                 $counts['tasks'] = $this->countOrZero('SELECT COUNT(*) FROM shared_tasks');
             } else {
                 $assigneeJoin = $this->dbTableExists('shared_task_assignees')
@@ -317,5 +332,37 @@ class AdminSidebarCountsController extends BaseAPI
         header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
         header('Pragma: no-cache');
         $this->sendJsonResponse(200, 'OK', $counts);
+    }
+
+    /**
+     * Why: Sidebar shared-doc badge must match BugDocs "Shared Docs" tab logic.
+     */
+    private function countSharedDocuments(string $userId): int
+    {
+        try {
+            require_once __DIR__ . '/../docs/BugDocsController.php';
+            $controller = new BugDocsController();
+            $result = $controller->listSharedDocuments($userId, false);
+            return (int) ($result['count'] ?? 0);
+        } catch (Throwable $e) {
+            error_log('AdminSidebarCountsController countSharedDocuments: ' . $e->getMessage());
+            return 0;
+        }
+    }
+
+    /**
+     * Why: Sidebar shared-sheet badge must match BugSheets "Shared Sheets" tab logic.
+     */
+    private function countSharedSheets(string $userId): int
+    {
+        try {
+            require_once __DIR__ . '/../sheets/BugSheetsController.php';
+            $controller = new BugSheetsController();
+            $result = $controller->listSharedSheets($userId, false);
+            return (int) ($result['count'] ?? 0);
+        } catch (Throwable $e) {
+            error_log('AdminSidebarCountsController countSharedSheets: ' . $e->getMessage());
+            return 0;
+        }
     }
 }
