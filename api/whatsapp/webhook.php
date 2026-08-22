@@ -403,9 +403,10 @@ if ($user === null) {
     $apitxt->sendText(
         $phone,
         "Access denied\n\n"
-        . "This WhatsApp number is not linked to a BugRicer account.\n\n"
-        . "Add your phone in Profile:\n{$appUrl}\n\n"
-        . "Then message us again."
+        . "This number is not on BugRicer yet.\n\n"
+        . "1. Open BugRicer and add your phone in Profile\n"
+        . "2. Message us again here\n\n"
+        . "{$appUrl}"
     );
     http_response_code(200);
     echo json_encode(['status' => 'unregistered_user', 'phone' => $fromRaw]);
@@ -456,7 +457,11 @@ if ($user !== null && ($isAnytimeMenu || $isAnytimeHelp || $isCancelAnytime || $
         echo json_encode(['ok' => true, 'cmd' => 'cancel']);
         exit;
     } elseif ($isAnytimeMenu && (!$isGreetingOnly || !$draftStarted)) {
-        openProjectMenu($db, $apitxt, $phone, $user);
+        if (empty($user['is_wa_verified'])) {
+            sendOtpReminder($apitxt, $phone, $user);
+        } else {
+            openProjectMenu($db, $apitxt, $phone, $user);
+        }
         http_response_code(200);
         echo json_encode(['ok' => true, 'cmd' => 'menu']);
         exit;
@@ -483,6 +488,16 @@ switch ($step) {
 
     // ── OTP verification ─────────────────────────────────────────────────────
     case STEP_WAITING_OTP:
+        // Resend / help first — even when the previous code expired.
+        if ($waAction === 'resend_otp' || $interactiveId === 'resend_otp') {
+            sendOtp($db, $apitxt, $phone, $user);
+            break;
+        }
+        if ($waAction === 'help' || $interactiveId === 'wa_help') {
+            sendOtpHelpMessage($apitxt, $phone, $user);
+            break;
+        }
+
         $otp     = $session['otp_code'];
         $expiry  = strtotime($session['otp_expires_at'] ?? '1970-01-01');
         $attempts = (int)$session['otp_attempts'];
@@ -491,7 +506,12 @@ switch ($step) {
         // Rate limit
         if ($attempts >= OTP_MAX_ATTEMPTS && (time() - $windowStart) < OTP_RATE_WINDOW_SECS) {
             $waitMins = ceil((OTP_RATE_WINDOW_SECS - (time() - $windowStart)) / 60);
-            $apitxt->sendText($phone, "Too many attempts.\nPlease wait {$waitMins} minute(s), then try again.");
+            $apitxt->sendInteractiveButtons(
+                $phone,
+                'Too many tries',
+                "Please wait *{$waitMins} min*, then tap *Resend code*.",
+                [['id' => 'resend_otp', 'title' => 'Resend code']]
+            );
             break;
         }
 
@@ -502,22 +522,22 @@ switch ($step) {
 
         // Expired
         if (time() > $expiry) {
-            $apitxt->sendInteractiveButtons($phone,
-                'OTP expired',
-                'Your code has expired. Tap below for a new one.',
-                [['id' => 'resend_otp', 'title' => 'Resend OTP']]
+            $apitxt->sendInteractiveButtons(
+                $phone,
+                'Code expired',
+                "Your code expired.\nTap *Resend code* to get a new one.",
+                [['id' => 'resend_otp', 'title' => 'Resend code']]
             );
             break;
         }
 
-        // Interactive button: resend
-        if ($interactiveId === 'resend_otp') {
-            sendOtp($db, $apitxt, $phone, $user);
+        // Verify OTP — user must reply with exactly 6 digits (not hi/menu/etc.)
+        $enteredOtp = preg_replace('/\D/', '', $msgText);
+        if (strlen($enteredOtp) !== 6) {
+            sendOtpReminder($apitxt, $phone, $user);
             break;
         }
 
-        // Verify OTP
-        $enteredOtp = preg_replace('/\D/', '', $msgText);
         $newAttempts = $attempts + 1;
         $firstAttemptAt = ($attempts === 0) ? date('Y-m-d H:i:s') : $session['otp_first_attempt_at'];
 
@@ -526,7 +546,15 @@ switch ($step) {
 
         if ($enteredOtp !== $otp) {
             $remaining = max(0, OTP_MAX_ATTEMPTS - $newAttempts);
-            $apitxt->sendText($phone, "Incorrect code.\n{$remaining} attempt(s) left.");
+            $apitxt->sendInteractiveButtons(
+                $phone,
+                'Wrong code',
+                "That code didn't match.\n*{$remaining}* try(s) left.\n\nReply with the 6-digit code from our last message.",
+                [
+                    ['id' => 'resend_otp', 'title' => 'Resend code'],
+                    ['id' => 'wa_help', 'title' => 'Help'],
+                ]
+            );
             break;
         }
 
@@ -535,8 +563,12 @@ switch ($step) {
            ->execute([$user['id']]);
         $user['is_wa_verified'] = 1;
 
-        $apitxt->sendText($phone, "Verified. Welcome, *{$user['name']}*.");
-        sendProjectPicker($db, $apitxt, $phone, $user);
+        $apitxt->sendText(
+            $phone,
+            "✅ *Verified!* Welcome, *{$user['name']}*.\n\n"
+            . "Next: choose a project and report a bug."
+        );
+        sendProjectPicker($db, $apitxt, $phone, $user, true);
         setStep($db, $phone, STEP_SELECT_PROJECT);
         break;
 
@@ -1470,11 +1502,55 @@ function sendOtp(PDO $db, APITxtService $apitxt, string $phone, array $user): vo
          WHERE phone=?"
     )->execute([$otp, $expires, $phone]);
 
-    $apitxt->sendText($phone,
-        "Hi *{$user['name']}*\n\n"
-        . "Your BugRicer verification code:\n"
+    $apitxt->sendInteractiveButtons(
+        $phone,
+        'Welcome to BugRicer',
+        "Hi *{$user['name']}* 👋\n\n"
+        . "One-time check — reply with this code:\n\n"
         . "*{$otp}*\n\n"
-        . "Valid for 10 minutes."
+        . "👉 Type the *6 numbers* above in this chat.\n"
+        . "Example: {$otp}\n\n"
+        . "Valid for 10 minutes.",
+        [
+            ['id' => 'resend_otp', 'title' => 'Resend code'],
+            ['id' => 'wa_help', 'title' => 'Help'],
+        ]
+    );
+}
+
+/** Remind user to reply with digits — does not consume an OTP attempt. */
+function sendOtpReminder(APITxtService $apitxt, string $phone, array $user): void
+{
+    $apitxt->sendInteractiveButtons(
+        $phone,
+        'Enter your code',
+        "Hi *{$user['name']}*,\n\n"
+        . "Reply with the *6-digit code* from our last message.\n\n"
+        . "Just type the numbers — nothing else.\n"
+        . "Example: 123456",
+        [
+            ['id' => 'resend_otp', 'title' => 'Resend code'],
+            ['id' => 'wa_help', 'title' => 'Help'],
+        ]
+    );
+}
+
+function sendOtpHelpMessage(APITxtService $apitxt, string $phone, array $user): void
+{
+    $appUrl = rtrim(Environment::get('APP_BASE_URL', 'https://bugs.bugricer.com'), '/');
+    $apitxt->sendInteractiveButtons(
+        $phone,
+        'How it works',
+        "Hi *{$user['name']}*\n\n"
+        . "*First time:*\n"
+        . "1. We send a 6-digit code\n"
+        . "2. You *reply with that code* here\n"
+        . "3. Pick a project → send bug details → Submit\n\n"
+        . "*After that:* just message *hi* anytime.\n\n"
+        .         "Web: {$appUrl}",
+        [
+            ['id' => 'resend_otp', 'title' => 'Resend code'],
+        ]
     );
 }
 
@@ -1503,10 +1579,11 @@ function sendHelpMessage(APITxtService $apitxt, string $phone, array $user): voi
         $phone,
         'Help',
         "Hi *{$user['name']}*\n\n"
-        . "1. Choose a project\n"
-        . "2. Send title + details / photos / voice\n"
-        . "3. Tap Submit\n\n"
-        . "Commands: *menu* · *cancel* · *submit*",
+        . "Report a bug in 3 steps:\n"
+        . "1️⃣ Choose a project\n"
+        . "2️⃣ Send title + details (photos/voice OK)\n"
+        . "3️⃣ Tap *Submit*\n\n"
+        . "Anytime: type *menu* or *hi*",
         [
             ['id' => 'wa_menu', 'title' => 'Projects'],
             ['id' => 'cancel_bug', 'title' => 'Cancel draft'],
@@ -1683,7 +1760,8 @@ function sendProjectBrowsePage(
     string $phone,
     array $user,
     string $group,
-    int $page
+    int $page,
+    string $intro = ''
 ): void {
     $page = max(1, $page);
     $all = waLoadSelectableProjects($db, $user);
@@ -1728,17 +1806,19 @@ function sendProjectBrowsePage(
         ? " · page {$page}/" . (int) ceil($total / $perPage)
         : '';
 
+    $lead = $intro !== '' ? "{$intro}\n\n" : '';
+
     $apitxt->sendInteractiveButtons(
         $phone,
         'Projects',
-        "*{$groupLabel}* ({$total}{$pageNote})\n\n"
+        $lead . "*{$groupLabel}* ({$total}{$pageNote})\n\n"
         . implode("\n", $lines) . "\n\n"
         . "Reply *1–" . count($slice) . "*, type a name, or tap below.",
         $buttons
     );
 }
 
-function sendProjectPicker(PDO $db, APITxtService $apitxt, string $phone, array $user): void
+function sendProjectPicker(PDO $db, APITxtService $apitxt, string $phone, array $user, bool $justVerified = false): void
 {
     $projects = waLoadSelectableProjects($db, $user);
     $isAdmin = waIsAdminUser($user);
@@ -1757,6 +1837,9 @@ function sendProjectPicker(PDO $db, APITxtService $apitxt, string $phone, array 
 
     $count = count($projects);
     $scopeLine = $isAdmin ? 'All projects' : 'Your assigned projects';
+    $intro = $justVerified
+        ? "Choose a project:"
+        : "Hi *{$user['name']}* — pick a project to report a bug:";
 
     // Few projects → direct buttons (clean).
     if ($count <= 3) {
@@ -1770,7 +1853,7 @@ function sendProjectPicker(PDO $db, APITxtService $apitxt, string $phone, array 
         $apitxt->sendInteractiveButtons(
             $phone,
             'Projects',
-            "Hi *{$user['name']}*\n{$scopeLine} — tap one to report a bug.",
+            "{$intro}\n{$scopeLine} — tap one below.",
             $buttons
         );
         return;
@@ -1778,7 +1861,7 @@ function sendProjectPicker(PDO $db, APITxtService $apitxt, string $phone, array 
 
     // Medium list → short page (no 40-line dump).
     if ($count <= 8) {
-        sendProjectBrowsePage($db, $apitxt, $phone, $user, 'all', 1);
+        sendProjectBrowsePage($db, $apitxt, $phone, $user, 'all', 1, $intro);
         return;
     }
 
@@ -1786,7 +1869,7 @@ function sendProjectPicker(PDO $db, APITxtService $apitxt, string $phone, array 
     $apitxt->sendInteractiveButtons(
         $phone,
         'Projects',
-        "Hi *{$user['name']}*\n*{$scopeLine}* ({$count})\n\n"
+        "{$intro}\n*{$scopeLine}* ({$count})\n\n"
         . "Open a group, or type part of the project name.",
         [
             ['id' => 'wa_browse_a', 'title' => 'A – I'],
