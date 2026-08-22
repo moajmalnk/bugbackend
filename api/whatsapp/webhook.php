@@ -420,6 +420,27 @@ $isAnytimeMenu = ($waAction === 'menu')
 $isAnytimeHelp = ($waAction === 'help') || $cmd === 'help';
 $isCancelAnytime = ($waAction === 'cancel');
 $isSubmitAnytime = ($waAction === 'submit');
+$isNewSameProject = ($waAction === 'new_same_project')
+    || (string) $interactiveId === 'wa_new_same_project'
+    || $cmd === 'same project';
+$isNewOtherProject = ($waAction === 'new_other_project')
+    || (string) $interactiveId === 'wa_new_other_project'
+    || in_array($cmd, ['other project', 'another project', 'new project'], true);
+
+// Same / other project — must run before IDLE (which otherwise opens the full picker).
+if ($user !== null && !empty($user['is_wa_verified']) && ($isNewSameProject || $isNewOtherProject)) {
+    if ($isNewOtherProject) {
+        openProjectMenu($db, $apitxt, $phone, $user);
+    } else {
+        $lastProjectId = (string) (getOrCreateSession($db, $phone)['selected_project_id'] ?? '');
+        if ($lastProjectId === '' || !waStartBugDraftInProject($db, $apitxt, $phone, $user, $lastProjectId, true)) {
+            openProjectMenu($db, $apitxt, $phone, $user);
+        }
+    }
+    http_response_code(200);
+    echo json_encode(['ok' => true, 'cmd' => $isNewOtherProject ? 'new_other_project' : 'new_same_project']);
+    exit;
+}
 
 if ($user !== null && ($isAnytimeMenu || $isAnytimeHelp || $isCancelAnytime || $isSubmitAnytime)) {
     $draftStarted = in_array($session['current_step'], [STEP_AWAITING_CONTENT, STEP_CONFIRM], true)
@@ -430,25 +451,6 @@ if ($user !== null && ($isAnytimeMenu || $isAnytimeHelp || $isCancelAnytime || $
         sendHelpMessage($apitxt, $phone, $user);
         http_response_code(200);
         echo json_encode(['ok' => true, 'cmd' => 'help']);
-        exit;
-    }
-
-    $isNewSameProject = ($waAction === 'new_same_project')
-        || (string) $interactiveId === 'wa_new_same_project';
-    $isNewOtherProject = ($waAction === 'new_other_project')
-        || (string) $interactiveId === 'wa_new_other_project';
-
-    if ($user !== null && !empty($user['is_wa_verified']) && ($isNewSameProject || $isNewOtherProject)) {
-        if ($isNewOtherProject) {
-            openProjectMenu($db, $apitxt, $phone, $user);
-        } else {
-            $lastProjectId = (string) (getOrCreateSession($db, $phone)['selected_project_id'] ?? '');
-            if ($lastProjectId === '' || !waStartBugDraftInProject($db, $apitxt, $phone, $user, $lastProjectId)) {
-                openProjectMenu($db, $apitxt, $phone, $user);
-            }
-        }
-        http_response_code(200);
-        echo json_encode(['ok' => true, 'cmd' => $isNewOtherProject ? 'new_other_project' : 'new_same_project']);
         exit;
     }
 
@@ -1108,18 +1110,18 @@ switch ($step) {
 
         $apitxt->sendInteractiveButtons(
             $phone,
-            'Bug filed',
-            "Ticket: *{$shortId}*\n"
-            . "Title: {$title}"
+            'Bug filed ✓',
+            "Ticket *{$shortId}*\n"
+            . "*{$title}*"
             . $attachText . "\n\n"
-            . "Open:\n{$bugUrl}\n\n"
-            . "Report another bug?",
+            . "{$bugUrl}\n\n"
+            . "Report another?",
             [
                 ['id' => 'wa_new_same_project', 'title' => 'Same project'],
                 ['id' => 'wa_new_other_project', 'title' => 'Other project'],
                 ['id' => 'wa_help', 'title' => 'Help'],
             ],
-            "Last: {$projectLabel}"
+            $projectLabel
         );
         break;
 
@@ -1501,7 +1503,6 @@ function waResolveAction(?string $interactiveId, string $msgText, string $msgTex
         'change project' => 'menu',
         'new bug' => 'menu',
         'same project' => 'new_same_project',
-        'same' => 'new_same_project',
         'other project' => 'new_other_project',
         'another project' => 'new_other_project',
         'new project' => 'new_other_project',
@@ -1709,7 +1710,8 @@ function waStartBugDraftInProject(
     APITxtService $apitxt,
     string $phone,
     array $user,
-    string $projectId
+    string $projectId,
+    bool $sameProjectContinue = false
 ): bool {
     $memberProjects = waLoadSelectableProjects($db, $user);
     $project = null;
@@ -1738,14 +1740,22 @@ function waStartBugDraftInProject(
          WHERE phone=?'
     )->execute([STEP_AWAITING_CONTENT, $projectId, $phone]);
 
+    $body = $sameProjectContinue
+        ? "Project: *{$project['name']}*\n\n"
+            . "What's the issue?\n\n"
+            . "• Send a *title* first\n"
+            . "• Then details, photo, or voice (optional)\n\n"
+            . "Reply *Submit* when ready."
+        : "Project: *{$project['name']}*\n\n"
+            . "Send a *title* first (what went wrong?).\n"
+            . "Then details, photos, or voice notes.\n"
+            . "Tip: photo *caption* can be your title.\n\n"
+            . "Reply *Submit* when ready.";
+
     $apitxt->sendInteractiveButtons(
         $phone,
-        'Report a bug',
-        "Project: *{$project['name']}*\n\n"
-        . "Send a *title* first (what went wrong?).\n"
-        . "Then details, photos, or voice notes.\n"
-        . "Tip: photo *caption* can be your title.\n"
-        . "Tap *Submit* when ready.",
+        $sameProjectContinue ? 'Another bug' : 'Report a bug',
+        $body,
         [
             ['id' => 'cancel_bug', 'title' => 'Cancel'],
             ['id' => 'wa_menu', 'title' => 'Change project'],
