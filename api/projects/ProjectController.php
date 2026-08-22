@@ -630,14 +630,18 @@ class ProjectController extends BaseAPI
                     $currentStmt->execute([$id]);
                     $current = $currentStmt->fetch(PDO::FETCH_ASSOC);
                     if ($current && $current['status'] !== $newStatus) {
-                        $complianceController = new ProjectComplianceController();
-                        $gate = $complianceController->canCloseProject($id);
-                        if (!$gate['allowed']) {
-                            $this->sendJsonResponse(
-                                403,
-                                'Cannot change project to a closed status until CODO compliance is complete (Developer + QA checklists) or emergency bypass is authorized.'
-                            );
-                            return;
+                        $isRealAdmin = $this->isRealAdmin($decoded);
+                        $adminArchiveBypass = $isRealAdmin && $newStatus === 'archived';
+                        if (!$adminArchiveBypass) {
+                            $complianceController = new ProjectComplianceController();
+                            $gate = $complianceController->canCloseProject($id);
+                            if (!$gate['allowed']) {
+                                $this->sendJsonResponse(
+                                    403,
+                                    'Cannot change project to a closed status until CODO compliance is complete (Developer + QA checklists) or emergency bypass is authorized.'
+                                );
+                                return;
+                            }
                         }
                     }
                 }
@@ -853,6 +857,27 @@ class ProjectController extends BaseAPI
         } catch (Exception $e) {
             error_log('ensureProjectUpdatesColumn: ' . $e->getMessage());
         }
+    }
+
+    /** Real admin session — not impersonating another user. */
+    private function isRealAdmin($decoded): bool
+    {
+        $userRole = strtolower(trim((string) ($decoded->role ?? '')));
+        if ($userRole !== 'admin') {
+            return false;
+        }
+
+        $isImpersonated = false;
+        if (isset($decoded->impersonated)) {
+            $isImpersonated = $decoded->impersonated === true
+                || $decoded->impersonated === 'true'
+                || $decoded->impersonated === 1;
+        }
+        if (!$isImpersonated && isset($decoded->admin_id) && !empty($decoded->admin_id)) {
+            $isImpersonated = true;
+        }
+
+        return !$isImpersonated;
     }
 
     private function userCanViewProject($decoded, string $projectId): bool
