@@ -179,6 +179,133 @@ function br_get_weekly_report(PDO $conn, string $userId, string $weekStart): ?ar
 }
 
 /**
+ * @param array<string,mixed> $row
+ * @return array<string,mixed>
+ */
+function br_present_weekly_report_row(array $row): array
+{
+    $weekStart = (string)($row['week_start'] ?? '');
+    $weekEnd = (string)($row['week_end'] ?? '');
+    $reportDate = (string)($row['report_date'] ?? $weekEnd);
+    $completed = (string)($row['work_completed'] ?? '');
+    $wip = (string)($row['work_in_progress'] ?? '');
+    $blockers = trim((string)($row['issues_blockers'] ?? ''));
+    $plan = (string)($row['plan_next_week'] ?? '');
+
+    return [
+        'id' => (string)($row['id'] ?? ''),
+        'user_id' => (string)($row['user_id'] ?? ''),
+        'user_name' => trim((string)($row['username'] ?? $row['user_name'] ?? 'User')) ?: 'User',
+        'user_role' => $row['role'] ?? null,
+        'week_start' => $weekStart,
+        'week_end' => $weekEnd,
+        'week_label' => $weekStart !== '' && $weekEnd !== ''
+            ? br_weekly_report_week_label($weekStart, $weekEnd)
+            : '',
+        'report_date' => $reportDate,
+        'date_label' => $reportDate !== '' ? br_weekly_report_date_label($reportDate) : '',
+        'work_completed' => $completed,
+        'work_in_progress' => $wip,
+        'issues_blockers' => $blockers,
+        'plan_next_week' => $plan,
+        'notified_at' => $row['notified_at'] ?? null,
+        'created_at' => $row['created_at'] ?? null,
+        'updated_at' => $row['updated_at'] ?? null,
+        'counts' => [
+            'completed' => count(br_weekly_report_split_lines($completed)),
+            'wip' => count(br_weekly_report_split_lines($wip)),
+            'blockers' => count(br_weekly_report_split_lines($blockers)),
+            'plan' => count(br_weekly_report_split_lines($plan)),
+        ],
+    ];
+}
+
+/**
+ * Why: Admins review the team; developers only read their own filed weeks.
+ *
+ * @param array{scope?:string,user_id?:string,week_start?:string,q?:string,page?:int,limit?:int} $opts
+ * @return array{items:array<int,array<string,mixed>>,total:int,page:int,limit:int,week_start:?string,week_end:?string,week_label:?string}
+ */
+function br_list_weekly_reports(PDO $conn, array $opts): array
+{
+    $page = max(1, (int)($opts['page'] ?? 1));
+    $limit = (int)($opts['limit'] ?? 20);
+    if ($limit < 1) {
+        $limit = 20;
+    }
+    if ($limit > 100) {
+        $limit = 100;
+    }
+    $offset = ($page - 1) * $limit;
+
+    $where = ['1=1'];
+    $params = [];
+
+    $scopeUserId = trim((string)($opts['user_id'] ?? ''));
+    if ($scopeUserId !== '') {
+        $where[] = 'wr.user_id = ?';
+        $params[] = $scopeUserId;
+    }
+
+    $weekStart = substr(trim((string)($opts['week_start'] ?? '')), 0, 10);
+    $weekEnd = null;
+    $weekLabel = null;
+    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $weekStart)) {
+        $bounds = br_monday_saturday_week_bounds($weekStart);
+        $weekStart = $bounds['week_start'];
+        $weekEnd = $bounds['week_end'];
+        $weekLabel = br_weekly_report_week_label($weekStart, $weekEnd);
+        $where[] = 'wr.week_start = ?';
+        $params[] = $weekStart;
+    } else {
+        $weekStart = null;
+    }
+
+    $q = trim((string)($opts['q'] ?? ''));
+    if ($q !== '') {
+        $where[] = 'u.username LIKE ?';
+        $params[] = '%' . $q . '%';
+    }
+
+    $whereSql = implode(' AND ', $where);
+    $countStmt = $conn->prepare(
+        "SELECT COUNT(*) AS total
+         FROM weekly_reports wr
+         INNER JOIN users u ON u.id = wr.user_id
+         WHERE {$whereSql}"
+    );
+    $countStmt->execute($params);
+    $total = (int)($countStmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
+
+    $stmt = $conn->prepare(
+        "SELECT wr.id, wr.user_id, wr.week_start, wr.week_end, wr.report_date,
+                wr.work_completed, wr.work_in_progress, wr.issues_blockers, wr.plan_next_week,
+                wr.notified_at, wr.created_at, wr.updated_at,
+                u.username, u.role
+         FROM weekly_reports wr
+         INNER JOIN users u ON u.id = wr.user_id
+         WHERE {$whereSql}
+         ORDER BY wr.week_start DESC, wr.updated_at DESC, u.username ASC
+         LIMIT {$limit} OFFSET {$offset}"
+    );
+    $stmt->execute($params);
+    $items = [];
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $items[] = br_present_weekly_report_row($row);
+    }
+
+    return [
+        'items' => $items,
+        'total' => $total,
+        'page' => $page,
+        'limit' => $limit,
+        'week_start' => $weekStart,
+        'week_end' => $weekEnd,
+        'week_label' => $weekLabel,
+    ];
+}
+
+/**
  * Why: Prefill from this week's daily checkout notes so Saturday is edit-not-rewrite.
  *
  * @return array{work_completed:string,work_in_progress:string,plan_next_week:string}
