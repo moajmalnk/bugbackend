@@ -686,7 +686,9 @@ switch ($step) {
             $phone,
             'Report a bug',
             "Project: *{$project['name']}*\n\n"
-            . "Send a *title*, then details, photos, or voice notes.\n"
+            . "Send a *title* first (what went wrong?).\n"
+            . "Then details, photos, or voice notes.\n"
+            . "Tip: photo *caption* can be your title.\n"
             . "Tap *Submit* when ready.",
             [
                 ['id' => 'cancel_bug', 'title' => 'Cancel'],
@@ -723,7 +725,7 @@ switch ($step) {
         // Allow skipping description after title is set
         if ($isSkipDesc) {
             $currentSession = getOrCreateSession($db, $phone);
-            if (empty($currentSession['temp_title'])) {
+            if (waIsPlaceholderBugTitle($currentSession['temp_title'] ?? null)) {
                 $apitxt->sendText($phone, "Please send a *title* first.");
                 break;
             }
@@ -741,14 +743,27 @@ switch ($step) {
 
         if ($isSubmitText || $isSubmitButton) {
             $currentSession = getOrCreateSession($db, $phone);
-            if (empty($currentSession['temp_title'])) {
+            $attachCount = countStagedAttachments($db, $phone);
+            $hasDraftText = !empty(trim((string) ($currentSession['temp_description'] ?? '')));
+            $hasRealTitle = !waIsPlaceholderBugTitle($currentSession['temp_title'] ?? null);
+
+            if (!$hasRealTitle && $attachCount === 0 && !$hasDraftText) {
                 $apitxt->sendText($phone, "Please send a *title* before submitting.");
                 break;
             }
 
-            $tempTitle = $currentSession['temp_title'];
-            $tempDesc  = $currentSession['temp_description'] ?: 'No description';
-            $attachCount = countStagedAttachments($db, $phone);
+            $projectName = waLoadProjectName($db, $currentSession['selected_project_id']);
+            $mediaKind   = $attachCount > 0 ? waPrimaryAttachmentKind($db, $phone) : 'document';
+            $tempTitle   = waResolveBugTitle(
+                $currentSession['temp_title'],
+                $currentSession['temp_description'],
+                $mediaKind,
+                $projectName
+            );
+            $db->prepare('UPDATE wa_sessions SET temp_title=? WHERE phone=?')
+                ->execute([$tempTitle, $phone]);
+
+            $tempDesc  = $currentSession['temp_description'] ?: 'No description provided.';
             $descPreview = mb_strlen($tempDesc) > 120 ? (mb_substr($tempDesc, 0, 117) . '...') : $tempDesc;
 
             $apitxt->sendInteractiveButtons($phone,
@@ -769,7 +784,7 @@ switch ($step) {
         // Text: first message = title, second = description
         if ($msgType === 'text' && $msgText !== '') {
             $currentSession = getOrCreateSession($db, $phone);
-            if (empty($currentSession['temp_title'])) {
+            if (waIsPlaceholderBugTitle($currentSession['temp_title'] ?? null)) {
                 $db->prepare("UPDATE wa_sessions SET temp_title=? WHERE phone=?")
                    ->execute([mb_substr($msgText, 0, 255), $phone]);
                 $apitxt->sendInteractiveButtons(
@@ -809,14 +824,8 @@ switch ($step) {
             waDebugPersistMediaPayload($payload, $msgType, $mediaUrl, $mediaId);
 
             $currentSession = getOrCreateSession($db, $phone);
-            if (empty($currentSession['temp_title'])) {
-                $db->prepare("UPDATE wa_sessions SET temp_title=? WHERE phone=?")
-                   ->execute(['Bug reported via WhatsApp', $phone]);
-            }
-            if (empty($currentSession['temp_description'])) {
-                $caption = $msgText !== '' ? $msgText : 'No description provided.';
-                $db->prepare("UPDATE wa_sessions SET temp_description=? WHERE phone=?")
-                   ->execute([$caption, $phone]);
+            if ($msgText !== '') {
+                waApplyCaptionToDraft($db, $phone, $msgText, $currentSession);
             }
 
             $result = null;
@@ -860,18 +869,19 @@ switch ($step) {
             $kind = str_starts_with($result['mime'], 'audio/')
                 ? 'Voice note'
                 : (str_starts_with($result['mime'], 'image/') ? 'Photo' : 'File');
-            sendDraftActions(
-                $apitxt,
-                $phone,
-                "✅ {$kind} saved (*{$attachCount}* total).\nSend more, or tap *Submit*."
-            );
+            $freshSession = getOrCreateSession($db, $phone);
+            $needsTitle = waIsPlaceholderBugTitle($freshSession['temp_title'] ?? null);
+            $followUp = $needsTitle
+                ? "✅ {$kind} saved (*{$attachCount}* total).\nSend a *title* (what went wrong?), then *Submit*."
+                : "✅ {$kind} saved (*{$attachCount}* total).\nSend more, or tap *Submit*.";
+            sendDraftActions($apitxt, $phone, $followUp);
             break;
         }
 
         sendDraftActions(
             $apitxt,
             $phone,
-            "Send a title, details, photo, or voice note.\nThen tap *Submit*."
+            "Send a *title* first, then details, photo, or voice note.\nThen tap *Submit*."
         );
         break;
 
@@ -930,10 +940,17 @@ switch ($step) {
             )->execute([$phone, $result['path'], $result['name'], $result['mime'], $mediaDuration]);
             $attachCount = countStagedAttachments($db, $phone);
             $sess = getOrCreateSession($db, $phone);
+            $projectName = waLoadProjectName($db, $sess['selected_project_id']);
+            $confirmTitle = waResolveBugTitle(
+                $sess['temp_title'],
+                $sess['temp_description'],
+                waPrimaryAttachmentKind($db, $phone),
+                $projectName
+            );
             $apitxt->sendInteractiveButtons(
                 $phone,
                 'Confirm',
-                "*{$sess['temp_title']}*\n"
+                "*{$confirmTitle}*\n"
                 . "Files: *{$attachCount}*\n\n"
                 . "Submit this bug?",
                 [
@@ -968,8 +985,6 @@ switch ($step) {
         }
 
         $bugId = generateUuid();
-        $title = $sess['temp_title'] ?: 'Bug reported via WhatsApp';
-        $desc  = $sess['temp_description'] ?: '';
         $now   = date('Y-m-d H:i:s');
 
         // Detect if bugs table has 'source' column
@@ -982,6 +997,19 @@ switch ($step) {
         );
         $stagedStmt->execute([$phone]);
         $staged = $stagedStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $projectName = waLoadProjectName($db, $projectId);
+        $mediaKind   = $staged !== [] ? waPrimaryAttachmentKind($db, $phone) : 'document';
+        $title       = waResolveBugTitle(
+            $sess['temp_title'],
+            $sess['temp_description'],
+            $mediaKind,
+            $projectName
+        );
+        $desc = trim((string) ($sess['temp_description'] ?? ''));
+        if ($desc === '') {
+            $desc = 'No description provided.';
+        }
 
         // Find first audio for audio_note_url (final path after move)
         $audioNoteUrl = null;
@@ -1310,6 +1338,110 @@ function waExtractInboundMedia(array $payload): array
     }
 
     return $out;
+}
+
+/** Generic auto-title we must never show in BugRicer lists. */
+function waIsPlaceholderBugTitle(?string $title): bool
+{
+    $t = strtolower(trim((string) $title));
+    return $t === '' || $t === 'bug reported via whatsapp';
+}
+
+/** First non-empty line, capped for bugs.title column. */
+function waFirstLine(string $text, int $maxLen = 255): string
+{
+    $text = trim($text);
+    if ($text === '') {
+        return '';
+    }
+    $lines = preg_split('/\R/u', $text) ?: [];
+    return mb_substr(trim((string) ($lines[0] ?? '')), 0, $maxLen);
+}
+
+/**
+ * Apply WhatsApp media caption: line 1 → title, remaining lines → description.
+ */
+function waApplyCaptionToDraft(PDO $db, string $phone, string $caption, array $currentSession): void
+{
+    $caption = trim($caption);
+    if ($caption === '') {
+        return;
+    }
+
+    $lines = preg_split('/\R/u', $caption) ?: [];
+    $titleLine = trim((string) ($lines[0] ?? ''));
+    $descRest  = trim(implode("\n", array_slice($lines, 1)));
+
+    if ($titleLine !== '' && waIsPlaceholderBugTitle($currentSession['temp_title'] ?? null)) {
+        $db->prepare('UPDATE wa_sessions SET temp_title=? WHERE phone=?')
+            ->execute([mb_substr($titleLine, 0, 255), $phone]);
+    }
+    if ($descRest !== '' && empty($currentSession['temp_description'])) {
+        $db->prepare('UPDATE wa_sessions SET temp_description=? WHERE phone=?')
+            ->execute([mb_substr($descRest, 0, 4000), $phone]);
+    }
+}
+
+function waLoadProjectName(PDO $db, ?string $projectId): ?string
+{
+    if (!$projectId) {
+        return null;
+    }
+    $stmt = $db->prepare('SELECT name FROM projects WHERE id=? LIMIT 1');
+    $stmt->execute([$projectId]);
+    $name = $stmt->fetchColumn();
+    return is_string($name) && trim($name) !== '' ? trim($name) : null;
+}
+
+/** Primary staged attachment type for title fallback labelling. */
+function waPrimaryAttachmentKind(PDO $db, string $phone): string
+{
+    $stmt = $db->prepare(
+        'SELECT file_type FROM wa_submission_attachments_temp WHERE phone=? ORDER BY id ASC LIMIT 1'
+    );
+    $stmt->execute([$phone]);
+    $mime = (string) ($stmt->fetchColumn() ?: '');
+    if (str_starts_with($mime, 'audio/')) {
+        return 'audio';
+    }
+    if (str_starts_with($mime, 'image/')) {
+        return 'image';
+    }
+    if (str_starts_with($mime, 'video/')) {
+        return 'video';
+    }
+    return 'document';
+}
+
+/**
+ * Resolve the bug title shown in BugRicer — never the generic WhatsApp placeholder.
+ */
+function waResolveBugTitle(
+    ?string $draftTitle,
+    ?string $draftDescription,
+    string $primaryMediaType = 'document',
+    ?string $projectName = null
+): string {
+    if (!waIsPlaceholderBugTitle($draftTitle)) {
+        return mb_substr(trim((string) $draftTitle), 0, 255);
+    }
+
+    $fromDesc = waFirstLine((string) $draftDescription);
+    if ($fromDesc !== '' && strtolower($fromDesc) !== 'no description provided.') {
+        return $fromDesc;
+    }
+
+    $label = match ($primaryMediaType) {
+        'image'    => 'Photo bug',
+        'video'    => 'Video bug',
+        'audio'    => 'Voice note bug',
+        default    => 'WhatsApp bug',
+    };
+    $date = date('j M Y');
+    if ($projectName) {
+        return mb_substr("{$label} – {$projectName} – {$date}", 0, 255);
+    }
+    return mb_substr("{$label} – {$date}", 0, 255);
 }
 
 /** Persist a trimmed media webhook sample for debugging failed downloads. */
