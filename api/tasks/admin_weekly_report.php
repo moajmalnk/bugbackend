@@ -26,7 +26,7 @@ class AdminWeeklyReportController extends BaseAPI
             return;
         }
         if ($method === 'DELETE') {
-            $this->deleteReport();
+            $this->deleteReport($decoded);
             return;
         }
 
@@ -72,7 +72,7 @@ class AdminWeeklyReportController extends BaseAPI
         $this->sendJsonResponse(200, 'Weekly report updated', ['report' => $saved]);
     }
 
-    private function deleteReport(): void
+    private function deleteReport($decoded): void
     {
         $id = $this->resolveReportId();
         if ($id === null) {
@@ -81,19 +81,16 @@ class AdminWeeklyReportController extends BaseAPI
         }
 
         try {
-            $deleted = br_admin_delete_weekly_report($this->conn, $id);
+            require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
+            $rb = new RecycleBinService($this->conn);
+            $rb->softDelete('weekly_report', $id, $decoded->user_id);
         } catch (Throwable $e) {
             error_log('AdminWeeklyReportController::deleteReport: ' . $e->getMessage());
             $this->sendJsonResponse(500, 'Failed to delete weekly report.');
             return;
         }
 
-        if (!$deleted) {
-            $this->sendJsonResponse(404, 'Weekly report not found.');
-            return;
-        }
-
-        $this->sendJsonResponse(200, 'Weekly report deleted');
+        $this->sendJsonResponse(200, 'Weekly report moved to recycle bin');
     }
 }
 

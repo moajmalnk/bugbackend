@@ -389,24 +389,26 @@ class ProjectController extends BaseAPI
             // - Admin impersonating another user: only that user's assigned projects
             //   so check-in matches their Assigned Projects view
             $clientIdFilter = isset($_GET['client_id']) ? trim((string) $_GET['client_id']) : '';
-            $clientWhere = $clientIdFilter !== '' ? ' WHERE client_id = ?' : '';
+            $liveFilter = 'deleted_at IS NULL';
+            $clientWhere = $clientIdFilter !== '' ? " WHERE {$liveFilter} AND client_id = ?" : " WHERE {$liveFilter}";
             $clientParams = $clientIdFilter !== '' ? [$clientIdFilter] : [];
 
             if ($user_role_lower === 'admin' && !$is_impersonated) {
-                $query = "SELECT * FROM projects" . $clientWhere;
+                $query = "SELECT * FROM projects" . $clientWhere . " ORDER BY created_at DESC";
                 $stmt = $this->conn->prepare($query);
                 $stmt->execute($clientParams);
                 $projects = $stmt->fetchAll(PDO::FETCH_ASSOC);
             } elseif ($is_impersonated) {
                 $query = "SELECT DISTINCT p.* FROM projects p
                           INNER JOIN project_members pm ON p.id = pm.project_id
-                          WHERE pm.user_id = ?";
+                          WHERE pm.user_id = ? AND p.deleted_at IS NULL
+                          ORDER BY p.created_at DESC";
                 $stmt = $this->conn->prepare($query);
                 $stmt->execute([$user_id]);
                 $projects = $stmt->fetchAll(PDO::FETCH_ASSOC);
             } else {
                 // Developer / tester: allow browsing all projects
-                $query = "SELECT * FROM projects" . $clientWhere;
+                $query = "SELECT * FROM projects" . $clientWhere . " ORDER BY created_at DESC";
                 $stmt = $this->conn->prepare($query);
                 $stmt->execute($clientParams);
                 $projects = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -732,34 +734,39 @@ class ProjectController extends BaseAPI
         }
     }
 
-    public function delete($id, $forceDelete = false)
+    public function delete($id, $forceDelete = false, $permanent = false)
     {
         try {
-            // Convert forceDelete to boolean and log it
             $forceDelete = (bool) $forceDelete;
-            error_log("ProjectController::delete - ID: $id, Force Delete: " . ($forceDelete ? 'YES' : 'NO'));
-            error_log("Raw forceDelete parameter value: " . var_export($forceDelete, true) . " (type: " . gettype($forceDelete) . ")");
+            $permanent = (bool) $permanent;
 
-            // Skip method check as it's already handled in delete.php
             $decoded = $this->validateToken();
 
-            // Start transaction
-            $this->conn->beginTransaction();
-            error_log("Transaction started for project deletion");
-
-            // Check if project exists
-            $checkQuery = "SELECT id FROM projects WHERE id = :id";
+            $checkQuery = "SELECT id, name, status, deleted_at FROM projects WHERE id = :id";
             $checkStmt = $this->conn->prepare($checkQuery);
             $checkStmt->bindParam(':id', $id);
             $checkStmt->execute();
+            $project = $checkStmt->fetch(PDO::FETCH_ASSOC);
 
-            if (!$checkStmt->fetch()) {
-                $this->conn->rollBack();
-                error_log("Project not found: $id");
+            if (!$project) {
                 $this->sendJsonResponse(404, "Project not found");
                 return;
             }
-            error_log("Project exists: $id");
+
+            if (!$permanent) {
+                require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
+                $rb = new RecycleBinService($this->conn);
+                $rb->softDelete('project', $id, $decoded->user_id, [
+                    'title' => $project['name'] ?? 'Project',
+                    'subtitle' => $project['status'] ?? null,
+                    'project_id' => $id,
+                ]);
+                $this->sendJsonResponse(200, "Project moved to recycle bin");
+                return;
+            }
+
+            // Permanent purge (recycle bin only) — cascade when force enabled
+            $this->conn->beginTransaction();
 
             // Check for project members
             $memberQuery = "SELECT COUNT(*) as member_count FROM project_members WHERE project_id = :id";
@@ -777,27 +784,8 @@ class ProjectController extends BaseAPI
             $bugCount = $bugStmt->fetch(PDO::FETCH_ASSOC)['bug_count'];
             error_log("Project $id has $bugCount bugs");
 
-            // If force delete is NOT enabled and there are related records, return error
-            if (!$forceDelete && ($memberCount > 0 || $bugCount > 0)) {
-                $this->conn->rollBack();
-
-                $message = "Cannot delete project due to existing ";
-                if ($memberCount > 0 && $bugCount > 0) {
-                    $message .= "team members and bugs";
-                } else if ($memberCount > 0) {
-                    $message .= "team members";
-                } else {
-                    $message .= "bugs";
-                }
-                $message .= ". Please remove these relationships first.";
-
-                error_log("Force delete not enabled, returning error: $message");
-                $this->sendJsonResponse(400, $message);
-                return;
-            }
-
             // Process with force delete if enabled or no related records
-            if ($forceDelete) {
+            if ($forceDelete || $permanent) {
                 error_log("Force delete enabled, removing related records");
 
                 // Delete team members

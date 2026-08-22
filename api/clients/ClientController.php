@@ -182,9 +182,10 @@ class ClientController extends BaseAPI
             $this->migrateLegacyClientData();
 
             $query = "SELECT c.*,
-                (SELECT COUNT(*) FROM projects p WHERE p.client_id = c.id) AS project_count,
-                (SELECT COUNT(*) FROM projects p WHERE p.client_id = c.id AND p.status = 'active') AS active_project_count
+                (SELECT COUNT(*) FROM projects p WHERE p.client_id = c.id AND p.deleted_at IS NULL) AS project_count,
+                (SELECT COUNT(*) FROM projects p WHERE p.client_id = c.id AND p.status = 'active' AND p.deleted_at IS NULL) AS active_project_count
                 FROM clients c
+                WHERE c.deleted_at IS NULL
                 ORDER BY c.corporate_name ASC";
 
             $stmt = $this->conn->prepare($query);
@@ -324,34 +325,38 @@ class ClientController extends BaseAPI
         }
     }
 
-    public function deleteClient(string $id, bool $force, $decoded): void
+    public function deleteClient(string $id, bool $force, $decoded, bool $permanent = false): void
     {
         try {
             $this->requireAdmin($decoded);
             $this->ensureSchema();
 
-            $check = $this->conn->prepare('SELECT id FROM clients WHERE id = ?');
+            $check = $this->conn->prepare('SELECT id, name, client_name, location, client_location, deleted_at FROM clients WHERE id = ?');
             $check->execute([$id]);
-            if (!$check->fetch()) {
+            $client = $check->fetch(PDO::FETCH_ASSOC);
+            if (!$client) {
                 $this->sendJsonResponse(404, 'Client not found');
                 return;
             }
 
-            $countStmt = $this->conn->prepare('SELECT COUNT(*) FROM projects WHERE client_id = ?');
-            $countStmt->execute([$id]);
-            $projectCount = (int) $countStmt->fetchColumn();
-
-            if ($projectCount > 0 && !$force) {
-                $this->sendJsonResponse(409, 'Cannot delete client with linked projects', [
-                    'project_count' => $projectCount,
-                    'canForceDelete' => true,
+            if (!$permanent) {
+                require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
+                $rb = new RecycleBinService($this->conn);
+                $rb->softDelete('client', $id, $decoded->user_id, [
+                    'title' => $client['name'] ?? $client['client_name'] ?? 'Client',
+                    'subtitle' => $client['location'] ?? $client['client_location'] ?? null,
                 ]);
+                $this->sendJsonResponse(200, 'Client moved to recycle bin');
                 return;
             }
 
+            $countStmt = $this->conn->prepare('SELECT COUNT(*) FROM projects WHERE client_id = ? AND deleted_at IS NULL');
+            $countStmt->execute([$id]);
+            $projectCount = (int) $countStmt->fetchColumn();
+
             $this->conn->beginTransaction();
 
-            if ($force && $projectCount > 0) {
+            if ($projectCount > 0) {
                 $unlink = $this->conn->prepare('UPDATE projects SET client_id = NULL WHERE client_id = ?');
                 $unlink->execute([$id]);
             }
@@ -360,7 +365,7 @@ class ClientController extends BaseAPI
             $delete->execute([$id]);
 
             $this->conn->commit();
-            $this->sendJsonResponse(200, 'Client deleted successfully');
+            $this->sendJsonResponse(200, 'Client permanently deleted');
         } catch (Exception $e) {
             if ($this->conn->inTransaction()) {
                 $this->conn->rollBack();

@@ -393,19 +393,17 @@ class FeedbackController extends BaseAPI {
                 return;
             }
             
-            // Delete the feedback
-            $stmt = $this->conn->prepare("DELETE FROM user_feedback WHERE id = ?");
-            $result = $stmt->execute([$feedbackId]);
-            
-            if ($result) {
-                // Log feedback deletion activity
+            require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
+            $rb = new RecycleBinService($this->conn);
+            $rb->softDelete('feedback', (string) $feedbackId, $tokenData->user_id);
+                
                 try {
                     $logger = ActivityLogger::getInstance();
                     $logger->logFeedbackDeleted(
                         $tokenData->user_id,
-                        null, // No specific project for feedback
+                        null,
                         $feedbackId,
-                        "Admin deleted user feedback",
+                        "Admin moved user feedback to recycle bin",
                         [
                             'deleted_feedback_id' => $feedbackId,
                             'original_user_id' => $feedback['user_id']
@@ -415,10 +413,7 @@ class FeedbackController extends BaseAPI {
                     error_log("Failed to log feedback deletion activity: " . $e->getMessage());
                 }
                 
-                $this->sendJsonResponse(200, "Feedback deleted successfully");
-            } else {
-                $this->sendJsonResponse(500, "Failed to delete feedback");
-            }
+                $this->sendJsonResponse(200, "Feedback moved to recycle bin");
             
         } catch (Exception $e) {
             error_log("Feedback deletion error: " . $e->getMessage());

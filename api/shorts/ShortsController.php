@@ -396,7 +396,7 @@ class ShortsController extends BaseAPI
             return;
         }
 
-        $check = $this->conn->prepare('SELECT video_path, thumbnail_path FROM shorts WHERE id = ? LIMIT 1');
+        $check = $this->conn->prepare('SELECT id, title, video_path, thumbnail_path FROM shorts WHERE id = ? LIMIT 1');
         $check->execute([$id]);
         $row = $check->fetch(PDO::FETCH_ASSOC);
         if (!$row) {
@@ -404,20 +404,13 @@ class ShortsController extends BaseAPI
             return;
         }
 
-        $stmt = $this->conn->prepare('DELETE FROM shorts WHERE id = ?');
-        $stmt->execute([$id]);
+        require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
+        $rb = new RecycleBinService($this->conn);
+        $rb->softDelete('short', $id, $decoded->user_id, [
+            'title' => $row['title'] ?? 'Short',
+        ]);
 
-        foreach (['video_path', 'thumbnail_path'] as $key) {
-            $rel = $row[$key] ?? null;
-            if ($rel && strpos($rel, 'uploads/shorts/') === 0) {
-                $abs = __DIR__ . '/../../' . $rel;
-                if (is_file($abs)) {
-                    @unlink($abs);
-                }
-            }
-        }
-
-        $this->sendJsonResponse(200, 'Short deleted successfully');
+        $this->sendJsonResponse(200, 'Short moved to recycle bin');
     }
 
     public function upload()

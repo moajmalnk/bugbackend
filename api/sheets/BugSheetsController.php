@@ -1342,31 +1342,16 @@ class BugSheetsController extends BaseAPI {
             if (!$sheet) {
                 throw new Exception('Sheet not found or access denied');
             }
-            
-            $googleAccountUserId = $isAdmin && (string)$sheet['creator_user_id'] !== (string)$userId
-                ? $sheet['creator_user_id']
-                : $userId;
-            
-            try {
-                $client = $this->authService->getClientForUser($googleAccountUserId);
-                $driveService = new Google\Service\Drive($client);
-                try {
-                    $driveService->files->delete($sheet['google_sheet_id']);
-                    error_log("Deleted Google Sheet: {$sheet['google_sheet_id']}");
-                } catch (Exception $e) {
-                    error_log("Warning: Failed to delete from Google Drive: " . $e->getMessage());
-                }
-            } catch (Exception $e) {
-                error_log("Warning: No Google client for Drive delete (user {$googleAccountUserId}): " . $e->getMessage());
-            }
-            
-            // Delete from database
-            $stmt = $this->conn->prepare("DELETE FROM user_sheets WHERE id = ?");
-            $stmt->execute([$sheetId]);
+
+            require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
+            $rb = new RecycleBinService($this->conn);
+            $rb->softDelete('sheet', (string) $sheetId, (string) $userId, [
+                'title' => $sheet['sheet_title'] ?? 'Sheet',
+            ]);
             
             return [
                 'success' => true,
-                'message' => "Sheet '{$sheet['sheet_title']}' deleted successfully"
+                'message' => "Sheet '{$sheet['sheet_title']}' moved to recycle bin"
             ];
             
         } catch (Exception $e) {

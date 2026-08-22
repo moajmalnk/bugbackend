@@ -685,7 +685,7 @@ class UpdateController extends BaseAPI
             $pmc = new ProjectMemberController();
             // Admin: get all updates
             if ($userRole === 'admin') {
-                $stmt = $this->conn->prepare("SELECT u.*, p.name as project_name, us.username as created_by_name FROM updates u JOIN projects p ON u.project_id = p.id LEFT JOIN users us ON u.created_by = us.id ORDER BY u.created_at DESC");
+                $stmt = $this->conn->prepare("SELECT u.*, p.name as project_name, us.username as created_by_name FROM updates u JOIN projects p ON u.project_id = p.id LEFT JOIN users us ON u.created_by = us.id WHERE u.deleted_at IS NULL AND p.deleted_at IS NULL ORDER BY u.created_at DESC");
                 $stmt->execute();
                 $updates = $stmt->fetchAll(PDO::FETCH_ASSOC);
             } else {
@@ -698,7 +698,7 @@ class UpdateController extends BaseAPI
                     return;
                 }
                 $in = str_repeat('?,', count($projectIds) - 1) . '?';
-                $stmt = $this->conn->prepare("SELECT u.*, p.name as project_name, us.username as created_by_name FROM updates u JOIN projects p ON u.project_id = p.id LEFT JOIN users us ON u.created_by = us.id WHERE u.project_id IN ($in) ORDER BY u.created_at DESC");
+                $stmt = $this->conn->prepare("SELECT u.*, p.name as project_name, us.username as created_by_name FROM updates u JOIN projects p ON u.project_id = p.id LEFT JOIN users us ON u.created_by = us.id WHERE u.project_id IN ($in) AND u.deleted_at IS NULL AND p.deleted_at IS NULL ORDER BY u.created_at DESC");
                 $stmt->execute($projectIds);
                 $updates = $stmt->fetchAll(PDO::FETCH_ASSOC);
             }
@@ -1175,6 +1175,10 @@ class UpdateController extends BaseAPI
                 $this->sendJsonResponse(404, "Update not found");
                 return;
             }
+            if (!empty($update['deleted_at'])) {
+                $this->sendJsonResponse(404, "Update not found");
+                return;
+            }
             $projectId = $update['project_id'];
             $pmc = new ProjectMemberController();
             if (!$pmc->hasProjectAccess($userId, $projectId)) {
@@ -1186,13 +1190,13 @@ class UpdateController extends BaseAPI
                 $this->sendJsonResponse(403, 'You do not have permission to delete this update');
                 return;
             }
-            $stmt = $this->conn->prepare("DELETE FROM updates WHERE id = ?");
-            $stmt->execute([$id]);
-            if ($stmt->rowCount() === 0) {
-                $this->sendJsonResponse(404, "Update not found");
-                return;
-            }
-            $this->sendJsonResponse(200, "Update deleted successfully");
+            require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
+            $rb = new RecycleBinService($this->conn);
+            $rb->softDelete('update', $id, $userId, [
+                'title' => $update['title'] ?? 'Update',
+                'project_id' => $projectId,
+            ]);
+            $this->sendJsonResponse(200, "Update moved to recycle bin");
         } catch (Exception $e) {
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
         }

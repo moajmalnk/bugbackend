@@ -1005,9 +1005,10 @@ class CodoRulesController extends BaseAPI
             return;
         }
 
-        $existing = $this->conn->prepare('SELECT id FROM codo_common_rules WHERE id = ? LIMIT 1');
+        $existing = $this->conn->prepare('SELECT id, title, rule_title, category FROM codo_common_rules WHERE id = ? LIMIT 1');
         $existing->execute([$id]);
-        if (!$existing->fetch(PDO::FETCH_ASSOC)) {
+        $ruleRow = $existing->fetch(PDO::FETCH_ASSOC);
+        if (!$ruleRow) {
             $this->sendJsonResponse(404, 'Rule not found');
             return;
         }
@@ -1019,11 +1020,13 @@ class CodoRulesController extends BaseAPI
                 $this->sendJsonResponse(200, 'Rule deleted');
                 return;
             }
-            $stmt = $this->conn->prepare(
-                "UPDATE codo_common_rules SET is_active = 0, updated_by = ? WHERE id = ?"
-            );
-            $stmt->execute([(string)$decoded->user_id, $id]);
-            $this->sendJsonResponse(200, 'Rule deactivated');
+            require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
+            $rb = new RecycleBinService($this->conn);
+            $rb->softDelete('codo_rule', (string) $id, (string) $decoded->user_id, [
+                'title' => $ruleRow['title'] ?? $ruleRow['rule_title'] ?? 'CODO Rule',
+                'subtitle' => $ruleRow['category'] ?? null,
+            ]);
+            $this->sendJsonResponse(200, 'Rule moved to recycle bin');
         } catch (Throwable $e) {
             error_log('CodoRulesController::delete: ' . $e->getMessage());
             $this->sendJsonResponse(500, 'Failed to delete rule');

@@ -42,6 +42,7 @@ class UserController extends BaseAPI {
             $hasRejectionReason = in_array('onboarding_rejection_reason', $cols, true);
             $hasRejectionNote = in_array('onboarding_rejection_note', $cols, true);
             $hasRejectionAction = in_array('onboarding_rejection_action', $cols, true);
+            $hasDeletedAt = in_array('deleted_at', $cols, true);
 
             $select = ['id', 'username', 'email', 'role', 'role_id', 'created_at', 'updated_at'];
             if ($hasPhone) $select[] = 'phone';
@@ -63,6 +64,9 @@ class UserController extends BaseAPI {
                 $select[] = "'offline' as status";
             }
             $query = "SELECT " . implode(', ', $select) . " FROM users";
+            if ($hasDeletedAt) {
+                $query .= " WHERE deleted_at IS NULL";
+            }
             if ($hasAccountActive && $hasLastActive) {
                 $query .= " ORDER BY (CASE WHEN account_active = 0 THEN 1 ELSE 0 END) ASC,"
                     . " (CASE WHEN last_active_at IS NULL THEN 2"
@@ -464,7 +468,7 @@ class UserController extends BaseAPI {
         }
     }
 
-    public function delete($userId, $force = false) {
+    public function delete($userId, $force = false, $permanent = false) {
         try {
             if (!$this->conn) {
                 error_log("Database connection failed in delete()");
@@ -477,7 +481,31 @@ class UserController extends BaseAPI {
                 return;
             }
 
-            // Start transaction for safe deletion
+            $decoded = $this->validateToken();
+
+            if (!$permanent) {
+                $checkStmt = $this->conn->prepare("SELECT id, username, email, role, deleted_at FROM users WHERE id = ?");
+                $checkStmt->execute([$userId]);
+                $user = $checkStmt->fetch(PDO::FETCH_ASSOC);
+                if (!$user) {
+                    $this->sendJsonResponse(404, "User not found");
+                    return;
+                }
+                if (!empty($user['deleted_at'])) {
+                    $this->sendJsonResponse(404, "User not found");
+                    return;
+                }
+                require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
+                $rb = new RecycleBinService($this->conn);
+                $rb->softDelete('user', $userId, $decoded->user_id, [
+                    'title' => $user['username'],
+                    'subtitle' => $user['email'] ?? $user['role'] ?? null,
+                ]);
+                $this->sendJsonResponse(200, "User moved to recycle bin");
+                return;
+            }
+
+            // Start transaction for permanent deletion
             $this->conn->beginTransaction();
 
             try {
@@ -549,14 +577,14 @@ class UserController extends BaseAPI {
 
                 // Always clear FK refs on force — even when the quick dependency list is empty
                 // (chat, FCM, compliance, etc. are not all listed above).
-                if ($force) {
+                if ($force || $permanent) {
                     $this->forceDetachUserReferences($userId);
                 }
 
                 // Now safe to delete the user. On force, briefly disable FK checks so any
                 // leftover RESTRICT refs from newer/unknown tables cannot block deletion.
                 $fkChecksDisabled = false;
-                if ($force) {
+                if ($force || $permanent) {
                     try {
                         $this->conn->exec('SET FOREIGN_KEY_CHECKS=0');
                         $fkChecksDisabled = true;

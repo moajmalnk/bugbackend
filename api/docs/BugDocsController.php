@@ -1271,33 +1271,16 @@ class BugDocsController extends BaseAPI {
             if (!$document) {
                 throw new Exception('Document not found or access denied');
             }
-            
-            // Use document owner's Google OAuth for Drive API when admin deletes someone else's doc
-            $googleAccountUserId = $isAdmin && (string)$document['creator_user_id'] !== (string)$userId
-                ? $document['creator_user_id']
-                : $userId;
-            
-            try {
-                $client = $this->authService->getClientForUser($googleAccountUserId);
-                $driveService = new Google\Service\Drive($client);
-                try {
-                    $driveService->files->delete($document['google_doc_id']);
-                    error_log("Deleted Google Doc: {$document['google_doc_id']}");
-                } catch (Exception $e) {
-                    error_log("Warning: Failed to delete from Google Drive: " . $e->getMessage());
-                }
-            } catch (Exception $e) {
-                error_log("Warning: No Google client for Drive delete (user {$googleAccountUserId}): " . $e->getMessage());
-                // Still remove DB row so admin can clear records if Drive token missing
-            }
-            
-            // Delete from database
-            $stmt = $this->conn->prepare("DELETE FROM user_documents WHERE id = ?");
-            $stmt->execute([$documentId]);
-            
+
+            require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
+            $rb = new RecycleBinService($this->conn);
+            $rb->softDelete('doc', (string) $documentId, (string) $userId, [
+                'title' => $document['doc_title'] ?? 'Document',
+            ]);
+
             return [
                 'success' => true,
-                'message' => "Document '{$document['doc_title']}' deleted successfully"
+                'message' => "Document '{$document['doc_title']}' moved to recycle bin"
             ];
             
         } catch (Exception $e) {

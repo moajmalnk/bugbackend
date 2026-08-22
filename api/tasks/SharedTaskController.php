@@ -518,12 +518,17 @@ class SharedTaskController extends BaseAPI {
                 return;
             }
             
-            // Delete task (cascade will handle shared_task_projects)
-            $deleteQuery = "DELETE FROM shared_tasks WHERE id = ?";
-            $deleteStmt = $this->conn->prepare($deleteQuery);
-            $deleteStmt->execute([$taskId]);
+            // Soft-delete task (recycle bin)
+            require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
+            $rb = new RecycleBinService($this->conn);
+            $taskRow = $this->conn->prepare('SELECT title FROM shared_tasks WHERE id = ?');
+            $taskRow->execute([$taskId]);
+            $title = $taskRow->fetchColumn();
+            $rb->softDelete('shared_task', (string) $taskId, (string) $userId, [
+                'title' => $title ?: 'Shared Task',
+            ]);
             
-            $this->sendJsonResponse(200, "Shared task deleted successfully");
+            $this->sendJsonResponse(200, "Shared task moved to recycle bin");
             
         } catch (Exception $e) {
             error_log("Error in deleteSharedTask: " . $e->getMessage());

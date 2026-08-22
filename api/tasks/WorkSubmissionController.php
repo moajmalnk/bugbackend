@@ -677,23 +677,33 @@ class WorkSubmissionController extends BaseAPI {
             }
 
             if ($role === 'admin' && $id) {
-                $stmt = $this->conn->prepare("DELETE FROM work_submissions WHERE id = ?");
-                $stmt->execute([(int)$id]);
-                if ($stmt->rowCount() === 0) {
-                    $this->sendJsonResponse(404, 'Submission not found');
+                require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
+                $rb = new RecycleBinService($this->conn);
+                try {
+                    $rb->softDelete('work_submission', (string) $id, $userId);
+                } catch (Throwable $e) {
+                    $this->sendJsonResponse(404, $e->getMessage());
                     return;
                 }
-                $this->sendJsonResponse(200, 'Submission deleted');
+                $this->sendJsonResponse(200, 'Submission moved to recycle bin');
                 return;
             }
 
             if ($id) {
-                $stmt = $this->conn->prepare("DELETE FROM work_submissions WHERE id = ? AND user_id = ?");
-                $stmt->execute([$id, $userId]);
-            } else {
-                $stmt = $this->conn->prepare("DELETE FROM work_submissions WHERE submission_date = ? AND user_id = ?");
-                $stmt->execute([$date, $userId]);
+                require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
+                $rb = new RecycleBinService($this->conn);
+                try {
+                    $rb->softDelete('work_submission', (string) $id, $userId);
+                } catch (Throwable $e) {
+                    $this->sendJsonResponse(404, $e->getMessage());
+                    return;
+                }
+                $this->sendJsonResponse(200, 'Submission moved to recycle bin');
+                return;
             }
+
+            $stmt = $this->conn->prepare("DELETE FROM work_submissions WHERE submission_date = ? AND user_id = ?");
+            $stmt->execute([$date, $userId]);
 
             $this->sendJsonResponse(200, 'Submission deleted');
         } catch (Exception $e) {

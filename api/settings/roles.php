@@ -4,6 +4,9 @@ if (ob_get_length()) ob_clean();
 require_once '../BaseAPI.php';
 
 class RolesController extends BaseAPI {
+    /** @var string|null */
+    private $currentUserId = null;
+
     public function __construct() {
         parent::__construct();
     }
@@ -20,6 +23,7 @@ class RolesController extends BaseAPI {
             }
             
             $userId = $decoded->user_id;
+            $this->currentUserId = $userId;
             
             // Check user's role for permission-based access
             $stmt = $this->conn->prepare("SELECT role, role_id FROM users WHERE id = ?");
@@ -193,7 +197,7 @@ class RolesController extends BaseAPI {
             }
             
             // Check if it's a system role
-            $stmt = $this->conn->prepare("SELECT is_system_role FROM roles WHERE id = ?");
+            $stmt = $this->conn->prepare("SELECT id, is_system_role, role_name FROM roles WHERE id = ?");
             $stmt->execute([$roleId]);
             $role = $stmt->fetch(PDO::FETCH_ASSOC);
             
@@ -206,22 +210,19 @@ class RolesController extends BaseAPI {
                 $this->sendJsonResponse(403, "Cannot delete system role");
                 return;
             }
-            
-            // Check if role is assigned to any users
-            $stmt = $this->conn->prepare("SELECT COUNT(*) as count FROM users WHERE role_id = ?");
-            $stmt->execute([$roleId]);
-            $count = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
-            
-            if ($count > 0) {
-                $this->sendJsonResponse(409, "Cannot delete role. It is assigned to $count user(s)");
+
+            require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
+            $rb = new RecycleBinService($this->conn);
+            try {
+                $rb->softDelete('role', (string) $roleId, (string) $this->currentUserId, [
+                    'title' => $role['role_name'] ?? 'Role',
+                ]);
+            } catch (Throwable $e) {
+                $this->sendJsonResponse(400, $e->getMessage());
                 return;
             }
             
-            // Delete role (role_permissions will be cascade deleted)
-            $stmt = $this->conn->prepare("DELETE FROM roles WHERE id = ?");
-            $stmt->execute([$roleId]);
-            
-            $this->sendJsonResponse(200, "Role deleted successfully");
+            $this->sendJsonResponse(200, "Role moved to recycle bin");
             
         } catch (Exception $e) {
             error_log("Delete role error: " . $e->getMessage());

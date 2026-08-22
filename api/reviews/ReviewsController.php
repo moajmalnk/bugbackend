@@ -766,9 +766,15 @@ class ReviewsController extends BaseAPI
             return;
         }
 
-        $this->conn->prepare("DELETE FROM review_answers WHERE review_id = ?")->execute([$id]);
-        $this->conn->prepare("DELETE FROM performance_reviews WHERE id = ?")->execute([$id]);
-        $this->sendJsonResponse(200, 'Review deleted');
+        require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
+        $rb = new RecycleBinService($this->conn);
+        try {
+            $rb->softDelete('performance_review', (string) $id, (string) $decoded->user_id);
+        } catch (Throwable $e) {
+            $this->sendJsonResponse(400, $e->getMessage());
+            return;
+        }
+        $this->sendJsonResponse(200, 'Review moved to recycle bin');
     }
 
     /**

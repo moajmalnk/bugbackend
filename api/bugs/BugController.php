@@ -2341,12 +2341,12 @@ class BugController extends BaseAPI {
         }
     }
 
-    public function delete($id) {
+    public function delete($id, $permanent = false) {
         try {
             $decoded = $this->validateToken();
             
             // First, get the bug to check who reported it and get details for logging
-            $checkQuery = "SELECT reported_by, title, project_id FROM bugs WHERE id = :id";
+            $checkQuery = "SELECT reported_by, title, project_id, deleted_at FROM bugs WHERE id = :id";
             $checkStmt = $this->conn->prepare($checkQuery);
             $checkStmt->bindParam(':id', $id);
             $checkStmt->execute();
@@ -2356,11 +2356,39 @@ class BugController extends BaseAPI {
                 $this->sendJsonResponse(404, "Bug not found");
                 return;
             }
+
+            if (!empty($bug['deleted_at']) && !$permanent) {
+                $this->sendJsonResponse(404, "Bug not found");
+                return;
+            }
             
             // Check if user has permission to delete
             // Only admins and the original reporter can delete
             if ($decoded->role !== 'admin' && $decoded->user_id !== $bug['reported_by']) {
                 $this->sendJsonResponse(403, "You don't have permission to delete this bug. Only the reporter and admins can delete bugs.");
+                return;
+            }
+
+            if (!$permanent) {
+                require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
+                $rb = new RecycleBinService($this->conn);
+                $rb->softDelete('bug', $id, $decoded->user_id, [
+                    'title' => $bug['title'],
+                    'project_id' => $bug['project_id'],
+                ]);
+                try {
+                    $logger = ActivityLogger::getInstance();
+                    $logger->logBugDeleted(
+                        $decoded->user_id,
+                        $bug['project_id'],
+                        $id,
+                        $bug['title'],
+                        ['deleted_by_role' => $decoded->role, 'soft_delete' => true]
+                    );
+                } catch (Exception $e) {
+                    error_log("Failed to log bug deletion activity: " . $e->getMessage());
+                }
+                $this->sendJsonResponse(200, "Bug moved to recycle bin");
                 return;
             }
             
@@ -2577,7 +2605,7 @@ class BugController extends BaseAPI {
             }
 
             $countQuery = "SELECT COUNT(*) as total FROM bugs b";
-            $where = [];
+            $where = ["b.deleted_at IS NULL"];
             $countParams = [];
 
             // Scope to projects the non-admin user can access

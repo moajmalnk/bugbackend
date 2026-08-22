@@ -706,18 +706,14 @@ class ProjectActivityController extends BaseAPI {
                 return;
             }
             
-            // Delete the activity
-            $stmt = $this->conn->prepare("DELETE FROM project_activities WHERE id = ?");
-            $result = $stmt->execute([$activityId]);
-            
-            if ($result) {
-                // Invalidate all activity caches since we don't know which specific caches to clear
-                $this->invalidateAllActivityCaches();
-                
-                $this->sendJsonResponse(200, "Activity deleted successfully");
-            } else {
-                $this->sendJsonResponse(500, "Failed to delete activity");
-            }
+            require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
+            $rb = new RecycleBinService($this->conn);
+            $rb->softDelete('activity', (string) $activityId, $decoded->user_id, [
+                'project_id' => $activity['project_id'] ?? null,
+            ]);
+
+            $this->invalidateAllActivityCaches();
+            $this->sendJsonResponse(200, "Activity moved to recycle bin");
             
         } catch (Exception $e) {
             error_log("Error deleting activity: " . $e->getMessage());

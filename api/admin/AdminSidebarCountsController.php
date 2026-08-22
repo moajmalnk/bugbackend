@@ -62,6 +62,7 @@ class AdminSidebarCountsController extends BaseAPI
             'shorts' => 0,
             'settings' => 0,
             'backup' => 0,
+            'recycleBin' => 0,
         ];
     }
 
@@ -383,6 +384,13 @@ class AdminSidebarCountsController extends BaseAPI
             && $this->dbTableExists('backup_jobs')
         ) {
             $counts['backup'] = $this->countOrZero('SELECT COUNT(*) FROM backup_jobs');
+        }
+
+        if ($can('RECYCLE_BIN_VIEW') && $this->dbTableExists('recycle_bin_items')) {
+            $counts['recycleBin'] = $this->countOrZero(
+                'SELECT COUNT(*) FROM recycle_bin_items
+                 WHERE restored_at IS NULL AND purged_at IS NULL'
+            );
         }
 
         header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');

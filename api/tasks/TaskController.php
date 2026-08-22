@@ -122,9 +122,19 @@ class TaskController extends BaseAPI {
         $getTaskStmt->execute([$id, $userId]);
         $task = $getTaskStmt->fetch(PDO::FETCH_ASSOC);
         
-        $sql = "DELETE FROM user_tasks WHERE id = ? AND user_id = ?";
-        $stmt = $this->conn->prepare($sql);
-        $stmt->execute([$id, $userId]);
+        if (!$task) { $this->sendJsonResponse(404, 'Task not found'); return; }
+
+        require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
+        $rb = new RecycleBinService($this->conn);
+        try {
+            $rb->softDelete('user_task', (string) $id, (string) $userId, [
+                'title' => $task['title'] ?? 'Task',
+                'project_id' => $task['project_id'] ?? null,
+            ]);
+        } catch (Throwable $e) {
+            $this->sendJsonResponse(404, $e->getMessage());
+            return;
+        }
         
         // Log activity
         if ($task) {
@@ -142,7 +152,7 @@ class TaskController extends BaseAPI {
             }
         }
         
-        $this->sendJsonResponse(200, 'Task deleted');
+        $this->sendJsonResponse(200, 'Task moved to recycle bin');
     }
 }
 ?>

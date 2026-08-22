@@ -268,15 +268,20 @@ class AnnouncementController extends BaseAPI {
                 return $this->sendJsonResponse(403, "Forbidden: You are not authorized.");
             }
 
-            $query = "DELETE FROM announcements WHERE id = ?";
-            $stmt = $this->conn->prepare($query);
+            $stmt = $this->conn->prepare("SELECT id, title FROM announcements WHERE id = ?");
             $stmt->execute([$id]);
-
-            if ($stmt->rowCount() === 0) {
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$row) {
                 return $this->sendJsonResponse(404, "Announcement not found.");
             }
 
-            $this->sendJsonResponse(200, "Announcement deleted successfully.");
+            require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
+            $rb = new RecycleBinService($this->conn);
+            $rb->softDelete('announcement', $id, $decoded->user_id, [
+                'title' => $row['title'] ?? 'Announcement',
+            ]);
+
+            $this->sendJsonResponse(200, "Announcement moved to recycle bin.");
 
         } catch (Exception $e) {
             error_log("Error deleting announcement: " . $e->getMessage());
