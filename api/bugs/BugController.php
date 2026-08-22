@@ -2725,6 +2725,17 @@ class BugController extends BaseAPI {
             }
             $facetSql = !empty($facetWhere) ? (" WHERE " . implode(" AND ", $facetWhere)) : "";
 
+            $verificationFacetSql = '';
+            if ($verificationFilter !== '' && $verificationFilter !== 'all') {
+                $verificationSqlPart = $this->verificationFilterSql($verificationFilter);
+                if ($verificationSqlPart) {
+                    $verificationFacetSql = ' AND ' . $verificationSqlPart;
+                }
+            }
+            $resolvedStatusSql = ($verificationFilter !== '' && $verificationFilter !== 'all')
+                ? "b.status = 'fixed'"
+                : "b.status IN ('fixed', 'rejected')";
+
             $openRow = $this->conn->prepare(
                 "SELECT COUNT(*) as total FROM bugs b{$facetSql}" .
                 (!empty($facetWhere) ? " AND " : " WHERE ") .
@@ -2737,7 +2748,7 @@ class BugController extends BaseAPI {
             $resolvedRow = $this->conn->prepare(
                 "SELECT COUNT(*) as total FROM bugs b{$facetSql}" .
                 (!empty($facetWhere) ? " AND " : " WHERE ") .
-                "b.status IN ('fixed', 'rejected')"
+                "{$resolvedStatusSql}{$verificationFacetSql}"
             );
             $resolvedRow->execute($facetParams);
             $resolvedCount = (int) ($resolvedRow->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
@@ -2757,7 +2768,7 @@ class BugController extends BaseAPI {
                 $myResolvedStmt = $this->conn->prepare(
                     "SELECT COUNT(*) as total FROM bugs b{$facetSql}" .
                     (!empty($facetWhere) ? " AND " : " WHERE ") .
-                    "b.status IN ('fixed', 'rejected')
+                    "{$resolvedStatusSql}{$verificationFacetSql}
                      AND COALESCE(NULLIF(TRIM(b.fixed_by), ''), b.updated_by) = ?"
                 );
                 $myResolvedParams = array_merge($facetParams, [$facetUserId]);

@@ -101,7 +101,10 @@ class AdminSidebarCountsController extends BaseAPI
                     "SELECT COUNT(*) FROM bugs WHERE status IN ('pending', 'in_progress')"
                 );
                 $counts['fixes'] = $this->countOrZero(
-                    "SELECT COUNT(*) FROM bugs WHERE status IN ('fixed', 'rejected')"
+                    "SELECT COUNT(*) FROM bugs
+                     WHERE status = 'fixed'
+                       AND tester_retested = 1
+                       AND tester_issue_fixed = 1"
                 );
                 $counts['retests'] = $this->countOrZero(
                     "SELECT COUNT(*) FROM bugs WHERE status = 'fixed' AND tester_retested IS NULL"
@@ -115,7 +118,9 @@ class AdminSidebarCountsController extends BaseAPI
                 );
                 $counts['fixes'] = $this->countOrZero(
                     "SELECT COUNT(*) FROM bugs
-                     WHERE status IN ('fixed', 'rejected')
+                     WHERE status = 'fixed'
+                       AND tester_retested = 1
+                       AND tester_issue_fixed = 1
                        AND project_id {$projectScopeSql}",
                     [$userId, $userId]
                 );
