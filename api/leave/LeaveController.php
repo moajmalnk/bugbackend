@@ -213,8 +213,8 @@ class LeaveController extends BaseAPI
             }
 
             // Split the request into segments: days within the monthly balance keep the
-            // requested (paid) type; overflow days are automatically marked Unpaid Leave.
-            // Unpaid leave itself is uncapped.
+            // requested type; overflow days are automatically marked Unpaid Leave.
+            // Unpaid Leave is capped at monthly_quota (max 5 days / month).
             $isUnpaidRequest = strtolower((string)$type['code']) === 'unpaid';
             $unpaidType = null;
             if (!$isUnpaidRequest) {
@@ -224,16 +224,32 @@ class LeaveController extends BaseAPI
             }
 
             $segments = [];
-            if ($isUnpaidRequest) {
-                $segments[] = ['type' => $type, 'start' => $startDate, 'end' => $endDate];
-            } else {
-                $tz = new DateTimeZone('Asia/Kolkata');
-                $cursor = DateTime::createFromFormat('Y-m-d', $startDate, $tz);
-                $endDt = DateTime::createFromFormat('Y-m-d', $endDate, $tz);
-                $remainingByMonth = [];
-                $current = null;
-                while ($cursor && $endDt && $cursor <= $endDt) {
-                    $ym = $cursor->format('Y-m');
+            $tz = new DateTimeZone('Asia/Kolkata');
+            $cursor = DateTime::createFromFormat('Y-m-d', $startDate, $tz);
+            $endDt = DateTime::createFromFormat('Y-m-d', $endDate, $tz);
+            $remainingByMonth = [];
+            $unpaidRemainingByMonth = [];
+            $current = null;
+
+            while ($cursor && $endDt && $cursor <= $endDt) {
+                $ym = $cursor->format('Y-m');
+                $date = $cursor->format('Y-m-d');
+
+                if ($isUnpaidRequest) {
+                    if (!isset($remainingByMonth[$ym])) {
+                        $used = br_leave_used_days_in_month($this->conn, $userId, $leaveTypeId, $ym);
+                        $remainingByMonth[$ym] = max(0.0, (float)$type['monthly_quota'] - $used);
+                    }
+                    if ($remainingByMonth[$ym] < 1.0 - 0.001) {
+                        $this->sendJsonResponse(
+                            400,
+                            "Insufficient Unpaid Leave balance for {$ym}. Remaining: {$remainingByMonth[$ym]} (max {$type['monthly_quota']} / month)."
+                        );
+                        return;
+                    }
+                    $dayType = $type;
+                    $remainingByMonth[$ym] -= 1.0;
+                } else {
                     if (!isset($remainingByMonth[$ym])) {
                         $used = br_leave_used_days_in_month($this->conn, $userId, $leaveTypeId, $ym);
                         $remainingByMonth[$ym] = max(0.0, (float)$type['monthly_quota'] - $used);
@@ -242,9 +258,24 @@ class LeaveController extends BaseAPI
                         $dayType = $type;
                         $remainingByMonth[$ym] -= 1.0;
                     } elseif ($unpaidType) {
+                        $unpaidId = (int)$unpaidType['id'];
+                        if (!isset($unpaidRemainingByMonth[$ym])) {
+                            $unpaidUsed = br_leave_used_days_in_month($this->conn, $userId, $unpaidId, $ym);
+                            $unpaidRemainingByMonth[$ym] = max(
+                                0.0,
+                                (float)$unpaidType['monthly_quota'] - $unpaidUsed
+                            );
+                        }
+                        if ($unpaidRemainingByMonth[$ym] < 1.0 - 0.001) {
+                            $this->sendJsonResponse(
+                                400,
+                                "Insufficient leave balance for {$ym}. {$type['name']} and Unpaid Leave (max {$unpaidType['monthly_quota']} / month) are exhausted."
+                            );
+                            return;
+                        }
                         $dayType = $unpaidType;
+                        $unpaidRemainingByMonth[$ym] -= 1.0;
                     } else {
-                        // No unpaid type configured — keep the original strict behaviour
                         $needed = br_leave_days_in_month($startDate, $endDate, $ym);
                         $remaining = $remainingByMonth[$ym];
                         $this->sendJsonResponse(
@@ -253,20 +284,20 @@ class LeaveController extends BaseAPI
                         );
                         return;
                     }
-                    $date = $cursor->format('Y-m-d');
-                    if ($current && (int)$current['type']['id'] === (int)$dayType['id']) {
-                        $current['end'] = $date;
-                    } else {
-                        if ($current) {
-                            $segments[] = $current;
-                        }
-                        $current = ['type' => $dayType, 'start' => $date, 'end' => $date];
+                }
+
+                if ($current && (int)$current['type']['id'] === (int)$dayType['id']) {
+                    $current['end'] = $date;
+                } else {
+                    if ($current) {
+                        $segments[] = $current;
                     }
-                    $cursor->modify('+1 day');
+                    $current = ['type' => $dayType, 'start' => $date, 'end' => $date];
                 }
-                if ($current) {
-                    $segments[] = $current;
-                }
+                $cursor->modify('+1 day');
+            }
+            if ($current) {
+                $segments[] = $current;
             }
 
             if (empty($segments)) {
@@ -410,11 +441,11 @@ class LeaveController extends BaseAPI
                 $this->sendJsonResponse(409, 'Cannot approve: overlapping leave already exists for these dates.');
                 return;
             }
-            // Re-check balance (Unpaid Leave is uncapped — it absorbs overflow from paid types)
+            // Re-check balance for all types (including Unpaid Leave max 5 / month)
             $typeStmt = $this->conn->prepare('SELECT id, code, name, monthly_quota FROM leave_types WHERE id = ? LIMIT 1');
             $typeStmt->execute([(int)$row['leave_type_id']]);
             $type = $typeStmt->fetch(PDO::FETCH_ASSOC);
-            if ($type && strtolower((string)($type['code'] ?? '')) !== 'unpaid') {
+            if ($type) {
                 $tz = new DateTimeZone('Asia/Kolkata');
                 $cursor = DateTime::createFromFormat('Y-m-d', (string)$row['start_date'], $tz);
                 $endDt = DateTime::createFromFormat('Y-m-d', (string)$row['end_date'], $tz);
