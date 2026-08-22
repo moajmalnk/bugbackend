@@ -743,6 +743,113 @@ Month totals ($periodLabel): $totalWorkingDays days · $totalHoursCompleted hour
     return $results;
 }
 
+function br_weekly_report_email_bullets($text): string
+{
+    $raw = trim((string)$text);
+    if ($raw === '') {
+        return '<li>—</li>';
+    }
+    $lines = preg_split('/\r\n|\r|\n/', $raw) ?: [];
+    $items = [];
+    foreach ($lines as $line) {
+        $line = trim((string)$line);
+        $line = preg_replace('/^[-*•]\s*/u', '', $line) ?? $line;
+        $line = trim($line);
+        if ($line === '') {
+            continue;
+        }
+        $items[] = '<li>' . htmlspecialchars($line, ENT_QUOTES, 'UTF-8') . '</li>';
+    }
+    return !empty($items) ? implode('', $items) : '<li>—</li>';
+}
+
+function br_weekly_report_email_text_block($text): string
+{
+    $raw = trim((string)$text);
+    if ($raw === '') {
+        return "- —\n";
+    }
+    $lines = preg_split('/\r\n|\r|\n/', $raw) ?: [];
+    $out = [];
+    foreach ($lines as $line) {
+        $line = trim((string)$line);
+        $line = preg_replace('/^[-*•]\s*/u', '', $line) ?? $line;
+        $line = trim($line);
+        if ($line === '') {
+            continue;
+        }
+        $out[] = '- ' . $line;
+    }
+    return (!empty($out) ? implode("\n", $out) : '- —') . "\n";
+}
+
+function sendWeeklyReportEmailToAdmins(array $adminEmails, array $report): array
+{
+    $userName = htmlspecialchars((string)($report['user_name'] ?? 'User'), ENT_QUOTES, 'UTF-8');
+    $dateLabel = htmlspecialchars((string)($report['date_label'] ?? ''), ENT_QUOTES, 'UTF-8');
+    $weekLabel = htmlspecialchars((string)($report['week_label'] ?? ''), ENT_QUOTES, 'UTF-8');
+    $completedHtml = br_weekly_report_email_bullets($report['work_completed'] ?? '');
+    $wipHtml = br_weekly_report_email_bullets($report['work_in_progress'] ?? '');
+    $blockersHtml = br_weekly_report_email_bullets($report['issues_blockers'] ?? 'No major blockers.');
+    $planHtml = br_weekly_report_email_bullets($report['plan_next_week'] ?? '');
+
+    $subject = 'Weekly Report · ' . ($report['user_name'] ?? 'User');
+
+    $html_body = "
+    <div style=\"font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;\">
+      <div style=\"max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);\">
+        <div style=\"background-color: #4f46e5; color: #ffffff; padding: 20px; text-align: center;\">
+           <h1 style=\"margin: 0; font-size: 22px;\">Weekly Report</h1>
+          <p style=\"margin: 5px 0 0 0; font-size: 15px;\">{$userName}</p>
+        </div>
+        <div style=\"padding: 24px;\">
+          <p style=\"margin: 0 0 4px 0; font-size: 14px; color: #334155;\"><strong>Name:</strong> {$userName}</p>
+          <p style=\"margin: 0 0 4px 0; font-size: 14px; color: #334155;\"><strong>Date:</strong> {$dateLabel}</p>
+          <p style=\"margin: 0 0 20px 0; font-size: 14px; color: #334155;\"><strong>Week:</strong> {$weekLabel}</p>
+
+          <h3 style=\"margin: 0 0 8px 0; font-size: 16px; color: #1e293b;\">Work Completed This Week</h3>
+          <ul style=\"margin: 0 0 18px 0; padding-left: 20px;\">{$completedHtml}</ul>
+
+          <h3 style=\"margin: 0 0 8px 0; font-size: 16px; color: #1e293b;\">Work in Progress</h3>
+          <ul style=\"margin: 0 0 18px 0; padding-left: 20px;\">{$wipHtml}</ul>
+
+          <h3 style=\"margin: 0 0 8px 0; font-size: 16px; color: #1e293b;\">Issues / Blockers</h3>
+          <ul style=\"margin: 0 0 18px 0; padding-left: 20px;\">{$blockersHtml}</ul>
+
+          <h3 style=\"margin: 0 0 8px 0; font-size: 16px; color: #1e293b;\">Plan for Next Week</h3>
+          <ul style=\"margin: 0; padding-left: 20px;\">{$planHtml}</ul>
+        </div>
+        <div style=\"padding: 14px 20px; background-color: #f8fafc; color: #64748b; font-size: 12px; text-align: center;\">
+          © " . date('Y') . " BugRicer · Weekly Report
+        </div>
+      </div>
+    </div>";
+
+    $plainName = (string)($report['user_name'] ?? 'User');
+    $text_body = "WEEKLY REPORT\n\n"
+        . "Name: {$plainName}\n"
+        . "Date: " . ($report['date_label'] ?? '') . "\n"
+        . "Week: " . ($report['week_label'] ?? '') . "\n\n"
+        . "Work Completed This Week\n"
+        . br_weekly_report_email_text_block($report['work_completed'] ?? '') . "\n"
+        . "Work in Progress\n"
+        . br_weekly_report_email_text_block($report['work_in_progress'] ?? '') . "\n"
+        . "Issues / Blockers\n"
+        . br_weekly_report_email_text_block($report['issues_blockers'] ?? 'No major blockers.') . "\n"
+        . "Plan for Next Week\n"
+        . br_weekly_report_email_text_block($report['plan_next_week'] ?? '');
+
+    $results = [];
+    foreach ($adminEmails as $adminEmail) {
+        $adminEmail = trim((string)$adminEmail);
+        if ($adminEmail === '') {
+            continue;
+        }
+        $results[$adminEmail] = sendEmail($adminEmail, $subject, $html_body, $text_body);
+    }
+    return $results;
+}
+
 function sendProjectMemberAddedEmail($email, $username, $projectName, $projectRole, $addedByName, $projectLink) {
     $subject = "Added to Project - BugRicer";
     

@@ -2214,5 +2214,83 @@ function sendProjectAccessRequestWhatsApp(
         . "{$reviewUrl}";
     return sendWhatsAppMessage($phone, $message);
 }
+
+/**
+ * Why: Saturday weekly report is a separate professional message sent with checkout.
+ */
+function br_weekly_report_bullet_block($text): string
+{
+    $raw = trim((string)$text);
+    if ($raw === '') {
+        return '- —';
+    }
+    $lines = preg_split('/\r\n|\r|\n/', $raw) ?: [];
+    $out = [];
+    foreach ($lines as $line) {
+        $line = trim((string)$line);
+        $line = preg_replace('/^[-*•]\s*/u', '', $line) ?? $line;
+        $line = trim($line);
+        if ($line === '') {
+            continue;
+        }
+        $out[] = '- ' . $line;
+    }
+    return !empty($out) ? implode("\n", $out) : '- —';
+}
+
+function formatWeeklyReportForWhatsApp(array $report): string
+{
+    $name = trim((string)($report['user_name'] ?? 'User'));
+    $dateLabel = trim((string)($report['date_label'] ?? ''));
+    $weekLabel = trim((string)($report['week_label'] ?? ''));
+    $completed = br_weekly_report_bullet_block($report['work_completed'] ?? '');
+    $wip = br_weekly_report_bullet_block($report['work_in_progress'] ?? '');
+    $blockers = br_weekly_report_bullet_block($report['issues_blockers'] ?? 'No major blockers.');
+    $plan = br_weekly_report_bullet_block($report['plan_next_week'] ?? '');
+
+    $message = "📋 *WEEKLY REPORT*\n";
+    $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
+    $message .= "*Name:* {$name}\n";
+    $message .= "*Date:* {$dateLabel}\n";
+    $message .= "*Week:* {$weekLabel}\n\n";
+    $message .= "*Work Completed This Week*\n{$completed}\n\n";
+    $message .= "*Work in Progress*\n{$wip}\n\n";
+    $message .= "*Issues / Blockers*\n{$blockers}\n\n";
+    $message .= "*Plan for Next Week*\n{$plan}";
+    return $message;
+}
+
+function sendWeeklyReportWhatsAppToAdmins(array $report): bool
+{
+    try {
+        if (!defined('WHATSAPP_ADMIN_NUMBERS') || trim((string)WHATSAPP_ADMIN_NUMBERS) === '') {
+            error_log('⚠️ WHATSAPP_ADMIN_NUMBERS empty — skipping weekly report WhatsApp');
+            return false;
+        }
+
+        $message = formatWeeklyReportForWhatsApp($report);
+        $phoneNumbers = explode(',', (string)WHATSAPP_ADMIN_NUMBERS);
+        $any = false;
+
+        foreach ($phoneNumbers as $phoneNumber) {
+            $phoneNumber = trim($phoneNumber);
+            if ($phoneNumber === '') {
+                continue;
+            }
+            $result = sendWhatsAppMessage($phoneNumber, $message);
+            if ($result) {
+                $any = true;
+            }
+            if (count($phoneNumbers) > 1) {
+                usleep(500000);
+            }
+        }
+
+        return $any;
+    } catch (Throwable $e) {
+        error_log('sendWeeklyReportWhatsAppToAdmins: ' . $e->getMessage());
+        return false;
+    }
+}
 ?>
 

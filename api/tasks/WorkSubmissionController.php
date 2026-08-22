@@ -3,6 +3,7 @@ require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../utils/work_period.php';
 require_once __DIR__ . '/../../utils/leave_attendance.php';
 require_once __DIR__ . '/../../utils/user_onboarding.php';
+require_once __DIR__ . '/../../utils/weekly_report.php';
 
 class WorkSubmissionController extends BaseAPI {
     public function submit($payload) {
@@ -33,6 +34,11 @@ class WorkSubmissionController extends BaseAPI {
             }
             $start = isset($payload['start_time']) && trim($payload['start_time']) !== '' ? $payload['start_time'] : null; // empty string -> NULL for TIME column
             $hours = isset($payload['hours_today']) ? (float)$payload['hours_today'] : 0;
+            $weeklyGate = br_assert_saturday_weekly_report_for_checkout($this->conn, (string)$userId, (string)$date, $hours);
+            if (empty($weeklyGate['ok'])) {
+                $this->sendJsonResponse(400, $weeklyGate['message'] ?? 'Submit your weekly report before Saturday checkout.');
+                return null;
+            }
             $days = isset($payload['total_working_days']) ? (int)$payload['total_working_days'] : null;
             $cumulative = isset($payload['total_hours_cumulative']) ? (float)$payload['total_hours_cumulative'] : null;
             $completed = $payload['completed_tasks'] ?? null;
@@ -462,6 +468,12 @@ class WorkSubmissionController extends BaseAPI {
                 }
             } catch (Exception $e) {
                 error_log("⚠️ Failed to send daily work $updateStatus WhatsApp notification: " . $e->getMessage());
+            }
+
+            try {
+                br_send_weekly_report_with_checkout($this->conn, (string)$userId, (string)$date, $userName, $userEmail);
+            } catch (Throwable $e) {
+                error_log('⚠️ Failed weekly report checkout notify: ' . $e->getMessage());
             }
 
             $this->sendJsonResponse(200, 'Submission saved');

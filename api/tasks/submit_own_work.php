@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/WorkSubmissionController.php';
 require_once __DIR__ . '/../../utils/user_onboarding.php';
+require_once __DIR__ . '/../../utils/weekly_report.php';
 
 class OwnWorkSubmissionController extends WorkSubmissionController {
     public function submitOwnWork($payload) {
@@ -28,6 +29,11 @@ class OwnWorkSubmissionController extends WorkSubmissionController {
         
         $start = isset($payload['start_time']) && trim($payload['start_time']) !== '' ? $payload['start_time'] : null;
         $hours = isset($payload['hours_today']) ? (float)$payload['hours_today'] : 0;
+        $weeklyGate = br_assert_saturday_weekly_report_for_checkout($this->conn, (string)$userId, (string)$date, $hours);
+        if (empty($weeklyGate['ok'])) {
+            $this->sendJsonResponse(400, $weeklyGate['message'] ?? 'Submit your weekly report before Saturday checkout.');
+            return null;
+        }
         $days = isset($payload['total_working_days']) ? (int)$payload['total_working_days'] : null;
         $cumulative = isset($payload['total_hours_cumulative']) ? (float)$payload['total_hours_cumulative'] : null;
         $completed = $payload['completed_tasks'] ?? null;
@@ -273,6 +279,12 @@ class OwnWorkSubmissionController extends WorkSubmissionController {
         } catch (Exception $e) {
             error_log("⚠️ Failed to send daily work $updateStatus WhatsApp notification: " . $e->getMessage());
             error_log("⚠️ Exception trace: " . $e->getTraceAsString());
+        }
+
+        try {
+            br_send_weekly_report_with_checkout($this->conn, (string)$userId, (string)$date, $userName, $userEmail);
+        } catch (Throwable $e) {
+            error_log('⚠️ Failed weekly report checkout notify: ' . $e->getMessage());
         }
 
         $this->sendJsonResponse(200, 'Submission saved');
