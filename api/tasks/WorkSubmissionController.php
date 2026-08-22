@@ -300,209 +300,277 @@ class WorkSubmissionController extends BaseAPI {
             }
 
             $this->persistCheckoutPlannedFields($userId, $date, $payload);
-            $this->recomputeDeveloperHoursTakenFromProjectUpdates(
-                is_array($payload['project_updates'] ?? null) ? $payload['project_updates'] : []
-            );
-
             $this->updateOvertimeApprovalOnSubmit($userId, $date, $requestedExtraHours, $approvalReason);
 
             error_log("🔍 WorkSubmissionController::submit - Saved submission for user: " . $userId . " on date: " . $date);
-            
-            // Prepare notification data (shared for email and WhatsApp)
-            $userStmt = $this->conn->prepare("SELECT username, email FROM users WHERE id = ? LIMIT 1");
-            $userStmt->execute([$userId]);
-            $user = $userStmt->fetch(PDO::FETCH_ASSOC);
-            $userName = $user['username'] ?? 'User';
-            $userEmail = $user['email'] ?? '';
-            
-            // Fetch planned_projects, planned_work, planned_work_status, and planned_work_notes from database if they exist
-            $plannedProjectsData = null;
-            $plannedWorkData = null;
-            $plannedWorkStatusData = 'not_started';
-            $plannedWorkNotesData = null;
-            if ($hasPlannedProjects && $hasPlannedWork) {
-                $selectFields = "planned_projects, planned_work";
-                if ($hasPlannedWorkStatus) {
-                    $selectFields .= ", planned_work_status";
-                }
-                if ($hasPlannedWorkNotes) {
-                    $selectFields .= ", planned_work_notes";
-                }
-                $fetchStmt = $this->conn->prepare("SELECT $selectFields FROM work_submissions WHERE user_id = ? AND submission_date = ? LIMIT 1");
-                $fetchStmt->execute([$userId, $date]);
-                $plannedData = $fetchStmt->fetch(PDO::FETCH_ASSOC);
-                if ($plannedData) {
-                    $plannedProjectsData = $plannedData['planned_projects'] ? json_decode($plannedData['planned_projects'], true) : null;
-                    $plannedWorkData = $plannedData['planned_work'];
-                    $plannedWorkStatusData = $plannedData['planned_work_status'] ?? 'not_started';
-                    $plannedWorkNotesData = $plannedData['planned_work_notes'] ?? null;
-                }
-            }
-            
-            // Fetch total_working_days and total_hours_cumulative from database
-            $totalWorkingDays = null;
-            $totalHoursCumulative = null;
-            try {
-                $totalStmt = $this->conn->prepare("SELECT total_working_days, total_hours_cumulative FROM work_submissions WHERE user_id = ? AND submission_date = ? LIMIT 1");
-                $totalStmt->execute([$userId, $date]);
-                $totalData = $totalStmt->fetch(PDO::FETCH_ASSOC);
-                if ($totalData) {
-                    $totalWorkingDays = $totalData['total_working_days'] ?? 0;
-                    $totalHoursCumulative = $totalData['total_hours_cumulative'] ?? 0;
-                }
-            } catch (Exception $e) {
-                error_log("⚠️ Could not fetch total working days/hours: " . $e->getMessage());
-            }
-            
-            $resolvedCheckIn = $this->resolveCheckInTimeForNotice($userId, $date, $payload, $start, $columns);
-            // Backfill DB when check-in exists in payload/created_at but column is still null
-            if ($resolvedCheckIn !== null && in_array('check_in_time', $columns, true)) {
-                try {
-                    $backfillStmt = $this->conn->prepare(
-                        "UPDATE work_submissions
-                         SET check_in_time = ?
-                         WHERE user_id = ? AND submission_date = ?
-                           AND (check_in_time IS NULL OR check_in_time = '0000-00-00 00:00:00')"
+
+            $projectUpdatesPayload = is_array($payload['project_updates'] ?? null)
+                ? $payload['project_updates']
+                : [];
+            $timeAllocationPayload = is_array($payload['time_allocation'] ?? null)
+                ? $payload['time_allocation']
+                : null;
+            $conn = $this->conn;
+            $hasPlannedProjectsFlag = $hasPlannedProjects;
+            $hasPlannedWorkFlag = $hasPlannedWork;
+            $hasPlannedWorkStatusFlag = $hasPlannedWorkStatus;
+            $hasPlannedWorkNotesFlag = $hasPlannedWorkNotes;
+            $columnsSnapshot = $columns;
+            $payloadSnapshot = $payload;
+            $isUpdateFlag = $isUpdate;
+            $requestedExtraHoursFlag = $requestedExtraHours;
+            $overtimeFlag = $overtime;
+            $approvalReasonFlag = $approvalReason;
+            $breakEntriesFlag = $breakEntries;
+            $totalBreakMinutesFlag = $totalBreakMinutes;
+            $completedFlag = $completed;
+            $pendingFlag = $pending;
+            $ongoingFlag = $ongoing;
+            $notesFlag = $notes;
+            $startFlag = $start;
+            $hoursFlag = $hours;
+
+            // Why: Persist first and return immediately; mail / WhatsApp / push run after the client gets success.
+            $this->sendJsonThen(
+                function () use (
+                    $conn,
+                    $userId,
+                    $date,
+                    $payloadSnapshot,
+                    $projectUpdatesPayload,
+                    $timeAllocationPayload,
+                    $hasPlannedProjectsFlag,
+                    $hasPlannedWorkFlag,
+                    $hasPlannedWorkStatusFlag,
+                    $hasPlannedWorkNotesFlag,
+                    $columnsSnapshot,
+                    $isUpdateFlag,
+                    $requestedExtraHoursFlag,
+                    $overtimeFlag,
+                    $approvalReasonFlag,
+                    $breakEntriesFlag,
+                    $totalBreakMinutesFlag,
+                    $completedFlag,
+                    $pendingFlag,
+                    $ongoingFlag,
+                    $notesFlag,
+                    $startFlag,
+                    $hoursFlag
+                ) {
+                    try {
+                        $this->recomputeDeveloperHoursTakenFromProjectUpdates($projectUpdatesPayload);
+                    } catch (Throwable $e) {
+                        error_log('⚠️ Deferred developer_hours_taken recompute: ' . $e->getMessage());
+                    }
+
+                    $userName = 'User';
+                    $userEmail = '';
+                    try {
+                        $userStmt = $conn->prepare("SELECT username, email FROM users WHERE id = ? LIMIT 1");
+                        $userStmt->execute([$userId]);
+                        $user = $userStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+                        $userName = $user['username'] ?? 'User';
+                        $userEmail = $user['email'] ?? '';
+                    } catch (Throwable $e) {
+                        error_log('⚠️ Deferred user lookup for checkout notify: ' . $e->getMessage());
+                    }
+
+                    $plannedProjectsData = null;
+                    $plannedWorkData = null;
+                    $plannedWorkStatusData = 'not_started';
+                    $plannedWorkNotesData = null;
+                    if ($hasPlannedProjectsFlag && $hasPlannedWorkFlag) {
+                        try {
+                            $selectFields = "planned_projects, planned_work";
+                            if ($hasPlannedWorkStatusFlag) {
+                                $selectFields .= ", planned_work_status";
+                            }
+                            if ($hasPlannedWorkNotesFlag) {
+                                $selectFields .= ", planned_work_notes";
+                            }
+                            $fetchStmt = $conn->prepare(
+                                "SELECT $selectFields FROM work_submissions WHERE user_id = ? AND submission_date = ? LIMIT 1"
+                            );
+                            $fetchStmt->execute([$userId, $date]);
+                            $plannedData = $fetchStmt->fetch(PDO::FETCH_ASSOC);
+                            if ($plannedData) {
+                                $plannedProjectsData = !empty($plannedData['planned_projects'])
+                                    ? json_decode($plannedData['planned_projects'], true)
+                                    : null;
+                                $plannedWorkData = $plannedData['planned_work'];
+                                $plannedWorkStatusData = $plannedData['planned_work_status'] ?? 'not_started';
+                                $plannedWorkNotesData = $plannedData['planned_work_notes'] ?? null;
+                            }
+                        } catch (Throwable $e) {
+                            error_log('⚠️ Deferred planned fields fetch: ' . $e->getMessage());
+                        }
+                    }
+
+                    $totalWorkingDays = 0;
+                    $totalHoursCumulative = 0;
+                    try {
+                        $totalStmt = $conn->prepare(
+                            "SELECT total_working_days, total_hours_cumulative FROM work_submissions WHERE user_id = ? AND submission_date = ? LIMIT 1"
+                        );
+                        $totalStmt->execute([$userId, $date]);
+                        $totalData = $totalStmt->fetch(PDO::FETCH_ASSOC);
+                        if ($totalData) {
+                            $totalWorkingDays = $totalData['total_working_days'] ?? 0;
+                            $totalHoursCumulative = $totalData['total_hours_cumulative'] ?? 0;
+                        }
+                    } catch (Throwable $e) {
+                        error_log("⚠️ Deferred totals fetch: " . $e->getMessage());
+                    }
+
+                    $resolvedCheckIn = $this->resolveCheckInTimeForNotice(
+                        $userId,
+                        $date,
+                        $payloadSnapshot,
+                        $startFlag,
+                        $columnsSnapshot
                     );
-                    $backfillStmt->execute([$resolvedCheckIn, $userId, $date]);
-                } catch (Exception $e) {
-                    error_log('⚠️ Could not backfill check_in_time: ' . $e->getMessage());
-                }
-            }
-
-            $attendanceExtras = [
-                'work_mode' => null,
-                'is_late' => false,
-                'is_sunday' => false,
-                'check_in_distance_m' => null,
-                'office_label' => null,
-            ];
-            try {
-                require_once __DIR__ . '/../../utils/checkin_policy.php';
-                br_ensure_checkin_policy_schema($this->conn);
-                $attCols = [];
-                $attColRes = $this->conn->query('SHOW COLUMNS FROM work_submissions');
-                if ($attColRes) {
-                    while ($c = $attColRes->fetch(PDO::FETCH_ASSOC)) {
-                        $attCols[] = $c['Field'];
+                    if ($resolvedCheckIn !== null && in_array('check_in_time', $columnsSnapshot, true)) {
+                        try {
+                            $backfillStmt = $conn->prepare(
+                                "UPDATE work_submissions
+                                 SET check_in_time = ?
+                                 WHERE user_id = ? AND submission_date = ?
+                                   AND (check_in_time IS NULL OR check_in_time = '0000-00-00 00:00:00')"
+                            );
+                            $backfillStmt->execute([$resolvedCheckIn, $userId, $date]);
+                        } catch (Throwable $e) {
+                            error_log('⚠️ Deferred check_in_time backfill: ' . $e->getMessage());
+                        }
                     }
-                }
-                $selectAtt = ['id'];
-                foreach (['work_mode', 'is_late', 'check_in_distance_m'] as $col) {
-                    if (in_array($col, $attCols, true)) {
-                        $selectAtt[] = $col;
+
+                    $attendanceExtras = [
+                        'work_mode' => null,
+                        'is_late' => false,
+                        'is_sunday' => false,
+                        'check_in_distance_m' => null,
+                        'office_label' => null,
+                    ];
+                    try {
+                        require_once __DIR__ . '/../../utils/checkin_policy.php';
+                        br_ensure_checkin_policy_schema($conn);
+                        $attCols = [];
+                        $attColRes = $conn->query('SHOW COLUMNS FROM work_submissions');
+                        if ($attColRes) {
+                            while ($c = $attColRes->fetch(PDO::FETCH_ASSOC)) {
+                                $attCols[] = $c['Field'];
+                            }
+                        }
+                        $selectAtt = ['id'];
+                        foreach (['work_mode', 'is_late', 'check_in_distance_m'] as $col) {
+                            if (in_array($col, $attCols, true)) {
+                                $selectAtt[] = $col;
+                            }
+                        }
+                        $attStmt = $conn->prepare(
+                            'SELECT ' . implode(', ', $selectAtt) . '
+                             FROM work_submissions
+                             WHERE user_id = ? AND submission_date = ?
+                             LIMIT 1'
+                        );
+                        $attStmt->execute([$userId, $date]);
+                        $attRow = $attStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+                        if (!empty($attRow['work_mode'])) {
+                            $attendanceExtras['work_mode'] = $attRow['work_mode'];
+                        }
+                        $attendanceExtras['is_late'] = !empty($attRow['is_late']);
+                        if (isset($attRow['check_in_distance_m']) && $attRow['check_in_distance_m'] !== null) {
+                            $attendanceExtras['check_in_distance_m'] = (float)$attRow['check_in_distance_m'];
+                        }
+                        $attendanceExtras['office_label'] = br_office_label($conn);
+                        $attendanceExtras['is_sunday'] = ((int)(new DateTimeImmutable($date . ' 12:00:00', new DateTimeZone('Asia/Kolkata')))->format('N') === 7);
+                    } catch (Throwable $e) {
+                        error_log('⚠️ Deferred attendance extras: ' . $e->getMessage());
                     }
-                }
-                $attStmt = $this->conn->prepare(
-                    'SELECT ' . implode(', ', $selectAtt) . '
-                     FROM work_submissions
-                     WHERE user_id = ? AND submission_date = ?
-                     LIMIT 1'
-                );
-                $attStmt->execute([$userId, $date]);
-                $attRow = $attStmt->fetch(PDO::FETCH_ASSOC) ?: [];
-                if (!empty($attRow['work_mode'])) {
-                    $attendanceExtras['work_mode'] = $attRow['work_mode'];
-                }
-                $attendanceExtras['is_late'] = !empty($attRow['is_late']);
-                if (isset($attRow['check_in_distance_m']) && $attRow['check_in_distance_m'] !== null) {
-                    $attendanceExtras['check_in_distance_m'] = (float)$attRow['check_in_distance_m'];
-                }
-                $attendanceExtras['office_label'] = br_office_label($this->conn);
-                $attendanceExtras['is_sunday'] = ((int)(new DateTimeImmutable($date . ' 12:00:00', new DateTimeZone('Asia/Kolkata')))->format('N') === 7);
-            } catch (Throwable $e) {
-                error_log('⚠️ Could not load attendance extras for notice: ' . $e->getMessage());
-            }
 
-            $submissionData = [
-                'submission_date' => $date,
-                'start_time' => $start,
-                'check_in_time' => $resolvedCheckIn,
-                'check_out_time' => date('Y-m-d H:i:s'),
-                'hours_today' => $hours,
-                'overtime_hours' => $overtime,
-                'requested_extra_hours' => $requestedExtraHours,
-                'approval_reason' => $approvalReason,
-                'break_entries' => $breakEntries,
-                'total_break_minutes' => $totalBreakMinutes,
-                'total_working_days' => $totalWorkingDays ?? 0,
-                'total_hours_cumulative' => $totalHoursCumulative ?? 0,
-                'completed_tasks' => $completed,
-                'pending_tasks' => $pending,
-                'ongoing_tasks' => $ongoing,
-                'notes' => $notes,
-                'planned_projects' => $plannedProjectsData,
-                'planned_work' => $plannedWorkData,
-                'planned_work_status' => $plannedWorkStatusData,
-                'planned_work_notes' => $plannedWorkNotesData,
-                'project_updates' => is_array($payload['project_updates'] ?? null) ? $payload['project_updates'] : [],
-                'time_allocation' => is_array($payload['time_allocation'] ?? null) ? $payload['time_allocation'] : null,
-                'work_mode' => $attendanceExtras['work_mode'],
-                'is_late' => $attendanceExtras['is_late'],
-                'is_sunday' => $attendanceExtras['is_sunday'],
-                'check_in_distance_m' => $attendanceExtras['check_in_distance_m'],
-                'office_label' => $attendanceExtras['office_label'],
-                'is_update' => $isUpdate,
-                '_db_conn' => $this->conn // Pass connection for project name lookup
-            ];
+                    $submissionData = [
+                        'submission_date' => $date,
+                        'start_time' => $startFlag,
+                        'check_in_time' => $resolvedCheckIn,
+                        'check_out_time' => date('Y-m-d H:i:s'),
+                        'hours_today' => $hoursFlag,
+                        'overtime_hours' => $overtimeFlag,
+                        'requested_extra_hours' => $requestedExtraHoursFlag,
+                        'approval_reason' => $approvalReasonFlag,
+                        'break_entries' => $breakEntriesFlag,
+                        'total_break_minutes' => $totalBreakMinutesFlag,
+                        'total_working_days' => $totalWorkingDays,
+                        'total_hours_cumulative' => $totalHoursCumulative,
+                        'completed_tasks' => $completedFlag,
+                        'pending_tasks' => $pendingFlag,
+                        'ongoing_tasks' => $ongoingFlag,
+                        'notes' => $notesFlag,
+                        'planned_projects' => $plannedProjectsData,
+                        'planned_work' => $plannedWorkData,
+                        'planned_work_status' => $plannedWorkStatusData,
+                        'planned_work_notes' => $plannedWorkNotesData,
+                        'project_updates' => $projectUpdatesPayload,
+                        'time_allocation' => $timeAllocationPayload,
+                        'work_mode' => $attendanceExtras['work_mode'],
+                        'is_late' => $attendanceExtras['is_late'],
+                        'is_sunday' => $attendanceExtras['is_sunday'],
+                        'check_in_distance_m' => $attendanceExtras['check_in_distance_m'],
+                        'office_label' => $attendanceExtras['office_label'],
+                        'is_update' => $isUpdateFlag,
+                        '_db_conn' => $conn,
+                    ];
 
-            // Send notifications BEFORE the HTTP response — sendJsonResponse() calls exit()
-            $updateStatus = $isUpdate ? 'UPDATE' : 'NEW SUBMISSION';
-            error_log("📢 NOTIFICATION: Sending admin notifications for work $updateStatus by $userName ($userEmail)");
+                    $updateStatus = $isUpdateFlag ? 'UPDATE' : 'NEW SUBMISSION';
+                    error_log("📢 NOTIFICATION (post-response): admin channels for work $updateStatus by $userName ($userEmail)");
 
-            try {
-                require_once __DIR__ . '/../NotificationManager.php';
-                $nm = NotificationManager::getInstance();
-                $submissionKey = $userId . ':' . $date;
-                $nm->notifyWorkCheckOut($submissionKey, $userId, $userName, $date, $hours, $isUpdate);
-                if ($requestedExtraHours > 0) {
-                    $nm->notifyOvertimeRequested($submissionKey, $userId, $requestedExtraHours);
-                }
-            } catch (Throwable $e) {
-                error_log("⚠️ Failed in-app/push work update notification: " . $e->getMessage());
-            }
+                    try {
+                        require_once __DIR__ . '/../NotificationManager.php';
+                        $nm = NotificationManager::getInstance();
+                        $submissionKey = $userId . ':' . $date;
+                        $nm->notifyWorkCheckOut($submissionKey, $userId, $userName, $date, $hoursFlag, $isUpdateFlag);
+                        if ($requestedExtraHoursFlag > 0) {
+                            $nm->notifyOvertimeRequested($submissionKey, $userId, $requestedExtraHoursFlag);
+                        }
+                    } catch (Throwable $e) {
+                        error_log("⚠️ Failed in-app/push work update notification: " . $e->getMessage());
+                    }
 
-            error_log("EMAIL_NOTIFICATION: Starting email notification process");
-            try {
-                $emailPath = __DIR__ . '/../../utils/email.php';
-                require_once $emailPath;
+                    try {
+                        require_once __DIR__ . '/../../utils/email.php';
+                        $adminStmt = $conn->prepare(
+                            "SELECT email FROM users WHERE account_active = 1 AND (role = 'admin' OR role_id = 1)"
+                        );
+                        $adminStmt->execute();
+                        $adminRows = $adminStmt->fetchAll(PDO::FETCH_ASSOC);
+                        $adminEmails = array_column($adminRows, 'email');
+                        if (!empty($adminEmails) && !empty($userEmail)) {
+                            $emailResults = sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $submissionData);
+                            error_log("📧 Daily work $updateStatus emails sent. Results: " . json_encode($emailResults));
+                        }
+                    } catch (Throwable $e) {
+                        error_log("⚠️ Failed daily work $updateStatus email: " . $e->getMessage());
+                    }
 
-                $adminStmt = $this->conn->prepare(
-                    "SELECT email FROM users WHERE account_active = 1 AND (role = 'admin' OR role_id = 1)"
-                );
-                $adminStmt->execute();
-                $adminRows = $adminStmt->fetchAll(PDO::FETCH_ASSOC);
-                $adminEmails = array_column($adminRows, 'email');
+                    try {
+                        require_once __DIR__ . '/../../utils/whatsapp.php';
+                        if (!empty($userEmail)) {
+                            $whatsappResult = sendDailyWorkUpdateWhatsAppToAdmins($userName, $userEmail, $submissionData);
+                            error_log($whatsappResult
+                                ? "✅ Daily work $updateStatus WhatsApp sent to admins"
+                                : "❌ Failed daily work $updateStatus WhatsApp to admins");
+                        }
+                    } catch (Throwable $e) {
+                        error_log("⚠️ Failed daily work $updateStatus WhatsApp: " . $e->getMessage());
+                    }
 
-                if (!empty($adminEmails) && !empty($userEmail)) {
-                    $emailResults = sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $submissionData);
-                    error_log("📧 Daily work $updateStatus emails sent to admins. Results: " . json_encode($emailResults));
-                }
-            } catch (Exception $e) {
-                error_log("⚠️ Failed to send daily work $updateStatus email notification: " . $e->getMessage());
-            }
-
-            try {
-                $whatsappPath = __DIR__ . '/../../utils/whatsapp.php';
-                require_once $whatsappPath;
-
-                if (!empty($userEmail)) {
-                    $whatsappResult = sendDailyWorkUpdateWhatsAppToAdmins($userName, $userEmail, $submissionData);
-                    error_log($whatsappResult
-                        ? "✅ Daily work $updateStatus WhatsApp sent to admins"
-                        : "❌ Failed to send daily work $updateStatus WhatsApp to admins");
-                }
-            } catch (Exception $e) {
-                error_log("⚠️ Failed to send daily work $updateStatus WhatsApp notification: " . $e->getMessage());
-            }
-
-            try {
-                br_send_weekly_report_with_checkout($this->conn, (string)$userId, (string)$date, $userName, $userEmail);
-            } catch (Throwable $e) {
-                error_log('⚠️ Failed weekly report checkout notify: ' . $e->getMessage());
-            }
-
-            $this->sendJsonResponse(200, 'Submission saved');
+                    try {
+                        br_send_weekly_report_with_checkout($conn, (string)$userId, (string)$date, $userName, $userEmail);
+                    } catch (Throwable $e) {
+                        error_log('⚠️ Failed weekly report checkout notify: ' . $e->getMessage());
+                    }
+                },
+                200,
+                'Submission saved'
+            );
         } catch (Exception $e) {
             error_log('WorkSubmission submit error: ' . $e->getMessage());
             $this->sendJsonResponse(500, 'Failed to save submission');
