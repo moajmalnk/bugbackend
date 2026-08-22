@@ -2701,7 +2701,7 @@ class BugController extends BaseAPI {
 
     /**
      * Common bugs: already raised and/or duplicate titles within a project.
-     * Admins see all projects; developers/testers are scoped to their memberships.
+     * Org-wide catalog for duplicate checking (scoped only when scopeUserId is passed).
      */
     public function getCommonBugs($page = 1, $limit = 20, $projectId = null, $reason = 'all', $scopeUserId = null) {
         try {
@@ -2710,7 +2710,7 @@ class BugController extends BaseAPI {
             }
 
             $page = max(1, (int) $page);
-            $limit = max(1, min(100, (int) $limit));
+            $limit = max(1, min(1000, (int) $limit));
             $offset = ($page - 1) * $limit;
             $reason = in_array($reason, ['all', 'already_raised', 'duplicate'], true) ? $reason : 'all';
             $hasAlreadyRaised = $this->bugsTableHasAlreadyRaisedColumn();

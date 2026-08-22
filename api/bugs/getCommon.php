@@ -81,7 +81,9 @@ try {
         exit;
     }
 
-    $scopeUserId = $isAdmin ? null : $userId;
+    // Why: Common Bugs is an org-wide duplicate catalog — developers and testers
+    // must see every entry to check before reporting, not only assigned projects.
+    $scopeUserId = null;
 
     $projectId = isset($_GET['project_id']) && $_GET['project_id'] !== '' ? $_GET['project_id'] : null;
     $page = isset($_GET['page']) ? (int) $_GET['page'] : 1;
