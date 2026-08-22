@@ -495,6 +495,89 @@ function br_save_weekly_report(PDO $conn, string $userId, array $payload): array
 }
 
 /**
+ * @return array<string,mixed>|null
+ */
+function br_get_weekly_report_by_id(PDO $conn, string $id): ?array
+{
+    $id = trim($id);
+    if ($id === '') {
+        return null;
+    }
+    $stmt = $conn->prepare(
+        'SELECT wr.id, wr.user_id, wr.week_start, wr.week_end, wr.report_date,
+                wr.work_completed, wr.work_in_progress, wr.issues_blockers, wr.plan_next_week,
+                wr.notified_at, wr.created_at, wr.updated_at,
+                u.username, u.role
+         FROM weekly_reports wr
+         INNER JOIN users u ON u.id = wr.user_id
+         WHERE wr.id = ?
+         LIMIT 1'
+    );
+    $stmt->execute([$id]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    return $row ? br_present_weekly_report_row($row) : null;
+}
+
+/**
+ * Why: Admins may correct typos or merge team reports without waiting for Saturday checkout.
+ *
+ * @return array<string,mixed>
+ */
+function br_admin_update_weekly_report(PDO $conn, string $id, array $payload): array
+{
+    br_ensure_weekly_reports_schema($conn);
+    $id = trim($id);
+    if ($id === '') {
+        throw new InvalidArgumentException('Report id is required.');
+    }
+
+    $existing = br_get_weekly_report_by_id($conn, $id);
+    if (!$existing) {
+        throw new InvalidArgumentException('Weekly report not found.');
+    }
+
+    $workCompleted = br_sanitize_weekly_report_field($payload['work_completed'] ?? '', true);
+    $workInProgress = br_sanitize_weekly_report_field($payload['work_in_progress'] ?? '', true);
+    $issues = br_sanitize_weekly_report_field($payload['issues_blockers'] ?? '', false);
+    $planNext = br_sanitize_weekly_report_field($payload['plan_next_week'] ?? '', true);
+
+    if ($workCompleted === '' || $workInProgress === '' || $planNext === '') {
+        throw new InvalidArgumentException('Work completed, work in progress, and plan for next week are required.');
+    }
+
+    $stmt = $conn->prepare(
+        'UPDATE weekly_reports
+         SET work_completed = ?, work_in_progress = ?, issues_blockers = ?, plan_next_week = ?
+         WHERE id = ?'
+    );
+    $stmt->execute([
+        $workCompleted,
+        $workInProgress,
+        $issues !== '' ? $issues : null,
+        $planNext,
+        $id,
+    ]);
+
+    $saved = br_get_weekly_report_by_id($conn, $id);
+    if (!$saved) {
+        throw new RuntimeException('Failed to update weekly report.');
+    }
+    return $saved;
+}
+
+function br_admin_delete_weekly_report(PDO $conn, string $id): bool
+{
+    br_ensure_weekly_reports_schema($conn);
+    $id = trim($id);
+    if ($id === '') {
+        return false;
+    }
+    $stmt = $conn->prepare('DELETE FROM weekly_reports WHERE id = ?');
+    $stmt->execute([$id]);
+    return $stmt->rowCount() > 0;
+}
+
+/**
  * @return string[]
  */
 function br_weekly_report_admin_emails(PDO $conn): array

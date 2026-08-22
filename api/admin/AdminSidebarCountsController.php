@@ -43,6 +43,7 @@ class AdminSidebarCountsController extends BaseAPI
             'meetings' => 0,
             'tasks' => 0,
             'bugupdate' => 0,
+            'weeklyReport' => 0,
             'myleave' => 0,
             'messages' => 0,
             'commonBugs' => 0,
@@ -206,6 +207,22 @@ class AdminSidebarCountsController extends BaseAPI
                 'SELECT COUNT(*) FROM work_submissions WHERE user_id = ?',
                 [$userId]
             );
+        }
+
+        if (
+            ($isAdmin || $role === 'developer'
+                || $can('DAILY_UPDATE_CREATE') || $can('DAILY_UPDATE_VIEW')
+                || $can('UPDATES_VIEW') || $can('UPDATES_CREATE'))
+            && $this->dbTableExists('weekly_reports')
+        ) {
+            if ($isAdmin) {
+                $counts['weeklyReport'] = $this->countOrZero('SELECT COUNT(*) FROM weekly_reports');
+            } else {
+                $counts['weeklyReport'] = $this->countOrZero(
+                    'SELECT COUNT(*) FROM weekly_reports WHERE user_id = ?',
+                    [$userId]
+                );
+            }
         }
 
         if (
