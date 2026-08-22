@@ -398,12 +398,16 @@ function formatWorkUpdateForWhatsApp($userName, $userEmail, $submissionData) {
             $pname = trim((string)($upd['project_name'] ?? $upd['name'] ?? $upd['project_id'] ?? 'Project'));
             $status = trim((string)($upd['status'] ?? ''));
             $progress = isset($upd['progress_percentage']) ? (int)$upd['progress_percentage'] : null;
+            $projectHours = isset($upd['hours']) ? (float)$upd['hours'] : null;
             $line = '• ' . $pname;
             if ($status !== '') {
                 $line .= ' · ' . str_replace('_', ' ', $status);
             }
             if ($progress !== null) {
                 $line .= ' · ' . $progress . '%';
+            }
+            if ($projectHours !== null && $projectHours > 0) {
+                $line .= ' · ' . br_format_whatsapp_hours($projectHours) . 'h';
             }
             $message .= $line . "\n";
             $shown++;

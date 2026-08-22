@@ -1026,6 +1026,7 @@ class ProjectController extends BaseAPI
             $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
             $entries = [];
+            $totalHours = 0.0;
             foreach ($rows as $row) {
                 $updates = json_decode($row['project_updates'] ?? '[]', true);
                 if (!is_array($updates)) {
@@ -1035,13 +1036,20 @@ class ProjectController extends BaseAPI
                     if (!is_array($update) || (string) ($update['project_id'] ?? '') !== $projectId) {
                         continue;
                     }
+                    $hours = (float) ($update['hours'] ?? 0);
+                    if ($hours < 0) {
+                        $hours = 0;
+                    }
+                    $hours = min(24, round($hours, 1));
+                    $totalHours += $hours;
                     $entries[] = [
                         'submission_id' => (int) $row['id'],
                         'submission_date' => $row['submission_date'],
                         'user_id' => $row['user_id'],
                         'username' => $row['username'],
                         'role' => $row['role'],
-                        'hours_today' => (float) ($row['hours_today'] ?? 0),
+                        'hours' => $hours,
+                        'hours_today' => $hours,
                         'status' => (string) ($update['status'] ?? 'not_started'),
                         'progress_percentage' => max(0, min(100, (int) ($update['progress_percentage'] ?? 0))),
                         'notes' => trim((string) ($update['notes'] ?? '')),
@@ -1053,6 +1061,7 @@ class ProjectController extends BaseAPI
                 'project_id' => $projectId,
                 'from' => $from,
                 'to' => $to,
+                'total_hours' => round($totalHours, 1),
                 'entries' => $entries,
             ]);
         } catch (Exception $e) {

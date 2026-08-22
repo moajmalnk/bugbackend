@@ -4,6 +4,7 @@ require_once __DIR__ . '/../../utils/work_period.php';
 require_once __DIR__ . '/../../utils/leave_attendance.php';
 require_once __DIR__ . '/../../utils/user_onboarding.php';
 require_once __DIR__ . '/../../utils/weekly_report.php';
+require_once __DIR__ . '/../../utils/checkout_time_allocation.php';
 
 class WorkSubmissionController extends BaseAPI {
     public function submit($payload) {
@@ -39,6 +40,26 @@ class WorkSubmissionController extends BaseAPI {
                 $this->sendJsonResponse(400, $weeklyGate['message'] ?? 'Submit your weekly report before Saturday checkout.');
                 return null;
             }
+
+            // Why: Hours today must equal lunch + breaks + Growth Glimpse + project hours + other.
+            $normalizedProjectUpdates = $this->normalizeProjectUpdatesPayload($payload['project_updates'] ?? null) ?? [];
+            $timeAllocation = br_normalize_time_allocation($payload['time_allocation'] ?? null, (string)$date);
+            if ($hours > 0 && !br_hours_tally_matches($hours, $timeAllocation, $normalizedProjectUpdates)) {
+                $allocated = br_allocation_total($timeAllocation, $normalizedProjectUpdates);
+                $this->sendJsonResponse(
+                    400,
+                    sprintf(
+                        'Hours must tally. Today is %.1fh but allocated %.1fh (lunch, breaks, Growth Glimpse, projects, other).',
+                        br_clamp_hours($hours),
+                        $allocated
+                    )
+                );
+                return null;
+            }
+            // Stash for persist + notifications
+            $payload['project_updates'] = $normalizedProjectUpdates;
+            $payload['time_allocation'] = $timeAllocation;
+
             $days = isset($payload['total_working_days']) ? (int)$payload['total_working_days'] : null;
             $cumulative = isset($payload['total_hours_cumulative']) ? (float)$payload['total_hours_cumulative'] : null;
             $completed = $payload['completed_tasks'] ?? null;
@@ -279,6 +300,9 @@ class WorkSubmissionController extends BaseAPI {
             }
 
             $this->persistCheckoutPlannedFields($userId, $date, $payload);
+            $this->recomputeDeveloperHoursTakenFromProjectUpdates(
+                is_array($payload['project_updates'] ?? null) ? $payload['project_updates'] : []
+            );
 
             $this->updateOvertimeApprovalOnSubmit($userId, $date, $requestedExtraHours, $approvalReason);
 
@@ -822,6 +846,18 @@ class WorkSubmissionController extends BaseAPI {
         } catch (Exception $e) {
             // ignore
         }
+        $this->ensureTimeAllocationColumn();
+    }
+
+    protected function ensureTimeAllocationColumn(): void {
+        try {
+            $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'time_allocation'");
+            if ($check->rowCount() === 0) {
+                $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN time_allocation JSON NULL DEFAULT NULL AFTER project_updates");
+            }
+        } catch (Exception $e) {
+            // ignore
+        }
     }
 
     protected function normalizeProjectUpdatesPayload($raw): ?array {
@@ -843,14 +879,86 @@ class WorkSubmissionController extends BaseAPI {
                 $progress = max($progress, 100);
             }
             $notes = trim((string)($item['notes'] ?? ''));
+            $hours = br_clamp_hours($item['hours'] ?? 0);
+            $meaningful = $hours > 0
+                || $notes !== ''
+                || $progress > 0
+                || !in_array($status, ['in_progress', 'not_started'], true);
+            if (!$meaningful) {
+                continue;
+            }
             $out[] = [
                 'project_id' => (string)$item['project_id'],
                 'status' => $status,
                 'progress_percentage' => $progress,
                 'notes' => $notes,
+                'hours' => $hours,
             ];
         }
         return $out;
+    }
+
+    /**
+     * Why: Developer Hours Taken on each project is the sum of checkout-allocated hours.
+     */
+    protected function recomputeDeveloperHoursTakenFromProjectUpdates(array $projectUpdates): void {
+        $projectIds = [];
+        foreach ($projectUpdates as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $pid = trim((string)($row['project_id'] ?? ''));
+            if ($pid !== '') {
+                $projectIds[$pid] = true;
+            }
+        }
+        if (empty($projectIds)) {
+            return;
+        }
+        foreach (array_keys($projectIds) as $projectId) {
+            $this->recomputeDeveloperHoursTakenForProject((string)$projectId);
+        }
+    }
+
+    protected function recomputeDeveloperHoursTakenForProject(string $projectId): void {
+        if ($projectId === '') {
+            return;
+        }
+        try {
+            $colCheck = $this->conn->query("SHOW COLUMNS FROM projects LIKE 'developer_hours_taken'");
+            if (!$colCheck || $colCheck->rowCount() === 0) {
+                return;
+            }
+            $this->ensureProjectUpdatesColumn();
+            $stmt = $this->conn->query(
+                "SELECT project_updates FROM work_submissions
+                 WHERE project_updates IS NOT NULL AND JSON_LENGTH(project_updates) > 0"
+            );
+            if (!$stmt) {
+                return;
+            }
+            $total = 0.0;
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $updates = json_decode($row['project_updates'] ?? '[]', true);
+                if (!is_array($updates)) {
+                    continue;
+                }
+                foreach ($updates as $update) {
+                    if (!is_array($update)) {
+                        continue;
+                    }
+                    if ((string)($update['project_id'] ?? '') !== $projectId) {
+                        continue;
+                    }
+                    $total += br_clamp_hours($update['hours'] ?? 0);
+                }
+            }
+            $total = round($total, 1);
+            $upd = $this->conn->prepare('UPDATE projects SET developer_hours_taken = ? WHERE id = ?');
+            $upd->execute([$total, $projectId]);
+        } catch (Exception $e) {
+            error_log('⚠️ Failed recompute developer_hours_taken: ' . $e->getMessage());
+        }
     }
 
     /**
@@ -938,6 +1046,8 @@ class WorkSubmissionController extends BaseAPI {
         $projectUpdatesJson = ($normalizedUpdates !== null && !empty($normalizedUpdates))
             ? json_encode($normalizedUpdates)
             : null;
+        $timeAllocation = br_normalize_time_allocation($payload['time_allocation'] ?? null, $date);
+        $timeAllocationJson = json_encode($timeAllocation);
 
         $columnsCheck = $this->conn->query("SHOW COLUMNS FROM work_submissions");
         $columns = $columnsCheck->fetchAll(PDO::FETCH_COLUMN);
@@ -955,6 +1065,10 @@ class WorkSubmissionController extends BaseAPI {
         if (in_array('project_updates', $columns, true)) {
             $parts[] = 'project_updates = ?';
             $values[] = $projectUpdatesJson;
+        }
+        if (in_array('time_allocation', $columns, true)) {
+            $parts[] = 'time_allocation = ?';
+            $values[] = $timeAllocationJson;
         }
 
         if (empty($parts)) {
