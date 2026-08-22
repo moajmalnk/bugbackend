@@ -194,6 +194,11 @@ class LeaveController extends BaseAPI
                 $this->sendJsonResponse(400, 'Invalid leave type');
                 return;
             }
+            // Personal Leave is retired — only Paid (1), Sick (1), Unpaid (max 5).
+            if (strtolower((string)$type['code']) === 'personal') {
+                $this->sendJsonResponse(400, 'Personal Leave is no longer available. Use Paid, Sick, or Unpaid Leave.');
+                return;
+            }
 
             $joining = br_user_joining_date($this->conn, $userId);
             if ($joining !== null && $startDate < $joining) {
