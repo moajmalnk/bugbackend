@@ -1,6 +1,24 @@
 <?php
 
 /**
+ * Exclude recycle-bin bugs from project stat badges when soft-delete column exists.
+ */
+function projectStatsBugLiveFilter(PDO $conn): string
+{
+    static $filter = null;
+    if ($filter !== null) {
+        return $filter;
+    }
+    try {
+        $st = $conn->query("SHOW COLUMNS FROM bugs LIKE 'deleted_at'");
+        $filter = ($st && $st->rowCount() > 0) ? ' AND deleted_at IS NULL' : '';
+    } catch (Throwable $e) {
+        $filter = '';
+    }
+    return $filter;
+}
+
+/**
  * Attach members, bug_stats, member_stats, and compliance counts to each project in one batch.
  */
 function attachProjectListStats(PDO $conn, array &$projects): void

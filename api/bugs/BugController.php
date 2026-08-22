@@ -602,6 +602,26 @@ class BugController extends BaseAPI {
         }
     }
 
+    /** Why: Soft-deleted (recycle bin) bugs must be excluded from lists and badge counts. */
+    private function bugsTableHasDeletedAtColumn(): bool
+    {
+        try {
+            $st = $this->conn->query("SHOW COLUMNS FROM bugs LIKE 'deleted_at'");
+            return (bool) ($st && $st->rowCount() > 0);
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+
+    private function bugRecycleBinExclude(string $alias = 'b'): string
+    {
+        if (!$this->bugsTableHasDeletedAtColumn()) {
+            return '1=1';
+        }
+        $p = $alias !== '' ? $alias . '.' : '';
+        return "{$p}deleted_at IS NULL";
+    }
+
     /**
      * Why: Fixes page verification tabs must filter in SQL, not on one paginated page.
      */
@@ -2482,7 +2502,7 @@ class BugController extends BaseAPI {
                 $to = $tmp;
             }
 
-            $where = [];
+            $where = [$this->bugRecycleBinExclude('b')];
             $params = [];
 
             if ($accessUserId) {
@@ -2656,7 +2676,7 @@ class BugController extends BaseAPI {
             }
             $statusKey = !empty($statusList) ? implode(',', $statusList) : 'all';
 
-            $cacheKey = 'bugs_v8_' . md5(json_encode([
+            $cacheKey = 'bugs_v9_' . md5(json_encode([
                 $projectId, $page, $limit, $statusKey, $userId,
                 $search, $priority, $fixedBy, $bugTypeId, $verificationFilter,
                 $verifiedFrom, $verifiedTo, $sort, $accessUserId, $facetUserId,
@@ -2667,7 +2687,7 @@ class BugController extends BaseAPI {
             }
 
             $countQuery = "SELECT COUNT(*) as total FROM bugs b";
-            $where = ["b.deleted_at IS NULL"];
+            $where = [$this->bugRecycleBinExclude('b')];
             $countParams = [];
 
             // Scope to projects the non-admin user can access
@@ -2821,7 +2841,7 @@ class BugController extends BaseAPI {
             }
 
             // Facet totals for badges (same project/access scope; not narrowed by list filters)
-            $facetWhere = [];
+            $facetWhere = [$this->bugRecycleBinExclude('b')];
             $facetParams = [];
             if ($accessUserId) {
                 $facetWhere[] = "b.project_id IN (
@@ -2958,9 +2978,11 @@ class BugController extends BaseAPI {
             $reason = in_array($reason, ['all', 'already_raised', 'duplicate'], true) ? $reason : 'all';
             $hasAlreadyRaised = $this->bugsTableHasAlreadyRaisedColumn();
 
+            $bugLivePlain = $this->bugRecycleBinExclude('');
             $dupSubquery = "
                 SELECT project_id, LOWER(TRIM(title)) AS norm_title, COUNT(*) AS duplicate_count
                 FROM bugs
+                WHERE {$bugLivePlain}
                 GROUP BY project_id, LOWER(TRIM(title))
                 HAVING COUNT(*) > 1
             ";
@@ -2976,7 +2998,7 @@ class BugController extends BaseAPI {
                     AND LOWER(TRIM(b.title)) = dup.norm_title
             ";
 
-            $where = "WHERE {$commonCondition}";
+            $where = 'WHERE ' . $this->bugRecycleBinExclude('b') . " AND {$commonCondition}";
             $params = [];
 
             if ($projectId) {

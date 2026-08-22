@@ -98,29 +98,33 @@ class AdminSidebarCountsController extends BaseAPI
         )";
 
         if ($this->dbTableExists('bugs')) {
+            $bugLive = $this->bugRecycleBinExclude();
             if ($isAdmin) {
                 $counts['bugs'] = $this->countOrZero(
-                    "SELECT COUNT(*) FROM bugs WHERE status IN ('pending', 'in_progress')"
+                    "SELECT COUNT(*) FROM bugs WHERE {$bugLive} AND status IN ('pending', 'in_progress')"
                 );
                 $counts['fixes'] = $this->countOrZero(
                     "SELECT COUNT(*) FROM bugs
-                     WHERE status = 'fixed'
+                     WHERE {$bugLive}
+                       AND status = 'fixed'
                        AND tester_retested = 1
                        AND tester_issue_fixed = 1"
                 );
                 $counts['retests'] = $this->countOrZero(
-                    "SELECT COUNT(*) FROM bugs WHERE status = 'fixed' AND tester_retested IS NULL"
+                    "SELECT COUNT(*) FROM bugs WHERE {$bugLive} AND status = 'fixed' AND tester_retested IS NULL"
                 );
             } else {
                 $counts['bugs'] = $this->countOrZero(
                     "SELECT COUNT(*) FROM bugs
-                     WHERE status IN ('pending', 'in_progress')
+                     WHERE {$bugLive}
+                       AND status IN ('pending', 'in_progress')
                        AND project_id {$projectScopeSql}",
                     [$userId, $userId]
                 );
                 $counts['fixes'] = $this->countOrZero(
                     "SELECT COUNT(*) FROM bugs
-                     WHERE status = 'fixed'
+                     WHERE {$bugLive}
+                       AND status = 'fixed'
                        AND tester_retested = 1
                        AND tester_issue_fixed = 1
                        AND project_id {$projectScopeSql}",
@@ -128,7 +132,8 @@ class AdminSidebarCountsController extends BaseAPI
                 );
                 $counts['retests'] = $this->countOrZero(
                     "SELECT COUNT(*) FROM bugs
-                     WHERE status = 'fixed'
+                     WHERE {$bugLive}
+                       AND status = 'fixed'
                        AND tester_retested IS NULL
                        AND project_id {$projectScopeSql}",
                     [$userId, $userId]
@@ -280,6 +285,8 @@ class AdminSidebarCountsController extends BaseAPI
         }
 
         if ($can('COMMON_BUGS_VIEW') && $this->dbTableExists('bugs')) {
+            $bugLiveB = $this->bugRecycleBinExclude('b');
+            $bugLivePlain = $this->bugRecycleBinExclude();
             $already = $this->dbColumnExists('bugs', 'already_raised')
                 ? 'b.already_raised = 1'
                 : '0 = 1';
@@ -288,12 +295,13 @@ class AdminSidebarCountsController extends BaseAPI
                  LEFT JOIN (
                     SELECT project_id, LOWER(TRIM(title)) AS norm_title, COUNT(*) AS duplicate_count
                     FROM bugs
+                    WHERE {$bugLivePlain}
                     GROUP BY project_id, LOWER(TRIM(title))
                     HAVING COUNT(*) > 1
                  ) dup
                     ON CAST(dup.project_id AS CHAR) = CAST(b.project_id AS CHAR)
                    AND LOWER(TRIM(b.title)) = dup.norm_title
-                 WHERE {$already} OR COALESCE(dup.duplicate_count, 0) > 1"
+                 WHERE {$bugLiveB} AND ({$already} OR COALESCE(dup.duplicate_count, 0) > 1)"
             );
         }
 
@@ -433,6 +441,18 @@ class AdminSidebarCountsController extends BaseAPI
              WHERE pm.user_id = ? AND {$nonArchived} AND {$incomplete}",
             [$userId]
         );
+    }
+
+    /**
+     * Why: Recycle-bin bugs must never inflate sidebar badges or open-bug totals.
+     */
+    private function bugRecycleBinExclude(string $alias = ''): string
+    {
+        if (!$this->dbColumnExists('bugs', 'deleted_at')) {
+            return '1=1';
+        }
+        $p = $alias !== '' ? $alias . '.' : '';
+        return "{$p}deleted_at IS NULL";
     }
 
     /**
