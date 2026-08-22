@@ -294,7 +294,17 @@ class RecruitmentController extends BaseAPI
             EXISTS (
                 SELECT 1 FROM recruitment_attachments ra
                 WHERE ra.applicant_id = a.id AND ra.kind = 'resume'
-            ) AS has_resume_file
+            ) AS has_resume_file,
+            (
+                SELECT ra.file_path FROM recruitment_attachments ra
+                WHERE ra.applicant_id = a.id AND ra.kind = 'resume'
+                ORDER BY ra.created_at DESC LIMIT 1
+            ) AS resume_file_path,
+            (
+                SELECT ra.file_name FROM recruitment_attachments ra
+                WHERE ra.applicant_id = a.id AND ra.kind = 'resume'
+                ORDER BY ra.created_at DESC LIMIT 1
+            ) AS resume_file_name
             FROM recruitment_applicants a
             WHERE {$whereSql}
             ORDER BY {$orderSql}
@@ -305,7 +315,20 @@ class RecruitmentController extends BaseAPI
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
         $items = array_map(function ($row) {
-            return $this->formatApplicant($row, null);
+            $attachments = null;
+            if (!empty($row['resume_file_path'])) {
+                $attachments = [[
+                    'id' => 'list-resume',
+                    'applicant_id' => $row['id'],
+                    'kind' => 'resume',
+                    'file_path' => $row['resume_file_path'],
+                    'file_name' => $row['resume_file_name'] ?? 'resume',
+                    'file_type' => null,
+                    'file_size' => null,
+                    'created_at' => null,
+                ]];
+            }
+            return $this->formatApplicant($row, $attachments);
         }, $rows);
 
         $facetStmt = $this->conn->query(
