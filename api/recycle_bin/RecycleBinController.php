@@ -71,9 +71,11 @@ class RecycleBinController extends BaseAPI
         }
 
         try {
-            $this->service->restore($id, $decoded->user_id);
+            $adminId = (string) ($decoded->user_id ?? '');
+            $this->service->restore($id, $adminId);
             $this->sendJsonResponse(200, 'Item restored successfully.');
         } catch (Throwable $e) {
+            error_log('RecycleBinController::handleRestore: ' . $e->getMessage());
             $this->sendJsonResponse(400, $e->getMessage());
         }
     }
@@ -93,9 +95,11 @@ class RecycleBinController extends BaseAPI
         }
 
         try {
-            $this->service->purge($id, $decoded->user_id);
+            $adminId = (string) ($decoded->user_id ?? '');
+            $this->service->purge($id, $adminId);
             $this->sendJsonResponse(200, 'Item permanently deleted.');
         } catch (Throwable $e) {
+            error_log('RecycleBinController::handlePurge: ' . $e->getMessage());
             $this->sendJsonResponse(400, $e->getMessage());
         }
     }
@@ -117,18 +121,20 @@ class RecycleBinController extends BaseAPI
         $ids = array_values(array_filter(array_map('strval', $ids)));
 
         try {
+            $adminId = (string) ($decoded->user_id ?? '');
             if ($action === 'restore') {
-                $result = $this->service->bulkRestore($ids, $decoded->user_id);
+                $result = $this->service->bulkRestore($ids, $adminId);
                 $this->sendJsonResponse(200, 'Bulk restore completed.', $result);
                 return;
             }
             if ($action === 'purge') {
-                $result = $this->service->bulkPurge($ids, $decoded->user_id);
+                $result = $this->service->bulkPurge($ids, $adminId);
                 $this->sendJsonResponse(200, 'Bulk purge completed.', $result);
                 return;
             }
             $this->sendJsonResponse(400, 'Invalid action. Use restore or purge.');
         } catch (Throwable $e) {
+            error_log('RecycleBinController::handleBulk: ' . $e->getMessage());
             $this->sendJsonResponse(500, $e->getMessage());
         }
     }
@@ -164,7 +170,10 @@ class RecycleBinController extends BaseAPI
         if (!$decoded) {
             return null;
         }
-        $pm = new PermissionManager();
+        if (strtolower((string) ($decoded->role ?? '')) === 'admin') {
+            return $decoded;
+        }
+        $pm = PermissionManager::getInstance();
         $legacyRole = $decoded->role ?? null;
         if (!$pm->hasPermissionOrAdmin($decoded->user_id, 'RECYCLE_BIN_MANAGE', $legacyRole)) {
             $this->sendJsonResponse(403, 'Manage permission required.');
@@ -178,7 +187,7 @@ class RecycleBinController extends BaseAPI
         if (strtolower((string) ($decoded->role ?? '')) === 'admin') {
             return true;
         }
-        $pm = new PermissionManager();
+        $pm = PermissionManager::getInstance();
         return $pm->hasPermissionOrAdmin($decoded->user_id, 'RECYCLE_BIN_VIEW', $decoded->role ?? null);
     }
 }
