@@ -69,13 +69,14 @@ function attachProjectListStats(PDO $conn, array &$projects): void
 
     $bugStatsByProject = [];
     try {
+        $bugLive = projectStatsBugLiveFilter($conn);
         $bugStmt = $conn->prepare(
             "SELECT project_id,
                     COUNT(*) AS total,
                     SUM(CASE WHEN status IN ('pending', 'in_progress') THEN 1 ELSE 0 END) AS open_count,
                     SUM(CASE WHEN status = 'fixed' THEN 1 ELSE 0 END) AS fixed_count
              FROM bugs
-             WHERE project_id IN ($placeholders)
+             WHERE project_id IN ($placeholders){$bugLive}
              GROUP BY project_id"
         );
         $bugStmt->execute($projectIds);
@@ -215,6 +216,7 @@ function buildProjectStatsBundle(PDO $conn, array $projectIds, int $user_id, boo
     }
 
     $placeholders = implode(',', array_fill(0, count($projectIds), '?'));
+    $bugLive = projectStatsBugLiveFilter($conn);
 
     $bugStmt = $conn->prepare(
         "SELECT project_id,
@@ -222,7 +224,7 @@ function buildProjectStatsBundle(PDO $conn, array $projectIds, int $user_id, boo
                 SUM(CASE WHEN status IN ('pending', 'in_progress') THEN 1 ELSE 0 END) AS open_count,
                 SUM(CASE WHEN status = 'fixed' THEN 1 ELSE 0 END) AS fixed_count
          FROM bugs
-         WHERE project_id IN ($placeholders)
+         WHERE project_id IN ($placeholders){$bugLive}
          GROUP BY project_id"
     );
     $bugStmt->execute($projectIds);
