@@ -120,11 +120,17 @@ class AdminSidebarCountsController extends BaseAPI
         }
 
         if ($this->dbTableExists('projects')) {
+            $nonArchived = "(status != 'archived' OR status IS NULL)";
             if ($isAdmin) {
-                $counts['projects'] = $this->countOrZero('SELECT COUNT(*) FROM projects');
+                $counts['projects'] = $this->countOrZero(
+                    "SELECT COUNT(*) FROM projects WHERE {$nonArchived}"
+                );
             } elseif ($this->dbTableExists('project_members')) {
                 $counts['projects'] = $this->countOrZero(
-                    'SELECT COUNT(DISTINCT project_id) FROM project_members WHERE user_id = ?',
+                    "SELECT COUNT(DISTINCT pm.project_id)
+                     FROM project_members pm
+                     INNER JOIN projects p ON p.id = pm.project_id
+                     WHERE pm.user_id = ? AND {$nonArchived}",
                     [$userId]
                 );
             }
