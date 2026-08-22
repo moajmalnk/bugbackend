@@ -34,6 +34,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/BugController.php';
 require_once __DIR__ . '/../projects/ProjectMemberController.php';
+require_once __DIR__ . '/../PermissionManager.php';
 
 if (!isset($_GET['id'])) {
     http_response_code(400);
@@ -63,6 +64,23 @@ try {
     $admin_role = isset($decoded->admin_role) ? strtolower(trim($decoded->admin_role)) : null;
     $user_role_lower = strtolower(trim($user_role));
     $isAdmin = ($user_role_lower === 'admin' && !$is_impersonated) || ($is_impersonated && $admin_role === 'admin');
+    $isDeveloper = $user_role_lower === 'developer';
+    $isTester = $user_role_lower === 'tester';
+
+    $hasCommonBugsPermission = false;
+    if ($user_id) {
+        try {
+            $hasCommonBugsPermission = PermissionManager::getInstance()->hasPermissionOrAdmin(
+                (string) $user_id,
+                'COMMON_BUGS_VIEW',
+                $user_role
+            );
+        } catch (Throwable $e) {
+            error_log('bugs/get.php common bugs permission: ' . $e->getMessage());
+        }
+    }
+
+    $canViewCommonBugCatalog = $isAdmin || $isDeveloper || $isTester || $hasCommonBugsPermission;
     
     // Get the bug ID from the request
     $bugId = $_GET['id'];
@@ -84,26 +102,36 @@ try {
     
     // Admin users can access all bugs (real admins or admins impersonating)
     if ($isAdmin) {
-        // Allow access for admins
         $controller->getById($bugId);
         exit;
     }
     
-    // For non-admin users, check if they are a member of the project
+    // Project members can access bugs in their projects
     $memberController = new ProjectMemberController();
     $hasAccess = $memberController->hasProjectAccess($user_id, $projectId);
     
-    if (!$hasAccess) {
-        http_response_code(403);
-        echo json_encode([
-            'success' => false,
-            'message' => 'You do not have access to this bug'
+    if ($hasAccess) {
+        $controller->getById($bugId);
+        exit;
+    }
+
+    // Why: Common Bugs is an org-wide reference catalog — allow read-only detail
+    // for catalog entries even when the viewer is not assigned to the project.
+    $commonMeta = $controller->getCommonBugMeta((string) $bugId);
+    if ($canViewCommonBugCatalog && !empty($commonMeta['is_common'])) {
+        $controller->getById($bugId, [
+            'common_bug_read_only' => true,
+            'common_reasons' => $commonMeta['reasons'],
         ]);
         exit;
     }
-    
-    // User has access, get the bug details
-    $controller->getById($bugId);
+
+    http_response_code(403);
+    echo json_encode([
+        'success' => false,
+        'message' => 'You do not have access to this bug'
+    ]);
+    exit;
 
 } catch (Exception $e) {
     http_response_code(500);
@@ -111,4 +139,4 @@ try {
         'success' => false,
         'message' => 'Server error: ' . $e->getMessage()
     ]);
-} 
+}

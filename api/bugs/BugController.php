@@ -1252,7 +1252,55 @@ class BugController extends BaseAPI {
         }
     }
     
-    public function getById($id) {
+    /**
+     * Whether a bug belongs in the Common Bugs catalog (already raised or duplicate title).
+     *
+     * @return array{is_common: bool, reasons: list<string>}
+     */
+    public function getCommonBugMeta(string $bugId): array
+    {
+        $reasons = [];
+        try {
+            $hasAlreadyRaised = $this->bugsTableHasAlreadyRaisedColumn();
+            $select = $hasAlreadyRaised
+                ? 'SELECT id, project_id, title, already_raised FROM bugs WHERE id = ?'
+                : 'SELECT id, project_id, title FROM bugs WHERE id = ?';
+            $stmt = $this->conn->prepare($select);
+            $stmt->execute([$bugId]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$row) {
+                return ['is_common' => false, 'reasons' => []];
+            }
+
+            if ($hasAlreadyRaised && $this->parseAlreadyRaisedFlag($row['already_raised'] ?? 0)) {
+                $reasons[] = 'already_raised';
+            }
+
+            $title = trim((string) ($row['title'] ?? ''));
+            $projectId = $row['project_id'] ?? null;
+            if ($title !== '' && $projectId !== null && $projectId !== '') {
+                $dupStmt = $this->conn->prepare(
+                    'SELECT COUNT(*) AS duplicate_count
+                     FROM bugs
+                     WHERE project_id = ? AND LOWER(TRIM(title)) = LOWER(TRIM(?))'
+                );
+                $dupStmt->execute([$projectId, $title]);
+                $duplicateCount = (int) ($dupStmt->fetch(PDO::FETCH_ASSOC)['duplicate_count'] ?? 0);
+                if ($duplicateCount > 1) {
+                    $reasons[] = 'duplicate';
+                }
+            }
+        } catch (Exception $e) {
+            error_log('BugController::getCommonBugMeta: ' . $e->getMessage());
+        }
+
+        return [
+            'is_common' => $reasons !== [],
+            'reasons' => $reasons,
+        ];
+    }
+
+    public function getById($id, array $viewMeta = []) {
         try {
             // Ensure ID is string for consistent comparison
             $id = (string)$id;
@@ -1381,6 +1429,13 @@ class BugController extends BaseAPI {
 
             $bug['bug_types'] = $this->getBugTypesForBug($id);
             $bug['_bug_types_count'] = is_array($bug['bug_types']) ? count($bug['bug_types']) : 0;
+
+            if (!empty($viewMeta['common_bug_read_only'])) {
+                $bug['common_bug_read_only'] = true;
+                $bug['common_reasons'] = array_values(
+                    array_unique((array) ($viewMeta['common_reasons'] ?? []))
+                );
+            }
             
             $this->handleSuccess("Bug details retrieved successfully", $bug);
         } catch (Exception $e) {
