@@ -38,9 +38,19 @@ try {
         exit;
     }
 
+    $hasDeletedAt = false;
+    try {
+        $colStmt = $conn->query("SHOW COLUMNS FROM projects LIKE 'deleted_at'");
+        $hasDeletedAt = $colStmt && $colStmt->rowCount() > 0;
+    } catch (Throwable $e) {
+        $hasDeletedAt = false;
+    }
+    $liveClause = $hasDeletedAt ? ' AND deleted_at IS NULL' : '';
+    $liveClauseP = $hasDeletedAt ? ' AND p.deleted_at IS NULL' : '';
+
     if ($is_admin || $is_developer) {
         $projectStmt = $conn->prepare(
-            "SELECT id FROM projects WHERE (status != 'archived' OR status IS NULL)"
+            "SELECT id FROM projects WHERE (status != 'archived' OR status IS NULL){$liveClause}"
         );
         $projectStmt->execute();
     } else {
@@ -49,7 +59,7 @@ try {
              FROM projects p
              INNER JOIN project_members pm ON p.id = pm.project_id
              WHERE pm.user_id = ?
-               AND (p.status != 'archived' OR p.status IS NULL)"
+               AND (p.status != 'archived' OR p.status IS NULL){$liveClauseP}"
         );
         $projectStmt->execute([$user_id]);
     }

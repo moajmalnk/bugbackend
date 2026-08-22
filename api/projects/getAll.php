@@ -37,19 +37,30 @@ $is_developer = ($user_role_lower === 'developer');
 $includeArchived = $is_admin || $is_developer;
 $archivedClause = $includeArchived ? '' : " AND (p.status != 'archived' OR p.status IS NULL)";
 
+// Why: Soft-deleted recycle-bin projects must never appear in the live Projects list/counts.
+$hasDeletedAt = false;
+try {
+    $colStmt = $conn->query("SHOW COLUMNS FROM projects LIKE 'deleted_at'");
+    $hasDeletedAt = $colStmt && $colStmt->rowCount() > 0;
+} catch (Throwable $e) {
+    $hasDeletedAt = false;
+}
+$liveClause = $hasDeletedAt ? 'deleted_at IS NULL' : '1=1';
+$liveClauseP = $hasDeletedAt ? 'p.deleted_at IS NULL' : '1=1';
+
 if ($is_admin || $is_developer) {
-    // Admin/developer: return all projects; archived hidden on frontend unless filtered/searched
+    // Admin/developer: return live projects; archived hidden on frontend unless filtered/searched
     $query = $includeArchived
-        ? 'SELECT * FROM projects ORDER BY created_at DESC'
-        : "SELECT * FROM projects WHERE (status != 'archived' OR status IS NULL) ORDER BY created_at DESC";
+        ? "SELECT * FROM projects WHERE {$liveClause} ORDER BY created_at DESC"
+        : "SELECT * FROM projects WHERE {$liveClause} AND (status != 'archived' OR status IS NULL) ORDER BY created_at DESC";
     $stmt = $conn->prepare($query);
     $stmt->execute();
     $projects = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } else {
-    // Non-admin, non-developer — assigned projects only (archived excluded)
+    // Non-admin, non-developer — assigned live projects only (archived excluded)
     $query = "SELECT DISTINCT p.* FROM projects p
               INNER JOIN project_members pm ON p.id = pm.project_id
-              WHERE pm.user_id = ?{$archivedClause}
+              WHERE pm.user_id = ? AND {$liveClauseP}{$archivedClause}
               ORDER BY p.created_at DESC";
     $stmt = $conn->prepare($query);
     $stmt->execute([$user_id]);

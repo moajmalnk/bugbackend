@@ -143,17 +143,20 @@ class AdminSidebarCountsController extends BaseAPI
         }
 
         if ($this->dbTableExists('projects')) {
+            $liveProjects = $this->projectRecycleBinExclude();
+            $liveProjectsP = $this->projectRecycleBinExclude('p');
             $nonArchived = "(status != 'archived' OR status IS NULL)";
+            $nonArchivedP = "(p.status != 'archived' OR p.status IS NULL)";
             if ($isAdmin) {
                 $counts['projects'] = $this->countOrZero(
-                    "SELECT COUNT(*) FROM projects WHERE {$nonArchived}"
+                    "SELECT COUNT(*) FROM projects WHERE {$nonArchived} AND {$liveProjects}"
                 );
             } elseif ($this->dbTableExists('project_members')) {
                 $counts['projects'] = $this->countOrZero(
                     "SELECT COUNT(DISTINCT pm.project_id)
                      FROM project_members pm
                      INNER JOIN projects p ON p.id = pm.project_id
-                     WHERE pm.user_id = ? AND {$nonArchived}",
+                     WHERE pm.user_id = ? AND {$nonArchivedP} AND {$liveProjectsP}",
                     [$userId]
                 );
             }
@@ -162,7 +165,12 @@ class AdminSidebarCountsController extends BaseAPI
                 ($isAdmin || $role === 'developer' || $role === 'tester')
                 && $this->dbTableExists('project_compliance')
             ) {
-                $counts['compliance'] = $this->countIncompleteCompliance($userId, $isAdmin, $nonArchived);
+                $counts['compliance'] = $this->countIncompleteCompliance(
+                    $userId,
+                    $isAdmin,
+                    $nonArchivedP,
+                    $liveProjectsP
+                );
             }
         }
 
@@ -417,8 +425,12 @@ class AdminSidebarCountsController extends BaseAPI
     /**
      * Why: Fallback compliance badge until the client recomputes pending rows from project payloads.
      */
-    private function countIncompleteCompliance(string $userId, bool $isAdmin, string $nonArchived): int
-    {
+    private function countIncompleteCompliance(
+        string $userId,
+        bool $isAdmin,
+        string $nonArchivedP,
+        string $liveProjectsP
+    ): int {
         $incomplete = "COALESCE(pc.emergency_bypass, 0) = 0
             AND COALESCE(pc.pipeline_stage, 'developer_unverified') != 'admin_ready'";
 
@@ -426,7 +438,7 @@ class AdminSidebarCountsController extends BaseAPI
             return $this->countOrZero(
                 "SELECT COUNT(*) FROM projects p
                  LEFT JOIN project_compliance pc ON pc.project_id = p.id
-                 WHERE {$nonArchived} AND {$incomplete}"
+                 WHERE {$nonArchivedP} AND {$liveProjectsP} AND {$incomplete}"
             );
         }
 
@@ -438,9 +450,21 @@ class AdminSidebarCountsController extends BaseAPI
             "SELECT COUNT(DISTINCT p.id) FROM projects p
              INNER JOIN project_members pm ON pm.project_id = p.id
              LEFT JOIN project_compliance pc ON pc.project_id = p.id
-             WHERE pm.user_id = ? AND {$nonArchived} AND {$incomplete}",
+             WHERE pm.user_id = ? AND {$nonArchivedP} AND {$liveProjectsP} AND {$incomplete}",
             [$userId]
         );
+    }
+
+    /**
+     * Why: Soft-deleted recycle-bin projects must never inflate Projects / Compliance badges.
+     */
+    private function projectRecycleBinExclude(string $alias = ''): string
+    {
+        if (!$this->dbColumnExists('projects', 'deleted_at')) {
+            return '1=1';
+        }
+        $p = $alias !== '' ? $alias . '.' : '';
+        return "{$p}deleted_at IS NULL";
     }
 
     /**
