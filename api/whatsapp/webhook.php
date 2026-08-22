@@ -433,6 +433,25 @@ if ($user !== null && ($isAnytimeMenu || $isAnytimeHelp || $isCancelAnytime || $
         exit;
     }
 
+    $isNewSameProject = ($waAction === 'new_same_project')
+        || (string) $interactiveId === 'wa_new_same_project';
+    $isNewOtherProject = ($waAction === 'new_other_project')
+        || (string) $interactiveId === 'wa_new_other_project';
+
+    if ($user !== null && !empty($user['is_wa_verified']) && ($isNewSameProject || $isNewOtherProject)) {
+        if ($isNewOtherProject) {
+            openProjectMenu($db, $apitxt, $phone, $user);
+        } else {
+            $lastProjectId = (string) (getOrCreateSession($db, $phone)['selected_project_id'] ?? '');
+            if ($lastProjectId === '' || !waStartBugDraftInProject($db, $apitxt, $phone, $user, $lastProjectId)) {
+                openProjectMenu($db, $apitxt, $phone, $user);
+            }
+        }
+        http_response_code(200);
+        echo json_encode(['ok' => true, 'cmd' => $isNewOtherProject ? 'new_other_project' : 'new_same_project']);
+        exit;
+    }
+
     // While confirming, Submit must create the bug — handle here so button title
     // matching cannot fall through and re-prompt forever.
     if ($isSubmitAnytime && $session['current_step'] === STEP_CONFIRM) {
@@ -677,24 +696,7 @@ switch ($step) {
         }
 
         waClearPickerPageIds($db, $phone);
-        $db->prepare("UPDATE wa_sessions SET selected_project_id=?, temp_title=NULL, temp_description=NULL WHERE phone=?")
-           ->execute([$projectId, $phone]);
-        setStep($db, $phone, STEP_AWAITING_CONTENT);
-        cleanUpStagedAttachments($db, $phone);
-
-        $apitxt->sendInteractiveButtons(
-            $phone,
-            'Report a bug',
-            "Project: *{$project['name']}*\n\n"
-            . "Send a *title* first (what went wrong?).\n"
-            . "Then details, photos, or voice notes.\n"
-            . "Tip: photo *caption* can be your title.\n"
-            . "Tap *Submit* when ready.",
-            [
-                ['id' => 'cancel_bug', 'title' => 'Cancel'],
-                ['id' => 'wa_menu', 'title' => 'Change project'],
-            ]
-        );
+        waStartBugDraftInProject($db, $apitxt, $phone, $user, $projectId);
         break;
 
     // ── Bug content collection ────────────────────────────────────────────────
@@ -1092,14 +1094,17 @@ switch ($step) {
         // Create in-app notification for project members
         createBugNotification($db, $bugId, $title, $projectId, $user['id']);
 
-        // Reset session
+        // Reset draft fields but remember project for "Same project" quick re-file.
         resetSession($db, $phone);
+        $db->prepare('UPDATE wa_sessions SET selected_project_id=? WHERE phone=?')
+            ->execute([$projectId, $phone]);
 
         // Send confirmation with deep link
         $appBaseUrl = rtrim(Environment::get('APP_BASE_URL', 'https://bugs.bugricer.com'), '/');
         $bugUrl     = $appBaseUrl . '/bugs/' . $bugId;
         $shortId    = strtoupper(substr(str_replace('-', '', $bugId), 0, 8));
         $attachText = count($staged) > 0 ? "\nFiles: " . count($staged) : '';
+        $projectLabel = $projectName ?: 'this project';
 
         $apitxt->sendInteractiveButtons(
             $phone,
@@ -1107,12 +1112,14 @@ switch ($step) {
             "Ticket: *{$shortId}*\n"
             . "Title: {$title}"
             . $attachText . "\n\n"
-            . "Open:\n{$bugUrl}",
+            . "Open:\n{$bugUrl}\n\n"
+            . "Report another bug?",
             [
-                ['id' => 'wa_menu', 'title' => 'New bug'],
+                ['id' => 'wa_new_same_project', 'title' => 'Same project'],
+                ['id' => 'wa_new_other_project', 'title' => 'Other project'],
                 ['id' => 'wa_help', 'title' => 'Help'],
             ],
-            'Thank you'
+            "Last: {$projectLabel}"
         );
         break;
 
@@ -1493,6 +1500,13 @@ function waResolveAction(?string $interactiveId, string $msgText, string $msgTex
         'wa_menu' => 'menu',
         'change project' => 'menu',
         'new bug' => 'menu',
+        'same project' => 'new_same_project',
+        'same' => 'new_same_project',
+        'other project' => 'new_other_project',
+        'another project' => 'new_other_project',
+        'new project' => 'new_other_project',
+        'wa_new_same_project' => 'new_same_project',
+        'wa_new_other_project' => 'new_other_project',
         'help' => 'help',
         'wa help' => 'help',
         'wa_help' => 'help',
@@ -1684,6 +1698,61 @@ function sendOtpHelpMessage(APITxtService $apitxt, string $phone, array $user): 
             ['id' => 'resend_otp', 'title' => 'Resend code'],
         ]
     );
+}
+
+/**
+ * Open the bug draft step for a project the user may access.
+ * Why: Reused after project pick and after "Same project" on the filed confirmation.
+ */
+function waStartBugDraftInProject(
+    PDO $db,
+    APITxtService $apitxt,
+    string $phone,
+    array $user,
+    string $projectId
+): bool {
+    $memberProjects = waLoadSelectableProjects($db, $user);
+    $project = null;
+    foreach ($memberProjects as $p) {
+        if ($p['id'] === $projectId) {
+            $project = $p;
+            break;
+        }
+    }
+    if ($project === null) {
+        return false;
+    }
+
+    cleanUpStagedAttachments($db, $phone);
+    $db->prepare(
+        'UPDATE wa_sessions SET
+           current_step=?,
+           selected_project_id=?,
+           otp_code=NULL,
+           otp_expires_at=NULL,
+           otp_attempts=0,
+           otp_first_attempt_at=NULL,
+           temp_title=NULL,
+           temp_description=NULL,
+           last_interaction=NOW()
+         WHERE phone=?'
+    )->execute([STEP_AWAITING_CONTENT, $projectId, $phone]);
+
+    $apitxt->sendInteractiveButtons(
+        $phone,
+        'Report a bug',
+        "Project: *{$project['name']}*\n\n"
+        . "Send a *title* first (what went wrong?).\n"
+        . "Then details, photos, or voice notes.\n"
+        . "Tip: photo *caption* can be your title.\n"
+        . "Tap *Submit* when ready.",
+        [
+            ['id' => 'cancel_bug', 'title' => 'Cancel'],
+            ['id' => 'wa_menu', 'title' => 'Change project'],
+        ]
+    );
+
+    return true;
 }
 
 function openProjectMenu(PDO $db, APITxtService $apitxt, string $phone, array $user): void
