@@ -24,14 +24,11 @@ header('Content-Type: application/json');
 date_default_timezone_set('Asia/Kolkata');
 
 // ── Constants ────────────────────────────────────────────────────────────────
-define('SESSION_IDLE_SECS',    30 * 60);   // 30 minutes idle timeout
-define('OTP_VALIDITY_SECS',    10 * 60);   // OTP expires in 10 minutes
-define('OTP_MAX_ATTEMPTS',     3);         // Maximum OTP attempts per window
-define('OTP_RATE_WINDOW_SECS', 10 * 60);  // Attempt-rate window
+define('SESSION_IDLE_SECS', 30 * 60);   // 30 minutes idle timeout
 
 // Steps
 define('STEP_IDLE',              'IDLE');
-define('STEP_WAITING_OTP',       'WAITING_OTP');
+define('STEP_WAITING_OTP',       'WAITING_OTP'); // Legacy — auto-continues without OTP
 define('STEP_SELECT_PROJECT',    'SELECT_PROJECT');
 define('STEP_AWAITING_CONTENT',  'AWAITING_BUG_CONTENT');
 define('STEP_CONFIRM',           'CONFIRM_SUBMISSION');
@@ -1553,70 +1550,32 @@ function getUserByPhone(PDO $db, string $phone): ?array
     return null;
 }
 
-function sendOtp(PDO $db, APITxtService $apitxt, string $phone, array $user): void
+/**
+ * Why: Phone match is the only gate — no OTP. Mark user verified once for DB consistency.
+ */
+function ensureWaPhoneVerified(PDO $db, array &$user): void
 {
-    $otp     = str_pad((string)random_int(100000, 999999), 6, '0', STR_PAD_LEFT);
-    $expires = date('Y-m-d H:i:s', time() + OTP_VALIDITY_SECS);
-
-    $db->prepare(
-        "UPDATE wa_sessions SET
-           current_step='WAITING_OTP',
-           otp_code=?,
-           otp_expires_at=?,
-           otp_attempts=0,
-           otp_first_attempt_at=NULL
-         WHERE phone=?"
-    )->execute([$otp, $expires, $phone]);
-
-    $apitxt->sendInteractiveButtons(
-        $phone,
-        'Welcome to BugRicer',
-        "Hi *{$user['name']}* 👋\n\n"
-        . "One-time check — reply with this code:\n\n"
-        . "*{$otp}*\n\n"
-        . "👉 Type the *6 numbers* above in this chat.\n"
-        . "Example: {$otp}\n\n"
-        . "Valid for 10 minutes.",
-        [
-            ['id' => 'resend_otp', 'title' => 'Resend code'],
-            ['id' => 'wa_help', 'title' => 'Help'],
-        ]
-    );
+    if (!empty($user['is_wa_verified'])) {
+        return;
+    }
+    try {
+        $db->prepare('UPDATE users SET is_wa_verified=1, wa_verified_at=NOW() WHERE id=?')
+            ->execute([$user['id']]);
+        $user['is_wa_verified'] = 1;
+        $user['wa_verified_at'] = date('Y-m-d H:i:s');
+    } catch (Throwable $e) {
+        error_log('[WA Webhook] ensureWaPhoneVerified: ' . $e->getMessage());
+    }
 }
 
-/** Remind user to reply with digits — does not consume an OTP attempt. */
-function sendOtpReminder(APITxtService $apitxt, string $phone, array $user): void
+function welcomeVerifiedUser(APITxtService $apitxt, string $phone, array $user): void
 {
-    $apitxt->sendInteractiveButtons(
+    $apitxt->sendText(
         $phone,
-        'Enter your code',
-        "Hi *{$user['name']}*,\n\n"
-        . "Reply with the *6-digit code* from our last message.\n\n"
-        . "Just type the numbers — nothing else.\n"
-        . "Example: 123456",
-        [
-            ['id' => 'resend_otp', 'title' => 'Resend code'],
-            ['id' => 'wa_help', 'title' => 'Help'],
-        ]
-    );
-}
-
-function sendOtpHelpMessage(APITxtService $apitxt, string $phone, array $user): void
-{
-    $appUrl = rtrim(Environment::get('APP_BASE_URL', 'https://bugs.bugricer.com'), '/');
-    $apitxt->sendInteractiveButtons(
-        $phone,
-        'How it works',
-        "Hi *{$user['name']}*\n\n"
-        . "*First time:*\n"
-        . "1. We send a 6-digit code\n"
-        . "2. You *reply with that code* here\n"
-        . "3. Pick a project → send bug details → Submit\n\n"
-        . "*After that:* just message *hi* anytime.\n\n"
-        .         "Web: {$appUrl}",
-        [
-            ['id' => 'resend_otp', 'title' => 'Resend code'],
-        ]
+        "✅ *Verified BugRicer user*\n\n"
+        . "Welcome, *{$user['name']}*!\n\n"
+        . "Your WhatsApp number is registered.\n"
+        . "Choose a project to report a bug."
     );
 }
 
@@ -1709,11 +1668,14 @@ function sendHelpMessage(APITxtService $apitxt, string $phone, array $user): voi
         $phone,
         'Help',
         "Hi *{$user['name']}*\n\n"
-        . "Report a bug in 3 steps:\n"
+        . "Your WhatsApp number is verified on BugRicer.\n\n"
+        . "Report a bug:\n"
         . "1️⃣ Choose a project\n"
         . "2️⃣ Send title + details (photos/voice OK)\n"
         . "3️⃣ Tap *Submit*\n\n"
-        . "Anytime: type *menu* or *hi*",
+        . "Anytime: type *menu* or *hi*\n\n"
+        . "Need access for someone else?\n"
+        . "Contact *Ajmal* — +91 88486 76627",
         [
             ['id' => 'wa_menu', 'title' => 'Projects'],
             ['id' => 'cancel_bug', 'title' => 'Cancel draft'],
