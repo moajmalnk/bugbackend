@@ -37,6 +37,8 @@ class ProjectController extends BaseAPI
         'backend_finish_date',
         'tester_compliance_complete_date',
         'developer_compliance_complete_date',
+        'estimated_hours',
+        'developer_hours_taken',
     ];
 
     public function __construct()
@@ -44,6 +46,7 @@ class ProjectController extends BaseAPI
         parent::__construct();
         $this->ensureProjectCategoryColumns();
         $this->ensureProjectMembersMultiRole();
+        $this->ensureProjectEffortHoursColumns();
     }
 
     private function ensureProjectCategoryColumns(): void
@@ -199,6 +202,9 @@ class ProjectController extends BaseAPI
 
     private function normalizeExtendedField(string $field, $value)
     {
+        if ($this->isHoursField($field)) {
+            return $this->normalizeHoursField($value);
+        }
         return $this->isDateTimeField($field)
             ? $this->normalizeDateTimeField($value)
             : $this->normalizeDateField($value);
@@ -207,6 +213,78 @@ class ProjectController extends BaseAPI
     private function isDateTimeField(string $field): bool
     {
         return substr($field, -5) === '_date';
+    }
+
+    private function isHoursField(string $field): bool
+    {
+        return $field === 'estimated_hours' || $field === 'developer_hours_taken';
+    }
+
+    /**
+     * Why: Effort hours are optional decimals; empty clears, negatives and oversized values are clamped.
+     */
+    private function normalizeHoursField($value)
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+        if (!is_numeric($value)) {
+            return null;
+        }
+        $n = (float) $value;
+        if ($n < 0) {
+            $n = 0.0;
+        }
+        if ($n > 99999.9) {
+            $n = 99999.9;
+        }
+        return round($n, 1);
+    }
+
+    /**
+     * Why: Local DBs may not have run migration 082; ensure effort hour columns exist at runtime.
+     */
+    private function ensureProjectEffortHoursColumns(): void
+    {
+        static $done = false;
+        if ($done || !$this->conn) {
+            return;
+        }
+        $done = true;
+        try {
+            $cols = [];
+            $res = $this->conn->query('SHOW COLUMNS FROM projects');
+            if ($res) {
+                while ($row = $res->fetch(PDO::FETCH_ASSOC)) {
+                    $cols[] = $row['Field'];
+                }
+            }
+            $needed = [
+                'estimated_hours' => 'developer_compliance_complete_date',
+                'developer_hours_taken' => 'estimated_hours',
+            ];
+            foreach ($needed as $name => $after) {
+                if (in_array($name, $cols, true)) {
+                    continue;
+                }
+                try {
+                    if (in_array($after, $cols, true)) {
+                        $this->conn->exec(
+                            "ALTER TABLE projects ADD COLUMN `{$name}` DECIMAL(8,1) DEFAULT NULL AFTER `{$after}`"
+                        );
+                    } else {
+                        $this->conn->exec(
+                            "ALTER TABLE projects ADD COLUMN `{$name}` DECIMAL(8,1) DEFAULT NULL"
+                        );
+                    }
+                    $cols[] = $name;
+                } catch (Exception $e) {
+                    error_log("ensureProjectEffortHoursColumns add {$name}: " . $e->getMessage());
+                }
+            }
+        } catch (Exception $e) {
+            error_log('ensureProjectEffortHoursColumns: ' . $e->getMessage());
+        }
     }
 
     /**
