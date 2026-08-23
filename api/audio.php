@@ -1,9 +1,44 @@
 <?php
 /**
- * Why: Serve upload audio with CORS that browsers accept for <audio crossOrigin>.
+ * Why: Serve upload audio for <audio> and anonymous blob downloads.
  * Never pair Access-Control-Allow-Credentials: true with Origin *.
+ * Prefer echoing the request Origin so credentialed clients also work.
  */
 require_once __DIR__ . '/../config/cors.php';
+
+$origin = trim((string)($_SERVER['HTTP_ORIGIN'] ?? ''));
+$allowedOrigins = [
+    'http://localhost:8080',
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'http://localhost',
+    'http://127.0.0.1:8080',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:5173',
+    'http://127.0.0.1',
+    'https://bugs.moajmalnk.in',
+    'https://bugricer.com',
+    'https://www.bugricer.com',
+    'https://bugs.bugricer.com',
+    'https://bugbackend.bugricer.com',
+    'https://bugbackend.moajmalnk.in',
+    'https://bugracers.vercel.app',
+];
+
+// Override any earlier wildcard so browsers accept localhost → production audio
+if (
+    $origin !== ''
+    && (
+        in_array($origin, $allowedOrigins, true)
+        || preg_match('/^https?:\/\/(localhost|127\.0\.0\.1)(:[0-9]+)?$/', $origin)
+    )
+) {
+    header('Access-Control-Allow-Origin: ' . $origin);
+    header('Vary: Origin');
+    header('Access-Control-Allow-Credentials: true');
+} else {
+    header('Access-Control-Allow-Origin: *');
+}
 
 header('Access-Control-Allow-Methods: GET, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Impersonate-User, X-User-Id, Range');
