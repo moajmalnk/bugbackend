@@ -83,7 +83,20 @@ class AdminWeeklyReportController extends BaseAPI
         try {
             require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
             $rb = new RecycleBinService($this->conn);
+            $rb->ensureSchema('weekly_report');
             $rb->softDelete('weekly_report', $id, $decoded->user_id);
+        } catch (InvalidArgumentException $e) {
+            $this->sendJsonResponse(400, $e->getMessage());
+            return;
+        } catch (RuntimeException $e) {
+            $msg = $e->getMessage();
+            $lower = strtolower($msg);
+            $code = (str_contains($lower, 'not found') || str_contains($lower, 'already'))
+                ? 404
+                : 400;
+            error_log('AdminWeeklyReportController::deleteReport: ' . $msg);
+            $this->sendJsonResponse($code, $msg);
+            return;
         } catch (Throwable $e) {
             error_log('AdminWeeklyReportController::deleteReport: ' . $e->getMessage());
             $this->sendJsonResponse(500, 'Failed to delete weekly report.');
