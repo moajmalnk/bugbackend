@@ -806,9 +806,26 @@ class ProjectComplianceController extends BaseAPI
             }
 
             $stmt = $this->conn->prepare(
-                "UPDATE projects SET status = ?, updated_at = CURRENT_TIMESTAMP() WHERE id = ?"
+                "UPDATE projects
+                 SET status = ?,
+                     completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP()),
+                     updated_at = CURRENT_TIMESTAMP()
+                 WHERE id = ?"
             );
-            $stmt->execute([$status, $projectId]);
+            try {
+                $stmt->execute([$status, $projectId]);
+            } catch (Throwable $e) {
+                // Hosts without migration 087 yet — still finalize status
+                if (stripos($e->getMessage(), 'completed_at') !== false) {
+                    $fallback = $this->conn->prepare(
+                        "UPDATE projects SET status = ?, updated_at = CURRENT_TIMESTAMP() WHERE id = ?"
+                    );
+                    $fallback->execute([$status, $projectId]);
+                    $stmt = $fallback;
+                } else {
+                    throw $e;
+                }
+            }
 
             if ($stmt->rowCount() === 0) {
                 $check = $this->conn->prepare("SELECT id FROM projects WHERE id = ?");

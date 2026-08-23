@@ -165,6 +165,33 @@ class ProjectController extends BaseAPI
                 error_log("ensureComplianceCompleteColumns modify {$name}: " . $e->getMessage());
             }
         }
+
+        $this->ensureCompletedAtColumn($cols);
+    }
+
+    /**
+     * Why: Overview Status card shows when the project was marked completed / release ready.
+     * @param string[] $cols
+     */
+    private function ensureCompletedAtColumn(array &$cols): void
+    {
+        if (!$this->conn || in_array('completed_at', $cols, true)) {
+            return;
+        }
+        try {
+            if (in_array('status', $cols, true)) {
+                $this->conn->exec(
+                    'ALTER TABLE projects ADD COLUMN `completed_at` DATETIME NULL DEFAULT NULL AFTER `status`'
+                );
+            } else {
+                $this->conn->exec(
+                    'ALTER TABLE projects ADD COLUMN `completed_at` DATETIME NULL DEFAULT NULL'
+                );
+            }
+            $cols[] = 'completed_at';
+        } catch (Exception $e) {
+            error_log('ensureCompletedAtColumn: ' . $e->getMessage());
+        }
     }
 
     private function normalizeDateField($value)
@@ -726,6 +753,19 @@ class ProjectController extends BaseAPI
 
                 $updateFields[] = "status = ?";
                 $values[] = $newStatus;
+
+                $projectColsForStatus = $this->listProjectColumns();
+                if (!in_array('completed_at', $projectColsForStatus, true)) {
+                    $this->ensureCompletedAtColumn($projectColsForStatus);
+                }
+                if (in_array('completed_at', $projectColsForStatus, true)) {
+                    if (in_array($newStatus, ['completed', 'release_ready'], true)) {
+                        // Stamp first close; keep original if already closed
+                        $updateFields[] = 'completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP())';
+                    } elseif ($newStatus === 'active') {
+                        $updateFields[] = 'completed_at = NULL';
+                    }
+                }
             }
 
             $projectCols = $this->listProjectColumns();
