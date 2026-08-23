@@ -419,20 +419,26 @@ $isAnytimeMenu = ($waAction === 'menu')
 $isAnytimeHelp = ($waAction === 'help') || $cmd === 'help';
 $isCancelAnytime = ($waAction === 'cancel');
 $isSubmitAnytime = ($waAction === 'submit');
-$isNewSameProject = ($waAction === 'new_same_project')
-    || (string) $interactiveId === 'wa_new_same_project'
-    || $cmd === 'same project';
-$isNewOtherProject = ($waAction === 'new_other_project')
-    || (string) $interactiveId === 'wa_new_other_project'
-    || in_array($cmd, ['other project', 'another project', 'new project'], true);
+$isNewSameProject = waIsSameProjectIntent($interactiveId, $msgText, $msgTextNorm, $waAction);
+$isNewOtherProject = waIsOtherProjectIntent($interactiveId, $msgText, $msgTextNorm, $waAction);
 
 // Same / other project — must run before IDLE (which otherwise opens the full picker).
 if ($user !== null && ($isNewSameProject || $isNewOtherProject)) {
     if ($isNewOtherProject) {
         openProjectMenu($db, $apitxt, $phone, $user);
     } else {
-        $lastProjectId = (string) (getOrCreateSession($db, $phone)['selected_project_id'] ?? '');
+        $lastProjectId = waResolveLastProjectId($db, $phone, $user, (string) ($interactiveId ?? ''));
+        error_log(sprintf(
+            '[WA Webhook] Same project intent phone=%s projectId=%s interactiveId=%s',
+            $phone,
+            $lastProjectId !== '' ? $lastProjectId : 'EMPTY',
+            (string) ($interactiveId ?? '')
+        ));
         if ($lastProjectId === '' || !waStartBugDraftInProject($db, $apitxt, $phone, $user, $lastProjectId, true)) {
+            $apitxt->sendText(
+                $phone,
+                "Could not reopen the last project.\nPick one below."
+            );
             openProjectMenu($db, $apitxt, $phone, $user);
         }
     }
@@ -1012,10 +1018,20 @@ switch ($step) {
         // Create in-app notification for project members
         createBugNotification($db, $bugId, $title, $projectId, $user['id']);
 
-        // Reset draft fields but remember project for "Same project" quick re-file.
-        resetSession($db, $phone);
-        $db->prepare('UPDATE wa_sessions SET selected_project_id=? WHERE phone=?')
-            ->execute([$projectId, $phone]);
+        // Clear draft only — keep selected_project_id for "Same project" (atomic).
+        $db->prepare(
+            "UPDATE wa_sessions SET
+               current_step='IDLE',
+               selected_project_id=?,
+               otp_code=NULL,
+               otp_expires_at=NULL,
+               otp_attempts=0,
+               otp_first_attempt_at=NULL,
+               temp_title=NULL,
+               temp_description=NULL,
+               last_interaction=NOW()
+             WHERE phone=?"
+        )->execute([$projectId, $phone]);
 
         // Send confirmation with deep link
         $appBaseUrl = rtrim(Environment::get('APP_BASE_URL', 'https://bugs.bugricer.com'), '/');
@@ -1023,6 +1039,8 @@ switch ($step) {
         $shortId    = strtoupper(substr(str_replace('-', '', $bugId), 0, 8));
         $attachText = count($staged) > 0 ? "\nFiles: " . count($staged) : '';
         $projectLabel = $projectName ?: 'this project';
+        // Encode project id in button so "Same project" works even if session is lost.
+        $sameBtnId = 'wa_same_' . $projectId;
 
         $apitxt->sendInteractiveButtons(
             $phone,
@@ -1033,7 +1051,7 @@ switch ($step) {
             . "{$bugUrl}\n\n"
             . "Report another?",
             [
-                ['id' => 'wa_new_same_project', 'title' => 'Same project'],
+                ['id' => $sameBtnId, 'title' => 'Same project'],
                 ['id' => 'wa_new_other_project', 'title' => 'Other project'],
                 ['id' => 'wa_help', 'title' => 'Help'],
             ],
@@ -1448,6 +1466,12 @@ function waResolveAction(?string $interactiveId, string $msgText, string $msgTex
     if (str_starts_with($rawId, 'proj_')) {
         return 'project';
     }
+    if (str_starts_with($rawId, 'wa_same_') || $rawId === 'wa_new_same_project') {
+        return 'new_same_project';
+    }
+    if ($rawId === 'wa_new_other_project') {
+        return 'new_other_project';
+    }
 
     // Last-line heuristic for reply-quoted button taps.
     $lines = preg_split('/\R/u', trim($msgText)) ?: [];
@@ -1456,8 +1480,121 @@ function waResolveAction(?string $interactiveId, string $msgText, string $msgTex
     if (isset($map[$last])) {
         return $map[$last];
     }
+    // Quoted / long replies: match phrase anywhere.
+    if (preg_match('/\bsame project\b/', $msgTextNorm)) {
+        return 'new_same_project';
+    }
+    if (preg_match('/\b(other|another) project\b/', $msgTextNorm)) {
+        return 'new_other_project';
+    }
 
     return null;
+}
+
+/**
+ * Why: APITxt may echo button title only ("Same project") or a long quoted reply.
+ */
+function waIsSameProjectIntent(
+    ?string $interactiveId,
+    string $msgText,
+    string $msgTextNorm,
+    ?string $waAction
+): bool {
+    if ($waAction === 'new_same_project') {
+        return true;
+    }
+    $id = strtolower(trim((string) $interactiveId));
+    if ($id === 'wa_new_same_project' || str_starts_with($id, 'wa_same_')) {
+        return true;
+    }
+    if ($msgTextNorm === 'same project' || str_ends_with($msgTextNorm, 'same project')) {
+        return true;
+    }
+    return (bool) preg_match('/\bsame project\b/i', $msgText);
+}
+
+function waIsOtherProjectIntent(
+    ?string $interactiveId,
+    string $msgText,
+    string $msgTextNorm,
+    ?string $waAction
+): bool {
+    if ($waAction === 'new_other_project') {
+        return true;
+    }
+    $id = strtolower(trim((string) $interactiveId));
+    if ($id === 'wa_new_other_project') {
+        return true;
+    }
+    if (in_array($msgTextNorm, ['other project', 'another project', 'new project'], true)) {
+        return true;
+    }
+    return (bool) preg_match('/\b(other|another) project\b/i', $msgText);
+}
+
+/**
+ * Resolve project for "Same project": button id → session → last WhatsApp bug.
+ */
+function waResolveLastProjectId(PDO $db, string $phone, array $user, string $interactiveId = ''): string
+{
+    if (preg_match('/^wa_same_(.+)$/i', $interactiveId, $m)) {
+        $fromBtn = trim($m[1]);
+        if ($fromBtn !== '') {
+            return $fromBtn;
+        }
+    }
+
+    $sess = getOrCreateSession($db, $phone);
+    $fromSession = trim((string) ($sess['selected_project_id'] ?? ''));
+    if ($fromSession !== '') {
+        return $fromSession;
+    }
+
+    try {
+        $hasDeleted = false;
+        try {
+            $col = $db->query("SHOW COLUMNS FROM bugs LIKE 'deleted_at'");
+            $hasDeleted = (bool) ($col && $col->rowCount() > 0);
+        } catch (Throwable $e) {
+            $hasDeleted = false;
+        }
+        $live = $hasDeleted ? ' AND deleted_at IS NULL' : '';
+        $hasSource = false;
+        try {
+            $col = $db->query("SHOW COLUMNS FROM bugs LIKE 'source'");
+            $hasSource = (bool) ($col && $col->rowCount() > 0);
+        } catch (Throwable $e) {
+            $hasSource = false;
+        }
+        $sourceSql = $hasSource ? " AND source = 'whatsapp'" : '';
+        $stmt = $db->prepare(
+            "SELECT project_id FROM bugs
+             WHERE reported_by = ?{$sourceSql}{$live}
+             ORDER BY created_at DESC
+             LIMIT 1"
+        );
+        $stmt->execute([(string) $user['id']]);
+        $pid = $stmt->fetchColumn();
+        if (is_string($pid) && trim($pid) !== '') {
+            return trim($pid);
+        }
+        // Fallback: any recent bug by this user (not only WhatsApp).
+        $stmt = $db->prepare(
+            "SELECT project_id FROM bugs
+             WHERE reported_by = ?{$live}
+             ORDER BY created_at DESC
+             LIMIT 1"
+        );
+        $stmt->execute([(string) $user['id']]);
+        $pid = $stmt->fetchColumn();
+        if (is_string($pid) && trim($pid) !== '') {
+            return trim($pid);
+        }
+    } catch (Throwable $e) {
+        error_log('[WA Webhook] waResolveLastProjectId: ' . $e->getMessage());
+    }
+
+    return '';
 }
 
 function mimeToExt(string $mime): string
