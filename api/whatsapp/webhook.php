@@ -161,6 +161,7 @@ $msgText     = '';
 $interactiveId = null;
 $mediaUrl    = null;
 $mediaId     = null;
+$mediaWamid  = null;
 $mediaMime   = 'application/octet-stream';
 $mediaBase64 = null;
 $mediaDuration = null;
@@ -221,7 +222,12 @@ if (isset($payload['entry'][0]['changes'][0]['value']['messages'][0])) {
         }
     } elseif (isset($msg[$msgType]) && is_array($msg[$msgType])) {
         $mediaUrl  = $msg[$msgType]['url']  ?? $msg[$msgType]['link'] ?? ($msg['media_url'] ?? null);
-        $mediaId   = $msg[$msgType]['id'] ?? ($msg['id'] ?? null);
+        // Meta media object id (image.id) vs message wamid (msg.id).
+        $mediaId   = $msg[$msgType]['id'] ?? null;
+        $msgId     = is_string($msg['id'] ?? null) ? (string) $msg['id'] : '';
+        if (str_starts_with($msgId, 'wamid.')) {
+            $mediaWamid = $msgId;
+        }
         $mediaMime = $msg[$msgType]['mime_type'] ?? 'application/octet-stream';
         $msgText   = trim($msg[$msgType]['caption'] ?? '');
         $mediaDuration = isset($msg[$msgType]['duration']) ? (int) $msg[$msgType]['duration'] : null;
@@ -247,12 +253,20 @@ if (isset($payload['entry'][0]['changes'][0]['value']['messages'][0])) {
     } elseif (isset($value[$msgType]) && is_array($value[$msgType])) {
         $mediaUrl  = $value[$msgType]['url'] ?? $value[$msgType]['link'] ?? ($value['media_url'] ?? null);
         $mediaId   = $value[$msgType]['id'] ?? null;
+        $msgId     = is_string($value['id'] ?? null) ? (string) $value['id'] : '';
+        if (str_starts_with($msgId, 'wamid.')) {
+            $mediaWamid = $msgId;
+        }
         $mediaMime = $value[$msgType]['mime_type'] ?? 'application/octet-stream';
         $msgText   = trim($value[$msgType]['caption'] ?? '');
         $mediaDuration = isset($value[$msgType]['duration']) ? (int) $value[$msgType]['duration'] : null;
     } else {
         $mediaUrl  = $value['media']['url'] ?? ($value['media_url'] ?? null);
         $mediaId   = $value['media']['id'] ?? null;
+        $msgId     = is_string($value['id'] ?? null) ? (string) $value['id'] : '';
+        if (str_starts_with($msgId, 'wamid.')) {
+            $mediaWamid = $msgId;
+        }
         $mediaMime = $value['media']['mime_type'] ?? 'application/octet-stream';
     }
 } elseif (isset($payload['from'])) {
@@ -275,13 +289,21 @@ if (isset($payload['entry'][0]['changes'][0]['value']['messages'][0])) {
     } elseif (isset($payload[$msgType]) && is_array($payload[$msgType])) {
         $mediaUrl  = $payload[$msgType]['url']  ?? $payload[$msgType]['link'] ?? ($payload['media_url'] ?? null);
         $mediaId   = $payload[$msgType]['id'] ?? null;
-        $mediaMime = $payload[$msgType]['mime_type'] ?? 'application/octet-stream';
+        $msgId     = is_string($payload['id'] ?? null) ? (string) $payload['id'] : '';
+        if (str_starts_with($msgId, 'wamid.')) {
+            $mediaWamid = $msgId;
+        }
+        $mediaMime = $payload[$msgType]['mime_type'] ?? ($payload['media_mime_type'] ?? 'application/octet-stream');
         $msgText   = trim($payload[$msgType]['caption'] ?? '');
         $mediaDuration = isset($payload[$msgType]['duration']) ? (int) $payload[$msgType]['duration'] : null;
     } else {
         $mediaUrl  = $payload['media']['url'] ?? ($payload['media_url'] ?? null);
         $mediaId   = $payload['media']['id'] ?? null;
-        $mediaMime = $payload['media']['mime_type'] ?? 'application/octet-stream';
+        $msgId     = is_string($payload['id'] ?? null) ? (string) $payload['id'] : '';
+        if (str_starts_with($msgId, 'wamid.')) {
+            $mediaWamid = $msgId;
+        }
+        $mediaMime = $payload['media']['mime_type'] ?? ($payload['media_mime_type'] ?? 'application/octet-stream');
         $msgText   = trim(is_string($payload['message'] ?? null) ? $payload['message'] : '');
     }
 }
@@ -308,6 +330,22 @@ if (($mediaUrl === null || $mediaUrl === '') && $mediaInfo['url'] !== null) {
 }
 if (($mediaId === null || $mediaId === '') && $mediaInfo['id'] !== null) {
     $mediaId = $mediaInfo['id'];
+}
+// Prefer message wamid (APITxt wa-media) over Meta media object id.
+if ($mediaWamid === null || $mediaWamid === '') {
+    foreach ([$payload['id'] ?? null, $mediaInfo['id'] ?? null, $mediaId] as $cand) {
+        if (is_string($cand) && str_starts_with($cand, 'wamid.')) {
+            $mediaWamid = $cand;
+            break;
+        }
+    }
+}
+if (is_string($mediaUrl) && str_contains($mediaUrl, 'YOUR_AUTH_KEY')) {
+    $authKey = Environment::get('APITXT_AUTH_KEY', '')
+        ?: ($_ENV['APITXT_AUTH_KEY'] ?? $_SERVER['APITXT_AUTH_KEY'] ?? getenv('APITXT_AUTH_KEY') ?: '');
+    if (is_string($authKey) && $authKey !== '') {
+        $mediaUrl = str_replace('YOUR_AUTH_KEY', $authKey, $mediaUrl);
+    }
 }
 if (($mediaMime === 'application/octet-stream' || $mediaMime === '') && $mediaInfo['mime'] !== null) {
     $mediaMime = $mediaInfo['mime'];
@@ -347,13 +385,14 @@ if ($msgText === '' && $deepTitle !== '') {
 $waAction = waResolveAction($interactiveId, $msgText, $msgTextNorm);
 
 error_log(sprintf(
-    '[WA Webhook] Parsed msgType=%s interactiveId=%s msgText=%s action=%s mediaUrl=%s mediaId=%s mime=%s',
+    '[WA Webhook] Parsed msgType=%s interactiveId=%s msgText=%s action=%s mediaUrl=%s mediaId=%s wamid=%s mime=%s',
     $msgType,
     $interactiveId ?? 'null',
     mb_substr($msgText, 0, 80),
     $waAction ?? 'null',
     $mediaUrl ? mb_substr((string) $mediaUrl, 0, 80) : 'null',
     $mediaId ? mb_substr((string) $mediaId, 0, 40) : 'null',
+    $mediaWamid ? mb_substr((string) $mediaWamid, 0, 40) : 'null',
     $mediaMime
 ));
 
@@ -747,7 +786,8 @@ switch ($step) {
                     $mediaMime,
                     $phone,
                     $mediaExt,
-                    $mediaId ? (string) $mediaId : null
+                    $mediaId ? (string) $mediaId : null,
+                    $mediaWamid ? (string) $mediaWamid : null
                 );
             }
 
@@ -755,7 +795,7 @@ switch ($step) {
                 $apitxt->sendText(
                     $phone,
                     "Got your file, but could not download it.\n"
-                    . "Please send it again, or ask admin to set *WHATSAPP_CLOUD_ACCESS_TOKEN*."
+                    . "Please send it again in a moment."
                 );
                 sendDraftActions($apitxt, $phone, "You can still add text or tap *Submit*.");
                 break;
@@ -823,7 +863,8 @@ switch ($step) {
                     $mediaMime,
                     $phone,
                     $mediaExt,
-                    $mediaId ? (string) $mediaId : null
+                    $mediaId ? (string) $mediaId : null,
+                    $mediaWamid ? (string) $mediaWamid : null
                 );
             }
             if ($result === null) {

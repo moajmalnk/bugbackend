@@ -430,10 +430,11 @@ class APITxtService
     // ----------------------------------------------------------------
 
     /**
-     * Resolve inbound WhatsApp media (direct URL and/or Meta media id) into staging.
+     * Resolve inbound WhatsApp media into staging.
      *
-     * Why: APITxt/Meta webhooks often send only `image.id` / `audio.id` (no URL),
-     * or a top-level `media_url`. Voice notes are type=audio with voice=true.
+     * Priority:
+     * 1) APITxt media_url (replace YOUR_AUTH_KEY) / wa-media by wamid
+     * 2) Meta Cloud API by media object id (needs WHATSAPP_CLOUD_ACCESS_TOKEN)
      *
      * @return array{path: string, name: string, mime: string}|null
      */
@@ -442,12 +443,37 @@ class APITxtService
         string $mimeType,
         string $phone,
         string $extHint = 'bin',
-        ?string $mediaId = null
+        ?string $mediaId = null,
+        ?string $wamid = null
     ): ?array {
-        $resolvedUrl = trim($mediaUrl);
+        $resolvedUrl = $this->normaliseApiTxtMediaUrl(trim($mediaUrl));
         $resolvedMime = $mimeType;
+        $wamid = $this->extractWamid($wamid ?: $mediaId ?: $resolvedUrl);
 
-        if ($resolvedUrl === '' && $mediaId) {
+        // 1) Prefer APITxt WhatsApp Media Download API (no Meta token).
+        if ($wamid !== null) {
+            $apitxt = $this->resolveApiTxtMedia($wamid);
+            if ($apitxt !== null) {
+                if (!empty($apitxt['url'])) {
+                    $resolvedUrl = $apitxt['url'];
+                }
+                if (!empty($apitxt['mime'])) {
+                    $resolvedMime = $apitxt['mime'];
+                }
+                if (!empty($apitxt['filename']) && $extHint === 'bin') {
+                    $pathExt = pathinfo($apitxt['filename'], PATHINFO_EXTENSION);
+                    if (is_string($pathExt) && $pathExt !== '') {
+                        $extHint = strtolower($pathExt);
+                    }
+                }
+            } elseif ($resolvedUrl === '') {
+                // Build download URL and follow 302 → S3.
+                $resolvedUrl = $this->buildApiTxtMediaUrl($wamid);
+            }
+        }
+
+        // 2) Meta Cloud fallback when we only have a numeric media object id.
+        if ($resolvedUrl === '' && $mediaId && !$this->looksLikeWamid($mediaId)) {
             $resolved = $this->resolveMetaMediaUrl($mediaId);
             if ($resolved !== null) {
                 $resolvedUrl = $resolved['url'];
@@ -458,7 +484,7 @@ class APITxtService
         }
 
         if ($resolvedUrl === '') {
-            error_log('[APITxtService] Staging download skipped — empty media URL and unresolved media id');
+            error_log('[APITxtService] Staging download skipped — empty media URL / unresolved wamid+media id');
             return null;
         }
 
@@ -471,8 +497,16 @@ class APITxtService
         $filename = 'wa_' . $phone . '_' . uniqid() . '.' . $ext;
         $fullPath = $stagingDir . $filename;
 
-        $bearer = $this->cloudAccessToken();
+        // APITxt / S3 presigned URLs do not need Meta bearer; Meta lookaside does.
+        $bearer = $this->urlNeedsMetaBearer($resolvedUrl) ? $this->cloudAccessToken() : '';
         $bytes = $this->downloadUrl($resolvedUrl, $fullPath, $bearer);
+        if ($bytes === false && $wamid !== null) {
+            // Retry via APITxt redirect URL if JSON path gave a stale S3 link.
+            $retryUrl = $this->buildApiTxtMediaUrl($wamid);
+            if ($retryUrl !== '' && $retryUrl !== $resolvedUrl) {
+                $bytes = $this->downloadUrl($retryUrl, $fullPath, '');
+            }
+        }
         if ($bytes === false) {
             return null;
         }
@@ -482,6 +516,118 @@ class APITxtService
             'name' => $filename,
             'mime' => $this->normaliseMime($resolvedMime),
         ];
+    }
+
+    /**
+     * Replace YOUR_AUTH_KEY placeholder in APITxt media_url templates.
+     */
+    private function normaliseApiTxtMediaUrl(string $url): string
+    {
+        if ($url === '') {
+            return '';
+        }
+        if ($this->authKey !== '' && str_contains($url, 'YOUR_AUTH_KEY')) {
+            $url = str_replace('YOUR_AUTH_KEY', $this->authKey, $url);
+        }
+        return $url;
+    }
+
+    private function looksLikeWamid(string $id): bool
+    {
+        return (bool) preg_match('/^wamid\./i', trim($id));
+    }
+
+    private function extractWamid(?string $value): ?string
+    {
+        if ($value === null || trim($value) === '') {
+            return null;
+        }
+        $value = trim($value);
+        if ($this->looksLikeWamid($value)) {
+            return $value;
+        }
+        // From a full media_url path segment.
+        if (preg_match('#/(wamid\.[^/?#\s]+)#i', $value, $m)) {
+            return $m[1];
+        }
+        return null;
+    }
+
+    private function buildApiTxtMediaUrl(string $wamid, bool $asJson = false): string
+    {
+        if ($this->authKey === '' || $wamid === '') {
+            return '';
+        }
+        $url = 'https://apitxt.com/api/wa-media/authkey='
+            . rawurlencode($this->authKey)
+            . '/'
+            . rawurlencode($wamid);
+        if ($asJson) {
+            $url .= '?format=json';
+        }
+        return $url;
+    }
+
+    /**
+     * @return array{url?: string, mime?: string, filename?: string}|null
+     */
+    private function resolveApiTxtMedia(string $wamid): ?array
+    {
+        $jsonUrl = $this->buildApiTxtMediaUrl($wamid, true);
+        if ($jsonUrl === '') {
+            return null;
+        }
+
+        $ch = curl_init($jsonUrl);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 30,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_HTTPHEADER     => [
+                'Accept: application/json',
+                'User-Agent: BugRicer-WA-Bot/1.0',
+            ],
+        ]);
+        $raw  = curl_exec($ch);
+        $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $err  = curl_error($ch);
+        curl_close($ch);
+
+        error_log(
+            '[APITxtService] wa-media json [' . $code . '] wamid='
+            . mb_substr($wamid, 0, 40)
+            . ($err ? " err={$err}" : '')
+            . ' body=' . mb_substr((string) $raw, 0, 180)
+        );
+
+        if ($raw === false || $code < 200 || $code >= 300) {
+            return null;
+        }
+        $decoded = json_decode((string) $raw, true);
+        if (!is_array($decoded)) {
+            return null;
+        }
+        $data = is_array($decoded['data'] ?? null) ? $decoded['data'] : $decoded;
+        $url = (string) ($data['url'] ?? '');
+        if ($url === '') {
+            // Fall back to redirect endpoint URL for downloadUrl to follow.
+            return ['url' => $this->buildApiTxtMediaUrl($wamid, false)];
+        }
+
+        return [
+            'url' => $url,
+            'mime' => (string) ($data['mime_type'] ?? $data['mime'] ?? ''),
+            'filename' => (string) ($data['filename'] ?? ''),
+        ];
+    }
+
+    private function urlNeedsMetaBearer(string $url): bool
+    {
+        $host = strtolower((string) (parse_url($url, PHP_URL_HOST) ?? ''));
+        return str_contains($host, 'facebook.com')
+            || str_contains($host, 'fbcdn.net')
+            || str_contains($host, 'whatsapp.net')
+            || str_contains($host, 'fbsbx.com');
     }
 
     /**
