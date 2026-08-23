@@ -3,11 +3,14 @@
  * WhatsApp Bot Webhook — APITxt Inbound Handler
  *
  * Why this exists: Receives inbound WhatsApp events from APITxt, drives a
- * per-phone state machine, verifies users via OTP, lets them pick a project,
- * collect bug content + attachments, and submits a bug into BugRicer.
+ * per-phone state machine, verifies users by BugRicer phone, lets them pick a
+ * project, collect bug content + attachments, and submits a bug into BugRicer.
  *
- * Endpoint:  POST /backend/api/whatsapp/webhook.php
- * Auth:      Static secret via APITXT_WEBHOOK_SECRET header (optional guard)
+ * Production Payload URL (APITxt dashboard — backend host, NOT the frontend):
+ *   https://bugbackend.bugricer.com/api/whatsapp/webhook.php
+ * Do NOT use https://bugs.bugricer.com/... for webhooks (that is the SPA only).
+ *
+ * Auth:      APITXT_WEBHOOK_SECRET (HMAC-SHA256) when APITxt sends a signature
  * Idempotent: Each phone has one row in wa_sessions; re-entrant steps are safe.
  */
 

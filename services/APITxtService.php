@@ -19,7 +19,8 @@
  * Required .env keys:
  *   APITXT_AUTH_KEY    — your APITxt authentication key
  *   APITXT_WA_NUMBER   — your registered sender WhatsApp number (with country code, e.g. 919999999999)
- *   APP_BASE_URL       — public base URL of BugRicer (e.g. https://bugs.bugricer.com)
+ *   APP_BASE_URL       — frontend base URL (e.g. https://bugs.bugricer.com) for ticket links
+ *   API / webhook host — https://bugbackend.bugricer.com (never the SPA host for webhooks)
  */
 
 require_once __DIR__ . '/../config/environment.php';
