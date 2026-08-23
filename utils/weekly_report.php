@@ -14,6 +14,41 @@ require_once __DIR__ . '/work_submission_ot.php';
 const BR_WEEKLY_REPORT_FIELD_MAX = 20000;
 
 /**
+ * Why: Recycle bin soft-deletes set deleted_at; list/read paths must ignore archived rows.
+ */
+function br_weekly_report_deleted_at_supported(PDO $conn): bool
+{
+    static $cache = [];
+    $key = spl_object_id($conn);
+    if (array_key_exists($key, $cache)) {
+        return $cache[$key];
+    }
+    try {
+        $stmt = $conn->prepare(
+            'SELECT COUNT(*) FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?'
+        );
+        $stmt->execute(['weekly_reports', 'deleted_at']);
+        $cache[$key] = (int)$stmt->fetchColumn() > 0;
+    } catch (Throwable $e) {
+        $cache[$key] = false;
+    }
+    return $cache[$key];
+}
+
+/**
+ * SQL AND fragment excluding soft-deleted weekly reports (empty when column missing).
+ */
+function br_weekly_report_live_and(PDO $conn, string $alias = ''): string
+{
+    if (!br_weekly_report_deleted_at_supported($conn)) {
+        return '';
+    }
+    $p = $alias !== '' ? $alias . '.' : '';
+    return " AND {$p}deleted_at IS NULL";
+}
+
+/**
  * @return array{week_start:string,week_end:string}
  */
 function br_monday_saturday_week_bounds(string $date): array
@@ -155,8 +190,9 @@ function br_weekly_report_join_bullets(array $lines): string
 
 function br_weekly_report_exists(PDO $conn, string $userId, string $weekStart): bool
 {
+    $live = br_weekly_report_live_and($conn);
     $stmt = $conn->prepare(
-        'SELECT id FROM weekly_reports WHERE user_id = ? AND week_start = ? LIMIT 1'
+        "SELECT id FROM weekly_reports WHERE user_id = ? AND week_start = ?{$live} LIMIT 1"
     );
     $stmt->execute([$userId, $weekStart]);
     return (bool)$stmt->fetch(PDO::FETCH_ASSOC);
@@ -167,13 +203,14 @@ function br_weekly_report_exists(PDO $conn, string $userId, string $weekStart): 
  */
 function br_get_weekly_report(PDO $conn, string $userId, string $weekStart): ?array
 {
+    $live = br_weekly_report_live_and($conn);
     $stmt = $conn->prepare(
-        'SELECT id, user_id, week_start, week_end, report_date,
+        "SELECT id, user_id, week_start, week_end, report_date,
                 work_completed, work_in_progress, issues_blockers, plan_next_week,
                 notified_at, created_at, updated_at
          FROM weekly_reports
-         WHERE user_id = ? AND week_start = ?
-         LIMIT 1'
+         WHERE user_id = ? AND week_start = ?{$live}
+         LIMIT 1"
     );
     $stmt->execute([$userId, $weekStart]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -517,6 +554,10 @@ function br_list_weekly_reports(PDO $conn, array $opts): array
     $where = ['1=1'];
     $params = [];
 
+    if (br_weekly_report_deleted_at_supported($conn)) {
+        $where[] = 'wr.deleted_at IS NULL';
+    }
+
     $scopeUserId = trim((string)($opts['user_id'] ?? ''));
     if ($scopeUserId !== '') {
         $where[] = 'wr.user_id = ?';
@@ -733,6 +774,38 @@ function br_save_weekly_report(PDO $conn, string $userId, array $payload): array
         return $saved ?: $existing;
     }
 
+    if (br_weekly_report_deleted_at_supported($conn)) {
+        $archived = $conn->prepare(
+            'SELECT id FROM weekly_reports
+             WHERE user_id = ? AND week_start = ? AND deleted_at IS NOT NULL
+             LIMIT 1'
+        );
+        $archived->execute([$userId, $bounds['week_start']]);
+        $archivedRow = $archived->fetch(PDO::FETCH_ASSOC);
+        if ($archivedRow) {
+            $stmt = $conn->prepare(
+                'UPDATE weekly_reports
+                 SET week_end = ?, report_date = ?, work_completed = ?, work_in_progress = ?,
+                     issues_blockers = ?, plan_next_week = ?, deleted_at = NULL, deleted_by = NULL
+                 WHERE id = ? AND user_id = ?'
+            );
+            $stmt->execute([
+                $bounds['week_end'],
+                $reportDate,
+                $workCompleted,
+                $workInProgress,
+                $issues !== '' ? $issues : null,
+                $planNext,
+                $archivedRow['id'],
+                $userId,
+            ]);
+            $saved = br_get_weekly_report($conn, $userId, $bounds['week_start']);
+            if ($saved) {
+                return $saved;
+            }
+        }
+    }
+
     $id = class_exists('Utils') ? Utils::generateUUID() : sprintf(
         '%04x%04x-%04x-%04x-%04x-%04x%04x%04x',
         mt_rand(0, 0xffff),
@@ -779,15 +852,16 @@ function br_get_weekly_report_by_id(PDO $conn, string $id): ?array
     if ($id === '') {
         return null;
     }
+    $live = br_weekly_report_live_and($conn, 'wr');
     $stmt = $conn->prepare(
-        'SELECT wr.id, wr.user_id, wr.week_start, wr.week_end, wr.report_date,
+        "SELECT wr.id, wr.user_id, wr.week_start, wr.week_end, wr.report_date,
                 wr.work_completed, wr.work_in_progress, wr.issues_blockers, wr.plan_next_week,
                 wr.notified_at, wr.created_at, wr.updated_at,
                 u.username, u.role
          FROM weekly_reports wr
          INNER JOIN users u ON u.id = wr.user_id
-         WHERE wr.id = ?
-         LIMIT 1'
+         WHERE wr.id = ?{$live}
+         LIMIT 1"
     );
     $stmt->execute([$id]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);

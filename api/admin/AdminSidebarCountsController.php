@@ -259,11 +259,14 @@ class AdminSidebarCountsController extends BaseAPI
                 || $can('UPDATES_VIEW') || $can('UPDATES_CREATE'))
             && $this->dbTableExists('weekly_reports')
         ) {
+            $weeklyLive = $this->weeklyReportRecycleBinExclude();
             if ($isAdmin) {
-                $counts['weeklyReport'] = $this->countOrZero('SELECT COUNT(*) FROM weekly_reports');
+                $counts['weeklyReport'] = $this->countOrZero(
+                    "SELECT COUNT(*) FROM weekly_reports WHERE {$weeklyLive}"
+                );
             } else {
                 $counts['weeklyReport'] = $this->countOrZero(
-                    'SELECT COUNT(*) FROM weekly_reports WHERE user_id = ?',
+                    "SELECT COUNT(*) FROM weekly_reports WHERE user_id = ? AND {$weeklyLive}",
                     [$userId]
                 );
             }
@@ -473,6 +476,18 @@ class AdminSidebarCountsController extends BaseAPI
     private function bugRecycleBinExclude(string $alias = ''): string
     {
         if (!$this->dbColumnExists('bugs', 'deleted_at')) {
+            return '1=1';
+        }
+        $p = $alias !== '' ? $alias . '.' : '';
+        return "{$p}deleted_at IS NULL";
+    }
+
+    /**
+     * Why: Soft-deleted weekly reports belong in recycle bin, not the sidebar count.
+     */
+    private function weeklyReportRecycleBinExclude(string $alias = ''): string
+    {
+        if (!$this->dbColumnExists('weekly_reports', 'deleted_at')) {
             return '1=1';
         }
         $p = $alias !== '' ? $alias . '.' : '';
