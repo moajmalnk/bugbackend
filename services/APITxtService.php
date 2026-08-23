@@ -499,20 +499,51 @@ class APITxtService
         $bearer = $this->urlNeedsMetaBearer($resolvedUrl) ? $this->cloudAccessToken() : '';
         $bytes = $this->downloadUrl($resolvedUrl, $fullPath, $bearer);
         if ($bytes === false && $wamid !== null) {
+            // Docs: rare race — wait briefly once, then retry redirect URL.
+            usleep(800000);
             $retryUrl = $this->buildApiTxtMediaUrl($wamid, false);
-            if ($retryUrl !== '' && $retryUrl !== $resolvedUrl) {
+            if ($retryUrl !== '') {
                 $bytes = $this->downloadUrl($retryUrl, $fullPath, '');
             }
         }
         if ($bytes === false) {
+            $this->persistMediaDownloadDebug([
+                'ok' => false,
+                'at' => date('c'),
+                'wamid' => $wamid ? mb_substr($wamid, 0, 80) : null,
+                'mediaId' => $mediaId ? mb_substr($mediaId, 0, 80) : null,
+                'triedUrl' => mb_substr($resolvedUrl, 0, 180),
+                'mime' => $resolvedMime,
+            ]);
             return null;
         }
+
+        $this->persistMediaDownloadDebug([
+            'ok' => true,
+            'at' => date('c'),
+            'wamid' => $wamid ? mb_substr($wamid, 0, 80) : null,
+            'bytes' => $bytes,
+            'mime' => $this->normaliseMime($resolvedMime),
+        ]);
 
         return [
             'path' => 'wa_staging/' . $filename,
             'name' => $filename,
             'mime' => $this->normaliseMime($resolvedMime),
         ];
+    }
+
+    /** @param array<string,mixed> $info */
+    private function persistMediaDownloadDebug(array $info): void
+    {
+        $dir = __DIR__ . '/../uploads/wa_staging/';
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0755, true);
+        }
+        @file_put_contents(
+            $dir . 'last_media_download.json',
+            json_encode($info, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
+        );
     }
 
     /**
@@ -597,6 +628,15 @@ class APITxtService
             . ($err ? " err={$err}" : '')
             . ' body=' . mb_substr((string) $raw, 0, 180)
         );
+
+        $this->persistMediaDownloadDebug([
+            'phase' => 'wa-media-json',
+            'at' => date('c'),
+            'http' => $code,
+            'wamid' => mb_substr($wamid, 0, 80),
+            'body' => mb_substr((string) $raw, 0, 400),
+            'err' => $err ?: null,
+        ]);
 
         if ($raw === false) {
             return null;
