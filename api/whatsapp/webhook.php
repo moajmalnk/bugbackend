@@ -468,17 +468,7 @@ if ($user !== null && ($isAnytimeMenu || $isAnytimeHelp || $isCancelAnytime || $
         $msgTextNorm = 'submit';
         $waAction = 'submit';
     } elseif ($isCancelAnytime && $draftStarted) {
-        cleanUpStagedAttachments($db, $phone);
-        resetSession($db, $phone);
-        $apitxt->sendInteractiveButtons(
-            $phone,
-            'Cancelled',
-            "Draft discarded.\nTap below to start again.",
-            [
-                ['id' => 'wa_menu', 'title' => 'New bug'],
-                ['id' => 'wa_help', 'title' => 'Help'],
-            ]
-        );
+        cancelDraftAndOfferNext($db, $apitxt, $phone, $user, $session);
         http_response_code(200);
         echo json_encode(['ok' => true, 'cmd' => 'cancel']);
         exit;
@@ -634,17 +624,7 @@ switch ($step) {
             || $msgTextNorm === 'skip';
 
         if ($isCancelText || $isCancelButton) {
-            cleanUpStagedAttachments($db, $phone);
-            resetSession($db, $phone);
-            $apitxt->sendInteractiveButtons(
-                $phone,
-                'Cancelled',
-                "Draft discarded.\nTap below to start again.",
-                [
-                    ['id' => 'wa_menu', 'title' => 'New bug'],
-                    ['id' => 'wa_help', 'title' => 'Help'],
-                ]
-            );
+            cancelDraftAndOfferNext($db, $apitxt, $phone, $user, getOrCreateSession($db, $phone));
             break;
         }
 
@@ -822,17 +802,7 @@ switch ($step) {
             || $msgTextNorm === 'cancel';
 
         if ($isCancel) {
-            cleanUpStagedAttachments($db, $phone);
-            resetSession($db, $phone);
-            $apitxt->sendInteractiveButtons(
-                $phone,
-                'Cancelled',
-                "Draft discarded.\nTap below to start again.",
-                [
-                    ['id' => 'wa_menu', 'title' => 'New bug'],
-                    ['id' => 'wa_help', 'title' => 'Help'],
-                ]
-            );
+            cancelDraftAndOfferNext($db, $apitxt, $phone, $user, getOrCreateSession($db, $phone));
             break;
         }
 
@@ -1052,7 +1022,7 @@ switch ($step) {
             . "Report another?",
             [
                 ['id' => $sameBtnId, 'title' => 'Same project'],
-                ['id' => 'wa_new_other_project', 'title' => 'Other project'],
+                ['id' => 'wa_new_other_project', 'title' => 'Change project'],
                 ['id' => 'wa_help', 'title' => 'Help'],
             ],
             $projectLabel
@@ -1434,7 +1404,7 @@ function waResolveAction(?string $interactiveId, string $msgText, string $msgTex
         'menu' => 'menu',
         'wa menu' => 'menu',
         'wa_menu' => 'menu',
-        'change project' => 'menu',
+        'change project' => 'new_other_project',
         'new bug' => 'menu',
         'same project' => 'new_same_project',
         'other project' => 'new_other_project',
@@ -1526,10 +1496,10 @@ function waIsOtherProjectIntent(
     if ($id === 'wa_new_other_project') {
         return true;
     }
-    if (in_array($msgTextNorm, ['other project', 'another project', 'new project'], true)) {
+    if (in_array($msgTextNorm, ['other project', 'another project', 'new project', 'change project'], true)) {
         return true;
     }
-    return (bool) preg_match('/\b(other|another) project\b/i', $msgText);
+    return (bool) preg_match('/\b(other|another|change) project\b/i', $msgText);
 }
 
 /**
@@ -1713,6 +1683,58 @@ function welcomeVerifiedUser(APITxtService $apitxt, string $phone, array $user):
         . "Welcome, *{$user['name']}*!\n\n"
         . "Your WhatsApp number is registered.\n"
         . "Choose a project to report a bug."
+    );
+}
+
+/**
+ * Discard draft and offer Same project / Change project (matches Bug filed UX).
+ */
+function cancelDraftAndOfferNext(
+    PDO $db,
+    APITxtService $apitxt,
+    string $phone,
+    array $user,
+    array $session
+): void {
+    $projectId = trim((string) ($session['selected_project_id'] ?? ''));
+    if ($projectId === '') {
+        $projectId = waResolveLastProjectId($db, $phone, $user, '');
+    }
+
+    cleanUpStagedAttachments($db, $phone);
+
+    $db->prepare(
+        "UPDATE wa_sessions SET
+           current_step='IDLE',
+           selected_project_id=?,
+           otp_code=NULL,
+           otp_expires_at=NULL,
+           otp_attempts=0,
+           otp_first_attempt_at=NULL,
+           temp_title=NULL,
+           temp_description=NULL,
+           last_interaction=NOW()
+         WHERE phone=?"
+    )->execute([$projectId !== '' ? $projectId : null, $phone]);
+
+    $projectName = $projectId !== '' ? waLoadProjectName($db, $projectId) : null;
+    $footer = $projectName ?: 'BugRicer';
+    $sameBtnId = $projectId !== '' ? ('wa_same_' . $projectId) : 'wa_new_same_project';
+
+    $body = $projectName
+        ? "Draft discarded.\n\nReport another bug?\nLast project: *{$projectName}*"
+        : "Draft discarded.\n\nReport another bug?";
+
+    $apitxt->sendInteractiveButtons(
+        $phone,
+        'Cancelled',
+        $body,
+        [
+            ['id' => $sameBtnId, 'title' => 'Same project'],
+            ['id' => 'wa_new_other_project', 'title' => 'Change project'],
+            ['id' => 'wa_help', 'title' => 'Help'],
+        ],
+        $footer
     );
 }
 
