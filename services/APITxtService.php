@@ -449,8 +449,30 @@ class APITxtService
         $resolvedUrl = $this->normaliseApiTxtMediaUrl(trim($mediaUrl));
         $resolvedMime = $mimeType;
         $wamid = $this->extractWamid($wamid ?: $mediaId ?: $resolvedUrl);
+        $inboundWaMediaUrl = ($resolvedUrl !== '' && $this->isApiTxtWaMediaUrl($resolvedUrl))
+            ? $resolvedUrl
+            : '';
 
-        // 1) Fast path: APITxt wa-media by wamid (one JSON probe, then download).
+        // 1) Docs: use inbound media_url first — replace YOUR_AUTH_KEY, follow 302 to S3.
+        if ($inboundWaMediaUrl !== '') {
+            $stagingDir = __DIR__ . '/../uploads/wa_staging/';
+            if (!is_dir($stagingDir)) {
+                mkdir($stagingDir, 0755, true);
+            }
+            $ext      = $this->mimeToExtension($resolvedMime, $extHint);
+            $filename = 'wa_' . $phone . '_' . uniqid() . '.' . $ext;
+            $fullPath = $stagingDir . $filename;
+            $bytes = $this->downloadUrl($inboundWaMediaUrl, $fullPath, '');
+            if ($bytes !== false) {
+                return [
+                    'path' => 'wa_staging/' . $filename,
+                    'name' => $filename,
+                    'mime' => $this->normaliseMime($resolvedMime),
+                ];
+            }
+        }
+
+        // 2) wa-media JSON (?format=json) → presigned S3 url, or build redirect URL from wamid.
         if ($wamid !== null) {
             $apitxt = $this->resolveApiTxtMedia($wamid);
             if ($apitxt !== null) {
@@ -472,7 +494,7 @@ class APITxtService
             }
         }
 
-        // 2) Meta Cloud fallback when we only have a numeric media object id.
+        // 3) Meta Cloud fallback when we only have a numeric media object id.
         if ($resolvedUrl === '' && $mediaId && !$this->looksLikeWamid($mediaId)) {
             $resolved = $this->resolveMetaMediaUrl($mediaId);
             if ($resolved !== null) {
@@ -652,16 +674,25 @@ class APITxtService
         }
 
         if ($code >= 200 && $code < 300) {
-            $data = is_array($decoded['data'] ?? null) ? $decoded['data'] : $decoded;
-            $url = (string) ($data['url'] ?? '');
-            if ($url === '') {
-                return ['url' => $this->buildApiTxtMediaUrl($wamid, false)];
+            $status = strtolower((string) ($decoded['status'] ?? ''));
+            if ($status === 'success') {
+                $data = is_array($decoded['data'] ?? null) ? $decoded['data'] : $decoded;
+                $url = (string) ($data['url'] ?? '');
+                if ($url === '') {
+                    return ['url' => $this->buildApiTxtMediaUrl($wamid, false)];
+                }
+                return [
+                    'url' => $url,
+                    'mime' => (string) ($data['mime_type'] ?? $data['mime'] ?? ''),
+                    'filename' => (string) ($data['filename'] ?? ''),
+                ];
             }
-            return [
-                'url' => $url,
-                'mime' => (string) ($data['mime_type'] ?? $data['mime'] ?? ''),
-                'filename' => (string) ($data['filename'] ?? ''),
-            ];
+            if ($status === 'error') {
+                $msg = strtolower((string) ($decoded['message'] ?? ''));
+                if (str_contains($msg, 'not found') || str_contains($msg, 'not available')) {
+                    return ['url' => $this->buildApiTxtMediaUrl($wamid, false)];
+                }
+            }
         }
 
         // 404/410 — return redirect URL anyway; download may still work once synced.
@@ -713,6 +744,11 @@ class APITxtService
     {
         $host = strtolower((string) (parse_url($url, PHP_URL_HOST) ?? ''));
         return str_contains($host, 'apitxt.com');
+    }
+
+    private function isApiTxtWaMediaUrl(string $url): bool
+    {
+        return $this->isApiTxtHost($url) && str_contains($url, '/api/wa-media/');
     }
 
     /**

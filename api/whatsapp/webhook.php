@@ -323,6 +323,35 @@ if (isset($payload['entry'][0]['changes'][0]['value']['messages'][0])) {
     }
 }
 
+// APITxt documented flat inbound shape (https://apitxt.com/developer/whatsapp-media-api)
+// { event, id, type, from, media_url, media_mime_type, media_file_size, payload }
+if (isset($payload['event']) && is_string($payload['event'])) {
+    $ev = strtolower(trim($payload['event']));
+    if (in_array($ev, ['message.delivered', 'message.read', 'message.sent', 'message.status'], true)) {
+        http_response_code(200);
+        echo json_encode(['ok' => true, 'skip' => 'status_event']);
+        exit;
+    }
+    if ($fromRaw === '' && isset($payload['from'])) {
+        $fromRaw = (string) $payload['from'];
+    }
+    if (isset($payload['type']) && is_string($payload['type']) && $payload['type'] !== '') {
+        $msgType = strtolower($payload['type']);
+    }
+    if (isset($payload['id']) && is_string($payload['id']) && str_starts_with($payload['id'], 'wamid.')) {
+        $mediaWamid = (string) $payload['id'];
+    }
+    if (($mediaUrl === null || $mediaUrl === '') && !empty($payload['media_url'])) {
+        $mediaUrl = (string) $payload['media_url'];
+    }
+    if (
+        ($mediaMime === 'application/octet-stream' || $mediaMime === '')
+        && !empty($payload['media_mime_type'])
+    ) {
+        $mediaMime = (string) $payload['media_mime_type'];
+    }
+}
+
 // Deep-extract media fields APITxt may place anywhere (media_url, image.id, base64…).
 $mediaInfo = waExtractInboundMedia($payload);
 $hasMediaAsset = ($mediaInfo['url'] !== null || $mediaInfo['id'] !== null || $mediaInfo['base64'] !== null);
@@ -1194,7 +1223,7 @@ function waExtractInboundMedia(array $payload): array
                         $out['url'] = $v;
                     }
                 }
-                if (in_array($k, ['mime_type', 'mimetype', 'mime', 'content_type', 'contenttype'], true)) {
+                if (in_array($k, ['mime_type', 'mimetype', 'mime', 'content_type', 'contenttype', 'media_mime_type'], true)) {
                     if ($out['mime'] === null) {
                         $out['mime'] = $v;
                     }
