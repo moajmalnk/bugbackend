@@ -432,9 +432,8 @@ class APITxtService
     /**
      * Resolve inbound WhatsApp media into staging.
      *
-     * Priority:
-     * 1) APITxt media_url (replace YOUR_AUTH_KEY) / wa-media by wamid
-     * 2) Meta Cloud API by media object id (needs WHATSAPP_CLOUD_ACCESS_TOKEN)
+     * Why: Webhooks must finish in a few seconds. Long sleep/retry loops caused
+     * Hostinger/APITxt to kill the request — user saw silence on photos/voice.
      *
      * @return array{path: string, name: string, mime: string}|null
      */
@@ -450,7 +449,7 @@ class APITxtService
         $resolvedMime = $mimeType;
         $wamid = $this->extractWamid($wamid ?: $mediaId ?: $resolvedUrl);
 
-        // 1) Prefer APITxt WhatsApp Media Download API (no Meta token).
+        // 1) Fast path: APITxt wa-media by wamid (one JSON probe, then download).
         if ($wamid !== null) {
             $apitxt = $this->resolveApiTxtMedia($wamid);
             if ($apitxt !== null) {
@@ -466,12 +465,9 @@ class APITxtService
                         $extHint = strtolower($pathExt);
                     }
                 }
-            } else {
-                // JSON failed — still try 302 redirect download with browser headers.
-                $redirectUrl = $this->buildApiTxtMediaUrl($wamid, false);
-                if ($redirectUrl !== '') {
-                    $resolvedUrl = $redirectUrl;
-                }
+            }
+            if ($resolvedUrl === '') {
+                $resolvedUrl = $this->buildApiTxtMediaUrl($wamid, false);
             }
         }
 
@@ -500,12 +496,10 @@ class APITxtService
         $filename = 'wa_' . $phone . '_' . uniqid() . '.' . $ext;
         $fullPath = $stagingDir . $filename;
 
-        // APITxt / S3 presigned URLs do not need Meta bearer; Meta lookaside does.
         $bearer = $this->urlNeedsMetaBearer($resolvedUrl) ? $this->cloudAccessToken() : '';
         $bytes = $this->downloadUrl($resolvedUrl, $fullPath, $bearer);
         if ($bytes === false && $wamid !== null) {
-            // Retry via APITxt redirect URL if JSON path gave a stale S3 link.
-            $retryUrl = $this->buildApiTxtMediaUrl($wamid);
+            $retryUrl = $this->buildApiTxtMediaUrl($wamid, false);
             if ($retryUrl !== '' && $retryUrl !== $resolvedUrl) {
                 $bytes = $this->downloadUrl($retryUrl, $fullPath, '');
             }
@@ -582,70 +576,58 @@ class APITxtService
             return null;
         }
 
-        // APITxt docs: media may not be ready immediately after webhook (404 race).
-        $attempts = [0, 2, 4];
-        $lastBody = '';
-        $lastCode = 0;
-        foreach ($attempts as $sleepSecs) {
-            if ($sleepSecs > 0) {
-                sleep($sleepSecs);
-            }
-            $ch = curl_init($jsonUrl);
-            curl_setopt_array($ch, [
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_TIMEOUT        => 45,
-                CURLOPT_FOLLOWLOCATION => true,
-                CURLOPT_HTTPHEADER     => $this->browserHeadersForApiTxt(true),
-                CURLOPT_USERAGENT      => $this->browserUserAgent(),
-            ]);
-            $raw  = curl_exec($ch);
-            $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            $err  = curl_error($ch);
-            curl_close($ch);
-            $lastCode = $code;
-            $lastBody = (string) $raw;
+        // One quick probe only — webhook must not sleep/retry for many seconds.
+        $ch = curl_init($jsonUrl);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 12,
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_HTTPHEADER     => $this->browserHeadersForApiTxt(true),
+            CURLOPT_USERAGENT      => $this->browserUserAgent(),
+        ]);
+        $raw  = curl_exec($ch);
+        $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $err  = curl_error($ch);
+        curl_close($ch);
 
-            error_log(
-                '[APITxtService] wa-media json [' . $code . '] wamid='
-                . mb_substr($wamid, 0, 48)
-                . ($err ? " err={$err}" : '')
-                . ' body=' . mb_substr($lastBody, 0, 180)
-            );
+        error_log(
+            '[APITxtService] wa-media json [' . $code . '] wamid='
+            . mb_substr($wamid, 0, 48)
+            . ($err ? " err={$err}" : '')
+            . ' body=' . mb_substr((string) $raw, 0, 180)
+        );
 
-            if ($raw === false) {
-                continue;
-            }
-            $decoded = json_decode($lastBody, true);
-            if (!is_array($decoded)) {
-                continue;
-            }
-
-            // Auth / WAF: retry with same headers already applied; stop on hard auth errors.
-            $reason = (string) ($decoded['reason'] ?? '');
-            if ($code === 401 || $reason === 'MISSING_BROWSER_HEADERS') {
-                break;
-            }
-
+        if ($raw === false) {
+            return null;
+        }
+        $decoded = json_decode((string) $raw, true);
+        if (!is_array($decoded)) {
+            // Non-JSON success — use redirect download URL.
             if ($code >= 200 && $code < 300) {
-                $data = is_array($decoded['data'] ?? null) ? $decoded['data'] : $decoded;
-                $url = (string) ($data['url'] ?? '');
-                if ($url === '') {
-                    return ['url' => $this->buildApiTxtMediaUrl($wamid, false)];
-                }
-                return [
-                    'url' => $url,
-                    'mime' => (string) ($data['mime_type'] ?? $data['mime'] ?? ''),
-                    'filename' => (string) ($data['filename'] ?? ''),
-                ];
+                return ['url' => $this->buildApiTxtMediaUrl($wamid, false)];
             }
-
-            // 404/410 — wait and retry (inbound sync race).
-            if (!in_array($code, [404, 410], true)) {
-                break;
-            }
+            return null;
         }
 
-        error_log("[APITxtService] wa-media unresolved code={$lastCode} body=" . mb_substr($lastBody, 0, 200));
+        if ($code >= 200 && $code < 300) {
+            $data = is_array($decoded['data'] ?? null) ? $decoded['data'] : $decoded;
+            $url = (string) ($data['url'] ?? '');
+            if ($url === '') {
+                return ['url' => $this->buildApiTxtMediaUrl($wamid, false)];
+            }
+            return [
+                'url' => $url,
+                'mime' => (string) ($data['mime_type'] ?? $data['mime'] ?? ''),
+                'filename' => (string) ($data['filename'] ?? ''),
+            ];
+        }
+
+        // 404/410 — return redirect URL anyway; download may still work once synced.
+        if (in_array($code, [404, 410], true)) {
+            return ['url' => $this->buildApiTxtMediaUrl($wamid, false)];
+        }
+
         return null;
     }
 
@@ -992,7 +974,8 @@ class APITxtService
         $ch = curl_init($finalUrl);
         curl_setopt_array($ch, [
             CURLOPT_FILE           => $fp,
-            CURLOPT_TIMEOUT        => 90,
+            CURLOPT_TIMEOUT        => 25,
+            CURLOPT_CONNECTTIMEOUT => 8,
             CURLOPT_FOLLOWLOCATION => true,
             CURLOPT_MAXREDIRS      => 5,
             CURLOPT_HTTPHEADER     => $headers,
@@ -1043,7 +1026,8 @@ class APITxtService
             CURLOPT_HEADER         => true,
             CURLOPT_NOBODY         => false,
             CURLOPT_FOLLOWLOCATION => false,
-            CURLOPT_TIMEOUT        => 45,
+            CURLOPT_TIMEOUT        => 12,
+            CURLOPT_CONNECTTIMEOUT => 5,
             CURLOPT_HTTPHEADER     => $headers,
             CURLOPT_USERAGENT      => $this->browserUserAgent(),
         ]);

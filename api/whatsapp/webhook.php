@@ -127,6 +127,18 @@ if (!is_array($payload)) {
     exit;
 }
 
+// Delivery/read receipts only — no user message to answer.
+if (
+    isset($payload['entry'][0]['changes'][0]['value']['statuses'])
+    && empty($payload['entry'][0]['changes'][0]['value']['messages'])
+    && !isset($payload['from'])
+    && !isset($payload['type'])
+) {
+    http_response_code(200);
+    echo json_encode(['ok' => true, 'skip' => 'status_only']);
+    exit;
+}
+
 // ── Top-level error fence ─────────────────────────────────────────────────────
 // Catches any uncaught exception or fatal error in the processing block and
 // returns a clean JSON diagnostic instead of an empty 500 page.
@@ -331,17 +343,42 @@ if (($mediaUrl === null || $mediaUrl === '') && $mediaInfo['url'] !== null) {
 if (($mediaId === null || $mediaId === '') && $mediaInfo['id'] !== null) {
     $mediaId = $mediaInfo['id'];
 }
-// Prefer message wamid (APITxt wa-media) over Meta media object id.
-if ($mediaWamid === null || $mediaWamid === '') {
-    $mediaWamid = waFindWamidInPayload($payload);
+
+// Voice / generic media aliases used by BSPs (before wamid / media detection).
+if (in_array($msgType, ['voice', 'ptt', 'ptv'], true)) {
+    $msgType = ($msgType === 'ptv') ? 'video' : 'audio';
 }
-if ($mediaWamid === null || $mediaWamid === '') {
-    foreach ([$payload['id'] ?? null, $mediaInfo['id'] ?? null, $mediaId] as $cand) {
-        if (is_string($cand) && str_starts_with($cand, 'wamid.')) {
-            $mediaWamid = $cand;
-            break;
+if (in_array($msgType, ['media', 'file', 'attachment'], true)) {
+    $hint = $mediaInfo['type'] ?? 'document';
+    $msgType = in_array($hint, ['voice', 'ptt'], true) ? 'audio' : (string) $hint;
+    if (!waIsInboundMediaType($msgType)) {
+        $msgType = 'document';
+    }
+}
+if (
+    ($msgType === 'text' || $msgType === '')
+    && in_array((string) ($mediaInfo['type'] ?? ''), ['image', 'video', 'audio', 'document', 'sticker'], true)
+    && ($mediaInfo['url'] !== null || $mediaInfo['id'] !== null || $mediaInfo['base64'] !== null)
+) {
+    $msgType = $mediaInfo['type'];
+}
+
+// Prefer message wamid (APITxt wa-media) over Meta media object id — only for media.
+if (waIsInboundMediaType($msgType) || $hasMediaAsset) {
+    if ($mediaWamid === null || $mediaWamid === '') {
+        $mediaWamid = waFindWamidInPayload($payload);
+    }
+    if ($mediaWamid === null || $mediaWamid === '') {
+        foreach ([$payload['id'] ?? null, $mediaInfo['id'] ?? null, $mediaId] as $cand) {
+            if (is_string($cand) && str_starts_with($cand, 'wamid.')) {
+                $mediaWamid = $cand;
+                break;
+            }
         }
     }
+} else {
+    // Every WA text message also has a wamid id — do not treat it as an attachment key.
+    $mediaWamid = null;
 }
 if (is_string($mediaUrl) && str_contains($mediaUrl, 'YOUR_AUTH_KEY')) {
     $authKey = Environment::get('APITXT_AUTH_KEY', '')
@@ -361,11 +398,6 @@ if ($mediaDuration === null && $mediaInfo['duration'] !== null) {
 }
 if ($msgText === '' && $mediaInfo['caption'] !== null) {
     $msgText = $mediaInfo['caption'];
-}
-
-// Voice aliases used by some BSPs / clients.
-if (in_array($msgType, ['voice', 'ptt', 'ptv'], true)) {
-    $msgType = ($msgType === 'ptv') ? 'video' : 'audio';
 }
 
 // Normalise button titles like "✅ Submit" → "submit" for text matching.
@@ -735,7 +767,7 @@ switch ($step) {
                 $apitxt->sendInteractiveButtons(
                     $phone,
                     'Title saved',
-                    "Now send details, a screenshot, or a voice note.\nOr tap *Submit*.",
+                    "Next: details, photo, or voice note.\nOr tap *Submit*.",
                     [
                         ['id' => 'submit_bug', 'title' => 'Submit'],
                         ['id' => 'cancel_bug', 'title' => 'Cancel'],
@@ -747,7 +779,7 @@ switch ($step) {
                 sendDraftActions(
                     $apitxt,
                     $phone,
-                    "Details saved.\nAdd files or voice notes, or tap *Submit*."
+                    "Details saved.\nAdd a photo or voice note, or tap *Submit*."
                 );
             } else {
                 // Extra text appends to description instead of looping the same prompt.
@@ -757,72 +789,40 @@ switch ($step) {
                 sendDraftActions(
                     $apitxt,
                     $phone,
-                    "Details updated.\nAdd more files, or tap *Submit*."
+                    "Details updated.\nAdd files, or tap *Submit*."
                 );
             }
             break;
         }
 
         // Media attachment (image / video / voice / document)
-        $isMediaMsg = in_array($msgType, ['image', 'video', 'audio', 'document', 'sticker'], true);
-        if ($isMediaMsg) {
-            waDebugPersistMediaPayload($payload, $msgType, $mediaUrl, $mediaId);
-
-            $currentSession = getOrCreateSession($db, $phone);
-            if ($msgText !== '') {
-                waApplyCaptionToDraft($db, $phone, $msgText, $currentSession);
+        if (waIsInboundMediaType($msgType) || waLooksLikeMediaPayload($mediaUrl, $mediaId, $mediaWamid, $mediaBase64, $mediaMime)) {
+            if (!waIsInboundMediaType($msgType)) {
+                $msgType = waGuessMediaType($mediaMime, $mediaInfo['type'] ?? null);
             }
-
-            $result = null;
-            if (is_string($mediaBase64) && $mediaBase64 !== '') {
-                $binary = base64_decode($mediaBase64, true);
-                if ($binary !== false) {
-                    $result = $apitxt->storeRawMediaToStaging($binary, $mediaMime, $phone, $mediaExt);
-                }
-            }
-            if ($result === null) {
-                $result = $apitxt->downloadAndStoreMediaToStaging(
-                    (string) ($mediaUrl ?? ''),
-                    $mediaMime,
-                    $phone,
-                    $mediaExt,
-                    $mediaId ? (string) $mediaId : null,
-                    $mediaWamid ? (string) $mediaWamid : null
-                );
-            }
-
-            if ($result === null) {
-                waNotifyMediaAttachFailed($apitxt, $phone, $msgType);
-                break;
-            }
-
-            $duration = $mediaDuration;
-            if ($duration === null && isset($payload['media']['duration'])) {
-                $duration = (int) $payload['media']['duration'];
-            }
-
-            $db->prepare(
-                "INSERT INTO wa_submission_attachments_temp (phone, file_path, file_name, file_type, duration)
-                 VALUES (?, ?, ?, ?, ?)"
-            )->execute([$phone, $result['path'], $result['name'], $result['mime'], $duration]);
-
-            $attachCount = countStagedAttachments($db, $phone);
-            $kind = str_starts_with($result['mime'], 'audio/')
-                ? 'Voice note'
-                : (str_starts_with($result['mime'], 'image/') ? 'Photo' : 'File');
-            $freshSession = getOrCreateSession($db, $phone);
-            $needsTitle = waIsPlaceholderBugTitle($freshSession['temp_title'] ?? null);
-            $followUp = $needsTitle
-                ? "✅ {$kind} saved (*{$attachCount}* total).\nSend a *title* (what went wrong?), then *Submit*."
-                : "✅ {$kind} saved (*{$attachCount}* total).\nSend more, or tap *Submit*.";
-            sendDraftActions($apitxt, $phone, $followUp);
+            waProcessDraftAttachment(
+                $db,
+                $apitxt,
+                $phone,
+                $payload,
+                $msgType,
+                $mediaUrl,
+                $mediaId,
+                $mediaWamid,
+                $mediaMime,
+                $mediaExt,
+                $mediaBase64,
+                $mediaDuration,
+                $msgText,
+                false
+            );
             break;
         }
 
         sendDraftActions(
             $apitxt,
             $phone,
-            "Send a *title* first, then details, photo, or voice note.\nThen tap *Submit*."
+            "Send a *title*, then details or a photo/voice note.\nTap *Submit* when ready."
         );
         break;
 
@@ -842,51 +842,25 @@ switch ($step) {
         }
 
         // Allow adding more files on the confirm screen.
-        $isMediaMsg = in_array($msgType, ['image', 'video', 'audio', 'document', 'sticker'], true);
-        if ($isMediaMsg) {
-            waDebugPersistMediaPayload($payload, $msgType, $mediaUrl, $mediaId);
-            $result = null;
-            if (is_string($mediaBase64) && $mediaBase64 !== '') {
-                $binary = base64_decode($mediaBase64, true);
-                if ($binary !== false) {
-                    $result = $apitxt->storeRawMediaToStaging($binary, $mediaMime, $phone, $mediaExt);
-                }
+        if (waIsInboundMediaType($msgType) || waLooksLikeMediaPayload($mediaUrl, $mediaId, $mediaWamid, $mediaBase64, $mediaMime)) {
+            if (!waIsInboundMediaType($msgType)) {
+                $msgType = waGuessMediaType($mediaMime, $mediaInfo['type'] ?? null);
             }
-            if ($result === null) {
-                $result = $apitxt->downloadAndStoreMediaToStaging(
-                    (string) ($mediaUrl ?? ''),
-                    $mediaMime,
-                    $phone,
-                    $mediaExt,
-                    $mediaId ? (string) $mediaId : null,
-                    $mediaWamid ? (string) $mediaWamid : null
-                );
-            }
-            if ($result === null) {
-                waNotifyMediaAttachFailed($apitxt, $phone, $msgType, true);
-                break;
-            }
-            $db->prepare(
-                "INSERT INTO wa_submission_attachments_temp (phone, file_path, file_name, file_type, duration)
-                 VALUES (?, ?, ?, ?, ?)"
-            )->execute([$phone, $result['path'], $result['name'], $result['mime'], $mediaDuration]);
-            $attachCount = countStagedAttachments($db, $phone);
-            $sess = getOrCreateSession($db, $phone);
-            $projectName = waLoadProjectName($db, $sess['selected_project_id']);
-            $confirmTitle = waResolveBugTitle(
-                $sess['temp_title'],
-                $sess['temp_description'],
-                waPrimaryAttachmentKind($db, $phone),
-                $projectName
-            );
-            $apitxt->sendInteractiveButtons(
+            waProcessDraftAttachment(
+                $db,
+                $apitxt,
                 $phone,
-                'Confirm',
-                waBuildConfirmBody($confirmTitle, null, $attachCount),
-                [
-                    ['id' => 'confirm_submit', 'title' => 'Submit'],
-                    ['id' => 'cancel_bug', 'title' => 'Cancel'],
-                ]
+                $payload,
+                $msgType,
+                $mediaUrl,
+                $mediaId,
+                $mediaWamid,
+                $mediaMime,
+                $mediaExt,
+                $mediaBase64,
+                $mediaDuration,
+                $msgText,
+                true
             );
             break;
         }
@@ -1344,19 +1318,18 @@ function waNotifyMediaAttachFailed(
         'image', 'sticker' => 'photo',
         'audio' => 'voice note',
         'video' => 'video',
-        'document' => 'document',
+        'document' => 'file',
         default => 'attachment',
     };
 
-    $body = "Couldn't save that {$label}.\n\n"
-        . "WhatsApp delivered it, but BugRicer couldn't download the file yet.\n"
-        . "Please send it again in a few seconds.";
+    $body = "Couldn't attach that {$label}.\n"
+        . "Please send it again, or continue without it.";
 
     if ($onConfirmScreen) {
         $apitxt->sendInteractiveButtons(
             $phone,
-            'Attachment not saved',
-            $body . "\n\nYou can still tap *Submit* without it, or *Cancel*.",
+            'Not attached',
+            $body . "\n\nTap *Submit* to file the bug anyway.",
             [
                 ['id' => 'confirm_submit', 'title' => 'Submit'],
                 ['id' => 'cancel_bug', 'title' => 'Cancel'],
@@ -1367,13 +1340,162 @@ function waNotifyMediaAttachFailed(
 
     $apitxt->sendInteractiveButtons(
         $phone,
-        'Attachment not saved',
-        $body . "\n\nOr continue without it — tap *Submit* when ready.",
+        'Not attached',
+        $body . "\n\nTap *Submit* when your draft is ready.",
         [
             ['id' => 'submit_bug', 'title' => 'Submit'],
             ['id' => 'cancel_bug', 'title' => 'Cancel'],
         ]
     );
+}
+
+function waIsInboundMediaType(string $msgType): bool
+{
+    return in_array($msgType, ['image', 'video', 'audio', 'document', 'sticker'], true);
+}
+
+function waLooksLikeMediaPayload($mediaUrl, $mediaId, $mediaWamid, $mediaBase64, string $mediaMime): bool
+{
+    if (is_string($mediaBase64) && $mediaBase64 !== '') {
+        return true;
+    }
+    if (is_string($mediaUrl) && trim($mediaUrl) !== '') {
+        return true;
+    }
+    // Meta media object ids are numeric / non-wamid. Bare wamid alone is every text message.
+    if (is_string($mediaId) && $mediaId !== '' && !str_starts_with($mediaId, 'wamid.')) {
+        return true;
+    }
+    $mime = strtolower(trim(explode(';', $mediaMime)[0]));
+    return $mime !== ''
+        && $mime !== 'application/octet-stream'
+        && (
+            str_starts_with($mime, 'image/')
+            || str_starts_with($mime, 'audio/')
+            || str_starts_with($mime, 'video/')
+            || $mime === 'application/pdf'
+        );
+}
+
+function waGuessMediaType(string $mediaMime, ?string $hint = null): string
+{
+    if (is_string($hint) && waIsInboundMediaType($hint)) {
+        return $hint;
+    }
+    $mime = strtolower(trim(explode(';', $mediaMime)[0]));
+    if (str_starts_with($mime, 'image/')) {
+        return 'image';
+    }
+    if (str_starts_with($mime, 'audio/')) {
+        return 'audio';
+    }
+    if (str_starts_with($mime, 'video/')) {
+        return 'video';
+    }
+    return 'document';
+}
+
+/**
+ * Stage an inbound WhatsApp attachment and always send one clear reply.
+ * Why: download failures previously hung the webhook (no reply on photos/voice).
+ */
+function waProcessDraftAttachment(
+    PDO $db,
+    APITxtService $apitxt,
+    string $phone,
+    array $payload,
+    string $msgType,
+    $mediaUrl,
+    $mediaId,
+    $mediaWamid,
+    string $mediaMime,
+    string $mediaExt,
+    $mediaBase64,
+    $mediaDuration,
+    string $caption,
+    bool $onConfirmScreen
+): void {
+    // Keep Hostinger from killing long downloads before we can reply.
+    if (function_exists('set_time_limit')) {
+        @set_time_limit(45);
+    }
+    waDebugPersistMediaPayload($payload, $msgType, $mediaUrl, $mediaId);
+
+    try {
+        $currentSession = getOrCreateSession($db, $phone);
+        if ($caption !== '') {
+            waApplyCaptionToDraft($db, $phone, $caption, $currentSession);
+        }
+
+        $result = null;
+        if (is_string($mediaBase64) && $mediaBase64 !== '') {
+            $binary = base64_decode($mediaBase64, true);
+            if ($binary !== false) {
+                $result = $apitxt->storeRawMediaToStaging($binary, $mediaMime, $phone, $mediaExt);
+            }
+        }
+        if ($result === null) {
+            $result = $apitxt->downloadAndStoreMediaToStaging(
+                (string) ($mediaUrl ?? ''),
+                $mediaMime,
+                $phone,
+                $mediaExt,
+                $mediaId ? (string) $mediaId : null,
+                $mediaWamid ? (string) $mediaWamid : null
+            );
+        }
+
+        if ($result === null) {
+            waNotifyMediaAttachFailed($apitxt, $phone, $msgType, $onConfirmScreen);
+            return;
+        }
+
+        $duration = $mediaDuration;
+        if ($duration === null && isset($payload['media']['duration'])) {
+            $duration = (int) $payload['media']['duration'];
+        }
+
+        $db->prepare(
+            "INSERT INTO wa_submission_attachments_temp (phone, file_path, file_name, file_type, duration)
+             VALUES (?, ?, ?, ?, ?)"
+        )->execute([$phone, $result['path'], $result['name'], $result['mime'], $duration]);
+
+        $attachCount = countStagedAttachments($db, $phone);
+        $kind = str_starts_with($result['mime'], 'audio/')
+            ? 'Voice note'
+            : (str_starts_with($result['mime'], 'image/') ? 'Photo' : 'File');
+
+        if ($onConfirmScreen) {
+            $sess = getOrCreateSession($db, $phone);
+            $projectName = waLoadProjectName($db, $sess['selected_project_id']);
+            $confirmTitle = waResolveBugTitle(
+                $sess['temp_title'],
+                $sess['temp_description'],
+                waPrimaryAttachmentKind($db, $phone),
+                $projectName
+            );
+            $apitxt->sendInteractiveButtons(
+                $phone,
+                'Confirm',
+                waBuildConfirmBody($confirmTitle, null, $attachCount),
+                [
+                    ['id' => 'confirm_submit', 'title' => 'Submit'],
+                    ['id' => 'cancel_bug', 'title' => 'Cancel'],
+                ]
+            );
+            return;
+        }
+
+        $freshSession = getOrCreateSession($db, $phone);
+        $needsTitle = waIsPlaceholderBugTitle($freshSession['temp_title'] ?? null);
+        $followUp = $needsTitle
+            ? "{$kind} attached ({$attachCount}).\nSend a short *title*, then *Submit*."
+            : "{$kind} attached ({$attachCount}).\nSend more, or tap *Submit*.";
+        sendDraftActions($apitxt, $phone, $followUp);
+    } catch (Throwable $e) {
+        error_log('[WA Webhook] Media attach error: ' . $e->getMessage());
+        waNotifyMediaAttachFailed($apitxt, $phone, $msgType, $onConfirmScreen);
+    }
 }
 
 /** Confirm card body — clear attachment status (never imply a file was kept when count is 0). */
@@ -1385,15 +1507,14 @@ function waBuildConfirmBody(string $title, ?string $descPreview, int $attachCoun
     }
     if ($attachCount > 0) {
         $lines[] = $attachCount === 1
-            ? 'Attachments: *1 file*'
-            : "Attachments: *{$attachCount} files*";
+            ? 'Attachments: *1*'
+            : "Attachments: *{$attachCount}*";
         $lines[] = '';
         $lines[] = 'Submit this bug?';
     } else {
         $lines[] = 'Attachments: *none*';
         $lines[] = '';
-        $lines[] = 'No photo, PDF, or voice note is attached yet.';
-        $lines[] = 'Send one now, or tap *Submit* to file without attachments.';
+        $lines[] = 'Send a photo, PDF, or voice note — or tap *Submit* without files.';
     }
     return implode("\n", $lines);
 }
