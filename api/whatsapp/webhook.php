@@ -333,6 +333,9 @@ if (($mediaId === null || $mediaId === '') && $mediaInfo['id'] !== null) {
 }
 // Prefer message wamid (APITxt wa-media) over Meta media object id.
 if ($mediaWamid === null || $mediaWamid === '') {
+    $mediaWamid = waFindWamidInPayload($payload);
+}
+if ($mediaWamid === null || $mediaWamid === '') {
     foreach ([$payload['id'] ?? null, $mediaInfo['id'] ?? null, $mediaId] as $cand) {
         if (is_string($cand) && str_starts_with($cand, 'wamid.')) {
             $mediaWamid = $cand;
@@ -713,10 +716,7 @@ switch ($step) {
 
             $apitxt->sendInteractiveButtons($phone,
                 'Confirm',
-                "*{$tempTitle}*\n"
-                . "{$descPreview}\n"
-                . "Files: *{$attachCount}*\n\n"
-                . "Submit this bug?",
+                waBuildConfirmBody($tempTitle, $descPreview, $attachCount),
                 [
                     ['id' => 'confirm_submit', 'title' => 'Submit'],
                     ['id' => 'cancel_bug',     'title' => 'Cancel'],
@@ -792,12 +792,7 @@ switch ($step) {
             }
 
             if ($result === null) {
-                $apitxt->sendText(
-                    $phone,
-                    "Got your file, but could not download it.\n"
-                    . "Please send it again in a moment."
-                );
-                sendDraftActions($apitxt, $phone, "You can still add text or tap *Submit*.");
+                waNotifyMediaAttachFailed($apitxt, $phone, $msgType);
                 break;
             }
 
@@ -868,7 +863,7 @@ switch ($step) {
                 );
             }
             if ($result === null) {
-                $apitxt->sendText($phone, "Could not save that file. Try again, then tap *Submit*.");
+                waNotifyMediaAttachFailed($apitxt, $phone, $msgType, true);
                 break;
             }
             $db->prepare(
@@ -887,9 +882,7 @@ switch ($step) {
             $apitxt->sendInteractiveButtons(
                 $phone,
                 'Confirm',
-                "*{$confirmTitle}*\n"
-                . "Files: *{$attachCount}*\n\n"
-                . "Submit this bug?",
+                waBuildConfirmBody($confirmTitle, null, $attachCount),
                 [
                     ['id' => 'confirm_submit', 'title' => 'Submit'],
                     ['id' => 'cancel_bug', 'title' => 'Cancel'],
@@ -900,9 +893,10 @@ switch ($step) {
 
         if (!$isConfirm) {
             error_log('[WA Webhook] CONFIRM unmatched. payload=' . mb_substr($rawBody, 0, 1500));
+            $attachCount = countStagedAttachments($db, $phone);
             $apitxt->sendInteractiveButtons($phone,
                 'Confirm',
-                "Tap *Submit* to file, or *Cancel* to discard.",
+                waBuildConfirmBody('Ready to file', null, $attachCount),
                 [
                     ['id' => 'confirm_submit', 'title' => 'Submit'],
                     ['id' => 'cancel_bug',     'title' => 'Cancel'],
@@ -1048,7 +1042,10 @@ switch ($step) {
         $appBaseUrl = rtrim(Environment::get('APP_BASE_URL', 'https://bugs.bugricer.com'), '/');
         $bugUrl     = $appBaseUrl . '/bugs/' . $bugId;
         $shortId    = strtoupper(substr(str_replace('-', '', $bugId), 0, 8));
-        $attachText = count($staged) > 0 ? "\nFiles: " . count($staged) : '';
+        $n = count($staged);
+        $attachText = $n > 0
+            ? ("\n" . ($n === 1 ? '1 attachment saved' : "{$n} attachments saved"))
+            : "\nNo attachments";
         $projectLabel = $projectName ?: 'this project';
         // Encode project id in button so "Same project" works even if session is lost.
         $sameBtnId = 'wa_same_' . $projectId;
@@ -1292,6 +1289,113 @@ function waExtractInboundMedia(array $payload): array
     }
 
     return $out;
+}
+
+/**
+ * Deep-scan payload for a WhatsApp message id (wamid.…).
+ * Why: APITxt wa-media download keys off message wamid, not Meta media object id.
+ */
+function waFindWamidInPayload(array $payload): ?string
+{
+    $found = null;
+    $walk = null;
+    $walk = static function ($node) use (&$walk, &$found): void {
+        if ($found !== null || !is_array($node)) {
+            return;
+        }
+        foreach ($node as $key => $value) {
+            if (is_string($value)) {
+                $v = trim($value);
+                if ($v !== '' && str_starts_with($v, 'wamid.')) {
+                    $k = is_string($key) ? strtolower($key) : '';
+                    // Prefer message id fields over nested media object ids.
+                    if (in_array($k, ['id', 'message_id', 'messageid', 'wamid', 'wa_message_id'], true)
+                        || preg_match('/^wamid\./', $v)
+                    ) {
+                        $found = $v;
+                        return;
+                    }
+                }
+                continue;
+            }
+            if (is_array($value)) {
+                $walk($value);
+                if ($found !== null) {
+                    return;
+                }
+            }
+        }
+    };
+    $walk($payload);
+    return $found;
+}
+
+/**
+ * Single professional reply when a WhatsApp attachment could not be staged.
+ * Why: avoid "Got your file" + separate draft spam when download failed.
+ */
+function waNotifyMediaAttachFailed(
+    APITxtService $apitxt,
+    string $phone,
+    string $msgType,
+    bool $onConfirmScreen = false
+): void {
+    $label = match ($msgType) {
+        'image', 'sticker' => 'photo',
+        'audio' => 'voice note',
+        'video' => 'video',
+        'document' => 'document',
+        default => 'attachment',
+    };
+
+    $body = "Couldn't save that {$label}.\n\n"
+        . "WhatsApp delivered it, but BugRicer couldn't download the file yet.\n"
+        . "Please send it again in a few seconds.";
+
+    if ($onConfirmScreen) {
+        $apitxt->sendInteractiveButtons(
+            $phone,
+            'Attachment not saved',
+            $body . "\n\nYou can still tap *Submit* without it, or *Cancel*.",
+            [
+                ['id' => 'confirm_submit', 'title' => 'Submit'],
+                ['id' => 'cancel_bug', 'title' => 'Cancel'],
+            ]
+        );
+        return;
+    }
+
+    $apitxt->sendInteractiveButtons(
+        $phone,
+        'Attachment not saved',
+        $body . "\n\nOr continue without it — tap *Submit* when ready.",
+        [
+            ['id' => 'submit_bug', 'title' => 'Submit'],
+            ['id' => 'cancel_bug', 'title' => 'Cancel'],
+        ]
+    );
+}
+
+/** Confirm card body — clear attachment status (never imply a file was kept when count is 0). */
+function waBuildConfirmBody(string $title, ?string $descPreview, int $attachCount): string
+{
+    $lines = ["*{$title}*"];
+    if ($descPreview !== null && trim($descPreview) !== '') {
+        $lines[] = $descPreview;
+    }
+    if ($attachCount > 0) {
+        $lines[] = $attachCount === 1
+            ? 'Attachments: *1 file*'
+            : "Attachments: *{$attachCount} files*";
+        $lines[] = '';
+        $lines[] = 'Submit this bug?';
+    } else {
+        $lines[] = 'Attachments: *none*';
+        $lines[] = '';
+        $lines[] = 'No photo, PDF, or voice note is attached yet.';
+        $lines[] = 'Send one now, or tap *Submit* to file without attachments.';
+    }
+    return implode("\n", $lines);
 }
 
 /** Generic auto-title we must never show in BugRicer lists. */

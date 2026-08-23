@@ -466,9 +466,12 @@ class APITxtService
                         $extHint = strtolower($pathExt);
                     }
                 }
-            } elseif ($resolvedUrl === '') {
-                // Build download URL and follow 302 → S3.
-                $resolvedUrl = $this->buildApiTxtMediaUrl($wamid);
+            } else {
+                // JSON failed — still try 302 redirect download with browser headers.
+                $redirectUrl = $this->buildApiTxtMediaUrl($wamid, false);
+                if ($redirectUrl !== '') {
+                    $resolvedUrl = $redirectUrl;
+                }
             }
         }
 
@@ -558,10 +561,11 @@ class APITxtService
         if ($this->authKey === '' || $wamid === '') {
             return '';
         }
+        // Path form from APITxt docs — do not encode authkey= segment separators.
         $url = 'https://apitxt.com/api/wa-media/authkey='
-            . rawurlencode($this->authKey)
+            . $this->authKey
             . '/'
-            . rawurlencode($wamid);
+            . $wamid;
         if ($asJson) {
             $url .= '?format=json';
         }
@@ -578,47 +582,99 @@ class APITxtService
             return null;
         }
 
-        $ch = curl_init($jsonUrl);
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT        => 30,
-            CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_HTTPHEADER     => [
-                'Accept: application/json',
-                'User-Agent: BugRicer-WA-Bot/1.0',
-            ],
-        ]);
-        $raw  = curl_exec($ch);
-        $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $err  = curl_error($ch);
-        curl_close($ch);
+        // APITxt docs: media may not be ready immediately after webhook (404 race).
+        $attempts = [0, 2, 4];
+        $lastBody = '';
+        $lastCode = 0;
+        foreach ($attempts as $sleepSecs) {
+            if ($sleepSecs > 0) {
+                sleep($sleepSecs);
+            }
+            $ch = curl_init($jsonUrl);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT        => 45,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_HTTPHEADER     => $this->browserHeadersForApiTxt(true),
+                CURLOPT_USERAGENT      => $this->browserUserAgent(),
+            ]);
+            $raw  = curl_exec($ch);
+            $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $err  = curl_error($ch);
+            curl_close($ch);
+            $lastCode = $code;
+            $lastBody = (string) $raw;
 
-        error_log(
-            '[APITxtService] wa-media json [' . $code . '] wamid='
-            . mb_substr($wamid, 0, 40)
-            . ($err ? " err={$err}" : '')
-            . ' body=' . mb_substr((string) $raw, 0, 180)
-        );
+            error_log(
+                '[APITxtService] wa-media json [' . $code . '] wamid='
+                . mb_substr($wamid, 0, 48)
+                . ($err ? " err={$err}" : '')
+                . ' body=' . mb_substr($lastBody, 0, 180)
+            );
 
-        if ($raw === false || $code < 200 || $code >= 300) {
-            return null;
-        }
-        $decoded = json_decode((string) $raw, true);
-        if (!is_array($decoded)) {
-            return null;
-        }
-        $data = is_array($decoded['data'] ?? null) ? $decoded['data'] : $decoded;
-        $url = (string) ($data['url'] ?? '');
-        if ($url === '') {
-            // Fall back to redirect endpoint URL for downloadUrl to follow.
-            return ['url' => $this->buildApiTxtMediaUrl($wamid, false)];
+            if ($raw === false) {
+                continue;
+            }
+            $decoded = json_decode($lastBody, true);
+            if (!is_array($decoded)) {
+                continue;
+            }
+
+            // Auth / WAF: retry with same headers already applied; stop on hard auth errors.
+            $reason = (string) ($decoded['reason'] ?? '');
+            if ($code === 401 || $reason === 'MISSING_BROWSER_HEADERS') {
+                break;
+            }
+
+            if ($code >= 200 && $code < 300) {
+                $data = is_array($decoded['data'] ?? null) ? $decoded['data'] : $decoded;
+                $url = (string) ($data['url'] ?? '');
+                if ($url === '') {
+                    return ['url' => $this->buildApiTxtMediaUrl($wamid, false)];
+                }
+                return [
+                    'url' => $url,
+                    'mime' => (string) ($data['mime_type'] ?? $data['mime'] ?? ''),
+                    'filename' => (string) ($data['filename'] ?? ''),
+                ];
+            }
+
+            // 404/410 — wait and retry (inbound sync race).
+            if (!in_array($code, [404, 410], true)) {
+                break;
+            }
         }
 
+        error_log("[APITxtService] wa-media unresolved code={$lastCode} body=" . mb_substr($lastBody, 0, 200));
+        return null;
+    }
+
+    /** Headers APITxt WAF expects (same pattern as sendWAMessage). */
+    private function browserHeadersForApiTxt(bool $wantJson = false): array
+    {
+        $accept = $wantJson
+            ? 'application/json, text/plain, */*'
+            : 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8';
         return [
-            'url' => $url,
-            'mime' => (string) ($data['mime_type'] ?? $data['mime'] ?? ''),
-            'filename' => (string) ($data['filename'] ?? ''),
+            'Accept: ' . $accept,
+            'Accept-Language: en-US,en;q=0.9',
+            'Cache-Control: no-cache',
+            'Pragma: no-cache',
+            'Connection: keep-alive',
+            'Origin: https://apitxt.com',
+            'Referer: https://apitxt.com/',
+            'Sec-Fetch-Dest: empty',
+            'Sec-Fetch-Mode: cors',
+            'Sec-Fetch-Site: same-origin',
+            'Sec-CH-UA: "Not/A)Brand";v="99", "Google Chrome";v="126", "Chromium";v="126"',
+            'Sec-CH-UA-Mobile: ?0',
+            'Sec-CH-UA-Platform: "macOS"',
         ];
+    }
+
+    private function browserUserAgent(): string
+    {
+        return 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
     }
 
     private function urlNeedsMetaBearer(string $url): bool
@@ -628,6 +684,12 @@ class APITxtService
             || str_contains($host, 'fbcdn.net')
             || str_contains($host, 'whatsapp.net')
             || str_contains($host, 'fbsbx.com');
+    }
+
+    private function isApiTxtHost(string $url): bool
+    {
+        $host = strtolower((string) (parse_url($url, PHP_URL_HOST) ?? ''));
+        return str_contains($host, 'apitxt.com');
     }
 
     /**
@@ -894,34 +956,47 @@ class APITxtService
     /**
      * Download a URL to a local file path.
      * Returns bytes written, or false on failure.
+     *
+     * Why: APITxt wa-media returns 302 → S3. Following that redirect while still
+     * sending Origin/Referer for apitxt.com causes S3 403 — resolve Location first,
+     * then download the CDN URL with clean headers.
      */
     private function downloadUrl(string $url, string $localPath, string $bearerToken = ''): int|false
     {
+        $finalUrl = $url;
+        if ($this->isApiTxtHost($url)) {
+            $resolved = $this->resolveRedirectLocation($url, $this->browserHeadersForApiTxt(false));
+            if (is_string($resolved) && $resolved !== '') {
+                $finalUrl = $resolved;
+            }
+        }
+
         $fp = fopen($localPath, 'wb');
         if ($fp === false) {
             return false;
         }
 
-        $headers = [
-            'Accept: */*',
-            'Cache-Control: no-cache',
-            'Connection: keep-alive',
-        ];
-        if ($this->authKey !== '') {
-            $headers[] = 'authkey: ' . $this->authKey;
-        }
-        // Meta lookaside URLs require the Cloud API bearer token.
+        $isApiTxt = $this->isApiTxtHost($finalUrl);
+        $headers = $isApiTxt
+            ? $this->browserHeadersForApiTxt(false)
+            : [
+                'Accept: */*',
+                'Cache-Control: no-cache',
+                'Connection: keep-alive',
+            ];
+        // Never send apitxt authkey / Origin to S3 or Meta CDNs (causes 403).
         if ($bearerToken !== '') {
             $headers[] = 'Authorization: Bearer ' . $bearerToken;
         }
 
-        $ch = curl_init($url);
+        $ch = curl_init($finalUrl);
         curl_setopt_array($ch, [
             CURLOPT_FILE           => $fp,
-            CURLOPT_TIMEOUT        => 60,
+            CURLOPT_TIMEOUT        => 90,
             CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS      => 5,
             CURLOPT_HTTPHEADER     => $headers,
-            CURLOPT_USERAGENT      => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+            CURLOPT_USERAGENT      => $this->browserUserAgent(),
         ]);
 
         curl_exec($ch);
@@ -931,7 +1006,10 @@ class APITxtService
         fclose($fp);
 
         if ($err || $code < 200 || $code >= 300) {
-            error_log("[APITxtService] Media download failed http={$code} err={$err} url=" . mb_substr($url, 0, 120));
+            error_log(
+                "[APITxtService] Media download failed http={$code} err={$err} url="
+                . mb_substr($finalUrl, 0, 120)
+            );
             @unlink($localPath);
             return false;
         }
@@ -951,6 +1029,53 @@ class APITxtService
         }
 
         return $size;
+    }
+
+    /**
+     * Follow one redirect hop without writing a body (for apitxt → CDN).
+     * Uses GET (not HEAD) — some wa-media hosts reject HEAD with 405.
+     */
+    private function resolveRedirectLocation(string $url, array $headers): ?string
+    {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HEADER         => true,
+            CURLOPT_NOBODY         => false,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_TIMEOUT        => 45,
+            CURLOPT_HTTPHEADER     => $headers,
+            CURLOPT_USERAGENT      => $this->browserUserAgent(),
+        ]);
+        $raw = curl_exec($ch);
+        $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $redirect = curl_getinfo($ch, CURLINFO_REDIRECT_URL);
+        $err = curl_error($ch);
+        curl_close($ch);
+
+        if ($raw === false && $err) {
+            error_log("[APITxtService] wa-media redirect probe failed err={$err}");
+            return null;
+        }
+
+        if (is_string($redirect) && $redirect !== '' && preg_match('#^https?://#i', $redirect)) {
+            return $redirect;
+        }
+        if (is_string($raw) && preg_match('/^Location:\s*(\S+)/im', $raw, $m)) {
+            $loc = trim($m[1]);
+            if ($loc !== '' && preg_match('#^https?://#i', $loc)) {
+                return $loc;
+            }
+        }
+        // Direct 200 body on apitxt host — caller can download original URL.
+        if ($code >= 200 && $code < 300) {
+            return $url;
+        }
+        error_log(
+            "[APITxtService] wa-media redirect unresolved http={$code} url="
+            . mb_substr($url, 0, 100)
+        );
+        return null;
     }
 
     /** Strip country-code prefix noise; return digits only. */
