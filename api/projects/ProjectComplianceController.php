@@ -787,6 +787,112 @@ class ProjectComplianceController extends BaseAPI
         }
     }
 
+    /**
+     * Why: When admin finalizes a project as completed/release_ready, pending
+     * retests (fixed bugs awaiting tester verification) should leave the Retests
+     * queue as verified fixed so the project close does not leave open QA work.
+     *
+     * @return int Number of bugs auto-verified
+     */
+    public function autoVerifyPendingRetests(string $projectId, string $actorUserId): int
+    {
+        if ($projectId === '' || !$this->conn) {
+            return 0;
+        }
+
+        try {
+            $hasRetest = $this->conn->query("SHOW COLUMNS FROM bugs LIKE 'tester_retested'");
+            if (!$hasRetest || $hasRetest->rowCount() === 0) {
+                return 0;
+            }
+
+            $hasDeletedAt = false;
+            try {
+                $delCol = $this->conn->query("SHOW COLUMNS FROM bugs LIKE 'deleted_at'");
+                $hasDeletedAt = (bool) ($delCol && $delCol->rowCount() > 0);
+            } catch (Throwable $e) {
+                $hasDeletedAt = false;
+            }
+
+            $hasNotes = false;
+            try {
+                $notesCol = $this->conn->query("SHOW COLUMNS FROM bugs LIKE 'tester_verification_notes'");
+                $hasNotes = (bool) ($notesCol && $notesCol->rowCount() > 0);
+            } catch (Throwable $e) {
+                $hasNotes = false;
+            }
+
+            $noteText = 'Auto-verified as fixed when project was marked completed by admin.';
+            $setParts = [
+                'tester_retested = 1',
+                'tester_issue_fixed = 1',
+                'tester_verified_by = ?',
+                'tester_verified_at = NOW()',
+                'updated_at = CURRENT_TIMESTAMP()',
+            ];
+            $params = [$actorUserId !== '' ? $actorUserId : null];
+
+            if ($hasNotes) {
+                // Keep existing tester notes; only stamp system note when empty.
+                $setParts[] = 'tester_verification_notes = CASE
+                    WHEN tester_verification_notes IS NULL OR TRIM(tester_verification_notes) = \'\'
+                    THEN ?
+                    ELSE tester_verification_notes
+                END';
+                $params[] = $noteText;
+            }
+
+            $where = [
+                'project_id = ?',
+                "status = 'fixed'",
+                'tester_retested IS NULL',
+            ];
+            $params[] = $projectId;
+            if ($hasDeletedAt) {
+                $where[] = 'deleted_at IS NULL';
+            }
+
+            $sql = 'UPDATE bugs SET ' . implode(', ', $setParts)
+                . ' WHERE ' . implode(' AND ', $where);
+            $stmt = $this->conn->prepare($sql);
+            $stmt->execute($params);
+            $count = (int) $stmt->rowCount();
+
+            if ($count > 0) {
+                try {
+                    $projectName = 'Project';
+                    $nameStmt = $this->conn->prepare('SELECT name FROM projects WHERE id = ?');
+                    $nameStmt->execute([$projectId]);
+                    $nameRow = $nameStmt->fetch(PDO::FETCH_ASSOC);
+                    if (!empty($nameRow['name'])) {
+                        $projectName = (string) $nameRow['name'];
+                    }
+
+                    $logger = ActivityLogger::getInstance();
+                    $logger->logActivity(
+                        $actorUserId,
+                        $projectId,
+                        'project_updated',
+                        "Auto-verified {$count} pending retest" . ($count === 1 ? '' : 's') . " as fixed on project close: {$projectName}",
+                        $projectId,
+                        [
+                            'action' => 'auto_verify_pending_retests',
+                            'verified_count' => $count,
+                            'reason' => 'project_completed',
+                        ]
+                    );
+                } catch (Throwable $e) {
+                    error_log('autoVerifyPendingRetests activity log: ' . $e->getMessage());
+                }
+            }
+
+            return $count;
+        } catch (Throwable $e) {
+            error_log('autoVerifyPendingRetests error: ' . $e->getMessage());
+            return 0;
+        }
+    }
+
     public function finalizeStatus()
     {
         if ($_SERVER['REQUEST_METHOD'] !== 'PUT') {
@@ -852,12 +958,18 @@ class ProjectComplianceController extends BaseAPI
                 }
             }
 
+            $autoVerified = $this->autoVerifyPendingRetests(
+                (string) $projectId,
+                (string) ($decoded->user_id ?? '')
+            );
+
             $projectStmt = $this->conn->prepare("SELECT * FROM projects WHERE id = ?");
             $projectStmt->execute([$projectId]);
             $project = $projectStmt->fetch(PDO::FETCH_ASSOC);
 
             $payload = $this->buildCompliancePayload($projectId);
             $payload['project'] = $project;
+            $payload['auto_verified_retests'] = $autoVerified;
 
             $this->sendJsonResponse(200, 'Project status finalized', $payload);
         } catch (Exception $e) {

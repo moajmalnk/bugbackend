@@ -802,6 +802,7 @@ class ProjectController extends BaseAPI
             $updateFields = [];
             $values = [];
             $afterTimeline = [];
+            $shouldAutoVerifyRetests = false;
 
             if (isset($data['name'])) {
                 $updateFields[] = "name = ?";
@@ -816,10 +817,12 @@ class ProjectController extends BaseAPI
             if (isset($data['status'])) {
                 $newStatus = $data['status'];
                 $closedStatuses = ['completed', 'release_ready', 'archived'];
+                $currentStmt = $this->conn->prepare("SELECT status FROM projects WHERE id = ?");
+                $currentStmt->execute([$id]);
+                $current = $currentStmt->fetch(PDO::FETCH_ASSOC);
+                $previousStatus = $current['status'] ?? null;
+
                 if (in_array($newStatus, $closedStatuses, true)) {
-                    $currentStmt = $this->conn->prepare("SELECT status FROM projects WHERE id = ?");
-                    $currentStmt->execute([$id]);
-                    $current = $currentStmt->fetch(PDO::FETCH_ASSOC);
                     if ($current && $current['status'] !== $newStatus) {
                         $isRealAdmin = $this->isRealAdmin($decoded);
                         $adminArchiveBypass = $isRealAdmin && $newStatus === 'archived';
@@ -835,6 +838,14 @@ class ProjectController extends BaseAPI
                             }
                         }
                     }
+                }
+
+                if (
+                    in_array($newStatus, ['completed', 'release_ready'], true)
+                    && $previousStatus !== $newStatus
+                    && !in_array((string) $previousStatus, ['completed', 'release_ready'], true)
+                ) {
+                    $shouldAutoVerifyRetests = true;
                 }
 
                 $updateFields[] = "status = ?";
@@ -931,6 +942,18 @@ class ProjectController extends BaseAPI
                     );
                 } catch (Exception $e) {
                     error_log("Failed to log timeline history activity: " . $e->getMessage());
+                }
+            }
+
+            if (!empty($shouldAutoVerifyRetests)) {
+                try {
+                    $complianceController = new ProjectComplianceController();
+                    $complianceController->autoVerifyPendingRetests(
+                        (string) $id,
+                        (string) ($decoded->user_id ?? '')
+                    );
+                } catch (Throwable $e) {
+                    error_log('Failed to auto-verify pending retests on project close: ' . $e->getMessage());
                 }
             }
 
