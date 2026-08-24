@@ -636,9 +636,15 @@ class ProjectController extends BaseAPI
 
                 $this->attachClientToProject($project);
 
-                $summary = $complianceController->getSummaryForProject($project['id']);
-                if ($summary) {
-                    $project['compliance'] = $summary;
+                $complianceRequired = !isset($project['compliance_required'])
+                    || (int) $project['compliance_required'] !== 0;
+                if ($complianceRequired) {
+                    $summary = $complianceController->getSummaryForProject($project['id']);
+                    if ($summary) {
+                        $project['compliance'] = $summary;
+                    }
+                } else {
+                    unset($project['compliance']);
                 }
             }
 
