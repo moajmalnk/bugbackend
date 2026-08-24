@@ -459,12 +459,22 @@ class APITxtService
         }
 
         // 1) Support-confirmed query URL (works when path-style media_url returns 410).
+        // Why: APITxt often returns 410 at webhook time; retry after a short wait.
         if ($wamid !== null) {
             $queryUrl = $this->buildApiTxtMediaUrl($wamid, false);
             $ext      = $this->mimeToExtension($resolvedMime, $extHint);
             $filename = 'wa_' . $phone . '_' . uniqid() . '.' . $ext;
             $fullPath = $stagingDir . $filename;
-            $bytes = $this->downloadUrl($queryUrl, $fullPath, '');
+            $bytes = false;
+            foreach ([0, 2, 4] as $waitSecs) {
+                if ($waitSecs > 0) {
+                    sleep($waitSecs);
+                }
+                $bytes = $this->downloadUrl($queryUrl, $fullPath, '');
+                if ($bytes !== false) {
+                    break;
+                }
+            }
             if ($bytes !== false) {
                 $this->persistMediaDownloadDebug([
                     'ok' => true,

@@ -755,6 +755,7 @@ switch ($step) {
 
         if ($isSubmitText || $isSubmitButton) {
             $currentSession = getOrCreateSession($db, $phone);
+            waRetryPendingMedia($db, $apitxt, $phone);
             $attachCount = countStagedAttachments($db, $phone);
             $hasDraftText = !empty(trim((string) ($currentSession['temp_description'] ?? '')));
             $hasRealTitle = !waIsPlaceholderBugTitle($currentSession['temp_title'] ?? null);
@@ -927,6 +928,8 @@ switch ($step) {
         // Detect if bugs table has 'source' column
         $hasSource = columnExists($db, 'bugs', 'source');
         $hasAudio  = columnExists($db, 'bugs', 'audio_note_url');
+
+        waRetryPendingMedia($db, $apitxt, $phone);
 
         // Pull staged attachments
         $stagedStmt = $db->prepare(
@@ -1475,6 +1478,40 @@ function waProcessDraftAttachment(
                 $mediaId ? (string) $mediaId : null,
                 $mediaWamid ? (string) $mediaWamid : null
             );
+        }
+
+        // Keep the wamid so Submit can retry (APITxt 410 race at inbound).
+        if ($result === null && is_string($mediaWamid) && $mediaWamid !== '') {
+            waSavePendingMedia($phone, [
+                'wamid' => $mediaWamid,
+                'mediaId' => is_string($mediaId) ? $mediaId : '',
+                'mime' => $mediaMime,
+                'ext' => $mediaExt,
+                'url' => is_string($mediaUrl) ? $mediaUrl : '',
+                'duration' => $mediaDuration,
+            ]);
+            $label = match ($msgType) {
+                'image', 'sticker' => 'photo',
+                'audio' => 'voice note',
+                'video' => 'video',
+                default => 'file',
+            };
+            $body = "Got your {$label}. Saving it now — this can take a few seconds.\n"
+                . "Tap *Submit* again in a moment.";
+            if ($onConfirmScreen) {
+                $apitxt->sendInteractiveButtons(
+                    $phone,
+                    'Saving file',
+                    $body,
+                    [
+                        ['id' => 'confirm_submit', 'title' => 'Submit'],
+                        ['id' => 'cancel_bug', 'title' => 'Cancel'],
+                    ]
+                );
+            } else {
+                sendDraftActions($apitxt, $phone, $body);
+            }
+            return;
         }
 
         if ($result === null) {
@@ -2428,6 +2465,94 @@ function sendProjectPicker(PDO $db, APITxtService $apitxt, string $phone, array 
     );
 }
 
+function waPendingMediaPath(string $phone): string
+{
+    $dir = __DIR__ . '/../../uploads/wa_staging/';
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0755, true);
+    }
+    $safe = preg_replace('/\D+/', '', $phone) ?: 'unknown';
+    return $dir . 'pending_' . $safe . '.json';
+}
+
+/** @param array{wamid:string,mediaId?:string,mime?:string,ext?:string,url?:string,duration?:mixed} $item */
+function waSavePendingMedia(string $phone, array $item): void
+{
+    $path = waPendingMediaPath($phone);
+    $list = [];
+    if (is_file($path)) {
+        $decoded = json_decode((string) file_get_contents($path), true);
+        if (is_array($decoded)) {
+            $list = $decoded;
+        }
+    }
+    foreach ($list as $existing) {
+        if (($existing['wamid'] ?? '') === ($item['wamid'] ?? '')) {
+            return;
+        }
+    }
+    $list[] = $item;
+    @file_put_contents($path, json_encode($list, JSON_UNESCAPED_SLASHES));
+}
+
+function waClearPendingMedia(string $phone): void
+{
+    $path = waPendingMediaPath($phone);
+    if (is_file($path)) {
+        @unlink($path);
+    }
+}
+
+/**
+ * Retry APITxt downloads that failed with 410 at inbound time.
+ */
+function waRetryPendingMedia(PDO $db, APITxtService $apitxt, string $phone): int
+{
+    $path = waPendingMediaPath($phone);
+    if (!is_file($path)) {
+        return 0;
+    }
+    $list = json_decode((string) file_get_contents($path), true);
+    if (!is_array($list) || $list === []) {
+        waClearPendingMedia($phone);
+        return 0;
+    }
+
+    $still = [];
+    $saved = 0;
+    foreach ($list as $item) {
+        $wamid = (string) ($item['wamid'] ?? '');
+        if ($wamid === '') {
+            continue;
+        }
+        $result = $apitxt->downloadAndStoreMediaToStaging(
+            (string) ($item['url'] ?? ''),
+            (string) ($item['mime'] ?? 'application/octet-stream'),
+            $phone,
+            (string) ($item['ext'] ?? 'bin'),
+            ($item['mediaId'] ?? '') !== '' ? (string) $item['mediaId'] : null,
+            $wamid
+        );
+        if ($result === null) {
+            $still[] = $item;
+            continue;
+        }
+        $duration = isset($item['duration']) ? (int) $item['duration'] : null;
+        $db->prepare(
+            "INSERT INTO wa_submission_attachments_temp (phone, file_path, file_name, file_type, duration)
+             VALUES (?, ?, ?, ?, ?)"
+        )->execute([$phone, $result['path'], $result['name'], $result['mime'], $duration]);
+        $saved++;
+    }
+
+    if ($still === []) {
+        waClearPendingMedia($phone);
+    } else {
+        @file_put_contents($path, json_encode($still, JSON_UNESCAPED_SLASHES));
+    }
+    return $saved;
+}
+
 function countStagedAttachments(PDO $db, string $phone): int
 {
     $stmt = $db->prepare("SELECT COUNT(*) FROM wa_submission_attachments_temp WHERE phone=?");
@@ -2447,6 +2572,7 @@ function cleanUpStagedAttachments(PDO $db, string $phone): void
         }
     }
     $db->prepare("DELETE FROM wa_submission_attachments_temp WHERE phone=?")->execute([$phone]);
+    waClearPendingMedia($phone);
 }
 
 function columnExists(PDO $db, string $table, string $column): bool
