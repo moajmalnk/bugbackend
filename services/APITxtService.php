@@ -433,8 +433,9 @@ class APITxtService
     /**
      * Resolve inbound WhatsApp media into staging.
      *
-     * Why: Webhooks must finish in a few seconds. Long sleep/retry loops caused
-     * Hostinger/APITxt to kill the request — user saw silence on photos/voice.
+     * Why: APITxt wa-media is often 410 at webhook time. Meta lookaside URLs in
+     * the same payload are usually downloadable immediately. Submit retries may
+     * wait; inbound webhooks must not sleep (Hostinger kills a silent request).
      *
      * @return array{path: string, name: string, mime: string}|null
      */
@@ -444,81 +445,87 @@ class APITxtService
         string $phone,
         string $extHint = 'bin',
         ?string $mediaId = null,
-        ?string $wamid = null
+        ?string $wamid = null,
+        bool $waitForSync = false
     ): ?array {
         $resolvedUrl = $this->normaliseApiTxtMediaUrl(trim($mediaUrl));
         $resolvedMime = $mimeType;
         $wamid = $this->extractWamid($wamid ?: $mediaId ?: $resolvedUrl);
-        $inboundWaMediaUrl = ($resolvedUrl !== '' && $this->isApiTxtWaMediaUrl($resolvedUrl))
-            ? $resolvedUrl
-            : '';
+        $cdnUrl = $this->urlNeedsMetaBearer($resolvedUrl) ? $resolvedUrl : '';
+        $queryUrl = ($wamid !== null) ? $this->buildApiTxtMediaUrl($wamid, false) : '';
 
         $stagingDir = __DIR__ . '/../uploads/wa_staging/';
         if (!is_dir($stagingDir)) {
             mkdir($stagingDir, 0755, true);
         }
 
-        // 1) Support-confirmed query URL — ONE attempt only.
-        // Why: retries/sleeps inside the webhook caused Hostinger to kill the
-        // request before any WhatsApp reply (silence on photos/voice).
-        if ($wamid !== null) {
-            $queryUrl = $this->buildApiTxtMediaUrl($wamid, false);
-            $ext      = $this->mimeToExtension($resolvedMime, $extHint);
-            $filename = 'wa_' . $phone . '_' . uniqid() . '.' . $ext;
-            $fullPath = $stagingDir . $filename;
-            $bytes = $this->downloadUrl($queryUrl, $fullPath, '');
-            if ($bytes !== false) {
-                $this->persistMediaDownloadDebug([
-                    'ok' => true,
-                    'via' => 'query_action_download',
-                    'at' => date('c'),
-                    'wamid' => mb_substr($wamid, 0, 80),
-                    'bytes' => $bytes,
-                    'mime' => $this->normaliseMime($resolvedMime),
-                ]);
-                return [
-                    'path' => 'wa_staging/' . $filename,
-                    'name' => $filename,
-                    'mime' => $this->normaliseMime($resolvedMime),
-                ];
+        $ext      = $this->mimeToExtension($resolvedMime, $extHint);
+        $filename = 'wa_' . $phone . '_' . uniqid() . '.' . $ext;
+        $fullPath = $stagingDir . $filename;
+        // When user taps Submit, we are allowed a longer retry window.
+        // Keep this bounded to avoid Hostinger/APITxt webhook timeouts.
+        $attempts = $waitForSync ? 4 : 1;
+        $sleepSeconds = $waitForSync ? 7 : 0;
+        $via = '';
+        $bytes = false;
+
+        for ($i = 0; $i < $attempts; $i++) {
+            if ($i > 0 && $sleepSeconds > 0) {
+                sleep($sleepSeconds);
             }
-            $resolvedUrl = $queryUrl;
-        }
 
-        // 2) Legacy inbound media_url path form (replace YOUR_AUTH_KEY).
-        if ($inboundWaMediaUrl !== '' && $resolvedUrl === '') {
-            $resolvedUrl = $inboundWaMediaUrl;
-        }
+            if ($cdnUrl !== '') {
+                $token = $this->cloudAccessToken();
+                $bytes = $this->downloadUrl($cdnUrl, $fullPath, '', 8);
+                if ($bytes === false && $token !== '') {
+                    $bytes = $this->downloadUrl($cdnUrl, $fullPath, $token, 8);
+                }
+                if ($bytes !== false) {
+                    $via = 'meta_cdn';
+                    break;
+                }
+            }
 
-        // 3) Meta Cloud fallback when we only have a numeric media object id.
-        if ($resolvedUrl === '' && $mediaId && !$this->looksLikeWamid($mediaId)) {
-            $resolved = $this->resolveMetaMediaUrl($mediaId);
-            if ($resolved !== null) {
-                $resolvedUrl = $resolved['url'];
-                if (!empty($resolved['mime'])) {
-                    $resolvedMime = $resolved['mime'];
+            if ($queryUrl !== '') {
+                $bytes = $this->downloadUrl($queryUrl, $fullPath, '', $waitForSync ? 10 : 8);
+                if ($bytes !== false) {
+                    $via = 'query_action_download';
+                    break;
                 }
             }
         }
 
-        if ($resolvedUrl === '') {
-            error_log('[APITxtService] Staging download skipped — empty media URL / unresolved wamid+media id');
-            return null;
+        if ($bytes === false
+            && $mediaId
+            && !$this->looksLikeWamid($mediaId)
+            && $this->cloudAccessToken() !== ''
+        ) {
+            $resolved = $this->resolveMetaMediaUrl($mediaId);
+            if ($resolved !== null) {
+                if (!empty($resolved['mime'])) {
+                    $resolvedMime = $resolved['mime'];
+                }
+                $bytes = $this->downloadUrl(
+                    $resolved['url'],
+                    $fullPath,
+                    $this->cloudAccessToken(),
+                    10
+                );
+                if ($bytes !== false) {
+                    $via = 'meta_graph';
+                }
+            }
         }
 
-        $ext      = $this->mimeToExtension($resolvedMime, $extHint);
-        $filename = 'wa_' . $phone . '_' . uniqid() . '.' . $ext;
-        $fullPath = $stagingDir . $filename;
-
-        $bearer = $this->urlNeedsMetaBearer($resolvedUrl) ? $this->cloudAccessToken() : '';
-        $bytes = $this->downloadUrl($resolvedUrl, $fullPath, $bearer);
         if ($bytes === false) {
             $this->persistMediaDownloadDebug([
                 'ok' => false,
                 'at' => date('c'),
+                'waited' => $waitForSync,
                 'wamid' => $wamid ? mb_substr($wamid, 0, 80) : null,
                 'mediaId' => $mediaId ? mb_substr($mediaId, 0, 80) : null,
-                'triedUrl' => mb_substr($resolvedUrl, 0, 180),
+                'triedCdn' => $cdnUrl !== '',
+                'triedQuery' => $queryUrl !== '',
                 'mime' => $resolvedMime,
             ]);
             return null;
@@ -526,7 +533,9 @@ class APITxtService
 
         $this->persistMediaDownloadDebug([
             'ok' => true,
+            'via' => $via,
             'at' => date('c'),
+            'waited' => $waitForSync,
             'wamid' => $wamid ? mb_substr($wamid, 0, 80) : null,
             'bytes' => $bytes,
             'mime' => $this->normaliseMime($resolvedMime),
@@ -1027,9 +1036,14 @@ class APITxtService
      * sending Origin/Referer for apitxt.com causes S3 403 — resolve Location first,
      * then download the CDN URL with clean headers.
      */
-    private function downloadUrl(string $url, string $localPath, string $bearerToken = ''): int|false
-    {
+    private function downloadUrl(
+        string $url,
+        string $localPath,
+        string $bearerToken = '',
+        int $timeout = 12
+    ): int|false {
         $finalUrl = $url;
+        $timeout = max(5, min(20, $timeout));
         // Path-style wa-media 302s to S3. Query action=download returns the file
         // (or JSON 410) — do not pre-fetch the body, that doubled timeout and
         // killed the webhook before we could reply.
@@ -1062,7 +1076,7 @@ class APITxtService
         $ch = curl_init($finalUrl);
         curl_setopt_array($ch, [
             CURLOPT_FILE           => $fp,
-            CURLOPT_TIMEOUT        => 12,
+            CURLOPT_TIMEOUT        => $timeout,
             CURLOPT_CONNECTTIMEOUT => 5,
             CURLOPT_FOLLOWLOCATION => true,
             CURLOPT_MAXREDIRS      => 5,

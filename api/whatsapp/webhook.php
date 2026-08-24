@@ -371,6 +371,18 @@ if (
 }
 if (($mediaUrl === null || $mediaUrl === '') && $mediaInfo['url'] !== null) {
     $mediaUrl = $mediaInfo['url'];
+} elseif (is_string($mediaInfo['url'] ?? null) && $mediaInfo['url'] !== '') {
+    $infoHost = strtolower((string) (parse_url($mediaInfo['url'], PHP_URL_HOST) ?? ''));
+    $curHost = strtolower((string) (parse_url((string) $mediaUrl, PHP_URL_HOST) ?? ''));
+    $infoIsMeta = str_contains($infoHost, 'fbsbx.com')
+        || str_contains($infoHost, 'fbcdn.net')
+        || str_contains($infoHost, 'whatsapp.net');
+    $curIsMeta = str_contains($curHost, 'fbsbx.com')
+        || str_contains($curHost, 'fbcdn.net')
+        || str_contains($curHost, 'whatsapp.net');
+    if ($infoIsMeta && !$curIsMeta) {
+        $mediaUrl = $mediaInfo['url'];
+    }
 }
 if (($mediaId === null || $mediaId === '') && $mediaInfo['id'] !== null) {
     $mediaId = $mediaInfo['id'];
@@ -755,7 +767,10 @@ switch ($step) {
 
         if ($isSubmitText || $isSubmitButton) {
             $currentSession = getOrCreateSession($db, $phone);
-            waRetryPendingMedia($db, $apitxt, $phone);
+            if (function_exists('set_time_limit')) {
+                @set_time_limit(55);
+            }
+            waRetryPendingMedia($db, $apitxt, $phone, true);
             $attachCount = countStagedAttachments($db, $phone);
             $hasDraftText = !empty(trim((string) ($currentSession['temp_description'] ?? '')));
             $hasRealTitle = !waIsPlaceholderBugTitle($currentSession['temp_title'] ?? null);
@@ -930,7 +945,34 @@ switch ($step) {
         $hasSource = columnExists($db, 'bugs', 'source');
         $hasAudio  = columnExists($db, 'bugs', 'audio_note_url');
 
-        waRetryPendingMedia($db, $apitxt, $phone);
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(55);
+        }
+        waRetryPendingMedia($db, $apitxt, $phone, true);
+
+        if (waCountPendingMedia($phone) > 0) {
+            $attachCount = countStagedAttachments($db, $phone);
+            $apitxt->sendInteractiveButtons(
+                $phone,
+                'Confirm',
+                waBuildConfirmBody(
+                    waResolveBugTitle(
+                        $sess['temp_title'],
+                        $sess['temp_description'],
+                        $attachCount > 0 ? waPrimaryAttachmentKind($db, $phone) : 'document',
+                        waLoadProjectName($db, $projectId)
+                    ),
+                    null,
+                    $attachCount,
+                    waCountPendingMedia($phone)
+                ),
+                [
+                    ['id' => 'confirm_submit', 'title' => 'Submit'],
+                    ['id' => 'cancel_bug', 'title' => 'Cancel'],
+                ]
+            );
+            break;
+        }
 
         // Pull staged attachments
         $stagedStmt = $db->prepare(
@@ -1029,6 +1071,7 @@ switch ($step) {
 
         // Clean up staging rows
         $db->prepare("DELETE FROM wa_submission_attachments_temp WHERE phone=?")->execute([$phone]);
+        waClearPendingMedia($phone);
 
         // Create in-app notification for project members
         createBugNotification($db, $bugId, $title, $projectId, $user['id']);
@@ -1223,8 +1266,19 @@ function waExtractInboundMedia(array $payload): array
                 if (in_array($k, ['media_url', 'mediaurl', 'file_url', 'fileurl', 'download_url', 'downloadurl'], true)
                     || (($k === 'url' || $k === 'link') && preg_match('#^https?://#i', $v))
                 ) {
-                    if ($out['url'] === null && preg_match('#^https?://#i', $v)) {
-                        $out['url'] = $v;
+                    if (preg_match('#^https?://#i', $v)) {
+                        // Prefer Meta lookaside/CDN over APITxt wa-media (often 410 at webhook time).
+                        $host = strtolower((string) (parse_url($v, PHP_URL_HOST) ?? ''));
+                        $isMetaCdn = str_contains($host, 'fbsbx.com')
+                            || str_contains($host, 'fbcdn.net')
+                            || str_contains($host, 'whatsapp.net');
+                        $currentHost = strtolower((string) (parse_url((string) $out['url'], PHP_URL_HOST) ?? ''));
+                        $currentIsMeta = str_contains($currentHost, 'fbsbx.com')
+                            || str_contains($currentHost, 'fbcdn.net')
+                            || str_contains($currentHost, 'whatsapp.net');
+                        if ($out['url'] === null || ($isMetaCdn && !$currentIsMeta)) {
+                            $out['url'] = $v;
+                        }
                     }
                 }
                 if (in_array($k, ['mime_type', 'mimetype', 'mime', 'content_type', 'contenttype', 'media_mime_type'], true)) {
@@ -1515,23 +1569,7 @@ function waProcessDraftAttachment(
         }
 
         if ($result === null) {
-            // Honest follow-up — download failed (usually APITxt 410 sync).
-            $fail = "Couldn't finish saving that {$label} yet.\n"
-                . "WhatsApp still has not released the file.\n"
-                . "Wait ~20 seconds, then tap *Submit* again — or continue without it.";
-            if ($onConfirmScreen) {
-                $apitxt->sendInteractiveButtons(
-                    $phone,
-                    'File not ready',
-                    $fail,
-                    [
-                        ['id' => 'confirm_submit', 'title' => 'Submit'],
-                        ['id' => 'cancel_bug', 'title' => 'Cancel'],
-                    ]
-                );
-            } else {
-                sendDraftActions($apitxt, $phone, $fail);
-            }
+            // Keep the wamid pending. Submit retries the Meta CDN + APITxt download.
             return;
         }
 
@@ -1605,10 +1643,9 @@ function waBuildConfirmBody(
         $lines[] = '';
         $lines[] = 'Submit this bug?';
     } elseif ($pendingCount > 0) {
-        $lines[] = 'Attachments: *not ready*';
+        $lines[] = 'Attachments: *saving*';
         $lines[] = '';
-        $lines[] = "We received {$pendingCount} file(s), but WhatsApp has not released them for download yet.";
-        $lines[] = 'Wait ~20 seconds and tap *Submit* again, or continue without files.';
+        $lines[] = "{$pendingCount} file(s) still saving. Tap *Submit* again in ~60 seconds (or Cancel).";
     } else {
         $lines[] = 'Attachments: *none*';
         $lines[] = '';
@@ -2565,7 +2602,7 @@ function waCountPendingMedia(string $phone): int
 /**
  * Retry APITxt downloads that failed with 410 at inbound time.
  */
-function waRetryPendingMedia(PDO $db, APITxtService $apitxt, string $phone): int
+function waRetryPendingMedia(PDO $db, APITxtService $apitxt, string $phone, bool $waitForSync = false): int
 {
     $path = waPendingMediaPath($phone);
     if (!is_file($path)) {
@@ -2590,7 +2627,8 @@ function waRetryPendingMedia(PDO $db, APITxtService $apitxt, string $phone): int
             $phone,
             (string) ($item['ext'] ?? 'bin'),
             ($item['mediaId'] ?? '') !== '' ? (string) $item['mediaId'] : null,
-            $wamid
+            $wamid,
+            $waitForSync
         );
         if ($result === null) {
             $still[] = $item;
