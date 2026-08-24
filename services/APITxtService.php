@@ -458,23 +458,15 @@ class APITxtService
             mkdir($stagingDir, 0755, true);
         }
 
-        // 1) Support-confirmed query URL (works when path-style media_url returns 410).
-        // Why: APITxt often returns 410 at webhook time; retry after a short wait.
+        // 1) Support-confirmed query URL — ONE attempt only.
+        // Why: retries/sleeps inside the webhook caused Hostinger to kill the
+        // request before any WhatsApp reply (silence on photos/voice).
         if ($wamid !== null) {
             $queryUrl = $this->buildApiTxtMediaUrl($wamid, false);
             $ext      = $this->mimeToExtension($resolvedMime, $extHint);
             $filename = 'wa_' . $phone . '_' . uniqid() . '.' . $ext;
             $fullPath = $stagingDir . $filename;
-            $bytes = false;
-            foreach ([0, 2, 4] as $waitSecs) {
-                if ($waitSecs > 0) {
-                    sleep($waitSecs);
-                }
-                $bytes = $this->downloadUrl($queryUrl, $fullPath, '');
-                if ($bytes !== false) {
-                    break;
-                }
-            }
+            $bytes = $this->downloadUrl($queryUrl, $fullPath, '');
             if ($bytes !== false) {
                 $this->persistMediaDownloadDebug([
                     'ok' => true,
@@ -490,26 +482,7 @@ class APITxtService
                     'mime' => $this->normaliseMime($resolvedMime),
                 ];
             }
-
-            // JSON probe for AWS URL, then download that.
-            $apitxt = $this->resolveApiTxtMedia($wamid);
-            if ($apitxt !== null) {
-                if (!empty($apitxt['url'])) {
-                    $resolvedUrl = $apitxt['url'];
-                }
-                if (!empty($apitxt['mime'])) {
-                    $resolvedMime = $apitxt['mime'];
-                }
-                if (!empty($apitxt['filename']) && $extHint === 'bin') {
-                    $pathExt = pathinfo($apitxt['filename'], PATHINFO_EXTENSION);
-                    if (is_string($pathExt) && $pathExt !== '') {
-                        $extHint = strtolower($pathExt);
-                    }
-                }
-            }
-            if ($resolvedUrl === '' || $this->isApiTxtWaMediaUrl($resolvedUrl)) {
-                $resolvedUrl = $queryUrl;
-            }
+            $resolvedUrl = $queryUrl;
         }
 
         // 2) Legacy inbound media_url path form (replace YOUR_AUTH_KEY).
@@ -539,14 +512,6 @@ class APITxtService
 
         $bearer = $this->urlNeedsMetaBearer($resolvedUrl) ? $this->cloudAccessToken() : '';
         $bytes = $this->downloadUrl($resolvedUrl, $fullPath, $bearer);
-        if ($bytes === false && $wamid !== null) {
-            // Fallback: legacy path URL from older docs.
-            usleep(400000);
-            $legacyUrl = $this->buildApiTxtMediaUrlPath($wamid, false);
-            if ($legacyUrl !== '' && $legacyUrl !== $resolvedUrl) {
-                $bytes = $this->downloadUrl($legacyUrl, $fullPath, '');
-            }
-        }
         if ($bytes === false) {
             $this->persistMediaDownloadDebug([
                 'ok' => false,
@@ -1065,7 +1030,11 @@ class APITxtService
     private function downloadUrl(string $url, string $localPath, string $bearerToken = ''): int|false
     {
         $finalUrl = $url;
-        if ($this->isApiTxtHost($url)) {
+        // Path-style wa-media 302s to S3. Query action=download returns the file
+        // (or JSON 410) — do not pre-fetch the body, that doubled timeout and
+        // killed the webhook before we could reply.
+        $skipProbe = str_contains($url, 'action=download') || str_contains($url, 'format=json');
+        if ($this->isApiTxtHost($url) && !$skipProbe) {
             $resolved = $this->resolveRedirectLocation($url, $this->browserHeadersForApiTxt(false));
             if (is_string($resolved) && $resolved !== '') {
                 $finalUrl = $resolved;
@@ -1093,8 +1062,8 @@ class APITxtService
         $ch = curl_init($finalUrl);
         curl_setopt_array($ch, [
             CURLOPT_FILE           => $fp,
-            CURLOPT_TIMEOUT        => 25,
-            CURLOPT_CONNECTTIMEOUT => 8,
+            CURLOPT_TIMEOUT        => 12,
+            CURLOPT_CONNECTTIMEOUT => 5,
             CURLOPT_FOLLOWLOCATION => true,
             CURLOPT_MAXREDIRS      => 5,
             CURLOPT_HTTPHEADER     => $headers,

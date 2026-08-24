@@ -1456,6 +1456,39 @@ function waProcessDraftAttachment(
     }
     waDebugPersistMediaPayload($payload, $msgType, $mediaUrl, $mediaId);
 
+    $label = match ($msgType) {
+        'image', 'sticker' => 'photo',
+        'audio' => 'voice note',
+        'video' => 'video',
+        default => 'file',
+    };
+
+    // Reply FIRST so Hostinger/APITxt timeout cannot leave the chat silent.
+    if (is_string($mediaWamid) && $mediaWamid !== '') {
+        waSavePendingMedia($phone, [
+            'wamid' => $mediaWamid,
+            'mediaId' => is_string($mediaId) ? $mediaId : '',
+            'mime' => $mediaMime,
+            'ext' => $mediaExt,
+            'url' => is_string($mediaUrl) ? $mediaUrl : '',
+            'duration' => $mediaDuration,
+        ]);
+    }
+    $ack = "Got your {$label}. Saving it now…";
+    if ($onConfirmScreen) {
+        $apitxt->sendInteractiveButtons(
+            $phone,
+            'Saving file',
+            $ack . "\nTap *Submit* in a moment if this stays open.",
+            [
+                ['id' => 'confirm_submit', 'title' => 'Submit'],
+                ['id' => 'cancel_bug', 'title' => 'Cancel'],
+            ]
+        );
+    } else {
+        sendDraftActions($apitxt, $phone, $ack . "\nTap *Submit* when it is saved.");
+    }
+
     try {
         $currentSession = getOrCreateSession($db, $phone);
         if ($caption !== '') {
@@ -1480,42 +1513,7 @@ function waProcessDraftAttachment(
             );
         }
 
-        // Keep the wamid so Submit can retry (APITxt 410 race at inbound).
-        if ($result === null && is_string($mediaWamid) && $mediaWamid !== '') {
-            waSavePendingMedia($phone, [
-                'wamid' => $mediaWamid,
-                'mediaId' => is_string($mediaId) ? $mediaId : '',
-                'mime' => $mediaMime,
-                'ext' => $mediaExt,
-                'url' => is_string($mediaUrl) ? $mediaUrl : '',
-                'duration' => $mediaDuration,
-            ]);
-            $label = match ($msgType) {
-                'image', 'sticker' => 'photo',
-                'audio' => 'voice note',
-                'video' => 'video',
-                default => 'file',
-            };
-            $body = "Got your {$label}. Saving it now — this can take a few seconds.\n"
-                . "Tap *Submit* again in a moment.";
-            if ($onConfirmScreen) {
-                $apitxt->sendInteractiveButtons(
-                    $phone,
-                    'Saving file',
-                    $body,
-                    [
-                        ['id' => 'confirm_submit', 'title' => 'Submit'],
-                        ['id' => 'cancel_bug', 'title' => 'Cancel'],
-                    ]
-                );
-            } else {
-                sendDraftActions($apitxt, $phone, $body);
-            }
-            return;
-        }
-
         if ($result === null) {
-            waNotifyMediaAttachFailed($apitxt, $phone, $msgType, $onConfirmScreen);
             return;
         }
 
@@ -1528,6 +1526,11 @@ function waProcessDraftAttachment(
             "INSERT INTO wa_submission_attachments_temp (phone, file_path, file_name, file_type, duration)
              VALUES (?, ?, ?, ?, ?)"
         )->execute([$phone, $result['path'], $result['name'], $result['mime'], $duration]);
+
+        // Drop this wamid from pending now that it is staged.
+        if (is_string($mediaWamid) && $mediaWamid !== '') {
+            waDropPendingWamid($phone, $mediaWamid);
+        }
 
         $attachCount = countStagedAttachments($db, $phone);
         $kind = str_starts_with($result['mime'], 'audio/')
@@ -1563,7 +1566,6 @@ function waProcessDraftAttachment(
         sendDraftActions($apitxt, $phone, $followUp);
     } catch (Throwable $e) {
         error_log('[WA Webhook] Media attach error: ' . $e->getMessage());
-        waNotifyMediaAttachFailed($apitxt, $phone, $msgType, $onConfirmScreen);
     }
 }
 
@@ -2493,6 +2495,26 @@ function waSavePendingMedia(string $phone, array $item): void
     }
     $list[] = $item;
     @file_put_contents($path, json_encode($list, JSON_UNESCAPED_SLASHES));
+}
+
+function waDropPendingWamid(string $phone, string $wamid): void
+{
+    $path = waPendingMediaPath($phone);
+    if (!is_file($path)) {
+        return;
+    }
+    $list = json_decode((string) file_get_contents($path), true);
+    if (!is_array($list)) {
+        return;
+    }
+    $keep = array_values(array_filter($list, static function ($row) use ($wamid) {
+        return ($row['wamid'] ?? '') !== $wamid;
+    }));
+    if ($keep === []) {
+        @unlink($path);
+        return;
+    }
+    @file_put_contents($path, json_encode($keep, JSON_UNESCAPED_SLASHES));
 }
 
 function waClearPendingMedia(string $phone): void
