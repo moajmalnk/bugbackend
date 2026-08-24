@@ -1609,22 +1609,24 @@ function waProcessDraftAttachment(
             return;
         }
 
-        // One plain chat reply per file — no extra "Saving…" bubble, no button spam.
+        // One reply per file, with Submit / Cancel buttons (no "Saving…" spam).
         if ($needsTitle) {
-            $apitxt->sendText(
+            sendDraftActions(
+                $apitxt,
                 $phone,
-                "{$kind} saved ({$attachCount}).\nNow type a short *title*."
+                "{$kind} saved ({$attachCount}).\nNow send a short *title*."
             );
             return;
         }
 
-        $apitxt->sendText(
+        sendDraftActions(
+            $apitxt,
             $phone,
-            "{$kind} saved ({$attachCount}).\nSend more, or type *Submit*."
+            "{$kind} saved ({$attachCount}).\nSend more, or tap *Submit*."
         );
     } catch (Throwable $e) {
         error_log('[WA Webhook] Media attach error: ' . $e->getMessage());
-        $apitxt->sendText($phone, "Couldn't save that {$label}. Please send it again.");
+        sendDraftActions($apitxt, $phone, "Couldn't save that {$label}. Please send it again.");
     }
 }
 
