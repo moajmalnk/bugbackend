@@ -453,27 +453,35 @@ class APITxtService
             ? $resolvedUrl
             : '';
 
-        // 1) Docs: use inbound media_url first — replace YOUR_AUTH_KEY, follow 302 to S3.
-        if ($inboundWaMediaUrl !== '') {
-            $stagingDir = __DIR__ . '/../uploads/wa_staging/';
-            if (!is_dir($stagingDir)) {
-                mkdir($stagingDir, 0755, true);
-            }
+        $stagingDir = __DIR__ . '/../uploads/wa_staging/';
+        if (!is_dir($stagingDir)) {
+            mkdir($stagingDir, 0755, true);
+        }
+
+        // 1) Support-confirmed query URL (works when path-style media_url returns 410).
+        if ($wamid !== null) {
+            $queryUrl = $this->buildApiTxtMediaUrl($wamid, false);
             $ext      = $this->mimeToExtension($resolvedMime, $extHint);
             $filename = 'wa_' . $phone . '_' . uniqid() . '.' . $ext;
             $fullPath = $stagingDir . $filename;
-            $bytes = $this->downloadUrl($inboundWaMediaUrl, $fullPath, '');
+            $bytes = $this->downloadUrl($queryUrl, $fullPath, '');
             if ($bytes !== false) {
+                $this->persistMediaDownloadDebug([
+                    'ok' => true,
+                    'via' => 'query_action_download',
+                    'at' => date('c'),
+                    'wamid' => mb_substr($wamid, 0, 80),
+                    'bytes' => $bytes,
+                    'mime' => $this->normaliseMime($resolvedMime),
+                ]);
                 return [
                     'path' => 'wa_staging/' . $filename,
                     'name' => $filename,
                     'mime' => $this->normaliseMime($resolvedMime),
                 ];
             }
-        }
 
-        // 2) wa-media JSON (?format=json) → presigned S3 url, or build redirect URL from wamid.
-        if ($wamid !== null) {
+            // JSON probe for AWS URL, then download that.
             $apitxt = $this->resolveApiTxtMedia($wamid);
             if ($apitxt !== null) {
                 if (!empty($apitxt['url'])) {
@@ -489,9 +497,14 @@ class APITxtService
                     }
                 }
             }
-            if ($resolvedUrl === '') {
-                $resolvedUrl = $this->buildApiTxtMediaUrl($wamid, false);
+            if ($resolvedUrl === '' || $this->isApiTxtWaMediaUrl($resolvedUrl)) {
+                $resolvedUrl = $queryUrl;
             }
+        }
+
+        // 2) Legacy inbound media_url path form (replace YOUR_AUTH_KEY).
+        if ($inboundWaMediaUrl !== '' && $resolvedUrl === '') {
+            $resolvedUrl = $inboundWaMediaUrl;
         }
 
         // 3) Meta Cloud fallback when we only have a numeric media object id.
@@ -510,11 +523,6 @@ class APITxtService
             return null;
         }
 
-        $stagingDir = __DIR__ . '/../uploads/wa_staging/';
-        if (!is_dir($stagingDir)) {
-            mkdir($stagingDir, 0755, true);
-        }
-
         $ext      = $this->mimeToExtension($resolvedMime, $extHint);
         $filename = 'wa_' . $phone . '_' . uniqid() . '.' . $ext;
         $fullPath = $stagingDir . $filename;
@@ -522,11 +530,11 @@ class APITxtService
         $bearer = $this->urlNeedsMetaBearer($resolvedUrl) ? $this->cloudAccessToken() : '';
         $bytes = $this->downloadUrl($resolvedUrl, $fullPath, $bearer);
         if ($bytes === false && $wamid !== null) {
-            // Docs: rare race — wait briefly once, then retry redirect URL.
-            usleep(800000);
-            $retryUrl = $this->buildApiTxtMediaUrl($wamid, false);
-            if ($retryUrl !== '') {
-                $bytes = $this->downloadUrl($retryUrl, $fullPath, '');
+            // Fallback: legacy path URL from older docs.
+            usleep(400000);
+            $legacyUrl = $this->buildApiTxtMediaUrlPath($wamid, false);
+            if ($legacyUrl !== '' && $legacyUrl !== $resolvedUrl) {
+                $bytes = $this->downloadUrl($legacyUrl, $fullPath, '');
             }
         }
         if ($bytes === false) {
@@ -604,12 +612,36 @@ class APITxtService
         return null;
     }
 
+    /**
+     * Build APITxt media download URL.
+     *
+     * Why: Support confirmed the working shape is query-string:
+     *   /api/wa-media?authkey=KEY&wamid=WAMID&action=download
+     * The older path form (/api/wa-media/authkey=KEY/:wamid) returned 410
+     * for the same wamid while this query form returns the file (200).
+     */
     private function buildApiTxtMediaUrl(string $wamid, bool $asJson = false): string
     {
         if ($this->authKey === '' || $wamid === '') {
             return '';
         }
-        // Path form from APITxt docs — do not encode authkey= segment separators.
+        $params = [
+            'authkey' => $this->authKey,
+            'wamid' => $wamid,
+            'action' => 'download',
+        ];
+        if ($asJson) {
+            $params['format'] = 'json';
+        }
+        return 'https://apitxt.com/api/wa-media?' . http_build_query($params);
+    }
+
+    /** Legacy path-style URL from older docs (fallback only). */
+    private function buildApiTxtMediaUrlPath(string $wamid, bool $asJson = false): string
+    {
+        if ($this->authKey === '' || $wamid === '') {
+            return '';
+        }
         $url = 'https://apitxt.com/api/wa-media/authkey='
             . $this->authKey
             . '/'
