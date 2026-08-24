@@ -731,7 +731,7 @@ switch ($step) {
         waStartBugDraftInProject($db, $apitxt, $phone, $user, $projectId);
         break;
 
-    // ── Bug content collection ────────────────────────────────────────────────
+    // ── Bug content collection (guided: title → details → files → submit) ─────
     case STEP_AWAITING_CONTENT:
         $isSubmitText   = ($waAction === 'submit') || ($msgTextNorm === 'submit');
         $isSubmitButton = in_array((string) $interactiveId, ['submit_bug', 'confirm_submit'], true);
@@ -746,22 +746,18 @@ switch ($step) {
             break;
         }
 
-        // Allow skipping description after title is set
+        // Skip details → Step 3 (files)
         if ($isSkipDesc) {
             $currentSession = getOrCreateSession($db, $phone);
-            if (waIsPlaceholderBugTitle($currentSession['temp_title'] ?? null)) {
-                $apitxt->sendText($phone, "Please send a *title* first.");
+            if (!waIsUsableBugTitle($currentSession['temp_title'] ?? null)) {
+                waAskForTitle($apitxt, $phone);
                 break;
             }
             if (empty($currentSession['temp_description'])) {
-                $db->prepare("UPDATE wa_sessions SET temp_description=? WHERE phone=?")
+                $db->prepare('UPDATE wa_sessions SET temp_description=? WHERE phone=?')
                    ->execute(['No description provided.', $phone]);
             }
-            sendDraftActions(
-                $apitxt,
-                $phone,
-                "Add screenshots or voice notes (optional).\nOr tap *Submit*."
-            );
+            waAskForFiles($apitxt, $phone, 'skipped');
             break;
         }
 
@@ -771,76 +767,61 @@ switch ($step) {
                 @set_time_limit(55);
             }
             waRetryPendingMedia($db, $apitxt, $phone, true);
-            $attachCount = countStagedAttachments($db, $phone);
-            $hasDraftText = !empty(trim((string) ($currentSession['temp_description'] ?? '')));
-            $hasRealTitle = !waIsPlaceholderBugTitle($currentSession['temp_title'] ?? null);
 
-            if (!$hasRealTitle && $attachCount === 0 && !$hasDraftText) {
-                $apitxt->sendText($phone, "Please send a *title* before submitting.");
+            if (!waIsUsableBugTitle($currentSession['temp_title'] ?? null)) {
+                waAskForTitle($apitxt, $phone);
                 break;
             }
 
-            $projectName = waLoadProjectName($db, $currentSession['selected_project_id']);
-            $mediaKind   = $attachCount > 0 ? waPrimaryAttachmentKind($db, $phone) : 'document';
-            $tempTitle   = waResolveBugTitle(
-                $currentSession['temp_title'],
-                $currentSession['temp_description'],
-                $mediaKind,
-                $projectName
-            );
-            $db->prepare('UPDATE wa_sessions SET temp_title=? WHERE phone=?')
-                ->execute([$tempTitle, $phone]);
-
-            $tempDesc  = $currentSession['temp_description'] ?: 'No description provided.';
-            $descPreview = mb_strlen($tempDesc) > 120 ? (mb_substr($tempDesc, 0, 117) . '...') : $tempDesc;
+            $attachCount = countStagedAttachments($db, $phone);
             $pendingCount = waCountPendingMedia($phone);
+            $tempTitle = mb_substr(trim((string) $currentSession['temp_title']), 0, 255);
+            $tempDesc = trim((string) ($currentSession['temp_description'] ?? ''));
+            if ($tempDesc === '') {
+                $tempDesc = 'No description provided.';
+            }
+            $descPreview = mb_strlen($tempDesc) > 120
+                ? (mb_substr($tempDesc, 0, 117) . '...')
+                : $tempDesc;
 
-            $apitxt->sendInteractiveButtons($phone,
+            $apitxt->sendInteractiveButtons(
+                $phone,
                 'Confirm',
                 waBuildConfirmBody($tempTitle, $descPreview, $attachCount, $pendingCount),
                 [
                     ['id' => 'confirm_submit', 'title' => 'Submit'],
-                    ['id' => 'cancel_bug',     'title' => 'Cancel'],
+                    ['id' => 'cancel_bug', 'title' => 'Cancel'],
                 ]
             );
             setStep($db, $phone, STEP_CONFIRM);
             break;
         }
 
-        // Text: first message = title, second = description
+        // Text: Step 1 title → Step 2 details → later lines append to details
         if ($msgType === 'text' && $msgText !== '') {
             $currentSession = getOrCreateSession($db, $phone);
-            if (waIsPlaceholderBugTitle($currentSession['temp_title'] ?? null)) {
-                $db->prepare("UPDATE wa_sessions SET temp_title=? WHERE phone=?")
-                   ->execute([mb_substr($msgText, 0, 255), $phone]);
-                $apitxt->sendInteractiveButtons(
-                    $phone,
-                    'Title saved',
-                    "Next: details, photo, or voice note.\nOr tap *Submit*.",
-                    [
-                        ['id' => 'submit_bug', 'title' => 'Submit'],
-                        ['id' => 'cancel_bug', 'title' => 'Cancel'],
-                    ]
-                );
-            } elseif (empty($currentSession['temp_description'])) {
-                $db->prepare("UPDATE wa_sessions SET temp_description=? WHERE phone=?")
-                   ->execute([$msgText, $phone]);
-                sendDraftActions(
-                    $apitxt,
-                    $phone,
-                    "Details saved.\nAdd a photo or voice note, or tap *Submit*."
-                );
-            } else {
-                // Extra text appends to description instead of looping the same prompt.
-                $merged = rtrim((string) $currentSession['temp_description']) . "\n" . $msgText;
-                $db->prepare("UPDATE wa_sessions SET temp_description=? WHERE phone=?")
-                   ->execute([mb_substr($merged, 0, 4000), $phone]);
-                sendDraftActions(
-                    $apitxt,
-                    $phone,
-                    "Details updated.\nAdd files, or tap *Submit*."
-                );
+            if (!waIsUsableBugTitle($currentSession['temp_title'] ?? null)) {
+                if (!waIsUsableBugTitle($msgText)) {
+                    waAskForTitle($apitxt, $phone);
+                    break;
+                }
+                $db->prepare('UPDATE wa_sessions SET temp_title=? WHERE phone=?')
+                   ->execute([mb_substr(trim($msgText), 0, 255), $phone]);
+                waAskForDetails($apitxt, $phone, mb_substr(trim($msgText), 0, 80));
+                break;
             }
+
+            if (empty($currentSession['temp_description'])) {
+                $db->prepare('UPDATE wa_sessions SET temp_description=? WHERE phone=?')
+                   ->execute([mb_substr($msgText, 0, 4000), $phone]);
+                waAskForFiles($apitxt, $phone, 'saved');
+                break;
+            }
+
+            $merged = rtrim((string) $currentSession['temp_description']) . "\n" . $msgText;
+            $db->prepare('UPDATE wa_sessions SET temp_description=? WHERE phone=?')
+               ->execute([mb_substr($merged, 0, 4000), $phone]);
+            waAskForFiles($apitxt, $phone, 'updated');
             break;
         }
 
@@ -868,11 +849,14 @@ switch ($step) {
             break;
         }
 
-        sendDraftActions(
-            $apitxt,
-            $phone,
-            "Send a *title*, then details or a photo/voice note.\nTap *Submit* when ready."
-        );
+        $currentSession = getOrCreateSession($db, $phone);
+        if (!waIsUsableBugTitle($currentSession['temp_title'] ?? null)) {
+            waAskForTitle($apitxt, $phone);
+        } elseif (empty($currentSession['temp_description'])) {
+            waAskForDetails($apitxt, $phone, (string) $currentSession['temp_title']);
+        } else {
+            waAskForFiles($apitxt, $phone, 'saved');
+        }
         break;
 
     // ── Confirm submission ────────────────────────────────────────────────────
@@ -933,8 +917,14 @@ switch ($step) {
         $projectId = $sess['selected_project_id'];
 
         if (!$projectId) {
-            $apitxt->sendText($phone, "⚠️ No project selected. Type *menu* to start again.");
+            $apitxt->sendText($phone, "No project selected. Type *menu* to start again.");
             resetSession($db, $phone);
+            break;
+        }
+
+        if (!waIsUsableBugTitle($sess['temp_title'] ?? null)) {
+            setStep($db, $phone, STEP_AWAITING_CONTENT);
+            waAskForTitle($apitxt, $phone);
             break;
         }
 
@@ -952,16 +942,12 @@ switch ($step) {
 
         if (waCountPendingMedia($phone) > 0) {
             $attachCount = countStagedAttachments($db, $phone);
+            $titlePreview = mb_substr(trim((string) $sess['temp_title']), 0, 255);
             $apitxt->sendInteractiveButtons(
                 $phone,
                 'Confirm',
                 waBuildConfirmBody(
-                    waResolveBugTitle(
-                        $sess['temp_title'],
-                        $sess['temp_description'],
-                        $attachCount > 0 ? waPrimaryAttachmentKind($db, $phone) : 'document',
-                        waLoadProjectName($db, $projectId)
-                    ),
+                    $titlePreview,
                     null,
                     $attachCount,
                     waCountPendingMedia($phone)
@@ -983,12 +969,15 @@ switch ($step) {
 
         $projectName = waLoadProjectName($db, $projectId);
         $mediaKind   = $staged !== [] ? waPrimaryAttachmentKind($db, $phone) : 'document';
-        $title       = waResolveBugTitle(
-            $sess['temp_title'],
-            $sess['temp_description'],
-            $mediaKind,
-            $projectName
-        );
+        $title       = mb_substr(trim((string) $sess['temp_title']), 0, 255);
+        if (!waIsUsableBugTitle($title)) {
+            $title = waResolveBugTitle(
+                null,
+                $sess['temp_description'],
+                $mediaKind,
+                $projectName
+            );
+        }
         $desc = trim((string) ($sess['temp_description'] ?? ''));
         if ($desc === '') {
             $desc = 'No description provided.';
@@ -1486,8 +1475,8 @@ function waGuessMediaType(string $mediaMime, ?string $hint = null): string
 }
 
 /**
- * Stage an inbound WhatsApp attachment and always send one clear reply.
- * Why: download failures previously hung the webhook (no reply on photos/voice).
+ * Stage an inbound WhatsApp attachment with one clear reply.
+ * Why: "Saving…" then "Attached" stacked buttons and confused users.
  */
 function waProcessDraftAttachment(
     PDO $db,
@@ -1505,7 +1494,6 @@ function waProcessDraftAttachment(
     string $caption,
     bool $onConfirmScreen
 ): void {
-    // Keep Hostinger from killing long downloads before we can reply.
     if (function_exists('set_time_limit')) {
         @set_time_limit(45);
     }
@@ -1518,7 +1506,6 @@ function waProcessDraftAttachment(
         default => 'file',
     };
 
-    // Reply FIRST so Hostinger/APITxt timeout cannot leave the chat silent.
     if (is_string($mediaWamid) && $mediaWamid !== '') {
         waSavePendingMedia($phone, [
             'wamid' => $mediaWamid,
@@ -1529,25 +1516,12 @@ function waProcessDraftAttachment(
             'duration' => $mediaDuration,
         ]);
     }
-    $ack = "Got your {$label}. Saving it now…";
-    if ($onConfirmScreen) {
-        $apitxt->sendInteractiveButtons(
-            $phone,
-            'Saving file',
-            $ack . "\nTap *Submit* in a moment if this stays open.",
-            [
-                ['id' => 'confirm_submit', 'title' => 'Submit'],
-                ['id' => 'cancel_bug', 'title' => 'Cancel'],
-            ]
-        );
-    } else {
-        sendDraftActions($apitxt, $phone, $ack . "\nTap *Submit* when it is saved.");
-    }
 
     try {
         $currentSession = getOrCreateSession($db, $phone);
         if ($caption !== '') {
             waApplyCaptionToDraft($db, $phone, $caption, $currentSession);
+            $currentSession = getOrCreateSession($db, $phone);
         }
 
         $result = null;
@@ -1569,7 +1543,20 @@ function waProcessDraftAttachment(
         }
 
         if ($result === null) {
-            // Keep the wamid pending. Submit retries the Meta CDN + APITxt download.
+            $fail = "Couldn't save that {$label}. Send it again.";
+            if ($onConfirmScreen) {
+                $apitxt->sendInteractiveButtons(
+                    $phone,
+                    'Confirm',
+                    $fail . "\nOr tap *Submit* without this file.",
+                    [
+                        ['id' => 'confirm_submit', 'title' => 'Submit'],
+                        ['id' => 'cancel_bug', 'title' => 'Cancel'],
+                    ]
+                );
+            } else {
+                sendDraftActions($apitxt, $phone, $fail);
+            }
             return;
         }
 
@@ -1583,7 +1570,6 @@ function waProcessDraftAttachment(
              VALUES (?, ?, ?, ?, ?)"
         )->execute([$phone, $result['path'], $result['name'], $result['mime'], $duration]);
 
-        // Drop this wamid from pending now that it is staged.
         if (is_string($mediaWamid) && $mediaWamid !== '') {
             waDropPendingWamid($phone, $mediaWamid);
         }
@@ -1593,19 +1579,28 @@ function waProcessDraftAttachment(
             ? 'Voice note'
             : (str_starts_with($result['mime'], 'image/') ? 'Photo' : 'File');
 
+        $needsTitle = !waIsUsableBugTitle($currentSession['temp_title'] ?? null);
+
         if ($onConfirmScreen) {
             $sess = getOrCreateSession($db, $phone);
-            $projectName = waLoadProjectName($db, $sess['selected_project_id']);
-            $confirmTitle = waResolveBugTitle(
-                $sess['temp_title'],
-                $sess['temp_description'],
-                waPrimaryAttachmentKind($db, $phone),
-                $projectName
-            );
+            if (!waIsUsableBugTitle($sess['temp_title'] ?? null)) {
+                setStep($db, $phone, STEP_AWAITING_CONTENT);
+                waAskForTitle($apitxt, $phone);
+                return;
+            }
+            $desc = trim((string) ($sess['temp_description'] ?? ''));
+            $descPreview = $desc === ''
+                ? null
+                : (mb_strlen($desc) > 120 ? (mb_substr($desc, 0, 117) . '...') : $desc);
             $apitxt->sendInteractiveButtons(
                 $phone,
                 'Confirm',
-                waBuildConfirmBody($confirmTitle, null, $attachCount, waCountPendingMedia($phone)),
+                waBuildConfirmBody(
+                    mb_substr(trim((string) $sess['temp_title']), 0, 255),
+                    $descPreview,
+                    $attachCount,
+                    waCountPendingMedia($phone)
+                ),
                 [
                     ['id' => 'confirm_submit', 'title' => 'Submit'],
                     ['id' => 'cancel_bug', 'title' => 'Cancel'],
@@ -1614,14 +1609,23 @@ function waProcessDraftAttachment(
             return;
         }
 
-        $freshSession = getOrCreateSession($db, $phone);
-        $needsTitle = waIsPlaceholderBugTitle($freshSession['temp_title'] ?? null);
-        $followUp = $needsTitle
-            ? "{$kind} attached ({$attachCount}).\nSend a short *title*, then *Submit*."
-            : "{$kind} attached ({$attachCount}).\nSend more, or tap *Submit*.";
-        sendDraftActions($apitxt, $phone, $followUp);
+        if ($needsTitle) {
+            sendDraftActions(
+                $apitxt,
+                $phone,
+                "{$kind} saved ({$attachCount}).\n\n*Still need a title*\nType a short title, then tap *Submit*."
+            );
+            return;
+        }
+
+        sendDraftActions(
+            $apitxt,
+            $phone,
+            "{$kind} saved ({$attachCount}).\nSend more, or tap *Submit*."
+        );
     } catch (Throwable $e) {
         error_log('[WA Webhook] Media attach error: ' . $e->getMessage());
+        sendDraftActions($apitxt, $phone, "Couldn't save that {$label}. Send it again.");
     }
 }
 
@@ -1633,24 +1637,22 @@ function waBuildConfirmBody(
     int $pendingCount = 0
 ): string {
     $lines = ["*{$title}*"];
-    if ($descPreview !== null && trim($descPreview) !== '') {
+    if ($descPreview !== null && trim($descPreview) !== '' && strtolower(trim($descPreview)) !== 'no description provided.') {
         $lines[] = $descPreview;
     }
     if ($attachCount > 0) {
         $lines[] = $attachCount === 1
             ? 'Attachments: *1*'
             : "Attachments: *{$attachCount}*";
-        $lines[] = '';
-        $lines[] = 'Submit this bug?';
     } elseif ($pendingCount > 0) {
-        $lines[] = 'Attachments: *saving*';
-        $lines[] = '';
-        $lines[] = "{$pendingCount} file(s) still saving. Tap *Submit* again in ~60 seconds (or Cancel).";
+        $lines[] = 'Attachments: *still saving*';
+        $lines[] = "Tap *Submit* again in ~60 seconds.";
+        return implode("\n", $lines);
     } else {
         $lines[] = 'Attachments: *none*';
-        $lines[] = '';
-        $lines[] = 'Send a photo, PDF, or voice note — or tap *Submit* without files.';
     }
+    $lines[] = '';
+    $lines[] = 'File this bug now?';
     return implode("\n", $lines);
 }
 
@@ -1659,6 +1661,92 @@ function waIsPlaceholderBugTitle(?string $title): bool
 {
     $t = strtolower(trim((string) $title));
     return $t === '' || $t === 'bug reported via whatsapp';
+}
+
+/**
+ * Why: Bot prompts were sometimes saved as the bug title
+ * (e.g. "Send a title first (what went wrong?).").
+ */
+function waLooksLikeBotPromptText(?string $text): bool
+{
+    $t = strtolower(trim((string) $text));
+    if ($t === '') {
+        return true;
+    }
+    $needles = [
+        'send a title first',
+        'what went wrong',
+        'tap submit',
+        'reply submit',
+        'step 1 of 3',
+        'step 2 of 3',
+        'step 3 of 3',
+        'title saved',
+        'details saved',
+        'photo saved',
+        'voice note saved',
+        'photo attached',
+        'voice note attached',
+        'file this bug',
+        'report a bug',
+        'add a photo or voice',
+        'send more, or tap',
+        'no description provided',
+        'attachments:',
+        'bug draft',
+    ];
+    foreach ($needles as $n) {
+        if (str_contains($t, $n)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/** Title is real user text — not empty, not placeholder, not bot copy. */
+function waIsUsableBugTitle(?string $title): bool
+{
+    return !waIsPlaceholderBugTitle($title) && !waLooksLikeBotPromptText($title);
+}
+
+function waAskForTitle(APITxtService $apitxt, string $phone): void
+{
+    $apitxt->sendInteractiveButtons(
+        $phone,
+        'Step 1 of 3',
+        "*Title*\nType a short title for the bug.\n\nExample: Login button not working",
+        [
+            ['id' => 'cancel_bug', 'title' => 'Cancel'],
+        ]
+    );
+}
+
+function waAskForDetails(APITxtService $apitxt, string $phone, string $titlePreview): void
+{
+    $short = mb_substr(trim($titlePreview), 0, 60);
+    $apitxt->sendInteractiveButtons(
+        $phone,
+        'Step 2 of 3',
+        "Title: *{$short}*\n\n*Details* (optional)\nDescribe the issue, or tap *Skip*.",
+        [
+            ['id' => 'skip_description', 'title' => 'Skip'],
+            ['id' => 'cancel_bug', 'title' => 'Cancel'],
+        ]
+    );
+}
+
+function waAskForFiles(APITxtService $apitxt, string $phone, string $mode = 'saved'): void
+{
+    $head = match ($mode) {
+        'updated' => "Details updated.\n\n",
+        'skipped' => '',
+        default => "Details saved.\n\n",
+    };
+    sendDraftActions(
+        $apitxt,
+        $phone,
+        $head . "*Step 3 of 3 — Files*\nSend a photo or voice note (optional).\nThen tap *Submit*."
+    );
 }
 
 /** First non-empty line, capped for bugs.title column. */
@@ -1686,7 +1774,7 @@ function waApplyCaptionToDraft(PDO $db, string $phone, string $caption, array $c
     $titleLine = trim((string) ($lines[0] ?? ''));
     $descRest  = trim(implode("\n", array_slice($lines, 1)));
 
-    if ($titleLine !== '' && waIsPlaceholderBugTitle($currentSession['temp_title'] ?? null)) {
+    if ($titleLine !== '' && waIsUsableBugTitle($titleLine) && !waIsUsableBugTitle($currentSession['temp_title'] ?? null)) {
         $db->prepare('UPDATE wa_sessions SET temp_title=? WHERE phone=?')
             ->execute([mb_substr($titleLine, 0, 255), $phone]);
     }
@@ -1736,12 +1824,12 @@ function waResolveBugTitle(
     string $primaryMediaType = 'document',
     ?string $projectName = null
 ): string {
-    if (!waIsPlaceholderBugTitle($draftTitle)) {
+    if (waIsUsableBugTitle($draftTitle)) {
         return mb_substr(trim((string) $draftTitle), 0, 255);
     }
 
     $fromDesc = waFirstLine((string) $draftDescription);
-    if ($fromDesc !== '' && strtolower($fromDesc) !== 'no description provided.') {
+    if (waIsUsableBugTitle($fromDesc)) {
         return $fromDesc;
     }
 
@@ -2180,15 +2268,14 @@ function waStartBugDraftInProject(
 
     $body = $sameProjectContinue
         ? "Project: *{$project['name']}*\n\n"
-            . "What's the issue?\n\n"
-            . "• Send a *title* first\n"
-            . "• Then details, photo, or voice (optional)\n\n"
-            . "Reply *Submit* when ready."
+            . "*Step 1 of 3 — Title*\n"
+            . "Type a short title for the bug.\n"
+            . "Example: Login button not working"
         : "Project: *{$project['name']}*\n\n"
-            . "Send a *title* first (what went wrong?).\n"
-            . "Then details, photos, or voice notes.\n"
-            . "Tip: photo *caption* can be your title.\n\n"
-            . "Reply *Submit* when ready.";
+            . "*Step 1 of 3 — Title*\n"
+            . "Type a short title for the bug.\n"
+            . "Example: Login button not working\n\n"
+            . "Tip: a photo *caption* can also be the title.";
 
     $apitxt->sendInteractiveButtons(
         $phone,
@@ -2229,10 +2316,11 @@ function sendHelpMessage(APITxtService $apitxt, string $phone, array $user): voi
         'Help',
         "Hi *{$user['name']}*\n\n"
         . "Your WhatsApp number is verified on BugRicer.\n\n"
-        . "Report a bug:\n"
+        .         "Report a bug:\n"
         . "1️⃣ Choose a project\n"
-        . "2️⃣ Send title + details (photos/voice OK)\n"
-        . "3️⃣ Tap *Submit*\n\n"
+        . "2️⃣ Type a short *title*\n"
+        . "3️⃣ Add details (or Skip)\n"
+        . "4️⃣ Send photo/voice (optional) → *Submit*\n\n"
         . "Anytime: type *menu* or *hi*\n\n"
         . "Need access for someone else?\n"
         . "Contact *Ajmal* — +91 88486 76627",
