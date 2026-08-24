@@ -778,10 +778,11 @@ switch ($step) {
 
             $tempDesc  = $currentSession['temp_description'] ?: 'No description provided.';
             $descPreview = mb_strlen($tempDesc) > 120 ? (mb_substr($tempDesc, 0, 117) . '...') : $tempDesc;
+            $pendingCount = waCountPendingMedia($phone);
 
             $apitxt->sendInteractiveButtons($phone,
                 'Confirm',
-                waBuildConfirmBody($tempTitle, $descPreview, $attachCount),
+                waBuildConfirmBody($tempTitle, $descPreview, $attachCount, $pendingCount),
                 [
                     ['id' => 'confirm_submit', 'title' => 'Submit'],
                     ['id' => 'cancel_bug',     'title' => 'Cancel'],
@@ -903,7 +904,7 @@ switch ($step) {
             $attachCount = countStagedAttachments($db, $phone);
             $apitxt->sendInteractiveButtons($phone,
                 'Confirm',
-                waBuildConfirmBody('Ready to file', null, $attachCount),
+                waBuildConfirmBody('Ready to file', null, $attachCount, waCountPendingMedia($phone)),
                 [
                     ['id' => 'confirm_submit', 'title' => 'Submit'],
                     ['id' => 'cancel_bug',     'title' => 'Cancel'],
@@ -1514,6 +1515,23 @@ function waProcessDraftAttachment(
         }
 
         if ($result === null) {
+            // Honest follow-up — download failed (usually APITxt 410 sync).
+            $fail = "Couldn't finish saving that {$label} yet.\n"
+                . "WhatsApp still has not released the file.\n"
+                . "Wait ~20 seconds, then tap *Submit* again — or continue without it.";
+            if ($onConfirmScreen) {
+                $apitxt->sendInteractiveButtons(
+                    $phone,
+                    'File not ready',
+                    $fail,
+                    [
+                        ['id' => 'confirm_submit', 'title' => 'Submit'],
+                        ['id' => 'cancel_bug', 'title' => 'Cancel'],
+                    ]
+                );
+            } else {
+                sendDraftActions($apitxt, $phone, $fail);
+            }
             return;
         }
 
@@ -1549,7 +1567,7 @@ function waProcessDraftAttachment(
             $apitxt->sendInteractiveButtons(
                 $phone,
                 'Confirm',
-                waBuildConfirmBody($confirmTitle, null, $attachCount),
+                waBuildConfirmBody($confirmTitle, null, $attachCount, waCountPendingMedia($phone)),
                 [
                     ['id' => 'confirm_submit', 'title' => 'Submit'],
                     ['id' => 'cancel_bug', 'title' => 'Cancel'],
@@ -1570,8 +1588,12 @@ function waProcessDraftAttachment(
 }
 
 /** Confirm card body — clear attachment status (never imply a file was kept when count is 0). */
-function waBuildConfirmBody(string $title, ?string $descPreview, int $attachCount): string
-{
+function waBuildConfirmBody(
+    string $title,
+    ?string $descPreview,
+    int $attachCount,
+    int $pendingCount = 0
+): string {
     $lines = ["*{$title}*"];
     if ($descPreview !== null && trim($descPreview) !== '') {
         $lines[] = $descPreview;
@@ -1582,6 +1604,11 @@ function waBuildConfirmBody(string $title, ?string $descPreview, int $attachCoun
             : "Attachments: *{$attachCount}*";
         $lines[] = '';
         $lines[] = 'Submit this bug?';
+    } elseif ($pendingCount > 0) {
+        $lines[] = 'Attachments: *not ready*';
+        $lines[] = '';
+        $lines[] = "We received {$pendingCount} file(s), but WhatsApp has not released them for download yet.";
+        $lines[] = 'Wait ~20 seconds and tap *Submit* again, or continue without files.';
     } else {
         $lines[] = 'Attachments: *none*';
         $lines[] = '';
@@ -2523,6 +2550,16 @@ function waClearPendingMedia(string $phone): void
     if (is_file($path)) {
         @unlink($path);
     }
+}
+
+function waCountPendingMedia(string $phone): int
+{
+    $path = waPendingMediaPath($phone);
+    if (!is_file($path)) {
+        return 0;
+    }
+    $list = json_decode((string) file_get_contents($path), true);
+    return is_array($list) ? count($list) : 0;
 }
 
 /**
