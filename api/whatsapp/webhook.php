@@ -2349,6 +2349,7 @@ function sendDraftActions(APITxtService $apitxt, string $phone, string $body): v
  * Why: Match Projects page visibility — admins see every project; developers
  * and testers only see projects they are assigned to. Order mirrors the app
  * picker: Ongoing → Release Ready → Completed → Archived, then name.
+ * No hard LIMIT — WhatsApp browse (A–I / J–R / S–Z) paginates large lists.
  *
  * @return list<array{id: string, name: string, status?: string}>
  */
@@ -2371,8 +2372,7 @@ function waLoadSelectableProjects(PDO $db, array $user): array
         $stmt = $db->query(
             "SELECT p.id, p.name, p.status
              FROM projects p
-             {$orderSql}
-             LIMIT 40"
+             {$orderSql}"
         );
         $projects = $stmt ? $stmt->fetchAll(PDO::FETCH_ASSOC) : [];
     } else {
@@ -2381,8 +2381,7 @@ function waLoadSelectableProjects(PDO $db, array $user): array
              FROM projects p
              INNER JOIN project_members pm ON pm.project_id = p.id
              WHERE pm.user_id = ?
-             {$orderSql}
-             LIMIT 40"
+             {$orderSql}"
         );
         $stmt->execute([(string) $user['id']]);
         $projects = $stmt->fetchAll(PDO::FETCH_ASSOC);
