@@ -1543,7 +1543,7 @@ function waProcessDraftAttachment(
         }
 
         if ($result === null) {
-            $fail = "Couldn't save that {$label}. Send it again.";
+            $fail = "Couldn't save that {$label}. Please send it again.";
             if ($onConfirmScreen) {
                 $apitxt->sendInteractiveButtons(
                     $phone,
@@ -1555,7 +1555,7 @@ function waProcessDraftAttachment(
                     ]
                 );
             } else {
-                sendDraftActions($apitxt, $phone, $fail);
+                $apitxt->sendText($phone, $fail);
             }
             return;
         }
@@ -1609,23 +1609,22 @@ function waProcessDraftAttachment(
             return;
         }
 
+        // One plain chat reply per file — no extra "Saving…" bubble, no button spam.
         if ($needsTitle) {
-            sendDraftActions(
-                $apitxt,
+            $apitxt->sendText(
                 $phone,
-                "{$kind} saved ({$attachCount}).\n\n*Still need a title*\nType a short title, then tap *Submit*."
+                "{$kind} saved ({$attachCount}).\nNow type a short *title*."
             );
             return;
         }
 
-        sendDraftActions(
-            $apitxt,
+        $apitxt->sendText(
             $phone,
-            "{$kind} saved ({$attachCount}).\nSend more, or tap *Submit*."
+            "{$kind} saved ({$attachCount}).\nSend more, or type *Submit*."
         );
     } catch (Throwable $e) {
         error_log('[WA Webhook] Media attach error: ' . $e->getMessage());
-        sendDraftActions($apitxt, $phone, "Couldn't save that {$label}. Send it again.");
+        $apitxt->sendText($phone, "Couldn't save that {$label}. Please send it again.");
     }
 }
 
@@ -1711,13 +1710,9 @@ function waIsUsableBugTitle(?string $title): bool
 
 function waAskForTitle(APITxtService $apitxt, string $phone): void
 {
-    $apitxt->sendInteractiveButtons(
+    $apitxt->sendText(
         $phone,
-        'Step 1 of 3',
-        "*Title*\nType a short title for the bug.\n\nExample: Login button not working",
-        [
-            ['id' => 'cancel_bug', 'title' => 'Cancel'],
-        ]
+        "*Step 1 of 3 — Title*\nType a short title for the bug.\nExample: Login button not working"
     );
 }
 
@@ -1742,10 +1737,14 @@ function waAskForFiles(APITxtService $apitxt, string $phone, string $mode = 'sav
         'skipped' => '',
         default => "Details saved.\n\n",
     };
-    sendDraftActions(
-        $apitxt,
+    $apitxt->sendInteractiveButtons(
         $phone,
-        $head . "*Step 3 of 3 — Files*\nSend a photo or voice note (optional).\nThen tap *Submit*."
+        'Step 3 of 3',
+        $head . "*Files* (optional)\nSend a photo or voice note.\nWhen ready, tap *Submit*.",
+        [
+            ['id' => 'submit_bug', 'title' => 'Submit'],
+            ['id' => 'cancel_bug', 'title' => 'Cancel'],
+        ]
     );
 }
 
