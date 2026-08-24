@@ -1,193 +1,199 @@
 <?php
+/**
+ * Why: Serve bug attachments (PDF, docs, etc.) from backend/uploads.
+ * WhatsApp stores paths as bugs/{id}/file.pdf — the old resolver joined onto
+ * the wrong directory, so previews showed JSON "File not found".
+ */
 require_once __DIR__ . '/../config/cors.php';
-header('Content-Type: application/json');
-require_once __DIR__ . '/../config/database.php';
 
-// Get request parameters with proper URL decoding
-$path = isset($_GET['path']) ? urldecode($_GET['path']) : null;
-$name = isset($_GET['name']) ? urldecode($_GET['name']) : null;
-$bug_id = isset($_GET['bug_id']) ? urldecode($_GET['bug_id']) : null;
-$type = isset($_GET['type']) ? urldecode($_GET['type']) : null;
-$filename = isset($_GET['filename']) ? urldecode($_GET['filename']) : null;
+$path = isset($_GET['path']) ? urldecode((string) $_GET['path']) : '';
+$name = isset($_GET['name']) ? urldecode((string) $_GET['name']) : '';
+$bugId = isset($_GET['bug_id']) ? urldecode((string) $_GET['bug_id']) : '';
+$type = isset($_GET['type']) ? urldecode((string) $_GET['type']) : '';
+$filename = isset($_GET['filename']) ? urldecode((string) $_GET['filename']) : '';
 
-// For debugging - log the incoming parameters
-error_log("Attachment request: path=$path, name=$name, bug_id=$bug_id, type=$type, filename=$filename");
+$uploadsDir = realpath(__DIR__ . '/../uploads');
+if ($uploadsDir === false || !is_dir($uploadsDir)) {
+    http_response_code(500);
+    header('Content-Type: application/json');
+    echo json_encode(['success' => false, 'message' => 'Uploads directory missing']);
+    exit;
+}
 
-// Handle both old and new parameter formats
-if ($path) {
-    // New format: use path directly
-    $file_path = $path;
-    $filename = $name ?: basename($path);
+/**
+ * @return string|null Absolute path under uploads, or null
+ */
+function brResolveUploadFile(string $uploadsDir, string $relative): ?string
+{
+    $relative = str_replace(["\0", '\\'], ['', '/'], $relative);
+    $relative = ltrim($relative, '/');
+    $relative = str_replace(['../', '..\\'], '', $relative);
+    if ($relative === '') {
+        return null;
+    }
+    if (strpos($relative, 'uploads/') === 0) {
+        $relative = substr($relative, 8);
+    }
+
+    $candidate = $uploadsDir . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relative);
+    $real = realpath($candidate);
+    if ($real === false || !is_file($real)) {
+        return null;
+    }
+    if (strpos($real, $uploadsDir) !== 0) {
+        return null;
+    }
+    return $real;
+}
+
+$filePath = null;
+$displayName = '';
+
+if ($path !== '') {
+    $filePath = brResolveUploadFile($uploadsDir, $path);
+    $displayName = $name !== '' ? $name : basename($path);
+
+    // If DB path is bugs/{id}/file but only file name was passed somehow
+    if ($filePath === null && $bugId !== '' && $bugId === basename(dirname($path))) {
+        $filePath = brResolveUploadFile($uploadsDir, 'bugs/' . $bugId . '/' . basename($path));
+    }
 } else {
-    // Old format: validate required parameters
-    if (!$bug_id || !$filename) {
+    if ($bugId === '' || ($filename === '' && $name === '')) {
         http_response_code(400);
         header('Content-Type: application/json');
         echo json_encode([
-            'success' => false, 
+            'success' => false,
             'message' => 'Missing required parameters',
             'received' => [
                 'path' => $path,
                 'name' => $name,
-                'bug_id' => $bug_id,
+                'bug_id' => $bugId,
                 'type' => $type,
-                'filename' => $filename
-            ]
+                'filename' => $filename,
+            ],
         ]);
         exit;
     }
-}
 
-try {
-    // If we have a direct path, use it
-    if (isset($file_path)) {
-        // Convert relative path to absolute if needed
-        if (!file_exists($file_path)) {
-            // Try to convert relative path to absolute if needed
-            if (strpos($file_path, 'uploads/') === 0) {
-                $file_path = __DIR__ . '/../' . $file_path;
-            } elseif (strpos($file_path, 'bugricer/backend/') !== false) {
-                $file_path = str_replace('bugricer/backend/', __DIR__ . '/../../', $file_path);
-            } else {
-                $file_path = __DIR__ . '/../..' . $file_path;
-            }
-        }
-    } else {
-        // Initialize database connection for old format
+    $displayName = $filename !== '' ? $filename : $name;
+    $safeName = basename($displayName);
+
+    // Prefer DB path when available
+    try {
+        require_once __DIR__ . '/../config/database.php';
         $database = new Database();
         $pdo = $database->getConnection();
-        
-        // First check for the file path in the database
-        $attachmentQuery = $pdo->prepare("
-            SELECT file_path, file_name 
-            FROM bug_attachments 
-            WHERE bug_id = :bug_id AND file_name LIKE :filename
-        ");
-        $attachmentQuery->bindParam(':bug_id', $bug_id);
-        // Use LIKE comparison with % for partial matches
-        $filenameLike = '%' . $filename . '%';
-        $attachmentQuery->bindParam(':filename', $filenameLike);
-        $attachmentQuery->execute();
-        $attachment = $attachmentQuery->fetch(PDO::FETCH_ASSOC);
-        
-        // If found in database, use that path directly
-        if ($attachment && !empty($attachment['file_path'])) {
-            $file_path = $attachment['file_path'];
-            // Make sure this is an absolute path
-            if (!file_exists($file_path)) {
-                // Try to convert relative path to absolute if needed
-                if (strpos($file_path, 'bugricer/backend/') !== false) {
-                    $file_path = str_replace('bugricer/backend/', __DIR__ . '/../../', $file_path);
-                } else {
-                    $file_path = __DIR__ . '/../..' . $file_path;
-                }
+        $stmt = $pdo->prepare(
+            'SELECT file_path, file_name FROM bug_attachments
+             WHERE bug_id = ? AND file_name LIKE ?
+             LIMIT 1'
+        );
+        $stmt->execute([$bugId, '%' . $safeName . '%']);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (is_array($row) && !empty($row['file_path'])) {
+            $filePath = brResolveUploadFile($uploadsDir, (string) $row['file_path']);
+            if (!empty($row['file_name'])) {
+                $displayName = (string) $row['file_name'];
             }
-        } else {
-            // Handle file paths - try multiple locations
-            $uploads_dir = __DIR__ . '/../uploads/';
-            $type_dir = $type ? $type . 's/' : '';
-            
-            // Try multiple possible file path formats
-            $possible_paths = [
-                $uploads_dir . $type_dir . $bug_id . '_' . $filename,  // bug_id_filename.ext
-                $uploads_dir . $type_dir . $filename,                  // filename.ext
-                $uploads_dir . $type_dir . $bug_id . '/' . $filename,  // bug_id/filename.ext
-                $uploads_dir . $type_dir . '/' . $bug_id . '/' . $filename,  // type_dir/bug_id/filename
-                $uploads_dir . $type_dir . '/' . $filename,            // type_dir/filename
-                $uploads_dir . $filename,                             // direct filename.ext
-                // Also try without URL encoding in case it was double-encoded
-                $uploads_dir . $type_dir . $bug_id . '_' . rawurldecode($filename),
-                $uploads_dir . $type_dir . rawurldecode($filename),
-                // Add this path to your possible_paths array
-                $uploads_dir . 'screenshots/' . $bug_id . '_' . $filename
-            ];
-            
-            $file_path = null;
-            foreach ($possible_paths as $path) {
-                if (file_exists($path)) {
-                    $file_path = $path;
+        }
+    } catch (Throwable $e) {
+        error_log('[get_attachment] DB lookup failed: ' . $e->getMessage());
+    }
+
+    if ($filePath === null) {
+        $candidates = [
+            'bugs/' . $bugId . '/' . $safeName,
+            'screenshots/' . $bugId . '_' . $safeName,
+            'screenshots/' . $safeName,
+            'files/' . $bugId . '/' . $safeName,
+            'files/' . $safeName,
+            $safeName,
+        ];
+        if ($type !== '') {
+            $candidates[] = $type . 's/' . $bugId . '/' . $safeName;
+            $candidates[] = $type . 's/' . $safeName;
+        }
+        foreach ($candidates as $rel) {
+            $filePath = brResolveUploadFile($uploadsDir, $rel);
+            if ($filePath !== null) {
+                break;
+            }
+        }
+    }
+
+    // Last resort: search under bugs/{bugId}/ only (bounded)
+    if ($filePath === null) {
+        $bugDir = $uploadsDir . DIRECTORY_SEPARATOR . 'bugs' . DIRECTORY_SEPARATOR . $bugId;
+        if (is_dir($bugDir)) {
+            $matches = glob($bugDir . DIRECTORY_SEPARATOR . '*' . $safeName . '*') ?: [];
+            foreach ($matches as $match) {
+                $real = realpath($match);
+                if ($real && is_file($real) && strpos($real, $uploadsDir) === 0) {
+                    $filePath = $real;
                     break;
                 }
             }
         }
     }
-    
-    // Final check if file exists
-    if (empty($file_path) || !file_exists($file_path)) {
-        // One more attempt - try to locate the file by globbing the directory
-        $pattern = $uploads_dir . $type_dir . '*' . basename($filename) . '*';
-        $glob_results = glob($pattern);
-        
-        if (!empty($glob_results) && file_exists($glob_results[0])) {
-            $file_path = $glob_results[0];
-        } else {
-            http_response_code(404);
-            header('Content-Type: application/json');
-            echo json_encode([
-                'success' => false, 
-                'message' => 'File not found',
-                'debug' => [
-                    'searched_paths' => $possible_paths,
-                    'glob_pattern' => $pattern,
-                    'glob_results' => $glob_results ?? []
-                ]
-            ]);
-            exit;
-        }
-    }
-    
-    // Get file MIME type
-    $finfo = finfo_open(FILEINFO_MIME_TYPE);
-    $mime_type = finfo_file($finfo, $file_path);
-    finfo_close($finfo);
-    
-    // Output the file with appropriate headers
-    $forceDownload = isset($_GET['download']) && (string) $_GET['download'] !== '0';
-    $safeName = str_replace(["\r", "\n", '"'], '', basename((string) $filename));
-    if ($safeName === '') {
-        $safeName = 'download';
-    }
-    $isAudio = is_string($mime_type) && (
-        strpos($mime_type, 'audio/') === 0
-        || $mime_type === 'video/webm'
-        || preg_match('/\.(webm|wav|mp3|m4a|ogg)$/i', $safeName)
-    );
+}
 
-    if ($forceDownload) {
-        // octet-stream + attachment stops browsers from playing voice notes inline
-        header('Content-Type: application/octet-stream');
-        header(
-            'Content-Disposition: attachment; filename="' . $safeName . '"; filename*=UTF-8\'\'' . rawurlencode($safeName)
-        );
-    } else {
-        header('Content-Type: ' . $mime_type);
-        header(
-            'Content-Disposition: inline; filename="' . $safeName . '"; filename*=UTF-8\'\'' . rawurlencode($safeName)
-        );
-    }
-    header('Content-Length: ' . filesize($file_path));
-    header('X-Content-Type-Options: nosniff');
-    if ($isAudio && !$forceDownload) {
-        header('Accept-Ranges: bytes');
-    }
-    
-    // Disable output buffering to handle large files better
-    if (ob_get_level()) {
-        ob_end_clean();
-    }
-    
-    // Read file and exit
-    readfile($file_path);
-    exit;
-    
-} catch (Exception $e) {
-    http_response_code(500);
+if ($filePath === null) {
+    http_response_code(404);
     header('Content-Type: application/json');
     echo json_encode([
-        'success' => false, 
-        'message' => 'Error retrieving attachment: ' . $e->getMessage(),
-        'file' => $e->getFile(),
-        'line' => $e->getLine()
+        'success' => false,
+        'message' => 'File not found',
+        'debug' => [
+            'path' => $path,
+            'bug_id' => $bugId !== '' ? $bugId : null,
+            'filename' => $displayName !== '' ? $displayName : ($filename ?: $name),
+        ],
     ]);
     exit;
 }
+
+$finfo = finfo_open(FILEINFO_MIME_TYPE);
+$mimeType = $finfo ? finfo_file($finfo, $filePath) : false;
+if ($finfo) {
+    finfo_close($finfo);
+}
+if (!is_string($mimeType) || $mimeType === '') {
+    $mimeType = 'application/octet-stream';
+}
+
+$forceDownload = isset($_GET['download']) && (string) $_GET['download'] !== '0';
+$safeName = str_replace(["\r", "\n", '"'], '', basename($displayName !== '' ? $displayName : $filePath));
+if ($safeName === '') {
+    $safeName = 'download';
+}
+
+$isAudio = str_starts_with($mimeType, 'audio/')
+    || $mimeType === 'video/webm'
+    || (bool) preg_match('/\.(webm|wav|mp3|m4a|ogg)$/i', $safeName);
+
+if ($forceDownload) {
+    header('Content-Type: application/octet-stream');
+    header(
+        'Content-Disposition: attachment; filename="' . $safeName . '"; filename*=UTF-8\'\'' . rawurlencode($safeName)
+    );
+} else {
+    header('Content-Type: ' . $mimeType);
+    header(
+        'Content-Disposition: inline; filename="' . $safeName . '"; filename*=UTF-8\'\'' . rawurlencode($safeName)
+    );
+}
+header('Content-Length: ' . filesize($filePath));
+header('X-Content-Type-Options: nosniff');
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Methods: GET, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Impersonate-User, X-User-Id');
+if ($isAudio && !$forceDownload) {
+    header('Accept-Ranges: bytes');
+}
+
+if (ob_get_level()) {
+    ob_end_clean();
+}
+
+readfile($filePath);
+exit;
