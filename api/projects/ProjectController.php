@@ -28,6 +28,7 @@ class ProjectController extends BaseAPI
         'github_frontend',
         'github_backend',
         'github_app',
+        'compliance_required',
         'start_date',
         'deadline_date',
         'expected_publish_date',
@@ -47,6 +48,7 @@ class ProjectController extends BaseAPI
         $this->ensureProjectCategoryColumns();
         $this->ensureProjectMembersMultiRole();
         $this->ensureProjectEffortHoursColumns();
+        $this->ensureComplianceRequiredColumn();
     }
 
     private function ensureProjectCategoryColumns(): void
@@ -229,12 +231,36 @@ class ProjectController extends BaseAPI
 
     private function normalizeExtendedField(string $field, $value)
     {
+        if ($field === 'compliance_required') {
+            return $this->normalizeBooleanField($value);
+        }
         if ($this->isHoursField($field)) {
             return $this->normalizeHoursField($value);
         }
         return $this->isDateTimeField($field)
             ? $this->normalizeDateTimeField($value)
             : $this->normalizeDateField($value);
+    }
+
+    /**
+     * Why: TINYINT(1) flags — accept bool/int/string from JSON and store 0/1.
+     */
+    private function normalizeBooleanField($value): int
+    {
+        if ($value === null || $value === '') {
+            return 1;
+        }
+        if (is_bool($value)) {
+            return $value ? 1 : 0;
+        }
+        if (is_numeric($value)) {
+            return ((int) $value) === 0 ? 0 : 1;
+        }
+        $raw = strtolower(trim((string) $value));
+        if (in_array($raw, ['0', 'false', 'no', 'off'], true)) {
+            return 0;
+        }
+        return 1;
     }
 
     private function isDateTimeField(string $field): bool
@@ -311,6 +337,60 @@ class ProjectController extends BaseAPI
             }
         } catch (Exception $e) {
             error_log('ensureProjectEffortHoursColumns: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Why: Per-project opt-out of CODO compliance (button, overview, close gate).
+     */
+    private function ensureComplianceRequiredColumn(): void
+    {
+        static $done = false;
+        if ($done || !$this->conn) {
+            return;
+        }
+        $done = true;
+        try {
+            $cols = $this->listProjectColumns();
+            if (in_array('compliance_required', $cols, true)) {
+                return;
+            }
+            if (in_array('status', $cols, true)) {
+                $this->conn->exec(
+                    'ALTER TABLE projects ADD COLUMN `compliance_required` TINYINT(1) NOT NULL DEFAULT 1 AFTER `status`'
+                );
+            } else {
+                $this->conn->exec(
+                    'ALTER TABLE projects ADD COLUMN `compliance_required` TINYINT(1) NOT NULL DEFAULT 1'
+                );
+            }
+        } catch (Exception $e) {
+            error_log('ensureComplianceRequiredColumn: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Why: Projects can opt out of CODO; closing must not require the pipeline then.
+     */
+    private function isProjectComplianceRequired(string $projectId): bool
+    {
+        $cols = $this->listProjectColumns();
+        if (!in_array('compliance_required', $cols, true)) {
+            return true;
+        }
+        try {
+            $stmt = $this->conn->prepare(
+                'SELECT compliance_required FROM projects WHERE id = ? LIMIT 1'
+            );
+            $stmt->execute([$projectId]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$row) {
+                return true;
+            }
+            return ((int) ($row['compliance_required'] ?? 1)) !== 0;
+        } catch (Exception $e) {
+            error_log('isProjectComplianceRequired: ' . $e->getMessage());
+            return true;
         }
     }
 
@@ -737,7 +817,7 @@ class ProjectController extends BaseAPI
                     if ($current && $current['status'] !== $newStatus) {
                         $isRealAdmin = $this->isRealAdmin($decoded);
                         $adminArchiveBypass = $isRealAdmin && $newStatus === 'archived';
-                        if (!$adminArchiveBypass) {
+                        if (!$adminArchiveBypass && $this->isProjectComplianceRequired($id)) {
                             $complianceController = new ProjectComplianceController();
                             $gate = $complianceController->canCloseProject($id);
                             if (!$gate['allowed']) {

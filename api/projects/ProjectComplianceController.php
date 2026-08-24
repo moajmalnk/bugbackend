@@ -433,6 +433,22 @@ class ProjectComplianceController extends BaseAPI
 
     public function canCloseProject(string $projectId): array
     {
+        try {
+            $col = $this->conn->query("SHOW COLUMNS FROM projects LIKE 'compliance_required'");
+            if ($col && $col->rowCount() > 0) {
+                $reqStmt = $this->conn->prepare(
+                    'SELECT compliance_required FROM projects WHERE id = ? LIMIT 1'
+                );
+                $reqStmt->execute([$projectId]);
+                $reqRow = $reqStmt->fetch(PDO::FETCH_ASSOC);
+                if ($reqRow && (int) ($reqRow['compliance_required'] ?? 1) === 0) {
+                    return ['allowed' => true, 'reason' => 'compliance_not_required'];
+                }
+            }
+        } catch (Throwable $e) {
+            error_log('canCloseProject compliance_required: ' . $e->getMessage());
+        }
+
         $this->ensureComplianceInitialized($projectId);
         $meta = $this->getComplianceMeta($projectId);
         if (!$meta) {
