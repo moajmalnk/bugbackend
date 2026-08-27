@@ -160,7 +160,8 @@ class BugDatesController extends BaseAPI
         $stmt = $this->conn->prepare(
             "SELECT e.*, u.username AS created_by_name
              FROM bug_dates_events e
-             LEFT JOIN users u ON u.id = e.created_by
+             LEFT JOIN users u
+               ON e.created_by COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
              WHERE e.id = ?
              LIMIT 1"
         );
@@ -214,6 +215,16 @@ class BugDatesController extends BaseAPI
             return;
         }
 
+        try {
+            $this->calendarFeed($decoded, $from, $to);
+        } catch (Throwable $e) {
+            error_log('BugDatesController::calendar: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Failed to load BugDates calendar');
+        }
+    }
+
+    private function calendarFeed(object $decoded, string $from, string $to): void
+    {
         $categoryFilter = [];
         if (!empty($_GET['categories'])) {
             $raw = is_array($_GET['categories'])
@@ -244,7 +255,8 @@ class BugDatesController extends BaseAPI
             $stmt = $this->conn->query(
                 "SELECT e.*, u.username AS created_by_name
                  FROM bug_dates_events e
-                 LEFT JOIN users u ON u.id = e.created_by
+                 LEFT JOIN users u
+                   ON e.created_by COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
                  WHERE e.status = 'approved'
                  ORDER BY e.start_date ASC, e.id ASC"
             );
@@ -331,29 +343,35 @@ class BugDatesController extends BaseAPI
         if (!br_leave_tables_ready($this->conn)) {
             return [];
         }
-        $hasHalf = false;
         try {
-            $c = $this->conn->query("SHOW COLUMNS FROM leave_requests LIKE 'is_half_day'");
-            $hasHalf = (bool)($c && $c->fetch(PDO::FETCH_ASSOC));
-        } catch (Throwable $e) {
             $hasHalf = false;
-        }
+            try {
+                $c = $this->conn->query("SHOW COLUMNS FROM leave_requests LIKE 'is_half_day'");
+                $hasHalf = (bool)($c && $c->fetch(PDO::FETCH_ASSOC));
+            } catch (Throwable $e) {
+                $hasHalf = false;
+            }
 
-        $halfCols = $hasHalf ? ', lr.is_half_day, lr.half_day_type' : '';
-        $stmt = $this->conn->prepare(
-            "SELECT lr.id, lr.user_id, lr.start_date, lr.end_date, lr.days_count, lr.reason, lr.status,
-                    lt.code AS leave_type_code, lt.name AS leave_type_name, u.username
-                    {$halfCols}
-             FROM leave_requests lr
-             LEFT JOIN leave_types lt ON lt.id = lr.leave_type_id
-             LEFT JOIN users u ON u.id = lr.user_id
-             WHERE lr.status IN ('pending', 'approved')
-               AND lr.start_date <= ?
-               AND lr.end_date >= ?
-             ORDER BY lr.start_date ASC"
-        );
-        $stmt->execute([$to, $from]);
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            $halfCols = $hasHalf ? ', lr.is_half_day, lr.half_day_type' : '';
+            $stmt = $this->conn->prepare(
+                "SELECT lr.id, lr.user_id, lr.start_date, lr.end_date, lr.days_count, lr.reason, lr.status,
+                        lt.code AS leave_type_code, lt.name AS leave_type_name, u.username
+                        {$halfCols}
+                 FROM leave_requests lr
+                 LEFT JOIN leave_types lt ON lt.id = lr.leave_type_id
+                 LEFT JOIN users u
+                   ON lr.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
+                 WHERE lr.status IN ('pending', 'approved')
+                   AND lr.start_date <= ?
+                   AND lr.end_date >= ?
+                 ORDER BY lr.start_date ASC"
+            );
+            $stmt->execute([$to, $from]);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        } catch (Throwable $e) {
+            error_log('BugDates leaveOverlayItems: ' . $e->getMessage());
+            return [];
+        }
         $tz = new DateTimeZone('Asia/Kolkata');
         $items = [];
         foreach ($rows as $row) {
@@ -387,8 +405,8 @@ class BugDatesController extends BaseAPI
                     'leave_type_code' => $row['leave_type_code'] ?? null,
                     'leave_type_name' => $typeName,
                     'status' => $row['status'],
-                    'is_half_day' => $hasHalf ? (bool)(int)($row['is_half_day'] ?? 0) : false,
-                    'half_day_type' => $hasHalf ? ($row['half_day_type'] ?? null) : null,
+                    'is_half_day' => !empty($row['is_half_day']),
+                    'half_day_type' => $row['half_day_type'] ?? null,
                 ];
                 if ($showReason) {
                     $item['reason'] = $row['reason'] ?? null;
@@ -419,16 +437,22 @@ class BugDatesController extends BaseAPI
             return [];
         }
 
-        $stmt = $this->conn->prepare(
-            "SELECT w.id, w.user_id, w.request_date, w.status, w.user_note, u.username
-             FROM attendance_wfh_requests w
-             LEFT JOIN users u ON u.id = w.user_id
-             WHERE w.status IN ('pending', 'approved')
-               AND w.request_date BETWEEN ? AND ?
-             ORDER BY w.request_date ASC"
-        );
-        $stmt->execute([$from, $to]);
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        try {
+            $stmt = $this->conn->prepare(
+                "SELECT w.id, w.user_id, w.request_date, w.status, w.user_note, u.username
+                 FROM attendance_wfh_requests w
+                 LEFT JOIN users u
+                   ON w.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
+                 WHERE w.status IN ('pending', 'approved')
+                   AND w.request_date BETWEEN ? AND ?
+                 ORDER BY w.request_date ASC"
+            );
+            $stmt->execute([$from, $to]);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        } catch (Throwable $e) {
+            error_log('BugDates wfhOverlayItems: ' . $e->getMessage());
+            return [];
+        }
         $items = [];
         foreach ($rows as $row) {
             $isSelf = (string)$row['user_id'] === $viewerId;
@@ -475,7 +499,8 @@ class BugDatesController extends BaseAPI
                     $stmt = $this->conn->query(
                         "SELECT u.id, u.username, d.date_of_birth
                          FROM users u
-                         INNER JOIN user_onboarding_details d ON d.user_id = u.id
+                         INNER JOIN user_onboarding_details d
+                           ON d.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
                          WHERE d.date_of_birth IS NOT NULL
                          ORDER BY u.username ASC"
                     );
@@ -652,7 +677,8 @@ class BugDatesController extends BaseAPI
         $category = isset($_GET['category']) ? trim((string)$_GET['category']) : '';
         $sql = "SELECT e.*, u.username AS created_by_name
                 FROM bug_dates_events e
-                LEFT JOIN users u ON u.id = e.created_by
+                LEFT JOIN users u
+                  ON e.created_by COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
                 WHERE 1=1";
         $params = [];
         if ($status !== '' && in_array($status, self::STATUSES, true)) {
@@ -967,28 +993,35 @@ class BugDatesController extends BaseAPI
         $eventId = isset($_GET['event_id']) ? (int)$_GET['event_id'] : 0;
         $from = $this->sanitizeDate($_GET['from'] ?? null);
         $to = $this->sanitizeDate($_GET['to'] ?? null);
-        $sql = "SELECT s.*, u.username AS host_name, e.title AS event_title
-                FROM growth_program_sessions s
-                LEFT JOIN users u ON u.id = s.host_user_id
-                LEFT JOIN bug_dates_events e ON e.id = s.event_id
-                WHERE 1=1";
-        $params = [];
-        if ($eventId > 0) {
-            $sql .= ' AND s.event_id = ?';
-            $params[] = $eventId;
+        try {
+            $sql = "SELECT s.*, u.username AS host_name, e.title AS event_title
+                    FROM growth_program_sessions s
+                    LEFT JOIN users u
+                      ON s.host_user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
+                    LEFT JOIN bug_dates_events e ON e.id = s.event_id
+                    WHERE 1=1";
+            $params = [];
+            if ($eventId > 0) {
+                $sql .= ' AND s.event_id = ?';
+                $params[] = $eventId;
+            }
+            if ($from) {
+                $sql .= ' AND s.session_date >= ?';
+                $params[] = $from;
+            }
+            if ($to) {
+                $sql .= ' AND s.session_date <= ?';
+                $params[] = $to;
+            }
+            $sql .= ' ORDER BY s.session_date DESC, s.id DESC';
+            $stmt = $this->conn->prepare($sql);
+            $stmt->execute($params);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        } catch (Throwable $e) {
+            error_log('BugDatesController::listSessions: ' . $e->getMessage());
+            $this->sendJsonResponse(200, 'OK', []);
+            return;
         }
-        if ($from) {
-            $sql .= ' AND s.session_date >= ?';
-            $params[] = $from;
-        }
-        if ($to) {
-            $sql .= ' AND s.session_date <= ?';
-            $params[] = $to;
-        }
-        $sql .= ' ORDER BY s.session_date DESC, s.id DESC';
-        $stmt = $this->conn->prepare($sql);
-        $stmt->execute($params);
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
         $out = array_map(static function (array $row) {
             return [
                 'id' => (int)$row['id'],
@@ -1079,7 +1112,8 @@ class BugDatesController extends BaseAPI
         $stmt = $this->conn->prepare(
             "SELECT s.*, u.username AS host_name, e.title AS event_title
              FROM growth_program_sessions s
-             LEFT JOIN users u ON u.id = s.host_user_id
+             LEFT JOIN users u
+               ON s.host_user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
              LEFT JOIN bug_dates_events e ON e.id = s.event_id
              WHERE s.id = ?"
         );
@@ -1411,7 +1445,8 @@ class BugDatesController extends BaseAPI
         $stmt = $this->conn->query(
             "SELECT e.*, u.username AS created_by_name
              FROM bug_dates_events e
-             LEFT JOIN users u ON u.id = e.created_by
+             LEFT JOIN users u
+               ON e.created_by COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
              WHERE e.status = 'approved'"
         );
         $rows = $stmt ? ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];

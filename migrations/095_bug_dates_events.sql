@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS `bug_dates_events` (
   KEY `idx_bug_dates_events_status` (`status`),
   KEY `idx_bug_dates_events_closed` (`is_office_closed`, `start_date`),
   KEY `idx_bug_dates_events_visibility` (`visibility`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `growth_program_sessions` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS `growth_program_sessions` (
   KEY `idx_growth_sessions_host` (`host_user_id`),
   CONSTRAINT `fk_growth_sessions_event`
     FOREIGN KEY (`event_id`) REFERENCES `bug_dates_events` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `bug_dates_hooks` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS `bug_dates_hooks` (
   KEY `idx_bug_dates_hooks_type` (`hook_type`),
   CONSTRAINT `fk_bug_dates_hooks_event`
     FOREIGN KEY (`event_id`) REFERENCES `bug_dates_events` (`id`) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO `permissions` (`permission_key`, `permission_name`, `category`, `scope`, `created_at`)
 SELECT 'BUGDATES_VIEW', 'View BugDates Calendar', 'BugDates', 'global', NOW()
