@@ -167,6 +167,8 @@ if ($safeName === '') {
     $safeName = 'download';
 }
 
+$isVideo = str_starts_with($mimeType, 'video/')
+    || (bool) preg_match('/\.(mp4|webm|mov|m4v|mkv|avi)$/i', $safeName);
 $isAudio = str_starts_with($mimeType, 'audio/')
     || $mimeType === 'video/webm'
     || (bool) preg_match('/\.(webm|wav|mp3|m4a|ogg)$/i', $safeName);
@@ -187,7 +189,7 @@ header('X-Content-Type-Options: nosniff');
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Impersonate-User, X-User-Id');
-if ($isAudio && !$forceDownload) {
+if (($isAudio || $isVideo) && !$forceDownload) {
     header('Accept-Ranges: bytes');
 }
 
