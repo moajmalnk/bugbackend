@@ -335,10 +335,15 @@ class CreativeAssetsController extends BaseAPI
                 $data['uploaded_file_path'] ?? ($existing['uploaded_file_path'] ?? null),
                 500
             ),
-            'preview_thumbnail_url' => $this->sanitizeText(
-                $data['preview_thumbnail_url'] ?? ($existing['preview_thumbnail_url'] ?? null),
-                500
-            ),
+            // Why: Explicit null/empty must clear the card thumbnail (?? would keep the old value).
+            'preview_thumbnail_url' => array_key_exists('preview_thumbnail_url', $data)
+                ? $this->sanitizeText(
+                    is_string($data['preview_thumbnail_url'] ?? null)
+                        ? $data['preview_thumbnail_url']
+                        : null,
+                    500
+                )
+                : ($existing['preview_thumbnail_url'] ?? null),
             'status' => $status,
             'scheduled_date' => $this->sanitizeDate($data['scheduled_date'] ?? ($existing['scheduled_date'] ?? null)),
             'published_date' => $published,
