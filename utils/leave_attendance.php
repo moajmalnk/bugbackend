@@ -76,10 +76,43 @@ function br_leave_calendar_days(string $startDate, string $endDate): float
 }
 
 /**
- * Days of a leave span that fall inside a calendar month (YYYY-MM).
+ * Why: Leave balances should skip Sundays and company office-closed holidays.
  */
-function br_leave_days_in_month(string $startDate, string $endDate, string $yearMonth): float
+function br_leave_working_days(string $startDate, string $endDate, ?PDO $conn = null): float
 {
+    $tz = new DateTimeZone('Asia/Kolkata');
+    $start = DateTime::createFromFormat('Y-m-d', $startDate, $tz);
+    $end = DateTime::createFromFormat('Y-m-d', $endDate, $tz);
+    if (!$start || !$end || $end < $start) {
+        return 0.0;
+    }
+
+    if (!function_exists('br_is_office_closed')) {
+        require_once __DIR__ . '/bug_dates_recurrence.php';
+    }
+
+    $days = 0.0;
+    $cursor = clone $start;
+    while ($cursor <= $end) {
+        $ymd = $cursor->format('Y-m-d');
+        if (!br_is_office_closed($ymd, $conn)) {
+            $days += 1.0;
+        }
+        $cursor->modify('+1 day');
+    }
+    return $days;
+}
+
+/**
+ * Days of a leave span that fall inside a calendar month (YYYY-MM).
+ * Skips Sundays / office-closed holidays when $conn is provided.
+ */
+function br_leave_days_in_month(
+    string $startDate,
+    string $endDate,
+    string $yearMonth,
+    ?PDO $conn = null
+): float {
     if (!preg_match('/^\d{4}-\d{2}$/', $yearMonth)) {
         return 0.0;
     }
@@ -94,6 +127,9 @@ function br_leave_days_in_month(string $startDate, string $endDate, string $year
     $overlapEnd = min($endDate, $monthEnd);
     if ($overlapStart > $overlapEnd) {
         return 0.0;
+    }
+    if ($conn) {
+        return br_leave_working_days($overlapStart, $overlapEnd, $conn);
     }
     return br_leave_calendar_days($overlapStart, $overlapEnd);
 }

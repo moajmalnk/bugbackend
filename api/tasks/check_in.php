@@ -262,6 +262,7 @@ class CheckInController extends BaseAPI {
                 $computedLate = 0;
             }
             $isSunday = br_is_sunday($submissionDate);
+            $isHoliday = br_checkin_is_holiday($submissionDate, $this->conn);
             $justMarkedLate = false;
 
             // Use check-then-update/insert pattern for better compatibility
@@ -449,6 +450,8 @@ class CheckInController extends BaseAPI {
                 'work_mode' => $workMode,
                 'is_late' => (bool)$isLate,
                 'is_sunday' => $isSunday,
+                'is_office_closed' => $isHoliday,
+                'is_holiday' => $isHoliday,
                 'late_count' => (int)($strikeResult['late_count'] ?? $policyStatus['late_count'] ?? 0),
                 'late_limit' => (int)($strikeResult['late_limit'] ?? br_checkin_late_limit()),
                 'office_only' => !empty($policyStatus['office_only']),
@@ -566,6 +569,8 @@ class CheckInController extends BaseAPI {
                             'work_mode' => $workMode,
                             'is_late' => (bool)$isLate,
                             'is_sunday' => (bool)$isSunday,
+                            'is_office_closed' => (bool)$isHoliday,
+                            'is_holiday' => (bool)$isHoliday,
                             'late_count' => (int)($strikeResult['late_count'] ?? $policyStatus['late_count'] ?? 0),
                             'late_limit' => (int)($strikeResult['late_limit'] ?? br_checkin_late_limit()),
                             'check_in_distance_m' => $checkInDistance,

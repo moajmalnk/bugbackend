@@ -41,6 +41,9 @@ function br_attendance_work_mode_short($mode): string
  */
 function br_attendance_punctuality_label(array $meta): string
 {
+    if (!empty($meta['is_holiday']) || !empty($meta['is_office_closed'])) {
+        return 'Company holiday · on-time (never late)';
+    }
     if (!empty($meta['is_sunday'])) {
         return 'Sunday holiday · on-time (never late)';
     }
@@ -126,7 +129,7 @@ function br_attendance_whatsapp_meta_block(array $meta): string
     if (array_key_exists('work_mode', $meta) && $meta['work_mode'] !== null && $meta['work_mode'] !== '') {
         $lines[] = '📍 Location: *' . br_attendance_work_mode_short($meta['work_mode']) . '*';
     }
-    if (array_key_exists('is_late', $meta) || !empty($meta['is_sunday'])) {
+    if (array_key_exists('is_late', $meta) || !empty($meta['is_sunday']) || !empty($meta['is_holiday']) || !empty($meta['is_office_closed'])) {
         $lines[] = '⏱ Status: *' . br_attendance_punctuality_label($meta) . '*';
     }
     $loc = br_attendance_location_note($meta);
@@ -155,7 +158,7 @@ function br_attendance_email_meta_html(array $meta): string
     if (array_key_exists('work_mode', $meta) && $meta['work_mode'] !== null && $meta['work_mode'] !== '') {
         $rows[] = '<strong>Work location:</strong> ' . htmlspecialchars(br_attendance_work_mode_label($meta['work_mode']));
     }
-    if (array_key_exists('is_late', $meta) || !empty($meta['is_sunday'])) {
+    if (array_key_exists('is_late', $meta) || !empty($meta['is_sunday']) || !empty($meta['is_holiday']) || !empty($meta['is_office_closed'])) {
         $rows[] = '<strong>Punctuality:</strong> ' . htmlspecialchars(br_attendance_punctuality_label($meta));
     }
     $loc = br_attendance_location_note($meta);
@@ -198,7 +201,7 @@ function br_attendance_email_meta_text(array $meta): string
     if (array_key_exists('work_mode', $meta) && $meta['work_mode'] !== null && $meta['work_mode'] !== '') {
         $lines[] = 'Work location: ' . br_attendance_work_mode_label($meta['work_mode']);
     }
-    if (array_key_exists('is_late', $meta) || !empty($meta['is_sunday'])) {
+    if (array_key_exists('is_late', $meta) || !empty($meta['is_sunday']) || !empty($meta['is_holiday']) || !empty($meta['is_office_closed'])) {
         $lines[] = 'Punctuality: ' . br_attendance_punctuality_label($meta);
     }
     $loc = br_attendance_location_note($meta);

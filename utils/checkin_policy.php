@@ -1,9 +1,10 @@
 <?php
 /**
  * Why: Company check-in policy — configurable IST late cutoff (default 10:00 AM,
- * Mon–Sat), Sunday holiday (anytime, never late), Office/WFH mode, rolling late
- * strikes that force Office-only for the next calendar week after 3 unconsumed
- * lates, and Office geofence at Wired In Coworks (500 m).
+ * Mon–Sat), Sunday + BugDates office-closed holidays (anytime, never late),
+ * Office/WFH mode, rolling late strikes that force Office-only for the next
+ * calendar week after 3 unconsumed lates, and Office geofence at Wired In
+ * Coworks (500 m).
  */
 
 if (!defined('BR_CHECKIN_LATE_LIMIT')) {
@@ -458,9 +459,20 @@ function br_is_sunday(string $date): bool
 }
 
 /**
- * Late only on Mon–Sat when cutoff policy is enabled, server time is at/after
+ * Sunday or approved BugDates office-closed holiday.
+ */
+function br_checkin_is_holiday(string $date, ?PDO $conn = null): bool
+{
+    if (!function_exists('br_is_office_closed')) {
+        require_once __DIR__ . '/bug_dates_recurrence.php';
+    }
+    return br_is_office_closed($date, $conn);
+}
+
+/**
+ * Late only on working days when cutoff policy is enabled, server time is at/after
  * the configured IST cutoff, and the submission date is today.
- * Sunday is never late. Past/future admin dates are not marked late from "now".
+ * Sundays and company holidays are never late. Past/future admin dates are not marked late from "now".
  */
 function br_is_late_checkin(
     ?DateTimeInterface $now,
@@ -472,7 +484,7 @@ function br_is_late_checkin(
         return false;
     }
 
-    if (br_is_sunday($submissionDate)) {
+    if (br_checkin_is_holiday($submissionDate, $conn)) {
         return false;
     }
 
@@ -1311,6 +1323,7 @@ function br_checkin_policy_status(PDO $conn, $userId, string $date): array
 {
     br_ensure_checkin_policy_schema($conn);
     $isSunday = br_is_sunday($date);
+    $isOfficeClosed = br_checkin_is_holiday($date, $conn);
     $restriction = br_active_office_restriction($conn, $userId, $date);
     $lateCount = br_count_unconsumed_lates($conn, $userId);
     $exception = br_day_exception($conn, $userId, $date);
@@ -1364,6 +1377,8 @@ function br_checkin_policy_status(PDO $conn, $userId, string $date): array
         'checkin_cutoff_enabled' => $cutoff['enabled'],
         'checkin_cutoff_label' => $cutoff['label'],
         'is_sunday' => $isSunday,
+        'is_office_closed' => $isOfficeClosed,
+        'is_holiday' => $isOfficeClosed,
         'late_count' => $lateCount,
         'late_limit' => br_checkin_late_limit(),
         'office_only' => $officeOnly,

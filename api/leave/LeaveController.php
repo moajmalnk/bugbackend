@@ -3,6 +3,7 @@ require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../NotificationManager.php';
 require_once __DIR__ . '/../../utils/work_period.php';
 require_once __DIR__ . '/../../utils/leave_attendance.php';
+require_once __DIR__ . '/../../utils/bug_dates_recurrence.php';
 
 class LeaveController extends BaseAPI
 {
@@ -57,7 +58,10 @@ class LeaveController extends BaseAPI
             'start_date' => $row['start_date'],
             'end_date' => $row['end_date'],
             'days_count' => (float)$row['days_count'],
+            'is_half_day' => (bool)(int)($row['is_half_day'] ?? 0),
+            'half_day_type' => $row['half_day_type'] ?? null,
             'reason' => $row['reason'] ?? null,
+            'emergency_contact' => $row['emergency_contact'] ?? null,
             'status' => $row['status'],
             'reviewed_by' => $row['reviewed_by'] ?? null,
             'reviewed_at' => $row['reviewed_at'] ?? null,
@@ -206,9 +210,38 @@ class LeaveController extends BaseAPI
                 return;
             }
 
-            $days = br_leave_calendar_days($startDate, $endDate);
+            $isHalfDay = !empty($payload['is_half_day']);
+            $halfDayType = null;
+            if ($isHalfDay) {
+                $halfDayType = strtolower(trim((string)($payload['half_day_type'] ?? '')));
+                if (!in_array($halfDayType, ['first_half', 'second_half'], true)) {
+                    $this->sendJsonResponse(400, 'half_day_type must be first_half or second_half');
+                    return;
+                }
+                if ($startDate !== $endDate) {
+                    $this->sendJsonResponse(400, 'Half-day leave must be a single date');
+                    return;
+                }
+            }
+
+            $emergencyContact = trim((string)($payload['emergency_contact'] ?? ''));
+            if (mb_strlen($emergencyContact) > 50) {
+                $emergencyContact = mb_substr($emergencyContact, 0, 50);
+            }
+
+            $hasHalfCols = false;
+            try {
+                $c = $this->conn->query("SHOW COLUMNS FROM leave_requests LIKE 'is_half_day'");
+                $hasHalfCols = (bool)($c && $c->fetch(PDO::FETCH_ASSOC));
+            } catch (Throwable $e) {
+                $hasHalfCols = false;
+            }
+
+            $days = $isHalfDay
+                ? 0.5
+                : br_leave_working_days($startDate, $endDate, $this->conn);
             if ($days <= 0) {
-                $this->sendJsonResponse(400, 'Invalid leave duration');
+                $this->sendJsonResponse(400, 'Invalid leave duration (no working days in range)');
                 return;
             }
 
@@ -217,12 +250,16 @@ class LeaveController extends BaseAPI
                 return;
             }
 
+            // on_duty / zero-quota types: no monthly balance gate
+            $typeCode = strtolower((string)$type['code']);
+            $unlimitedQuota = $typeCode === 'on_duty' || (float)$type['monthly_quota'] <= 0;
+
             // Split the request into segments: days within the monthly balance keep the
             // requested type; overflow days are automatically marked Unpaid Leave.
             // Unpaid Leave is capped at monthly_quota (max 5 days / month).
-            $isUnpaidRequest = strtolower((string)$type['code']) === 'unpaid';
+            $isUnpaidRequest = $typeCode === 'unpaid';
             $unpaidType = null;
-            if (!$isUnpaidRequest) {
+            if (!$isUnpaidRequest && !$unlimitedQuota) {
                 $u = $this->conn->prepare("SELECT id, code, name, monthly_quota FROM leave_types WHERE code = 'unpaid' AND is_active = 1 LIMIT 1");
                 $u->execute();
                 $unpaidType = $u->fetch(PDO::FETCH_ASSOC) ?: null;
@@ -236,16 +273,80 @@ class LeaveController extends BaseAPI
             $unpaidRemainingByMonth = [];
             $current = null;
 
+            if ($isHalfDay) {
+                if (!$unlimitedQuota && !$isUnpaidRequest) {
+                    $ym = substr($startDate, 0, 7);
+                    $used = br_leave_used_days_in_month($this->conn, $userId, $leaveTypeId, $ym);
+                    $remaining = max(0.0, (float)$type['monthly_quota'] - $used);
+                    if ($remaining < 0.5 - 0.001) {
+                        // Try unpaid overflow for half day
+                        if ($unpaidType) {
+                            $unpaidUsed = br_leave_used_days_in_month($this->conn, $userId, (int)$unpaidType['id'], $ym);
+                            $unpaidRem = max(0.0, (float)$unpaidType['monthly_quota'] - $unpaidUsed);
+                            if ($unpaidRem < 0.5 - 0.001) {
+                                $this->sendJsonResponse(400, "Insufficient leave balance for half-day in {$ym}.");
+                                return;
+                            }
+                            $segments[] = [
+                                'type' => $unpaidType,
+                                'start' => $startDate,
+                                'end' => $endDate,
+                                'days' => 0.5,
+                            ];
+                        } else {
+                            $this->sendJsonResponse(400, "Insufficient {$type['name']} balance for half-day in {$ym}.");
+                            return;
+                        }
+                    } else {
+                        $segments[] = [
+                            'type' => $type,
+                            'start' => $startDate,
+                            'end' => $endDate,
+                            'days' => 0.5,
+                        ];
+                    }
+                } elseif ($isUnpaidRequest) {
+                    $ym = substr($startDate, 0, 7);
+                    $used = br_leave_used_days_in_month($this->conn, $userId, $leaveTypeId, $ym);
+                    $remaining = max(0.0, (float)$type['monthly_quota'] - $used);
+                    if ($remaining < 0.5 - 0.001) {
+                        $this->sendJsonResponse(400, "Insufficient Unpaid Leave balance for half-day in {$ym}.");
+                        return;
+                    }
+                    $segments[] = [
+                        'type' => $type,
+                        'start' => $startDate,
+                        'end' => $endDate,
+                        'days' => 0.5,
+                    ];
+                } else {
+                    $segments[] = [
+                        'type' => $type,
+                        'start' => $startDate,
+                        'end' => $endDate,
+                        'days' => 0.5,
+                    ];
+                }
+            } else {
             while ($cursor && $endDt && $cursor <= $endDt) {
                 $ym = $cursor->format('Y-m');
                 $date = $cursor->format('Y-m-d');
 
-                if ($isUnpaidRequest) {
+                if (br_is_office_closed($date, $this->conn)) {
+                    $cursor->modify('+1 day');
+                    continue;
+                }
+
+                $dayCost = 1.0;
+
+                if ($unlimitedQuota) {
+                    $dayType = $type;
+                } elseif ($isUnpaidRequest) {
                     if (!isset($remainingByMonth[$ym])) {
                         $used = br_leave_used_days_in_month($this->conn, $userId, $leaveTypeId, $ym);
                         $remainingByMonth[$ym] = max(0.0, (float)$type['monthly_quota'] - $used);
                     }
-                    if ($remainingByMonth[$ym] < 1.0 - 0.001) {
+                    if ($remainingByMonth[$ym] < $dayCost - 0.001) {
                         $this->sendJsonResponse(
                             400,
                             "Insufficient Unpaid Leave balance for {$ym}. Remaining: {$remainingByMonth[$ym]} (max {$type['monthly_quota']} / month)."
@@ -253,15 +354,15 @@ class LeaveController extends BaseAPI
                         return;
                     }
                     $dayType = $type;
-                    $remainingByMonth[$ym] -= 1.0;
+                    $remainingByMonth[$ym] -= $dayCost;
                 } else {
                     if (!isset($remainingByMonth[$ym])) {
                         $used = br_leave_used_days_in_month($this->conn, $userId, $leaveTypeId, $ym);
                         $remainingByMonth[$ym] = max(0.0, (float)$type['monthly_quota'] - $used);
                     }
-                    if ($remainingByMonth[$ym] >= 1.0 - 0.001) {
+                    if ($remainingByMonth[$ym] >= $dayCost - 0.001) {
                         $dayType = $type;
-                        $remainingByMonth[$ym] -= 1.0;
+                        $remainingByMonth[$ym] -= $dayCost;
                     } elseif ($unpaidType) {
                         $unpaidId = (int)$unpaidType['id'];
                         if (!isset($unpaidRemainingByMonth[$ym])) {
@@ -271,7 +372,7 @@ class LeaveController extends BaseAPI
                                 (float)$unpaidType['monthly_quota'] - $unpaidUsed
                             );
                         }
-                        if ($unpaidRemainingByMonth[$ym] < 1.0 - 0.001) {
+                        if ($unpaidRemainingByMonth[$ym] < $dayCost - 0.001) {
                             $this->sendJsonResponse(
                                 400,
                                 "Insufficient leave balance for {$ym}. {$type['name']} and Unpaid Leave (max {$unpaidType['monthly_quota']} / month) are exhausted."
@@ -279,9 +380,9 @@ class LeaveController extends BaseAPI
                             return;
                         }
                         $dayType = $unpaidType;
-                        $unpaidRemainingByMonth[$ym] -= 1.0;
+                        $unpaidRemainingByMonth[$ym] -= $dayCost;
                     } else {
-                        $needed = br_leave_days_in_month($startDate, $endDate, $ym);
+                        $needed = br_leave_days_in_month($startDate, $endDate, $ym, $this->conn);
                         $remaining = $remainingByMonth[$ym];
                         $this->sendJsonResponse(
                             400,
@@ -293,42 +394,68 @@ class LeaveController extends BaseAPI
 
                 if ($current && (int)$current['type']['id'] === (int)$dayType['id']) {
                     $current['end'] = $date;
+                    $current['days'] = ($current['days'] ?? 0) + $dayCost;
                 } else {
                     if ($current) {
                         $segments[] = $current;
                     }
-                    $current = ['type' => $dayType, 'start' => $date, 'end' => $date];
+                    $current = ['type' => $dayType, 'start' => $date, 'end' => $date, 'days' => $dayCost];
                 }
                 $cursor->modify('+1 day');
             }
             if ($current) {
                 $segments[] = $current;
             }
+            }
 
             if (empty($segments)) {
-                $this->sendJsonResponse(400, 'Invalid leave duration');
+                $this->sendJsonResponse(400, 'Invalid leave duration (no working days in range)');
                 return;
             }
 
-            $stmt = $this->conn->prepare(
-                "INSERT INTO leave_requests
-                 (user_id, leave_type_id, start_date, end_date, days_count, reason, status)
-                 VALUES (?, ?, ?, ?, ?, ?, 'pending')"
-            );
+            if ($hasHalfCols) {
+                $stmt = $this->conn->prepare(
+                    "INSERT INTO leave_requests
+                     (user_id, leave_type_id, start_date, end_date, days_count, is_half_day, half_day_type, reason, emergency_contact, status)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')"
+                );
+            } else {
+                $stmt = $this->conn->prepare(
+                    "INSERT INTO leave_requests
+                     (user_id, leave_type_id, start_date, end_date, days_count, reason, status)
+                     VALUES (?, ?, ?, ?, ?, ?, 'pending')"
+                );
+            }
 
             $createdIds = [];
             $summaryParts = [];
             $notifyQueue = [];
             foreach ($segments as $segment) {
-                $segDays = br_leave_calendar_days($segment['start'], $segment['end']);
-                $stmt->execute([
-                    $userId,
-                    (int)$segment['type']['id'],
-                    $segment['start'],
-                    $segment['end'],
-                    $segDays,
-                    $reason !== '' ? $reason : null,
-                ]);
+                $segDays = isset($segment['days'])
+                    ? (float)$segment['days']
+                    : br_leave_working_days($segment['start'], $segment['end'], $this->conn);
+                if ($hasHalfCols) {
+                    $stmt->execute([
+                        $userId,
+                        (int)$segment['type']['id'],
+                        $segment['start'],
+                        $segment['end'],
+                        $segDays,
+                        $isHalfDay ? 1 : 0,
+                        $isHalfDay ? $halfDayType : null,
+                        $reason !== '' ? $reason : null,
+                        $emergencyContact !== '' ? $emergencyContact : null,
+                    ]);
+                } else {
+                    $stmt->execute([
+                        $userId,
+                        (int)$segment['type']['id'],
+                        $segment['start'],
+                        $segment['end'],
+                        $segDays,
+                        $reason !== '' ? $reason : null,
+                    ]);
+                }
                 $segId = (int)$this->conn->lastInsertId();
                 $createdIds[] = $segId;
                 $segDaysLabel = rtrim(rtrim(number_format($segDays, 2, '.', ''), '0'), '.');
