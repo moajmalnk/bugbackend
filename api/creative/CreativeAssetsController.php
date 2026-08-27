@@ -240,8 +240,8 @@ class CreativeAssetsController extends BaseAPI
         if (!$this->can($decoded, 'CREATIVE_CREATE')) {
             return false;
         }
-        // Why: Creators may revise or withdraw work while it is still Draft / In Review / Rejected.
-        return in_array($row['status'], ['Draft', 'In Review', 'Rejected'], true);
+        // Why: Creators may edit their own assets in any workflow status (Draft → Published).
+        return in_array($row['status'], self::STATUSES, true);
     }
 
     private function applyOwnerScope(object $decoded, array &$where, array &$params): void
@@ -577,10 +577,8 @@ class CreativeAssetsController extends BaseAPI
         }
 
         if ($this->isCreatorRole($decoded) && !$this->can($decoded, 'CREATIVE_MANAGE')) {
-            $payload['status'] = $existing['status'] === 'Rejected' ? 'Draft' : $existing['status'];
-            if (!in_array($payload['status'], ['Draft', 'In Review', 'Rejected'], true)) {
-                $payload['status'] = 'Draft';
-            }
+            // Why: Field edits must not bounce Completed/Published back to Draft; status moves via submit/publish/review.
+            $payload['status'] = $existing['status'];
         }
 
         $stmt = $this->conn->prepare(
