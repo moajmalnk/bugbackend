@@ -1123,7 +1123,7 @@ class NotificationManager extends BaseAPI {
         $userId = (string) $userId;
         $role = strtolower((string) $this->getUserRole($userId));
         // Only notify admin channel for workforce check-ins.
-        if (!in_array($role, ['admin', 'developer', 'tester'], true)) {
+        if (!in_array($role, ['admin', 'developer', 'tester', 'creator'], true)) {
             error_log("NotificationManager::notifyWorkCheckIn - Skip non-workforce role '{$role}' for user {$userId}");
             return false;
         }

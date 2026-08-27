@@ -717,7 +717,7 @@ function generateRoleBasedTaskUrl($role, $taskId) {
     
     // Map roles to URL paths
     $rolePath = 'user'; // Default fallback
-    if (in_array($role, ['admin', 'developer', 'tester', 'user'])) {
+    if (in_array($role, ['admin', 'developer', 'tester', 'user', 'creator'])) {
         $rolePath = $role;
     }
     
@@ -739,7 +739,7 @@ function generateRoleBasedBugUrl($role, $bugId) {
     
     // Map roles to URL paths
     $rolePath = 'user'; // Default fallback
-    if (in_array($role, ['admin', 'developer', 'tester', 'user'])) {
+    if (in_array($role, ['admin', 'developer', 'tester', 'user', 'creator'])) {
         $rolePath = $role;
     }
     
@@ -1131,7 +1131,7 @@ function generateRoleBasedUpdateUrl($role, $updateId) {
     
     // Map roles to URL paths
     $rolePath = 'user'; // Default fallback
-    if (in_array($role, ['admin', 'developer', 'tester', 'user'])) {
+    if (in_array($role, ['admin', 'developer', 'tester', 'user', 'creator'])) {
         $rolePath = $role;
     }
     
@@ -1432,7 +1432,7 @@ function generateRoleBasedProjectUrl($role, $projectId) {
     
     // Map roles to URL paths
     $rolePath = 'user'; // Default fallback
-    if (in_array($role, ['admin', 'developer', 'tester', 'user'])) {
+    if (in_array($role, ['admin', 'developer', 'tester', 'user', 'creator'])) {
         $rolePath = $role;
     }
     

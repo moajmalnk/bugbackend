@@ -30,7 +30,7 @@ class AnnouncementController extends BaseAPI {
             $userRole = $decoded->role ?? 'user';
             
             // Determine user's role for filtering
-            $roleMap = ['admin' => 'admins', 'developer' => 'developers', 'tester' => 'testers'];
+            $roleMap = ['admin' => 'admins', 'developer' => 'developers', 'tester' => 'testers', 'creator' => 'creators'];
             $userRoleFilter = $roleMap[$userRole] ?? null;
 
             // Build role filter condition

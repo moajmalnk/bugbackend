@@ -769,7 +769,7 @@ class UserController extends BaseAPI {
                     // Map the role_name to a valid ENUM value
                     $actualRole = strtolower($roleData['role_name']);
                     // Map to valid ENUM values
-                    if (in_array($actualRole, ['admin', 'developer', 'tester', 'user'])) {
+                    if (in_array($actualRole, ['admin', 'developer', 'tester', 'user', 'creator'])) {
                         $role = $actualRole;
                     } else {
                         // For custom roles, use a default ENUM value ('user')
@@ -978,7 +978,7 @@ class UserController extends BaseAPI {
                         // Map the role_name to a valid ENUM value
                         $actualRole = strtolower($roleData['role_name']);
                         // Map to valid ENUM values
-                        if (in_array($actualRole, ['admin', 'developer', 'tester', 'user'])) {
+                        if (in_array($actualRole, ['admin', 'developer', 'tester', 'user', 'creator'])) {
                             $role = $actualRole;
                         } else {
                             // For custom roles, use a default ENUM value

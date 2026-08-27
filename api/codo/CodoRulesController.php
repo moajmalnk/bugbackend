@@ -3,7 +3,7 @@ require_once __DIR__ . '/../BaseAPI.php';
 
 class CodoRulesController extends BaseAPI
 {
-    private const TEAM_ROLES = ['admin', 'developer', 'tester'];
+    private const TEAM_ROLES = ['admin', 'developer', 'tester', 'creator'];
     private const PHASES = ['developer', 'tester', 'project'];
 
     public function __construct()
@@ -25,7 +25,7 @@ class CodoRulesController extends BaseAPI
         }
         $role = strtolower(trim((string)($decoded->role ?? '')));
         if (!in_array($role, self::TEAM_ROLES, true)) {
-            $this->sendJsonResponse(403, 'Access denied. Common CODO is available to admin, developer, and tester.');
+            $this->sendJsonResponse(403, 'Access denied. Common CODO is available to admin, developer, tester, and creator.');
             return null;
         }
         return $decoded;

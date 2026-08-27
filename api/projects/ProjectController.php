@@ -429,7 +429,7 @@ class ProjectController extends BaseAPI
             return;
         }
 
-        $allowedRoles = ['manager', 'developer', 'tester'];
+        $allowedRoles = ['manager', 'developer', 'tester', 'creator'];
         $stmt = $this->conn->prepare(
             "INSERT INTO project_members (project_id, user_id, role, joined_at) VALUES (?, ?, ?, NOW())"
         );

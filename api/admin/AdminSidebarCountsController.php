@@ -64,6 +64,7 @@ class AdminSidebarCountsController extends BaseAPI
             'settings' => 0,
             'backup' => 0,
             'recycleBin' => 0,
+            'creative' => 0,
         ];
     }
 
@@ -191,7 +192,7 @@ class AdminSidebarCountsController extends BaseAPI
                     ? ' WHERE COALESCE(is_archived, 0) = 0'
                     : '';
                 $counts['docs'] = $this->countOrZero("SELECT COUNT(*) FROM user_documents{$archived}");
-            } elseif ($role === 'developer' || $role === 'tester') {
+            } elseif ($role === 'developer' || $role === 'tester' || $role === 'creator') {
                 $counts['docs'] = $this->countSharedDocuments($userId);
             }
         }
@@ -205,7 +206,7 @@ class AdminSidebarCountsController extends BaseAPI
                     ? ' WHERE COALESCE(is_archived, 0) = 0'
                     : '';
                 $counts['sheets'] = $this->countOrZero("SELECT COUNT(*) FROM user_sheets{$archived}");
-            } elseif ($role === 'developer' || $role === 'tester') {
+            } elseif ($role === 'developer' || $role === 'tester' || $role === 'creator') {
                 $counts['sheets'] = $this->countSharedSheets($userId);
             }
         }
@@ -418,6 +419,20 @@ class AdminSidebarCountsController extends BaseAPI
                 'SELECT COUNT(*) FROM recycle_bin_items
                  WHERE restored_at IS NULL AND purged_at IS NULL'
             );
+        }
+
+        if ($can('CREATIVE_VIEW') && $this->dbTableExists('creative_assets')) {
+            if ($isAdmin || $can('CREATIVE_REVIEW') || $can('CREATIVE_MANAGE')) {
+                $counts['creative'] = $this->countOrZero(
+                    "SELECT COUNT(*) FROM creative_assets WHERE status = 'In Review'"
+                );
+            } else {
+                $counts['creative'] = $this->countOrZero(
+                    "SELECT COUNT(*) FROM creative_assets
+                     WHERE creator_id = ? AND status IN ('Draft', 'In Review')",
+                    [$userId]
+                );
+            }
         }
 
         header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
