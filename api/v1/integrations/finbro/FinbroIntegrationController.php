@@ -30,6 +30,7 @@ class FinbroIntegrationController
         }
 
         br_finbro_require_auth();
+        br_finbro_rate_limit_check();
 
         switch ($route) {
             case 'users/status':
@@ -97,7 +98,9 @@ class FinbroIntegrationController
         $emailFilter = $email !== '' ? $email : null;
 
         $users = br_finbro_load_users($this->conn, $emailFilter);
-        $buckets = br_finbro_aggregate_hours_by_user($this->conn, $from, $to);
+        // Scope month scan to loaded users when email filter is set; full roster otherwise.
+        $userIds = $emailFilter !== null ? br_finbro_user_ids($users) : null;
+        $buckets = br_finbro_aggregate_hours_by_user($this->conn, $from, $to, $userIds);
         $members = br_finbro_build_members($users, $buckets);
 
         br_finbro_json_response(200, [
@@ -127,9 +130,17 @@ class FinbroIntegrationController
         if ($from > $to) {
             br_finbro_json_response(422, ['error' => 'from must be less than or equal to to']);
         }
+        if (br_finbro_range_day_count($from, $to) > 366) {
+            br_finbro_json_response(422, ['error' => 'Date range must be at most 366 days']);
+        }
 
         $users = br_finbro_load_users($this->conn, $email);
-        $buckets = br_finbro_aggregate_hours_by_user($this->conn, $from, $to);
+        $buckets = br_finbro_aggregate_hours_by_user(
+            $this->conn,
+            $from,
+            $to,
+            br_finbro_user_ids($users)
+        );
         $members = br_finbro_build_members($users, $buckets);
 
         br_finbro_json_response(200, [

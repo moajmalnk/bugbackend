@@ -10,6 +10,9 @@ function br_work_submission_has_extra_request(array $s): bool
 /**
  * Overtime that counts toward period totals. Explicit extra-hour requests only count after admin approval (or change).
  * Rejected and pending requests contribute 0. Rows without an explicit request use stored overtime_hours (e.g. hours > 8).
+ *
+ * Why: Never fatal if OT approval columns are missing (older prod DBs). array_key_exists + ?? keep this safe
+ * when Finbro SELECT omits or the DB lacks extra_hours_approval_status / requested_extra_hours / approval_reason.
  */
 function br_effective_overtime_hours_for_stats(array $s): float
 {
