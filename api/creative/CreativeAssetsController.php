@@ -14,7 +14,7 @@ class CreativeAssetsController extends BaseAPI
         'Tips', 'Document', 'Logo', 'Brochure', 'Other',
     ];
     private const PLATFORMS = ['Insta', 'Web', 'YouTube', 'LinkedIn', 'Other'];
-    private const SOURCES = ['link', 'upload'];
+    private const SOURCES = ['link', 'upload', 'both'];
     private const REVIEW_STATUSES = ['Approved', 'Changes Requested', 'Rejected'];
     private const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
     private const ALLOWED_EXT = [
@@ -324,17 +324,38 @@ class CreativeAssetsController extends BaseAPI
             $published = date('Y-m-d');
         }
 
+        // Why: Drive link and upload are independent — clear when the client sends explicit null/empty.
+        $driveLink = array_key_exists('drive_link', $data)
+            ? $this->sanitizeUrl(
+                is_string($data['drive_link'] ?? null) ? $data['drive_link'] : null
+            )
+            : ($existing['drive_link'] ?? null);
+        $uploadedPath = array_key_exists('uploaded_file_path', $data)
+            ? $this->sanitizeText(
+                is_string($data['uploaded_file_path'] ?? null) ? $data['uploaded_file_path'] : null,
+                500
+            )
+            : ($existing['uploaded_file_path'] ?? null);
+
+        // Derive source from what is actually attached (link / upload / both).
+        $hasLink = $driveLink !== null && $driveLink !== '';
+        $hasFile = $uploadedPath !== null && $uploadedPath !== '';
+        if ($hasLink && $hasFile) {
+            $source = 'both';
+        } elseif ($hasFile) {
+            $source = 'upload';
+        } else {
+            $source = 'link';
+        }
+
         return [
             'title' => $title,
             'material_type' => $material,
             'platform' => $platform,
             'hook_content' => $this->sanitizeText($data['hook_content'] ?? ($existing['hook_content'] ?? null), 2000),
             'asset_source' => $source,
-            'drive_link' => $this->sanitizeUrl($data['drive_link'] ?? ($existing['drive_link'] ?? null)),
-            'uploaded_file_path' => $this->sanitizeText(
-                $data['uploaded_file_path'] ?? ($existing['uploaded_file_path'] ?? null),
-                500
-            ),
+            'drive_link' => $driveLink,
+            'uploaded_file_path' => $uploadedPath,
             // Why: Explicit null/empty must clear the card thumbnail (?? would keep the old value).
             'preview_thumbnail_url' => array_key_exists('preview_thumbnail_url', $data)
                 ? $this->sanitizeText(
