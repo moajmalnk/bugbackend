@@ -1450,6 +1450,7 @@ class UserWorkStatsController extends BaseAPI {
                 'admin' => [],
                 'developer' => [],
                 'tester' => [],
+                'creator' => [],
             ];
 
             foreach ($allUsers as $user) {
@@ -1506,7 +1507,7 @@ class UserWorkStatsController extends BaseAPI {
                 ];
             }
 
-            $allRankedUsers = array_merge($roleGroups['admin'], $roleGroups['developer'], $roleGroups['tester']);
+            $allRankedUsers = array_merge($roleGroups['admin'], $roleGroups['developer'], $roleGroups['tester'], $roleGroups['creator']);
 
             $payload = [
                 'period' => [
