@@ -433,6 +433,31 @@ class BaseAPI {
         
         return $headerId ?: $queryId ?: $bodyId;
     }
+
+    /**
+     * Why: Impersonation connection checks use the admin's Google token.
+     * Create/update must use that same account, or Google returns 403 for the target user.
+     *
+     * @param object $userData Token payload from validateToken()
+     */
+    public function resolveGoogleAccountUserId($userData): string
+    {
+        $userId = isset($userData->user_id) ? (string) $userData->user_id : '';
+        $adminId = !empty($userData->admin_id) ? (string) $userData->admin_id : '';
+        $isImpersonated = false;
+        if (isset($userData->impersonated)) {
+            $isImpersonated = $userData->impersonated === true
+                || $userData->impersonated === 'true'
+                || $userData->impersonated === 1;
+        }
+        if (!$isImpersonated && $adminId !== '') {
+            $isImpersonated = true;
+        }
+        if ($isImpersonated && $adminId !== '') {
+            return $adminId;
+        }
+        return $userId;
+    }
     
     protected function getBearerToken() {
         $headers = $this->getAuthorizationHeader();

@@ -36,8 +36,7 @@ try {
         $admin_id = $userData->admin_id;
     }
     
-    // Use admin's Google account if impersonating, otherwise use the user's account
-    $googleAccountUserId = $is_impersonated && $admin_id ? $admin_id : $userId;
+    $googleAccountUserId = $sheetsController->resolveGoogleAccountUserId($userData);
     
     error_log("Checking connection for user: " . $userId . ", googleAccountUserId: " . $googleAccountUserId . ", impersonated: " . ($is_impersonated ? 'yes' : 'no'));
     

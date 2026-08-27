@@ -50,8 +50,7 @@ try {
         throw new Exception('Invalid bug ID format');
     }
     
-    // Use admin's Google account if impersonating, otherwise use the user's account
-    $googleAccountUserId = $is_impersonated && $admin_id ? $admin_id : $userId;
+    $googleAccountUserId = $docsController->resolveGoogleAccountUserId($userData);
     
     error_log("Creating document for bug: " . $bugId . ", user: " . $userId . ", googleAccountUserId: " . $googleAccountUserId . ", impersonated: " . ($is_impersonated ? 'yes' : 'no'));
     

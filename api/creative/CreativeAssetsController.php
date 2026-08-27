@@ -240,7 +240,8 @@ class CreativeAssetsController extends BaseAPI
         if (!$this->can($decoded, 'CREATIVE_CREATE')) {
             return false;
         }
-        return in_array($row['status'], ['Draft', 'Rejected'], true);
+        // Why: Creators may revise or withdraw work while it is still Draft / In Review / Rejected.
+        return in_array($row['status'], ['Draft', 'In Review', 'Rejected'], true);
     }
 
     private function applyOwnerScope(object $decoded, array &$where, array &$params): void
@@ -577,7 +578,7 @@ class CreativeAssetsController extends BaseAPI
 
         if ($this->isCreatorRole($decoded) && !$this->can($decoded, 'CREATIVE_MANAGE')) {
             $payload['status'] = $existing['status'] === 'Rejected' ? 'Draft' : $existing['status'];
-            if (!in_array($payload['status'], ['Draft', 'Rejected'], true)) {
+            if (!in_array($payload['status'], ['Draft', 'In Review', 'Rejected'], true)) {
                 $payload['status'] = 'Draft';
             }
         }
@@ -630,11 +631,11 @@ class CreativeAssetsController extends BaseAPI
             return;
         }
 
-        $isOwnerDraft = (string)$existing['creator_id'] === (string)$decoded->user_id
-            && $existing['status'] === 'Draft'
+        $isOwnerDeletable = (string)$existing['creator_id'] === (string)$decoded->user_id
+            && in_array($existing['status'], ['Draft', 'In Review'], true)
             && $this->can($decoded, 'CREATIVE_CREATE');
-        if (!$this->can($decoded, 'CREATIVE_MANAGE') && !$this->isAdmin($decoded) && !$isOwnerDraft) {
-            $this->sendJsonResponse(403, 'Only drafts can be deleted by their owner');
+        if (!$this->can($decoded, 'CREATIVE_MANAGE') && !$this->isAdmin($decoded) && !$isOwnerDeletable) {
+            $this->sendJsonResponse(403, 'Only Draft or In Review assets can be deleted by their owner');
             return;
         }
 

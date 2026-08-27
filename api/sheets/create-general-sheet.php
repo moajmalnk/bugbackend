@@ -65,7 +65,7 @@ try {
     }
     
     // Validate role
-    $validRoles = ['for_me', 'all', 'admins', 'developers', 'testers'];
+    $validRoles = ['for_me', 'all', 'admins', 'developers', 'testers', 'creators'];
     // Support comma-separated roles
     if (strpos($role, ',') !== false) {
         $roles = array_map('trim', explode(',', $role));
@@ -87,10 +87,11 @@ try {
         }
     }
     
-    error_log("Creating general sheet: '{$sheetTitle}' for user: {$userId}, project: " . ($projectId ?? 'none') . ", role: {$role}");
+    $googleAccountUserId = $controller->resolveGoogleAccountUserId($userData);
+    error_log("Creating general sheet: '{$sheetTitle}' for user: {$userId}, googleAccountUserId: {$googleAccountUserId}, project: " . ($projectId ?? 'none') . ", role: {$role}");
     
-    // Create sheet
-    $result = $controller->createGeneralSheet($userId, $sheetTitle, $templateId, $sheetType, $projectId, $role, $allowedUserIds);
+    // Create sheet (owned by impersonated user; Google API uses admin token while impersonating)
+    $result = $controller->createGeneralSheet($userId, $sheetTitle, $templateId, $sheetType, $projectId, $role, $allowedUserIds, $googleAccountUserId);
     
     http_response_code(201);
     echo json_encode($result);

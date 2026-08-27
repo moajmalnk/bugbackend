@@ -87,7 +87,7 @@ try {
     $allowedUserIds = $input['allowed_user_ids'] ?? ($input['allowed_users'] ?? null);
     
     // Validate role (support comma-separated roles for multi-select)
-    $validRoles = ['for_me', 'all', 'admins', 'developers', 'testers'];
+    $validRoles = ['for_me', 'all', 'admins', 'developers', 'testers', 'creators'];
     // Support comma-separated roles
     if (strpos($role, ',') !== false) {
         $roles = array_map('trim', explode(',', $role));

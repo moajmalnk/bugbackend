@@ -238,7 +238,8 @@ class BugSheetsController extends BaseAPI {
         $roleMap = [
             'admin' => 'admins',
             'developer' => 'developers',
-            'tester' => 'testers'
+            'tester' => 'testers',
+            'creator' => 'creators',
         ];
         $dbRole = isset($roleMap[$userRole]) ? $roleMap[$userRole] : $userRole;
         
@@ -253,22 +254,10 @@ class BugSheetsController extends BaseAPI {
             $excludeForMe = " AND {$tableAlias}.role != 'for_me'";
         }
         
-        // Admins can see all documents (except "for_me" unless they're the creator)
-        if ($userRole === 'admin') {
-            // Admins can see: all, admins, or any document containing 'admins' in comma-separated list
-            // Use FIND_IN_SET for precise comma-separated matching, or LIKE as fallback
-            $filter = "({$tableAlias}.role IS NULL OR {$tableAlias}.role = 'all' OR {$tableAlias}.role = 'admins' OR FIND_IN_SET('admins', {$tableAlias}.role) > 0 OR {$tableAlias}.role LIKE 'admins,%' OR {$tableAlias}.role LIKE '%,admins' OR {$tableAlias}.role LIKE '%,admins,%'){$excludeForMe}";
-        }
-        // Developers can see: all, developers, or documents containing 'developers' in comma-separated list
-        else if ($userRole === 'developer') {
-            $filter = "({$tableAlias}.role IS NULL OR {$tableAlias}.role = 'all' OR {$tableAlias}.role = 'developers' OR FIND_IN_SET('developers', {$tableAlias}.role) > 0 OR {$tableAlias}.role LIKE 'developers,%' OR {$tableAlias}.role LIKE '%,developers' OR {$tableAlias}.role LIKE '%,developers,%'){$excludeForMe}";
-        }
-        // Testers can see: all, testers, or documents containing 'testers' in comma-separated list
-        else if ($userRole === 'tester') {
-            $filter = "({$tableAlias}.role IS NULL OR {$tableAlias}.role = 'all' OR {$tableAlias}.role = 'testers' OR FIND_IN_SET('testers', {$tableAlias}.role) > 0 OR {$tableAlias}.role LIKE 'testers,%' OR {$tableAlias}.role LIKE '%,testers' OR {$tableAlias}.role LIKE '%,testers,%'){$excludeForMe}";
-        }
-        // Regular users can only see 'all'
-        else {
+        if (isset($roleMap[$userRole])) {
+            $audience = $roleMap[$userRole];
+            $filter = "({$tableAlias}.role IS NULL OR {$tableAlias}.role = 'all' OR {$tableAlias}.role = '{$audience}' OR FIND_IN_SET('{$audience}', {$tableAlias}.role) > 0 OR {$tableAlias}.role LIKE '{$audience},%' OR {$tableAlias}.role LIKE '%,{$audience}' OR {$tableAlias}.role LIKE '%,{$audience},%'){$excludeForMe}";
+        } else {
             $filter = "({$tableAlias}.role IS NULL OR {$tableAlias}.role = 'all'){$excludeForMe}";
         }
 
@@ -337,12 +326,14 @@ class BugSheetsController extends BaseAPI {
      * @param string|null $projectId Project ID (optional)
      * @param string $role Role access (default: 'all')
      * @param string|null $allowedUserIds Comma-separated user UUIDs with explicit access
+     * @param string|null $googleAccountUserId Google token owner (admin while impersonating)
      * @return array Sheet details with URL
      */
-    public function createGeneralSheet($userId, $sheetTitle, $templateId = null, $sheetType = 'general', $projectId = null, $role = 'all', $allowedUserIds = null) {
+    public function createGeneralSheet($userId, $sheetTitle, $templateId = null, $sheetType = 'general', $projectId = null, $role = 'all', $allowedUserIds = null, $googleAccountUserId = null) {
         try {
-            // Get authenticated client
-            $client = $this->authService->getClientForUser($userId);
+            // Get authenticated client (admin Google account while impersonating)
+            $googleUserId = $googleAccountUserId ?: $userId;
+            $client = $this->authService->getClientForUser($googleUserId);
             $sheetsService = new Google\Service\Sheets($client);
             $driveService = new Google\Service\Drive($client);
             
