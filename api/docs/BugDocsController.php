@@ -764,7 +764,7 @@ class BugDocsController extends BaseAPI {
     }
     
     /**
-     * List shared documents for developers/testers from projects they're members of
+     * List shared documents for developers, testers, and creators from projects they belong to
      * 
      * @param string $userId User ID
      * @param bool $includeArchived Include archived documents (default: false)

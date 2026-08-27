@@ -835,7 +835,7 @@ class BugSheetsController extends BaseAPI {
     }
     
     /**
-     * List shared sheets for developers/testers from projects they're members of
+     * List shared sheets for developers, testers, and creators from projects they belong to
      * 
      * @param string $userId User ID
      * @param bool $includeArchived Include archived sheets (default: false)

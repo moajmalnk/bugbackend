@@ -422,6 +422,8 @@ class AnnouncementController extends BaseAPI {
                 $roles[] = 'developer';
             } elseif ($normalized === 'testers') {
                 $roles[] = 'tester';
+            } elseif ($normalized === 'creators') {
+                $roles[] = 'creator';
             }
         }
 
