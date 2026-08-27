@@ -252,6 +252,29 @@ class CreativeAssetsController extends BaseAPI
         $params[] = $decoded->user_id;
     }
 
+    /**
+     * Why: Dashboard-style period filter scopes counts and lists to created_at.
+     */
+    private function applyCreatedPeriod(?string $from, ?string $to, array &$where, array &$params): void
+    {
+        $from = $this->sanitizeDate($from);
+        $to = $this->sanitizeDate($to);
+        if ($from !== null && $to !== null) {
+            $where[] = 'DATE(a.created_at) BETWEEN ? AND ?';
+            $params[] = $from;
+            $params[] = $to;
+            return;
+        }
+        if ($from !== null) {
+            $where[] = 'DATE(a.created_at) >= ?';
+            $params[] = $from;
+        }
+        if ($to !== null) {
+            $where[] = 'DATE(a.created_at) <= ?';
+            $params[] = $to;
+        }
+    }
+
     private function parsePayload(array $data, object $decoded, ?array $existing = null): array
     {
         $title = $this->sanitizeText($data['title'] ?? ($existing['title'] ?? null), 255);
@@ -339,6 +362,8 @@ class CreativeAssetsController extends BaseAPI
         $material = isset($_GET['material_type']) ? trim((string)$_GET['material_type']) : '';
         $platform = isset($_GET['platform']) ? trim((string)$_GET['platform']) : '';
         $projectId = isset($_GET['project_id']) ? trim((string)$_GET['project_id']) : '';
+        $from = isset($_GET['from']) ? (string)$_GET['from'] : null;
+        $to = isset($_GET['to']) ? (string)$_GET['to'] : null;
         $page = max(1, (int)($_GET['page'] ?? 1));
         $limit = min(100, max(1, (int)($_GET['limit'] ?? 20)));
         $offset = ($page - 1) * $limit;
@@ -346,6 +371,7 @@ class CreativeAssetsController extends BaseAPI
         $where = ['1=1'];
         $params = [];
         $this->applyOwnerScope($decoded, $where, $params);
+        $this->applyCreatedPeriod($from, $to, $where, $params);
 
         if ($q !== '') {
             $where[] = '(a.title LIKE ? OR a.hook_content LIKE ? OR u.username LIKE ? OR p.name LIKE ?)';
@@ -741,12 +767,13 @@ class CreativeAssetsController extends BaseAPI
             return;
         }
 
-        $from = $this->sanitizeDate($_GET['from'] ?? null);
-        $to = $this->sanitizeDate($_GET['to'] ?? null);
+        $from = isset($_GET['from']) ? (string)$_GET['from'] : null;
+        $to = isset($_GET['to']) ? (string)$_GET['to'] : null;
 
         $where = ['1=1'];
         $params = [];
         $this->applyOwnerScope($decoded, $where, $params);
+        $this->applyCreatedPeriod($from, $to, $where, $params);
         $whereSql = implode(' AND ', $where);
 
         $counts = [];
@@ -768,17 +795,10 @@ class CreativeAssetsController extends BaseAPI
         $dueStmt->execute($params);
         $dueThisWeek = (int)$dueStmt->fetchColumn();
 
-        $publishedWhere = $whereSql;
-        $publishedParams = $params;
-        if ($from && $to) {
-            $publishedWhere .= ' AND a.published_date BETWEEN ? AND ?';
-            $publishedParams[] = $from;
-            $publishedParams[] = $to;
-        }
         $pubStmt = $this->conn->prepare(
-            "SELECT COUNT(*) FROM creative_assets a WHERE {$publishedWhere} AND a.status = 'Published'"
+            "SELECT COUNT(*) FROM creative_assets a WHERE {$whereSql} AND a.status = 'Published'"
         );
-        $pubStmt->execute($publishedParams);
+        $pubStmt->execute($params);
         $publishedInPeriod = (int)$pubStmt->fetchColumn();
 
         $feedbackStmt = $this->conn->prepare(

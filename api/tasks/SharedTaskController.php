@@ -1,7 +1,18 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
 
 class SharedTaskController extends BaseAPI {
+    /**
+     * Why: Soft-deleted shared tasks belong in recycle bin, not live BugToDo lists.
+     */
+    private function sharedTaskLiveClause(string $alias = 'st'): string
+    {
+        if (!$this->dbColumnExists('shared_tasks', 'deleted_at')) {
+            return '1=1';
+        }
+        return RecycleBinService::liveClause($alias);
+    }
     
     // Get all shared tasks for current user (assigned to or created by)
     public function getSharedTasks($userId, $status = null) {
@@ -12,6 +23,7 @@ class SharedTaskController extends BaseAPI {
                 FROM shared_tasks st
                 LEFT JOIN shared_task_assignees sta ON st.id = sta.shared_task_id
                 WHERE (st.assigned_to = ? OR st.created_by = ? OR sta.assigned_to = ?)
+                  AND " . $this->sharedTaskLiveClause('st') . "
             ";
             
             $taskIdsParams = [$userId, $userId, $userId];
@@ -56,6 +68,7 @@ class SharedTaskController extends BaseAPI {
                 LEFT JOIN shared_task_assignees sta ON st.id = sta.shared_task_id
                 LEFT JOIN users au ON sta.assigned_to COLLATE utf8mb4_unicode_ci = au.id COLLATE utf8mb4_unicode_ci
                 WHERE st.id IN ($placeholders)
+                  AND " . $this->sharedTaskLiveClause('st') . "
             ";
             
             $params = $taskIds;
@@ -283,7 +296,7 @@ class SharedTaskController extends BaseAPI {
                 LEFT JOIN projects p ON stp.project_id COLLATE utf8mb4_unicode_ci = p.id COLLATE utf8mb4_unicode_ci
                 LEFT JOIN shared_task_assignees sta ON st.id = sta.shared_task_id
                 LEFT JOIN users au ON sta.assigned_to COLLATE utf8mb4_unicode_ci = au.id COLLATE utf8mb4_unicode_ci
-                WHERE st.id = ?
+                WHERE st.id = ? AND " . $this->sharedTaskLiveClause('st') . "
                 GROUP BY st.id
             ";
             
@@ -357,7 +370,9 @@ class SharedTaskController extends BaseAPI {
     public function updateSharedTask($taskId, $data, $userId) {
         try {
             // Check if user is the creator of the task
-            $checkCreatorStmt = $this->conn->prepare("SELECT created_by FROM shared_tasks WHERE id = ?");
+            $checkCreatorStmt = $this->conn->prepare(
+                "SELECT created_by FROM shared_tasks WHERE id = ? AND " . $this->sharedTaskLiveClause('')
+            );
             $checkCreatorStmt->execute([$taskId]);
             $task = $checkCreatorStmt->fetch(PDO::FETCH_ASSOC);
             

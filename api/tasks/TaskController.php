@@ -1,8 +1,20 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../ActivityLogger.php';
+require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
 
 class TaskController extends BaseAPI {
+    /**
+     * Why: Soft-deleted user_tasks live in recycle bin and must not reappear on BugToDo.
+     */
+    private function userTaskLiveClause(): string
+    {
+        if (!$this->dbColumnExists('user_tasks', 'deleted_at')) {
+            return '1=1';
+        }
+        return RecycleBinService::liveClause();
+    }
+
     public function createTask($payload) {
         $decoded = $this->validateToken();
         $userId = $decoded->user_id;
@@ -57,7 +69,7 @@ class TaskController extends BaseAPI {
         $roleInfo = isset($decoded->role) ? " Role: " . $decoded->role : "";
         error_log("🔍 TaskController::listMyTasks - User ID: " . $userId . ", Username: " . ($decoded->username ?? 'unknown') . $impersonationInfo . $roleInfo);
 
-        $conditions = ["user_id = ?"]; $params = [$userId];
+        $conditions = ["user_id = ?", $this->userTaskLiveClause()]; $params = [$userId];
         if (!empty($filters['status'])) { $conditions[] = "status = ?"; $params[] = $filters['status']; }
         if (!empty($filters['project_id'])) { $conditions[] = "project_id = ?"; $params[] = $filters['project_id']; }
         $where = "WHERE " . implode(" AND ", $conditions);
@@ -85,7 +97,7 @@ class TaskController extends BaseAPI {
         if (!$sets) { $this->sendJsonResponse(400, 'Nothing to update'); }
         $params[] = $id; $params[] = $userId;
 
-        $sql = "UPDATE user_tasks SET " . implode(',', $sets) . " WHERE id = ? AND user_id = ?";
+        $sql = "UPDATE user_tasks SET " . implode(',', $sets) . " WHERE id = ? AND user_id = ? AND " . $this->userTaskLiveClause();
         $stmt = $this->conn->prepare($sql);
         $stmt->execute($params);
         
@@ -117,7 +129,7 @@ class TaskController extends BaseAPI {
         if (!$id) { $this->sendJsonResponse(400, 'Missing id'); }
         
         // Get task details before deleting for activity logging
-        $getTaskSql = "SELECT title, project_id FROM user_tasks WHERE id = ? AND user_id = ?";
+        $getTaskSql = "SELECT title, project_id FROM user_tasks WHERE id = ? AND user_id = ? AND " . $this->userTaskLiveClause();
         $getTaskStmt = $this->conn->prepare($getTaskSql);
         $getTaskStmt->execute([$id, $userId]);
         $task = $getTaskStmt->fetch(PDO::FETCH_ASSOC);

@@ -229,8 +229,12 @@ class AdminSidebarCountsController extends BaseAPI
             ($can('TASKS_VIEW_ALL') || $can('TASKS_VIEW_ASSIGNED') || $can('TASKS_CREATE'))
             && $this->dbTableExists('shared_tasks')
         ) {
+            $liveTasks = $this->taskRecycleBinExclude();
+            $liveTasksSt = $this->taskRecycleBinExclude('st');
             if ($isAdmin) {
-                $counts['tasks'] = $this->countOrZero('SELECT COUNT(*) FROM shared_tasks');
+                $counts['tasks'] = $this->countOrZero(
+                    "SELECT COUNT(*) FROM shared_tasks WHERE {$liveTasks}"
+                );
             } else {
                 $assigneeJoin = $this->dbTableExists('shared_task_assignees')
                     ? ' LEFT JOIN shared_task_assignees sta ON st.id = sta.shared_task_id'
@@ -241,7 +245,7 @@ class AdminSidebarCountsController extends BaseAPI
                 $params = $assigneeWhere !== '' ? [$userId, $userId, $userId] : [$userId, $userId];
                 $counts['tasks'] = $this->countOrZero(
                     "SELECT COUNT(DISTINCT st.id) FROM shared_tasks st{$assigneeJoin}
-                     WHERE st.assigned_to = ? OR st.created_by = ?{$assigneeWhere}",
+                     WHERE ({$liveTasksSt}) AND (st.assigned_to = ? OR st.created_by = ?{$assigneeWhere})",
                     $params
                 );
             }
@@ -491,6 +495,18 @@ class AdminSidebarCountsController extends BaseAPI
     private function bugRecycleBinExclude(string $alias = ''): string
     {
         if (!$this->dbColumnExists('bugs', 'deleted_at')) {
+            return '1=1';
+        }
+        $p = $alias !== '' ? $alias . '.' : '';
+        return "{$p}deleted_at IS NULL";
+    }
+
+    /**
+     * Why: Soft-deleted shared tasks belong in recycle bin, not the BugToDo badge.
+     */
+    private function taskRecycleBinExclude(string $alias = ''): string
+    {
+        if (!$this->dbColumnExists('shared_tasks', 'deleted_at')) {
             return '1=1';
         }
         $p = $alias !== '' ? $alias . '.' : '';
