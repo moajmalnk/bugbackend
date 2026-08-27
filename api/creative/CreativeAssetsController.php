@@ -746,6 +746,24 @@ class CreativeAssetsController extends BaseAPI
 
         $relativePath = 'uploads/creative/' . basename($targetPath);
         $isImage = in_array($ext, self::IMAGE_EXT, true);
+        $purpose = strtolower(trim((string)($_POST['purpose'] ?? '')));
+
+        // Why: Card thumbnails must be images even when the main asset is a Drive folder / PDF / ZIP.
+        if ($purpose === 'thumbnail') {
+            if (!$isImage) {
+                @unlink($targetPath);
+                $this->sendJsonResponse(400, 'Thumbnail must be an image (webp, jpg, png, or gif)');
+                return;
+            }
+            $this->sendJsonResponse(200, 'Thumbnail uploaded', [
+                'file_path' => $relativePath,
+                'file_name' => $original,
+                'file_size' => $size,
+                'preview_thumbnail_url' => $relativePath,
+                'purpose' => 'thumbnail',
+            ]);
+            return;
+        }
 
         $this->sendJsonResponse(200, 'Uploaded', [
             'file_path' => $relativePath,
