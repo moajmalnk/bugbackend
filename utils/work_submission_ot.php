@@ -1,5 +1,36 @@
 <?php
 
+/**
+ * Why: Admin soft-deletes move work_submissions to the recycle bin; live lists must hide those rows.
+ */
+function br_work_submission_deleted_at_supported(PDO $conn): bool
+{
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+    $cached = false;
+    try {
+        $check = $conn->query("SHOW COLUMNS FROM work_submissions LIKE 'deleted_at'");
+        $cached = $check && $check->rowCount() > 0;
+    } catch (Throwable $e) {
+        error_log('br_work_submission_deleted_at_supported: ' . $e->getMessage());
+    }
+    return $cached;
+}
+
+/**
+ * SQL AND fragment excluding soft-deleted work submissions (empty when column missing).
+ */
+function br_work_submission_live_and(PDO $conn, string $alias = ''): string
+{
+    if (!br_work_submission_deleted_at_supported($conn)) {
+        return '';
+    }
+    $p = $alias !== '' ? rtrim($alias, '.') . '.' : '';
+    return " AND {$p}deleted_at IS NULL";
+}
+
 function br_work_submission_has_extra_request(array $s): bool
 {
     $req = (float)($s['requested_extra_hours'] ?? 0) > 0;

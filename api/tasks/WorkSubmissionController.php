@@ -5,6 +5,7 @@ require_once __DIR__ . '/../../utils/leave_attendance.php';
 require_once __DIR__ . '/../../utils/user_onboarding.php';
 require_once __DIR__ . '/../../utils/weekly_report.php';
 require_once __DIR__ . '/../../utils/checkout_time_allocation.php';
+require_once __DIR__ . '/../../utils/work_submission_ot.php';
 
 class WorkSubmissionController extends BaseAPI {
     public function submit($payload) {
@@ -598,7 +599,8 @@ class WorkSubmissionController extends BaseAPI {
         // Force clear any cached token validation to ensure fresh processing
         $this->clearCache();
 
-        $sql = "SELECT * FROM work_submissions WHERE user_id = ? AND submission_date BETWEEN ? AND ? ORDER BY submission_date DESC";
+        $live = br_work_submission_live_and($this->conn);
+        $sql = "SELECT * FROM work_submissions WHERE user_id = ? AND submission_date BETWEEN ? AND ?{$live} ORDER BY submission_date DESC";
         error_log("🔍 WorkSubmissionController::mySubmissions - Request ID: $requestId - SQL Query: " . $sql);
         error_log("🔍 WorkSubmissionController::mySubmissions - Request ID: $requestId - Query Parameters: userId=$userId, from=$from, to=$to");
         
@@ -717,12 +719,14 @@ class WorkSubmissionController extends BaseAPI {
 
         // Match frontend hasApprovalRequest(): row fields OR legacy/request text in notes.
         // DATE(submission_date): safe if column is DATETIME. LEFT JOIN: still list rows if user row is missing.
+        $wsLive = br_work_submission_live_and($this->conn, 'ws');
         $sql = "SELECT ws.*,
                        COALESCE(NULLIF(TRIM(u.username), ''), CONCAT('user #', ws.user_id)) AS username,
                        COALESCE(u.role, '') AS role
                 FROM work_submissions ws
                 LEFT JOIN users u ON u.id = ws.user_id
                 WHERE DATE(ws.submission_date) BETWEEN ? AND ?
+                  {$wsLive}
                   AND (
                     COALESCE(ws.requested_extra_hours, 0) > 0
                     OR NULLIF(TRIM(COALESCE(ws.approval_reason, '')), '') IS NOT NULL
@@ -743,6 +747,7 @@ class WorkSubmissionController extends BaseAPI {
                      FROM work_submissions ws
                      LEFT JOIN users u ON u.id = ws.user_id
                      WHERE DATE(ws.submission_date) BETWEEN ? AND ?
+                       {$wsLive}
                        AND ws.notes LIKE '%[ADMIN HOURS ENTRY%'
                        AND COALESCE(ws.hours_today, 0) >= 1
                      ORDER BY ws.submission_date DESC, ws.id DESC";
@@ -778,6 +783,11 @@ class WorkSubmissionController extends BaseAPI {
                 try {
                     $rb->softDelete('work_submission', (string) $id, $userId);
                 } catch (Throwable $e) {
+                    // Why: Treat repeat delete as success so stale UI does not show a hard error.
+                    if (stripos($e->getMessage(), 'already in the recycle bin') !== false) {
+                        $this->sendJsonResponse(200, 'Submission moved to recycle bin');
+                        return;
+                    }
                     $this->sendJsonResponse(404, $e->getMessage());
                     return;
                 }

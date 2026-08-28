@@ -300,12 +300,14 @@ function br_weekly_attendance_summary(PDO $conn, string $userId, string $weekSta
     $submissionsByDate = [];
 
     try {
+        $live = br_work_submission_live_and($conn);
         $stmt = $conn->prepare(
             'SELECT submission_date, check_in_time, hours_today, total_break_minutes, break_entries,
                     work_mode, is_late, overtime_hours, requested_extra_hours,
                     extra_hours_approval_status, extra_hours_approved_amount, approval_reason
              FROM work_submissions
              WHERE user_id = ? AND submission_date >= ? AND submission_date <= ?
+             ' . $live . '
              ORDER BY submission_date ASC'
         );
         $stmt->execute([$userId, $weekStart, $weekEnd]);
@@ -634,10 +636,12 @@ function br_weekly_report_suggestions(PDO $conn, string $userId, string $weekSta
     $plan = [];
 
     try {
+        $live = br_work_submission_live_and($conn);
         $stmt = $conn->prepare(
             'SELECT completed_tasks, pending_tasks, ongoing_tasks, notes
              FROM work_submissions
              WHERE user_id = ? AND submission_date >= ? AND submission_date <= ?
+             ' . $live . '
              ORDER BY submission_date ASC'
         );
         $stmt->execute([$userId, $weekStart, $weekEnd]);
@@ -684,8 +688,9 @@ function br_assert_saturday_weekly_report_for_checkout(PDO $conn, string $userId
     br_ensure_weekly_reports_schema($conn);
 
     try {
+        $live = br_work_submission_live_and($conn);
         $stmt = $conn->prepare(
-            'SELECT hours_today FROM work_submissions WHERE user_id = ? AND submission_date = ? LIMIT 1'
+            'SELECT hours_today FROM work_submissions WHERE user_id = ? AND submission_date = ?' . $live . ' LIMIT 1'
         );
         $stmt->execute([$userId, $date]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);

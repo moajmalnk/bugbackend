@@ -376,6 +376,11 @@ class UserWorkStatsController extends BaseAPI {
         }
     }
 
+    private function wsLiveAnd(string $alias = ''): string
+    {
+        return br_work_submission_live_and($this->conn, $alias);
+    }
+
     public function getUserWorkStats($userId) {
         try {
             // Validate token
@@ -438,6 +443,7 @@ class UserWorkStatsController extends BaseAPI {
             }
             
             // Get work submissions for the current custom period
+            $wsLive = $this->wsLiveAnd();
             $stmt = $this->conn->prepare("
                 SELECT 
                     submission_date,
@@ -447,6 +453,7 @@ class UserWorkStatsController extends BaseAPI {
                 WHERE user_id = ? 
                 AND submission_date >= ? 
                 AND submission_date <= ?
+                {$wsLive}
                 ORDER BY submission_date DESC
             ");
             
@@ -486,6 +493,7 @@ class UserWorkStatsController extends BaseAPI {
                 WHERE user_id = ? 
                 AND submission_date >= ? 
                 AND submission_date <= ?
+                {$wsLive}
             ");
             $taskStmt->execute([$userId, $periodStart, $periodEnd]);
             $submissionTasks = $taskStmt->fetchAll(PDO::FETCH_ASSOC);
@@ -569,6 +577,7 @@ class UserWorkStatsController extends BaseAPI {
                     WHERE user_id = ? 
                     AND submission_date >= ?
                     AND submission_date <= ?
+                    {$wsLive}
                 ");
                 $stmt->execute([$userId, $periodStartStr, $periodEndStr]);
                 $periodData = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -580,6 +589,7 @@ class UserWorkStatsController extends BaseAPI {
                     WHERE user_id = ?
                     AND submission_date >= ?
                     AND submission_date <= ?
+                    {$wsLive}
                 ");
                 $hoursStmt->execute([$userId, $periodStartStr, $periodEndStr]);
                 $periodHourRows = $hoursStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
@@ -614,6 +624,7 @@ class UserWorkStatsController extends BaseAPI {
                     WHERE user_id = ? 
                     AND submission_date >= ? 
                     AND submission_date <= ?
+                    {$wsLive}
                 ");
                 $taskStmt->execute([$userId, $periodStartStr, $periodEndStr]);
                 $periodSubmissionTasks = $taskStmt->fetchAll(PDO::FETCH_ASSOC);
@@ -760,6 +771,7 @@ class UserWorkStatsController extends BaseAPI {
 
             $this->ensureWorkSubmissionOtApprovalColumns();
 
+            $wsLive = $this->wsLiveAnd();
             // Get all work submissions for the period with all details
             $stmt = $this->conn->prepare("
                 SELECT 
@@ -790,6 +802,7 @@ class UserWorkStatsController extends BaseAPI {
                 WHERE user_id = ? 
                 AND submission_date >= ? 
                 AND submission_date <= ?
+                {$wsLive}
                 ORDER BY submission_date DESC
             ");
             
@@ -947,6 +960,7 @@ class UserWorkStatsController extends BaseAPI {
             $this->assertCanViewTeamPeriodDetails($decoded);
             $this->ensureWorkSubmissionOtApprovalColumns();
 
+            $wsLive = $this->wsLiveAnd('ws');
             $stmt = $this->conn->prepare("
                 SELECT
                     ws.*,
@@ -956,6 +970,7 @@ class UserWorkStatsController extends BaseAPI {
                 INNER JOIN users u ON u.id = ws.user_id
                 WHERE ws.submission_date >= ?
                 AND ws.submission_date <= ?
+                {$wsLive}
                 ORDER BY ws.submission_date DESC, u.username ASC
             ");
             $stmt->execute([$periodStart, $periodEnd]);
@@ -1389,12 +1404,14 @@ class UserWorkStatsController extends BaseAPI {
                 ];
             }
 
+            $wsLive = $this->wsLiveAnd('ws');
             $submissionStmt = $this->conn->prepare("
                 SELECT ws.*, u.id AS user_ref_id
                 FROM work_submissions ws
                 INNER JOIN users u ON u.id = ws.user_id
                 WHERE ws.submission_date >= ?
                 AND ws.submission_date <= ?
+                {$wsLive}
             ");
             if (!$submissionStmt) {
                 $err = $this->conn->errorInfo();
