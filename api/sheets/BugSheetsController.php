@@ -602,10 +602,7 @@ class BugSheetsController extends BaseAPI {
                 $params[] = '%,' . $projectId . ',%'; // In middle of list
             }
             
-            // Add role-based filtering
-            if ($hasRoleColumn) {
-                $sql .= " AND " . $this->getRoleFilterSQL($userRole, 's', $userId);
-            }
+            // Why: My Sheets lists everything the user created — role gates shared views only.
             
             $sql .= " ORDER BY s.created_at DESC";
             
@@ -659,11 +656,6 @@ class BugSheetsController extends BaseAPI {
             if (!$includeArchived) {
                 $sql .= " AND s.is_archived = 0";
             }
-            
-            // Add role-based filtering
-                if ($hasRoleColumn) {
-                    $sql .= " AND " . $this->getRoleFilterSQL($userRole, 's', $userId);
-                }
                 
                 $sql .= " ORDER BY s.created_at DESC";
                 
