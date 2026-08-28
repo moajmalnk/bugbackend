@@ -5,6 +5,7 @@ require_once __DIR__ . '/../../config/database.php';
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../oauth/GoogleAuthService.php';
 require_once __DIR__ . '/../projects/ProjectMemberController.php';
+require_once __DIR__ . '/../../utils/docs_sheets_recycle.php';
 
 class BugDocsController extends BaseAPI {
     private $authService;
@@ -556,6 +557,7 @@ class BugDocsController extends BaseAPI {
 
             // Why: My Docs lists everything the user created — access role controls shared views only.
             
+            $sql .= br_user_documents_live_and($this->conn, 'd');
             $sql .= " ORDER BY d.created_at DESC";
             
             error_log("Executing SQL: " . $sql);
@@ -598,6 +600,7 @@ class BugDocsController extends BaseAPI {
                 $sql .= " AND d.is_archived = 0";
             }
 
+            $sql .= br_user_documents_live_and($this->conn, 'd');
             $sql .= " ORDER BY d.created_at DESC";
             
             $stmt = $this->conn->prepare($sql);
@@ -715,6 +718,7 @@ class BugDocsController extends BaseAPI {
                 $sql .= " AND d.is_archived = 0";
             }
             
+            $sql .= br_user_documents_live_and($this->conn, 'd');
             $sql .= " ORDER BY " . ($hasProjectColumn ? "COALESCE(p.name, 'No Project'), " : "") . "d.created_at DESC";
             
             $stmt = $this->conn->prepare($sql);
@@ -853,7 +857,8 @@ class BugDocsController extends BaseAPI {
                     $sql .= " AND d.project_id IS NULL";
                 }
                 
-                $sql .= " ORDER BY d.created_at DESC";
+                $sql .= br_user_documents_live_and($this->conn, 'd');
+            $sql .= " ORDER BY d.created_at DESC";
                 
                 $stmt = $this->conn->prepare($sql);
                 $stmt->execute([$userId]);
@@ -989,6 +994,7 @@ class BugDocsController extends BaseAPI {
                 $sql .= " AND d.is_archived = 0";
             }
             
+            $sql .= br_user_documents_live_and($this->conn, 'd');
             $sql .= " ORDER BY d.created_at DESC";
             
             error_log("Shared docs SQL: " . $sql);
@@ -1110,6 +1116,7 @@ class BugDocsController extends BaseAPI {
                 $sql .= " AND d.is_archived = 0";
             }
             
+            $sql .= br_user_documents_live_and($this->conn, 'd');
             $sql .= " ORDER BY d.created_at DESC";
             
             $stmt = $this->conn->prepare($sql);
@@ -1210,7 +1217,7 @@ class BugDocsController extends BaseAPI {
                 $countStmt = $this->conn->prepare(
                     "SELECT COUNT(*) as count FROM user_documents 
                      WHERE (project_id = ? OR project_id LIKE ? OR project_id LIKE ? OR project_id LIKE ?) 
-                     AND is_archived = 0"
+                     AND is_archived = 0" . br_user_documents_live_and($this->conn, '')
                 );
                 $projectId = $project['id'];
                 $countStmt->execute([
@@ -1268,6 +1275,7 @@ class BugDocsController extends BaseAPI {
 
             require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
             $rb = new RecycleBinService($this->conn);
+            $rb->ensureSchema('doc');
             $rb->softDelete('doc', (string) $documentId, (string) $userId, [
                 'title' => $document['doc_title'] ?? 'Document',
             ]);

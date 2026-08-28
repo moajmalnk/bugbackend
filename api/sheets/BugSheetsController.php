@@ -5,6 +5,7 @@ require_once __DIR__ . '/../../config/database.php';
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../oauth/GoogleAuthService.php';
 require_once __DIR__ . '/../projects/ProjectMemberController.php';
+require_once __DIR__ . '/../../utils/docs_sheets_recycle.php';
 
 class BugSheetsController extends BaseAPI {
     private $authService;
@@ -604,6 +605,7 @@ class BugSheetsController extends BaseAPI {
             
             // Why: My Sheets lists everything the user created — role gates shared views only.
             
+            $sql .= br_user_sheets_live_and($this->conn, 's');
             $sql .= " ORDER BY s.created_at DESC";
             
             error_log("Executing SQL: " . $sql);
@@ -657,7 +659,8 @@ class BugSheetsController extends BaseAPI {
                 $sql .= " AND s.is_archived = 0";
             }
                 
-                $sql .= " ORDER BY s.created_at DESC";
+                $sql .= br_user_sheets_live_and($this->conn, 's');
+            $sql .= " ORDER BY s.created_at DESC";
                 
                 $stmt = $this->conn->prepare($sql);
                     $stmt->execute($params);
@@ -774,6 +777,7 @@ class BugSheetsController extends BaseAPI {
                 $sql .= " AND s.is_archived = 0";
             }
             
+            $sql .= br_user_sheets_live_and($this->conn, 's');
             $sql .= " ORDER BY " . ($hasProjectColumn ? "COALESCE(p.name, 'No Project'), " : "") . "s.created_at DESC";
             
             $stmt = $this->conn->prepare($sql);
@@ -913,7 +917,8 @@ class BugSheetsController extends BaseAPI {
                     $sql .= " AND s.project_id IS NULL";
                 }
                 
-                $sql .= " ORDER BY s.created_at DESC";
+                $sql .= br_user_sheets_live_and($this->conn, 's');
+            $sql .= " ORDER BY s.created_at DESC";
                 
                 $stmt = $this->conn->prepare($sql);
                 $stmt->execute([$userId]);
@@ -1049,6 +1054,7 @@ class BugSheetsController extends BaseAPI {
                 $sql .= " AND s.is_archived = 0";
             }
             
+            $sql .= br_user_sheets_live_and($this->conn, 's');
             $sql .= " ORDER BY s.created_at DESC";
             
             error_log("Shared sheets SQL: " . $sql);
@@ -1170,6 +1176,7 @@ class BugSheetsController extends BaseAPI {
                 $sql .= " AND s.is_archived = 0";
             }
             
+            $sql .= br_user_sheets_live_and($this->conn, 's');
             $sql .= " ORDER BY s.created_at DESC";
             
             $stmt = $this->conn->prepare($sql);
@@ -1270,7 +1277,7 @@ class BugSheetsController extends BaseAPI {
                 $countStmt = $this->conn->prepare(
                     "SELECT COUNT(*) as count FROM user_sheets 
                      WHERE (project_id = ? OR project_id LIKE ? OR project_id LIKE ? OR project_id LIKE ?) 
-                     AND is_archived = 0"
+                     AND is_archived = 0" . br_user_sheets_live_and($this->conn, '')
                 );
                 $projectId = $project['id'];
                 $countStmt->execute([
@@ -1328,6 +1335,7 @@ class BugSheetsController extends BaseAPI {
 
             require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
             $rb = new RecycleBinService($this->conn);
+            $rb->ensureSchema('sheet');
             $rb->softDelete('sheet', (string) $sheetId, (string) $userId, [
                 'title' => $sheet['sheet_title'] ?? 'Sheet',
             ]);

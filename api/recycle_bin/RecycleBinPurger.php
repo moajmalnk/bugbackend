@@ -81,9 +81,7 @@ class RecycleBinPurger
         }
         $stmt = $this->conn->prepare("DELETE FROM `{$table}` WHERE id = ?");
         $stmt->execute([$id]);
-        if ($stmt->rowCount() === 0) {
-            throw new RuntimeException('Entity already removed from database.');
-        }
+        // Why: Entity row may already be removed; still allow bin item to be marked purged.
     }
 
     private function purgeBug(string $id): void

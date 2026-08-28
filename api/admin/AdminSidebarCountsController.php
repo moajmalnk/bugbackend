@@ -6,6 +6,7 @@
  * Why: One round-trip for every sidebar badge instead of loading each list page.
  */
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../../utils/docs_sheets_recycle.php';
 
 class AdminSidebarCountsController extends BaseAPI
 {
@@ -188,10 +189,15 @@ class AdminSidebarCountsController extends BaseAPI
 
         if (($can('DOCS_VIEW') || $can('DOCS_CREATE')) && $this->dbTableExists('user_documents')) {
             if ($isAdmin) {
-                $archived = $this->dbColumnExists('user_documents', 'is_archived')
-                    ? ' WHERE COALESCE(is_archived, 0) = 0'
-                    : '';
-                $counts['docs'] = $this->countOrZero("SELECT COUNT(*) FROM user_documents{$archived}");
+                $docConds = [];
+                if ($this->dbColumnExists('user_documents', 'is_archived')) {
+                    $docConds[] = 'COALESCE(is_archived, 0) = 0';
+                }
+                if (br_user_documents_deleted_at_supported($this->conn)) {
+                    $docConds[] = 'deleted_at IS NULL';
+                }
+                $docWhere = $docConds !== [] ? ' WHERE ' . implode(' AND ', $docConds) : '';
+                $counts['docs'] = $this->countOrZero("SELECT COUNT(*) FROM user_documents{$docWhere}");
             } elseif ($role === 'developer' || $role === 'tester' || $role === 'creator') {
                 $counts['docs'] = $this->countSharedDocuments($userId);
             }
@@ -202,10 +208,15 @@ class AdminSidebarCountsController extends BaseAPI
             && $this->dbTableExists('user_sheets')
         ) {
             if ($isAdmin) {
-                $archived = $this->dbColumnExists('user_sheets', 'is_archived')
-                    ? ' WHERE COALESCE(is_archived, 0) = 0'
-                    : '';
-                $counts['sheets'] = $this->countOrZero("SELECT COUNT(*) FROM user_sheets{$archived}");
+                $sheetConds = [];
+                if ($this->dbColumnExists('user_sheets', 'is_archived')) {
+                    $sheetConds[] = 'COALESCE(is_archived, 0) = 0';
+                }
+                if (br_user_sheets_deleted_at_supported($this->conn)) {
+                    $sheetConds[] = 'deleted_at IS NULL';
+                }
+                $sheetWhere = $sheetConds !== [] ? ' WHERE ' . implode(' AND ', $sheetConds) : '';
+                $counts['sheets'] = $this->countOrZero("SELECT COUNT(*) FROM user_sheets{$sheetWhere}");
             } elseif ($role === 'developer' || $role === 'tester' || $role === 'creator') {
                 $counts['sheets'] = $this->countSharedSheets($userId);
             }
