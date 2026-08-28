@@ -98,11 +98,17 @@ try {
     
 } catch (Exception $e) {
     error_log("Error in create-general-doc.php: " . $e->getMessage());
-    
-    http_response_code(400);
+
+    $authService = new GoogleAuthService();
+    $isScope = $authService->isScopeInsufficientMessage($e->getMessage());
+
+    http_response_code($isScope ? 403 : 400);
     echo json_encode([
         'success' => false,
-        'message' => $e->getMessage()
+        'message' => $isScope
+            ? 'Your Google account needs Docs permission. Disconnect and reconnect, then allow Google Docs access.'
+            : $e->getMessage(),
+        'error_code' => $isScope ? 'GOOGLE_SCOPE_INSUFFICIENT' : null,
     ]);
 }
 

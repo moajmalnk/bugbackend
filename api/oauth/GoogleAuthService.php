@@ -12,6 +12,11 @@ require_once __DIR__ . '/../../config/environment.php';
 class GoogleAuthService {
     private $conn;
     private $googleClient;
+
+    /** Why: BugDocs create/edit requires Docs API — drive.file alone is not enough. */
+    private const REQUIRED_DOC_SCOPES = [
+        'https://www.googleapis.com/auth/documents',
+    ];
     
     // OAuth configuration - loaded from environment
     private $clientId;
@@ -135,6 +140,12 @@ class GoogleAuthService {
             }
             
             error_log("✓ Successfully obtained access token for user: " . $bugricerUserId);
+
+            if (!$this->accessTokenHasDocsScope($accessToken)) {
+                throw new Exception(
+                    'GOOGLE_SCOPE_INSUFFICIENT: Your Google account is missing Docs permission. Disconnect and reconnect, then allow Google Docs access.'
+                );
+            }
             
             // Update token expiry in database for tracking
             $this->updateTokenExpiry($bugricerUserId, $accessToken);
@@ -149,6 +160,69 @@ class GoogleAuthService {
         }
     }
     
+    /**
+     * Why: Tokens saved before Docs scope was added still show as "connected" but fail on create.
+     */
+    public function userHasDocsScope($bugricerUserId) {
+        try {
+            $this->getClientForUser($bugricerUserId);
+            return true;
+        } catch (Exception $e) {
+            if ($this->isScopeInsufficientMessage($e->getMessage())) {
+                return false;
+            }
+            throw $e;
+        }
+    }
+
+    public function isScopeInsufficientMessage($message) {
+        $message = (string)$message;
+        return stripos($message, 'GOOGLE_SCOPE_INSUFFICIENT') !== false
+            || stripos($message, 'insufficient authentication scopes') !== false
+            || stripos($message, 'ACCESS_TOKEN_SCOPE_INSUFFICIENT') !== false;
+    }
+
+    /**
+     * @param array<string,mixed> $accessToken
+     */
+    private function accessTokenHasDocsScope(array $accessToken) {
+        $scopeStr = trim((string)($accessToken['scope'] ?? ''));
+        if ($scopeStr !== '') {
+            return $this->scopeStringIncludesDocs($scopeStr);
+        }
+
+        $token = (string)($accessToken['access_token'] ?? '');
+        if ($token === '') {
+            return false;
+        }
+
+        try {
+            $url = 'https://oauth2.googleapis.com/tokeninfo?access_token=' . urlencode($token);
+            $context = stream_context_create(['http' => ['timeout' => 5]]);
+            $json = @file_get_contents($url, false, $context);
+            if ($json === false) {
+                return true;
+            }
+            $info = json_decode($json, true);
+            if (!is_array($info)) {
+                return true;
+            }
+            return $this->scopeStringIncludesDocs((string)($info['scope'] ?? ''));
+        } catch (Throwable $e) {
+            error_log('accessTokenHasDocsScope tokeninfo failed: ' . $e->getMessage());
+            return true;
+        }
+    }
+
+    private function scopeStringIncludesDocs($scopeStr) {
+        foreach (self::REQUIRED_DOC_SCOPES as $required) {
+            if (strpos($scopeStr, $required) !== false) {
+                return true;
+            }
+        }
+        return strpos($scopeStr, 'auth/documents') !== false;
+    }
+
     /**
      * Check if a user has connected their Google account
      * 

@@ -48,9 +48,21 @@ try {
     
     // Get connected email if account is linked (use Google account user ID)
     $connectedEmail = null;
+    $scopesOk = false;
+    $needsReauth = false;
     if ($hasAccount) {
         $connectedEmail = $authService->getUserGoogleEmail($googleAccountUserId);
         error_log("Connected email for user $googleAccountUserId: " . ($connectedEmail ?? 'null'));
+        try {
+            $scopesOk = $authService->userHasDocsScope($googleAccountUserId);
+            $needsReauth = !$scopesOk;
+        } catch (Exception $scopeEx) {
+            $needsReauth = $authService->isScopeInsufficientMessage($scopeEx->getMessage());
+            $scopesOk = false;
+            if (!$needsReauth) {
+                throw $scopeEx;
+            }
+        }
     }
     
     // Additional debug: check database directly
@@ -65,7 +77,9 @@ try {
         'success' => true,
         'data' => [
             'connected' => $hasAccount,
-            'email' => $connectedEmail
+            'email' => $connectedEmail,
+            'scopes_ok' => $hasAccount ? $scopesOk : false,
+            'needs_reauth' => $hasAccount ? $needsReauth : false,
         ],
         'debug' => [
             'user_id' => $userId,

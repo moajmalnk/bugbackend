@@ -438,8 +438,20 @@ class BugDocsController extends BaseAPI {
             
         } catch (Exception $e) {
             error_log("Error creating general document: " . $e->getMessage());
-            throw $e;
+            throw $this->mapGoogleApiException($e);
         }
+    }
+
+    /**
+     * Why: Surface missing Docs OAuth scope as a reconnect prompt instead of raw Google JSON.
+     */
+    private function mapGoogleApiException(Exception $e) {
+        if ($this->authService->isScopeInsufficientMessage($e->getMessage())) {
+            return new Exception(
+                'GOOGLE_SCOPE_INSUFFICIENT: Your Google account is missing Docs permission. Disconnect and reconnect, then allow Google Docs access.'
+            );
+        }
+        return $e;
     }
     
     /**

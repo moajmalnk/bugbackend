@@ -210,6 +210,8 @@ try {
                         $rolePath = 'tester';
                     } elseif ($userRole === 'developer') {
                         $rolePath = 'developer';
+                    } elseif ($userRole === 'creator') {
+                        $rolePath = 'creator';
                     }
                     
                     if ($isDefinitelyLocal) {
@@ -308,6 +310,8 @@ try {
                             $rolePath = 'tester';
                         } elseif ($userRole === 'developer') {
                             $rolePath = 'developer';
+                        } elseif ($userRole === 'creator') {
+                            $rolePath = 'creator';
                         }
                         
                         if ($isDefinitelyLocal) {
@@ -435,6 +439,8 @@ try {
             $rolePath = 'tester';
         } elseif ($userRole === 'developer') {
             $rolePath = 'developer';
+        } elseif ($userRole === 'creator') {
+            $rolePath = 'creator';
         }
         
         if ($isDefinitelyLocal) {
