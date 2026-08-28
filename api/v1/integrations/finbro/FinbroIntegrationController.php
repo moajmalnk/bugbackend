@@ -1,8 +1,9 @@
 <?php
 /**
- * Finbro integration producer endpoints (M2M pull-only).
+ * Finbro integration producer endpoints (M2M).
  *
- * Why: Finbro is SoT for rates/payroll; BugRicer exposes hours + account status only.
+ * Why: Finbro is SoT for rates/payroll; BugRicer exposes hours, account status,
+ * and payroll acknowledgement write-back.
  */
 
 require_once __DIR__ . '/../../../../config/database.php';
@@ -25,12 +26,19 @@ class FinbroIntegrationController
             exit;
         }
 
-        if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
-            br_finbro_json_response(405, ['error' => 'Method not allowed']);
-        }
-
         br_finbro_require_auth();
         br_finbro_rate_limit_check();
+
+        $method = (string)($_SERVER['REQUEST_METHOD'] ?? 'GET');
+
+        if ($route === 'payroll-hours' && $method === 'POST') {
+            $this->payrollHoursAck();
+            return;
+        }
+
+        if ($method !== 'GET') {
+            br_finbro_json_response(405, ['error' => 'Method not allowed']);
+        }
 
         switch ($route) {
             case 'users/status':
@@ -61,6 +69,7 @@ class FinbroIntegrationController
                 'username' => (string)($row['username'] ?? ''),
                 'name' => (string)($row['name'] ?? $row['username'] ?? ''),
                 'role' => (string)($row['role'] ?? ''),
+                'payrollEligible' => br_finbro_is_payroll_eligible_role($row['role'] ?? ''),
                 'accountStatus' => br_finbro_account_status(
                     isset($row['account_active']) ? (int)$row['account_active'] : 1
                 ),
@@ -98,28 +107,33 @@ class FinbroIntegrationController
         $emailFilter = $email !== '' ? $email : null;
 
         $users = br_finbro_load_users($this->conn, $emailFilter);
-        // Scope month scan to loaded users when email filter is set; full roster otherwise.
         $userIds = $emailFilter !== null ? br_finbro_user_ids($users) : null;
         $buckets = br_finbro_aggregate_hours_by_user($this->conn, $from, $to, $userIds);
         $members = br_finbro_build_members($users, $buckets);
 
         br_finbro_json_response(200, [
-            'period' => ['year' => $year, 'month' => $month],
+            'period' => [
+                'year' => $year,
+                'month' => $month,
+                'from' => $from,
+                'to' => $to,
+            ],
             'members' => $members,
         ]);
     }
 
     /**
-     * GET /v1/integrations/finbro/hours/by-user?email=&from=&to=
+     * GET /v1/integrations/finbro/hours/by-user?email=&from=&to=&bugricerUserId=
      */
     private function hoursByUserRange(): void
     {
         $email = isset($_GET['email']) ? trim((string)$_GET['email']) : '';
+        $bugricerUserId = isset($_GET['bugricerUserId']) ? trim((string)$_GET['bugricerUserId']) : '';
         $fromRaw = isset($_GET['from']) ? trim((string)$_GET['from']) : '';
         $toRaw = isset($_GET['to']) ? trim((string)$_GET['to']) : '';
 
-        if ($email === '' || $fromRaw === '' || $toRaw === '') {
-            br_finbro_json_response(422, ['error' => 'email, from, and to are required']);
+        if (($email === '' && $bugricerUserId === '') || $fromRaw === '' || $toRaw === '') {
+            br_finbro_json_response(422, ['error' => 'email or bugricerUserId, plus from and to, are required']);
         }
 
         $from = br_finbro_parse_date($fromRaw);
@@ -134,7 +148,12 @@ class FinbroIntegrationController
             br_finbro_json_response(422, ['error' => 'Date range must be at most 366 days']);
         }
 
-        $users = br_finbro_load_users($this->conn, $email);
+        if ($bugricerUserId !== '') {
+            $users = br_finbro_load_users_by_id($this->conn, $bugricerUserId);
+        } else {
+            $users = br_finbro_load_users($this->conn, $email);
+        }
+
         $buckets = br_finbro_aggregate_hours_by_user(
             $this->conn,
             $from,
@@ -147,5 +166,22 @@ class FinbroIntegrationController
             'period' => ['from' => $from, 'to' => $to],
             'members' => $members,
         ]);
+    }
+
+    /**
+     * POST /v1/integrations/finbro/payroll-hours
+     *
+     * Why: Finbro commits payroll → BugRicer records reconciliation for the hours window.
+     */
+    private function payrollHoursAck(): void
+    {
+        $payload = br_finbro_read_json_body();
+        if ($payload === []) {
+            br_finbro_json_response(422, ['error' => 'JSON body is required']);
+        }
+
+        $result = br_finbro_record_payroll_acknowledgement($this->conn, $payload);
+        $status = !empty($result['alreadyExists']) ? 200 : 201;
+        br_finbro_json_response_data($status, $result);
     }
 }

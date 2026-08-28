@@ -8,6 +8,7 @@
 # Finbro M2M producer endpoints (clean paths → front controller)
 <IfModule mod_rewrite.c>
   RewriteEngine On
+  RewriteRule ^v1/integrations/finbro/payroll-hours/?$ v1/integrations/finbro/index.php?finbro_route=payroll-hours [L,QSA]
   RewriteRule ^v1/integrations/finbro/users/status/?$ v1/integrations/finbro/index.php?finbro_route=users/status [L,QSA]
   RewriteRule ^v1/integrations/finbro/hours/by-user/?$ v1/integrations/finbro/index.php?finbro_route=hours/by-user [L,QSA]
   RewriteRule ^v1/integrations/finbro/hours/?$ v1/integrations/finbro/index.php?finbro_route=hours [L,QSA]

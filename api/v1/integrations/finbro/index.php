@@ -6,6 +6,7 @@
  *   GET v1/integrations/finbro/users/status
  *   GET v1/integrations/finbro/hours
  *   GET v1/integrations/finbro/hours/by-user
+ *   POST v1/integrations/finbro/payroll-hours
  *
  * Always returns JSON (never HTML 500 pages). Finbro maps non-JSON/5xx → 503.
  */

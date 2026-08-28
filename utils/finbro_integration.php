@@ -562,6 +562,7 @@ function br_finbro_build_members(array $users, array $buckets): array
             'username' => (string)($user['username'] ?? ''),
             'name' => (string)($user['name'] ?? $user['username'] ?? ''),
             'role' => (string)($user['role'] ?? ''),
+            'payrollEligible' => br_finbro_is_payroll_eligible_role($user['role'] ?? ''),
             'accountStatus' => br_finbro_account_status(
                 isset($user['account_active']) ? (int)$user['account_active'] : 1
             ),
@@ -642,4 +643,235 @@ function br_finbro_user_ids(array $users): array
         }
     }
     return array_values(array_unique($ids));
+}
+
+/**
+ * Finbro payroll counts developer + tester BugRicer logins only (not admin/ops).
+ */
+function br_finbro_is_payroll_eligible_role(?string $role): bool
+{
+    $role = strtolower(trim((string)$role));
+    return in_array($role, ['developer', 'tester'], true);
+}
+
+/**
+ * Load one BugRicer user by id (non-deleted, must have email).
+ *
+ * @return list<array<string,mixed>>
+ */
+function br_finbro_load_users_by_id(PDO $conn, string $userId): array
+{
+    $userId = trim($userId);
+    if ($userId === '') {
+        return [];
+    }
+
+    $hasName = br_finbro_users_has_name_column($conn);
+    $hasActive = br_finbro_users_has_account_active($conn);
+    $hasDeleted = br_finbro_users_has_deleted_at($conn);
+    $nameExpr = $hasName
+        ? "COALESCE(NULLIF(TRIM(name), ''), username) AS name"
+        : 'username AS name';
+    $activeExpr = $hasActive
+        ? 'COALESCE(account_active, 1) AS account_active'
+        : '1 AS account_active';
+
+    $sql = "SELECT id, email, username, {$nameExpr}, role, {$activeExpr}, updated_at
+            FROM users
+            WHERE id = ?
+              AND email IS NOT NULL AND TRIM(email) <> ''";
+    if ($hasDeleted) {
+        $sql .= ' AND deleted_at IS NULL';
+    }
+
+    $stmt = $conn->prepare($sql);
+    $stmt->execute([$userId]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    return $row ? [$row] : [];
+}
+
+/**
+ * Emit Finbro POST contract JSON { data: ... } and exit.
+ *
+ * @param array<string,mixed> $data
+ */
+function br_finbro_json_response_data(int $status, array $data): void
+{
+    br_finbro_json_response($status, ['data' => $data]);
+}
+
+/**
+ * Read JSON request body for Finbro POST endpoints.
+ *
+ * @return array<string,mixed>
+ */
+function br_finbro_read_json_body(): array
+{
+    $raw = file_get_contents('php://input');
+    if (!is_string($raw) || trim($raw) === '') {
+        return [];
+    }
+    $decoded = json_decode($raw, true);
+    return is_array($decoded) ? $decoded : [];
+}
+
+/**
+ * Ensure finbro_payroll_acknowledgements exists (migration 097 or runtime).
+ */
+function br_finbro_ensure_payroll_ack_table(PDO $conn): void
+{
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    try {
+        $check = $conn->query("SHOW TABLES LIKE 'finbro_payroll_acknowledgements'");
+        if ($check && $check->rowCount() > 0) {
+            $done = true;
+            return;
+        }
+    } catch (Throwable $e) {
+        /* fall through to CREATE */
+    }
+
+    $migration = __DIR__ . '/../migrations/097_finbro_payroll_acknowledgements.sql';
+    if (is_readable($migration)) {
+        $sql = file_get_contents($migration);
+        if (is_string($sql) && trim($sql) !== '') {
+            $conn->exec($sql);
+            $done = true;
+            return;
+        }
+    }
+
+    $conn->exec(
+        "CREATE TABLE IF NOT EXISTS finbro_payroll_acknowledgements (
+          id VARCHAR(36) NOT NULL PRIMARY KEY,
+          employee_email VARCHAR(255) NOT NULL,
+          finbro_employee_id VARCHAR(64) NULL,
+          bugricer_user_id VARCHAR(36) NULL,
+          pay_date DATE NOT NULL,
+          hours_from DATE NOT NULL,
+          hours_to DATE NOT NULL,
+          hours_worked DECIMAL(10,2) NOT NULL DEFAULT 0,
+          hourly_rate DECIMAL(12,2) NULL,
+          gross_amount DECIMAL(14,2) NULL,
+          net_amount DECIMAL(14,2) NULL,
+          bugricer_hours_used DECIMAL(10,2) NULL,
+          manually_edited TINYINT(1) NOT NULL DEFAULT 0,
+          narration TEXT NULL,
+          payroll_entry_id VARCHAR(128) NOT NULL,
+          source VARCHAR(32) NOT NULL DEFAULT 'finbro',
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          UNIQUE KEY uk_finbro_payroll_entry_id (payroll_entry_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    );
+    $done = true;
+}
+
+/**
+ * Store Finbro payroll commit acknowledgement (idempotent on payrollEntryId).
+ *
+ * @param array<string,mixed> $payload
+ * @return array<string,mixed>
+ */
+function br_finbro_record_payroll_acknowledgement(PDO $conn, array $payload): array
+{
+    require_once __DIR__ . '/../config/utils.php';
+
+    br_finbro_ensure_payroll_ack_table($conn);
+
+    $email = strtolower(trim((string)($payload['email'] ?? '')));
+    $payDate = br_finbro_parse_date((string)($payload['payDate'] ?? ''));
+    $hoursFrom = br_finbro_parse_date((string)($payload['hoursFrom'] ?? ''));
+    $hoursTo = br_finbro_parse_date((string)($payload['hoursTo'] ?? ''));
+    $payrollEntryId = trim((string)($payload['payrollEntryId'] ?? ''));
+
+    if ($email === '' || $payDate === null || $hoursFrom === null || $hoursTo === null || $payrollEntryId === '') {
+        br_finbro_json_response(422, ['error' => 'email, payDate, hoursFrom, hoursTo, and payrollEntryId are required']);
+    }
+    if ($hoursFrom > $hoursTo) {
+        br_finbro_json_response(422, ['error' => 'hoursFrom must be less than or equal to hoursTo']);
+    }
+
+    $existing = $conn->prepare(
+        'SELECT id, payroll_entry_id, created_at FROM finbro_payroll_acknowledgements WHERE payroll_entry_id = ? LIMIT 1'
+    );
+    $existing->execute([$payrollEntryId]);
+    $row = $existing->fetch(PDO::FETCH_ASSOC);
+    if ($row) {
+        return [
+            'acknowledged' => true,
+            'alreadyExists' => true,
+            'id' => (string)$row['id'],
+            'payrollEntryId' => (string)$row['payroll_entry_id'],
+            'recordedAt' => br_finbro_iso_utc($row['created_at'] ?? null),
+        ];
+    }
+
+    $bugricerUserId = trim((string)($payload['bugricerUserId'] ?? ''));
+    if ($bugricerUserId === '') {
+        $bugricerUserId = null;
+    }
+
+    $finbroEmployeeId = trim((string)($payload['employeeId'] ?? ''));
+    if ($finbroEmployeeId === '') {
+        $finbroEmployeeId = null;
+    }
+
+    $hoursWorked = (float)($payload['hoursWorked'] ?? 0);
+    $hourlyRate = isset($payload['hourlyRate']) ? (float)$payload['hourlyRate'] : null;
+    $grossAmount = isset($payload['grossAmount']) ? (float)$payload['grossAmount'] : null;
+    $netAmount = isset($payload['netAmount']) ? (float)$payload['netAmount'] : null;
+    $bugricerHoursUsed = isset($payload['bugricerHoursUsed']) ? (float)$payload['bugricerHoursUsed'] : null;
+    $manuallyEdited = !empty($payload['manuallyEdited']) ? 1 : 0;
+    $narration = isset($payload['narration']) ? trim((string)$payload['narration']) : null;
+    if ($narration === '') {
+        $narration = null;
+    }
+    $source = trim((string)($payload['source'] ?? 'finbro'));
+    if ($source === '') {
+        $source = 'finbro';
+    }
+
+    $id = Utils::generateUUID();
+    $stmt = $conn->prepare(
+        'INSERT INTO finbro_payroll_acknowledgements
+         (id, employee_email, finbro_employee_id, bugricer_user_id, pay_date,
+          hours_from, hours_to, hours_worked, hourly_rate, gross_amount, net_amount,
+          bugricer_hours_used, manually_edited, narration, payroll_entry_id, source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    );
+    $stmt->execute([
+        $id,
+        $email,
+        $finbroEmployeeId,
+        $bugricerUserId,
+        $payDate,
+        $hoursFrom,
+        $hoursTo,
+        round($hoursWorked, 2),
+        $hourlyRate !== null ? round($hourlyRate, 2) : null,
+        $grossAmount !== null ? round($grossAmount, 2) : null,
+        $netAmount !== null ? round($netAmount, 2) : null,
+        $bugricerHoursUsed !== null ? round($bugricerHoursUsed, 2) : null,
+        $manuallyEdited,
+        $narration,
+        $payrollEntryId,
+        mb_substr($source, 0, 32),
+    ]);
+
+    return [
+        'acknowledged' => true,
+        'alreadyExists' => false,
+        'id' => $id,
+        'payrollEntryId' => $payrollEntryId,
+        'employeeEmail' => $email,
+        'bugricerUserId' => $bugricerUserId,
+        'hoursFrom' => $hoursFrom,
+        'hoursTo' => $hoursTo,
+        'payDate' => $payDate,
+        'recordedAt' => br_finbro_iso_utc(null),
+    ];
 }

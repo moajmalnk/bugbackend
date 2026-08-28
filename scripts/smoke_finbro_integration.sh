@@ -16,9 +16,11 @@
 #   - Token matches Finbro BUGRICER_INTEGRATION_TOKEN
 #   - Migration 055 idx_users_updated_at applied
 #   - Migration 094 idx_ws_submission_date_user applied
+#   - Migration 097 finbro_payroll_acknowledgements applied
 #   - Routes:
 #       /v1/integrations/finbro/users/status
 #       /v1/integrations/finbro/hours?year=YYYY&month=M
+#       POST /v1/integrations/finbro/payroll-hours
 #   - Wrong token → 401 JSON; valid → 200 JSON (never HTML)
 #
 # Finbro consumer should set:
@@ -139,6 +141,27 @@ code=$(curl -sS -o /tmp/finbro_smoke_body.json -w '%{http_code}' \
 body=$(cat /tmp/finbro_smoke_body.json 2>/dev/null || true)
 check "hours/by-user → 200" "200" "$code" "$body" \
   'has("period") and has("members") and (.members | length) <= 1'
+
+# 10) payroll-hours POST → 201 with data.acknowledged
+code=$(curl -sS -o /tmp/finbro_smoke_body.json -w '%{http_code}' \
+  -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"email\":\"smoke-test@example.com\",\"employeeId\":\"emp-smoke\",\"payDate\":\"2026-09-06\",\"hoursFrom\":\"2026-08-01\",\"hoursTo\":\"2026-08-31\",\"hoursWorked\":290,\"hourlyRate\":25,\"grossAmount\":7250,\"netAmount\":7250,\"bugricerHoursUsed\":313,\"manuallyEdited\":true,\"narration\":\"Smoke test payroll ack\",\"payrollEntryId\":\"pr-smoke-$(date +%s)\",\"source\":\"finbro\"}" \
+  "$BASE/v1/integrations/finbro/payroll-hours" || true)
+body=$(cat /tmp/finbro_smoke_body.json 2>/dev/null || true)
+check "payroll-hours POST → 201" "201" "$code" "$body" \
+  'has("data") and (.data.acknowledged == true)'
+
+# 11) payroll-hours missing fields → 422
+code=$(curl -sS -o /tmp/finbro_smoke_body.json -w '%{http_code}' \
+  -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"a@b.com"}' \
+  "$BASE/v1/integrations/finbro/payroll-hours" || true)
+body=$(cat /tmp/finbro_smoke_body.json 2>/dev/null || true)
+check "payroll-hours invalid body → 422" "422" "$code" "$body" 'has("error")'
 
 # 9) Parallel identical Bearer GETs (status + hours) — expect all 200 JSON, no HTML
 echo "Running parallel concurrency smoke (4× status + 4× hours)…"
