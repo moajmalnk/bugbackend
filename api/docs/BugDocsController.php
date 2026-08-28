@@ -553,11 +553,8 @@ class BugDocsController extends BaseAPI {
                 $params[] = '%,' . $projectId; // At end of list
                 $params[] = '%,' . $projectId . ',%'; // In middle of list
             }
-            
-            // Add role-based filtering
-            if ($hasRoleColumn) {
-                $sql .= " AND " . $this->getRoleFilterSQL($userRole, 'd', $userId);
-            }
+
+            // Why: My Docs lists everything the user created — access role controls shared views only.
             
             $sql .= " ORDER BY d.created_at DESC";
             
@@ -600,12 +597,7 @@ class BugDocsController extends BaseAPI {
             if (!$includeArchived) {
                 $sql .= " AND d.is_archived = 0";
             }
-            
-            // Add role-based filtering
-            if ($hasRoleColumn) {
-                $sql .= " AND " . $this->getRoleFilterSQL($userRole, 'd', $userId);
-            }
-            
+
             $sql .= " ORDER BY d.created_at DESC";
             
             $stmt = $this->conn->prepare($sql);
