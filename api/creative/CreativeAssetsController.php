@@ -564,10 +564,37 @@ class CreativeAssetsController extends BaseAPI
                 $this->sendJsonResponse(403, 'Only the owner can submit this asset');
                 return;
             }
+            try {
+                $payload = $this->parsePayload($data, $decoded, $existing);
+            } catch (InvalidArgumentException $e) {
+                $this->sendJsonResponse(400, $e->getMessage());
+                return;
+            }
+            // Why: Submit must persist pending edits (e.g. card thumbnail) — not only flip status.
+            $payload['status'] = 'In Review';
             $stmt = $this->conn->prepare(
-                "UPDATE creative_assets SET status = 'In Review' WHERE id = ?"
+                'UPDATE creative_assets SET
+                    project_id = ?, creator_id = ?, title = ?, material_type = ?, platform = ?,
+                    hook_content = ?, asset_source = ?, drive_link = ?, uploaded_file_path = ?,
+                    preview_thumbnail_url = ?, status = ?, scheduled_date = ?, published_date = ?
+                 WHERE id = ?'
             );
-            $stmt->execute([$id]);
+            $stmt->execute([
+                $payload['project_id'],
+                $payload['creator_id'],
+                $payload['title'],
+                $payload['material_type'],
+                $payload['platform'],
+                $payload['hook_content'],
+                $payload['asset_source'],
+                $payload['drive_link'],
+                $payload['uploaded_file_path'],
+                $payload['preview_thumbnail_url'],
+                $payload['status'],
+                $payload['scheduled_date'],
+                $payload['published_date'],
+                $id,
+            ]);
             $row = $this->fetchAsset($id);
             $this->sendJsonResponse(200, 'Submitted for review', $this->formatAsset($row, $this->loadReviews($id)));
             return;
