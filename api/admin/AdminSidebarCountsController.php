@@ -466,12 +466,15 @@ class AdminSidebarCountsController extends BaseAPI
     ): int {
         $incomplete = "COALESCE(pc.emergency_bypass, 0) = 0
             AND COALESCE(pc.pipeline_stage, 'developer_unverified') != 'admin_ready'";
+        $complianceRequired = $this->dbColumnExists('projects', 'compliance_required')
+            ? 'COALESCE(p.compliance_required, 1) != 0'
+            : '1=1';
 
         if ($isAdmin) {
             return $this->countOrZero(
                 "SELECT COUNT(*) FROM projects p
                  LEFT JOIN project_compliance pc ON pc.project_id = p.id
-                 WHERE {$nonArchivedP} AND {$liveProjectsP} AND {$incomplete}"
+                 WHERE {$nonArchivedP} AND {$liveProjectsP} AND {$complianceRequired} AND {$incomplete}"
             );
         }
 
@@ -483,7 +486,7 @@ class AdminSidebarCountsController extends BaseAPI
             "SELECT COUNT(DISTINCT p.id) FROM projects p
              INNER JOIN project_members pm ON pm.project_id = p.id
              LEFT JOIN project_compliance pc ON pc.project_id = p.id
-             WHERE pm.user_id = ? AND {$nonArchivedP} AND {$liveProjectsP} AND {$incomplete}",
+             WHERE pm.user_id = ? AND {$nonArchivedP} AND {$liveProjectsP} AND {$complianceRequired} AND {$incomplete}",
             [$userId]
         );
     }
