@@ -2,6 +2,7 @@
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../utils/checkin_policy.php';
 require_once __DIR__ . '/../../utils/work_period.php';
+require_once __DIR__ . '/../../utils/attendance_roles.php';
 
 class AttendanceExceptionController extends BaseAPI
 {
@@ -364,7 +365,7 @@ class AttendanceExceptionController extends BaseAPI
                  WHERE ws.check_in_time IS NOT NULL
                    AND ws.submission_date >= ?
                    AND (ws.work_mode = 'office' OR ws.work_mode IS NULL OR ws.work_mode = '')
-                   AND LOWER(TRIM(COALESCE(u.role, ''))) IN ('admin', 'developer', 'user')
+                   AND LOWER(TRIM(COALESCE(u.role, ''))) IN (" . br_workforce_roster_role_sql_in() . ")
                    AND (u.account_active IS NULL OR u.account_active = 1)
                  GROUP BY ws.user_id"
             );

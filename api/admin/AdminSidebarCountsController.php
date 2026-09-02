@@ -289,7 +289,7 @@ class AdminSidebarCountsController extends BaseAPI
         }
 
         if (
-            ($can('LEAVE_VIEW') || $role === 'developer' || $role === 'user')
+            ($can('LEAVE_VIEW') || in_array($role, ['developer', 'creator', 'user'], true))
             && $this->dbTableExists('leave_requests')
         ) {
             $counts['myleave'] = $this->countOrZero(
