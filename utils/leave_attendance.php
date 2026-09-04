@@ -193,7 +193,7 @@ function br_approved_leaves_in_range(PDO $conn, string $userId, string $from, st
 /**
  * Expand approved leave rows into per-day map within [from, to].
  *
- * @return array<string, array{day_status:string,leave_type_code:?string,leave_type_name:?string,leave_request_id:int}>
+ * @return array<string, array{day_status:string,leave_type_code:?string,leave_type_name:?string,leave_request_id:int,leave_reason:?string}>
  */
 function br_leave_day_map(PDO $conn, string $userId, string $from, string $to): array
 {
@@ -219,6 +219,7 @@ function br_leave_day_map(PDO $conn, string $userId, string $from, string $to): 
                     'leave_type_code' => $leave['leave_type_code'] ?? null,
                     'leave_type_name' => $leave['leave_type_name'] ?? null,
                     'leave_request_id' => (int)$leave['id'],
+                    'leave_reason' => isset($leave['reason']) ? (string)$leave['reason'] : null,
                 ];
             }
             $cursor->modify('+1 day');
@@ -268,6 +269,7 @@ function br_merge_leave_into_submission_rows(PDO $conn, string $userId, string $
         $row['leave_type_code'] = $info['leave_type_code'];
         $row['leave_type_name'] = $info['leave_type_name'];
         $row['leave_request_id'] = $info['leave_request_id'];
+        $row['leave_reason'] = $info['leave_reason'] ?? null;
         $credited = br_leave_credited_hours($info['leave_type_code'] ?? null);
         if ($credited > (float)($row['hours_today'] ?? 0)) {
             $row['hours_today'] = $credited;
@@ -298,6 +300,7 @@ function br_merge_leave_into_submission_rows(PDO $conn, string $userId, string $
             'leave_type_code' => $info['leave_type_code'],
             'leave_type_name' => $info['leave_type_name'],
             'leave_request_id' => $info['leave_request_id'],
+            'leave_reason' => $info['leave_reason'] ?? null,
         ];
     }
 
