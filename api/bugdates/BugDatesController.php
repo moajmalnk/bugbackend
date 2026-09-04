@@ -389,13 +389,22 @@ class BugDatesController extends BaseAPI
             }
             while ($cursor <= $endDt) {
                 $occ = $cursor->format('Y-m-d');
+                $typeCode = strtolower(trim((string)($row['leave_type_code'] ?? '')));
                 $typeName = (string)($row['leave_type_name'] ?? 'Leave');
                 $username = (string)($row['username'] ?? 'Teammate');
+                $reason = trim((string)($row['reason'] ?? ''));
+                // Official Leave is a company holiday grant — visible to all teammates (not privacy-masked as Away).
+                $isOfficial = $typeCode === 'corporate';
+                if ($isOfficial) {
+                    $typeName = 'Official Leave';
+                }
+                $creditedHours = br_leave_credited_hours($typeCode);
+                $revealDetails = $showReason || $isOfficial;
                 $item = [
                     'source' => 'leave',
                     'layer' => 'leave',
                     'occurrence_date' => $occ,
-                    'title' => $showReason
+                    'title' => $revealDetails
                         ? "{$username} — {$typeName}"
                         : "{$username} — Away",
                     'category' => 'attendance',
@@ -407,10 +416,16 @@ class BugDatesController extends BaseAPI
                     'status' => $row['status'],
                     'is_half_day' => !empty($row['is_half_day']),
                     'half_day_type' => $row['half_day_type'] ?? null,
+                    'credited_hours' => $revealDetails ? $creditedHours : null,
+                    'is_official_leave' => $isOfficial,
                 ];
-                if ($showReason) {
-                    $item['reason'] = $row['reason'] ?? null;
-                    $item['description'] = $row['reason'] ?? null;
+                if ($revealDetails) {
+                    if ($reason !== '') {
+                        $item['reason'] = $reason;
+                        $item['description'] = $reason;
+                    } elseif ($isOfficial && $creditedHours > 0) {
+                        $item['description'] = 'Company holiday leave';
+                    }
                 }
                 $items[] = $item;
                 $cursor->modify('+1 day');
