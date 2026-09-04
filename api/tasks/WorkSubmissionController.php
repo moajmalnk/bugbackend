@@ -618,6 +618,14 @@ class WorkSubmissionController extends BaseAPI {
         } else {
             error_log("🔍 WorkSubmissionController::mySubmissions - Request ID: $requestId - No rows returned for user: " . $userId);
         }
+
+        $rows = br_merge_leave_into_submission_rows(
+            $this->conn,
+            (string)$userId,
+            (string)$from,
+            (string)$to,
+            $rows
+        );
         
         $this->sendSubmissionsListResponse($rows);
     }

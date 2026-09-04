@@ -239,6 +239,76 @@ function br_leave_credited_hours(?string $leaveTypeCode): float
 }
 
 /**
+ * Merge approved leave into a work-submissions list (Daily Update / my submissions).
+ * Why: Admin work-stats already injects leave-only days; the developer Daily Update
+ * feed must show the same leave days with credited hours so dashboards stay aligned.
+ *
+ * @param list<array<string,mixed>> $rows
+ * @return list<array<string,mixed>>
+ */
+function br_merge_leave_into_submission_rows(PDO $conn, string $userId, string $from, string $to, array $rows): array
+{
+    $leaveMap = br_leave_day_map($conn, $userId, $from, $to);
+    if ($leaveMap === []) {
+        return $rows;
+    }
+
+    $seen = [];
+    foreach ($rows as &$row) {
+        $d = (string)($row['submission_date'] ?? '');
+        if ($d === '') {
+            continue;
+        }
+        $seen[$d] = true;
+        if (!isset($leaveMap[$d])) {
+            continue;
+        }
+        $info = $leaveMap[$d];
+        $row['day_status'] = 'leave';
+        $row['leave_type_code'] = $info['leave_type_code'];
+        $row['leave_type_name'] = $info['leave_type_name'];
+        $row['leave_request_id'] = $info['leave_request_id'];
+        $credited = br_leave_credited_hours($info['leave_type_code'] ?? null);
+        if ($credited > (float)($row['hours_today'] ?? 0)) {
+            $row['hours_today'] = $credited;
+        }
+    }
+    unset($row);
+
+    foreach ($leaveMap as $leaveDate => $info) {
+        if (isset($seen[$leaveDate])) {
+            continue;
+        }
+        $credited = br_leave_credited_hours($info['leave_type_code'] ?? null);
+        $rows[] = [
+            'id' => null,
+            'user_id' => $userId,
+            'submission_date' => $leaveDate,
+            'start_time' => null,
+            'check_in_time' => null,
+            'hours_today' => $credited,
+            'overtime_hours' => 0,
+            'requested_extra_hours' => 0,
+            'total_break_minutes' => 0,
+            'completed_tasks' => '',
+            'pending_tasks' => '',
+            'ongoing_tasks' => '',
+            'notes' => '',
+            'day_status' => 'leave',
+            'leave_type_code' => $info['leave_type_code'],
+            'leave_type_name' => $info['leave_type_name'],
+            'leave_request_id' => $info['leave_request_id'],
+        ];
+    }
+
+    usort($rows, static function ($a, $b) {
+        return strcmp((string)($b['submission_date'] ?? ''), (string)($a['submission_date'] ?? ''));
+    });
+
+    return $rows;
+}
+
+/**
  * Add leave-only days and paid-leave hour credits into month totals.
  *
  * @param array<string, float> $submissionHoursByDate date => hours_today

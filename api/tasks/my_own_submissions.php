@@ -18,6 +18,14 @@ class OwnWorkSubmissionController extends WorkSubmissionController {
         $stmt = $this->conn->prepare($sql);
         $stmt->execute([$userId, $from, $to]);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $rows = br_merge_leave_into_submission_rows(
+            $this->conn,
+            (string)$userId,
+            (string)$from,
+            (string)$to,
+            $rows
+        );
         
         error_log("🔍 OwnWorkSubmissionController::myOwnSubmissions - Found " . count($rows) . " submissions for user: " . $userId . $impersonationInfo);
         $this->sendSubmissionsListResponse($rows);
