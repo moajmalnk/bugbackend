@@ -203,6 +203,11 @@ class LeaveController extends BaseAPI
                 $this->sendJsonResponse(400, 'Personal Leave is no longer available. Use Paid, Sick, or Unpaid Leave.');
                 return;
             }
+            // Official Leave is admin-granted only (company holidays).
+            if (strtolower((string)$type['code']) === 'corporate') {
+                $this->sendJsonResponse(400, 'Official Leave can only be granted by an admin.');
+                return;
+            }
 
             $joining = br_user_joining_date($this->conn, $userId);
             if ($joining !== null && $startDate < $joining) {
@@ -250,9 +255,9 @@ class LeaveController extends BaseAPI
                 return;
             }
 
-            // on_duty / zero-quota types: no monthly balance gate
+            // on_duty / corporate / zero-quota types: no monthly balance gate
             $typeCode = strtolower((string)$type['code']);
-            $unlimitedQuota = $typeCode === 'on_duty' || (float)$type['monthly_quota'] <= 0;
+            $unlimitedQuota = $typeCode === 'on_duty' || $typeCode === 'corporate' || (float)$type['monthly_quota'] <= 0;
 
             // Split the request into segments: days within the monthly balance keep the
             // requested type; overflow days are automatically marked Unpaid Leave.
@@ -638,6 +643,276 @@ class LeaveController extends BaseAPI
             'Leave request ' . $newStatus,
             $formatted
         );
+    }
+
+    /**
+     * Admin-only: grant Official Leave (corporate, 8h) to all or selected users for a date range.
+     * Why: Company holidays (e.g. Meelad Nabi) must credit work hours without using personal leave quotas
+     * or the forgot-checkout admin-hours path.
+     *
+     * @param array<string,mixed> $payload
+     */
+    public function adminGrantOfficialLeave($payload)
+    {
+        try {
+            $decoded = $this->requireAuth();
+            if (!$decoded || !$this->ensureLeaveReady()) {
+                return;
+            }
+            if (!$this->requireAdmin($decoded)) {
+                return;
+            }
+
+            $startDate = trim((string)($payload['start_date'] ?? $payload['date'] ?? ''));
+            $endDate = trim((string)($payload['end_date'] ?? $startDate));
+            $title = trim((string)($payload['title'] ?? $payload['reason'] ?? ''));
+            $scope = strtolower(trim((string)($payload['scope'] ?? 'all')));
+            $userIdsRaw = $payload['user_ids'] ?? [];
+
+            if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $startDate) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $endDate)) {
+                $this->sendJsonResponse(400, 'date or start_date/end_date (YYYY-MM-DD) are required');
+                return;
+            }
+            if ($endDate < $startDate) {
+                $this->sendJsonResponse(400, 'end_date cannot be before start_date');
+                return;
+            }
+            if ($title === '') {
+                $this->sendJsonResponse(400, 'title is required (e.g. Meelad Nabi)');
+                return;
+            }
+            if (mb_strlen($title) > 255) {
+                $title = mb_substr($title, 0, 255);
+            }
+            if (!in_array($scope, ['all', 'users'], true)) {
+                $this->sendJsonResponse(400, 'scope must be all or users');
+                return;
+            }
+
+            $type = $this->ensureCorporateLeaveType();
+            if (!$type) {
+                $this->sendJsonResponse(500, 'Official Leave type is not available');
+                return;
+            }
+
+            // Calendar-day span (do not skip office-closed days — this leave IS the holiday credit).
+            $tz = new DateTimeZone('Asia/Kolkata');
+            $startDt = DateTime::createFromFormat('Y-m-d', $startDate, $tz);
+            $endDt = DateTime::createFromFormat('Y-m-d', $endDate, $tz);
+            if (!$startDt || !$endDt) {
+                $this->sendJsonResponse(400, 'Invalid date format');
+                return;
+            }
+            $daysCount = (float)($startDt->diff($endDt)->days + 1);
+
+            $targetIds = [];
+            if ($scope === 'users') {
+                if (!is_array($userIdsRaw) || count($userIdsRaw) === 0) {
+                    $this->sendJsonResponse(400, 'user_ids is required when scope=users');
+                    return;
+                }
+                foreach ($userIdsRaw as $uid) {
+                    $uid = trim((string)$uid);
+                    if ($uid !== '') {
+                        $targetIds[$uid] = true;
+                    }
+                }
+                $targetIds = array_keys($targetIds);
+            } else {
+                $targetIds = $this->listActiveEmployeeIds();
+            }
+
+            if (count($targetIds) === 0) {
+                $this->sendJsonResponse(400, 'No users to grant Official Leave');
+                return;
+            }
+
+            $adminId = (string)($decoded->user_id ?? '');
+            $created = 0;
+            $skipped = [];
+            $createdRows = [];
+
+            $hasHalfCols = false;
+            try {
+                $c = $this->conn->query("SHOW COLUMNS FROM leave_requests LIKE 'is_half_day'");
+                $hasHalfCols = (bool)($c && $c->fetch(PDO::FETCH_ASSOC));
+            } catch (Throwable $e) {
+                $hasHalfCols = false;
+            }
+
+            if ($hasHalfCols) {
+                $ins = $this->conn->prepare(
+                    "INSERT INTO leave_requests
+                     (user_id, leave_type_id, start_date, end_date, days_count, is_half_day, half_day_type, reason, status, reviewed_by, reviewed_at, admin_note)
+                     VALUES (?, ?, ?, ?, ?, 0, NULL, ?, 'approved', ?, NOW(), ?)"
+                );
+            } else {
+                $ins = $this->conn->prepare(
+                    "INSERT INTO leave_requests
+                     (user_id, leave_type_id, start_date, end_date, days_count, reason, status, reviewed_by, reviewed_at, admin_note)
+                     VALUES (?, ?, ?, ?, ?, ?, 'approved', ?, NOW(), ?)"
+                );
+            }
+
+            foreach ($targetIds as $uid) {
+                $joining = br_user_joining_date($this->conn, $uid);
+                if ($joining !== null && $endDate < $joining) {
+                    $skipped[] = ['user_id' => $uid, 'reason' => 'before_joining'];
+                    continue;
+                }
+                $effectiveStart = $startDate;
+                if ($joining !== null && $joining > $startDate && $joining <= $endDate) {
+                    $effectiveStart = $joining;
+                }
+
+                if (br_leave_has_overlap($this->conn, $uid, $effectiveStart, $endDate)) {
+                    $skipped[] = ['user_id' => $uid, 'reason' => 'overlap'];
+                    continue;
+                }
+
+                $effStartDt = DateTime::createFromFormat('Y-m-d', $effectiveStart, $tz);
+                $segDays = $effStartDt
+                    ? (float)($effStartDt->diff($endDt)->days + 1)
+                    : $daysCount;
+
+                $adminNote = 'Official Leave granted by admin';
+                try {
+                    if ($hasHalfCols) {
+                        $ins->execute([
+                            $uid,
+                            (int)$type['id'],
+                            $effectiveStart,
+                            $endDate,
+                            $segDays,
+                            $title,
+                            $adminId !== '' ? $adminId : null,
+                            $adminNote,
+                        ]);
+                    } else {
+                        $ins->execute([
+                            $uid,
+                            (int)$type['id'],
+                            $effectiveStart,
+                            $endDate,
+                            $segDays,
+                            $title,
+                            $adminId !== '' ? $adminId : null,
+                            $adminNote,
+                        ]);
+                    }
+                    $newId = (int)$this->conn->lastInsertId();
+                    $created += 1;
+                    $createdRows[] = [
+                        'id' => $newId,
+                        'user_id' => $uid,
+                        'start_date' => $effectiveStart,
+                        'end_date' => $endDate,
+                        'days_count' => $segDays,
+                    ];
+                } catch (Throwable $e) {
+                    error_log('adminGrantOfficialLeave insert: ' . $e->getMessage());
+                    $skipped[] = ['user_id' => $uid, 'reason' => 'insert_failed'];
+                }
+            }
+
+            $this->sendJsonResponse(200, 'Official Leave granted', [
+                'title' => $title,
+                'start_date' => $startDate,
+                'end_date' => $endDate,
+                'leave_type_code' => 'corporate',
+                'credited_hours_per_day' => 8,
+                'created' => $created,
+                'skipped' => $skipped,
+                'requests' => $createdRows,
+            ]);
+        } catch (Throwable $e) {
+            error_log('adminGrantOfficialLeave: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Failed to grant Official Leave');
+        }
+    }
+
+    /**
+     * Ensure corporate leave type exists (migration 098 may not have run yet).
+     *
+     * @return array{id:int,code:string,name:string,monthly_quota:float}|null
+     */
+    private function ensureCorporateLeaveType(): ?array
+    {
+        try {
+            $stmt = $this->conn->prepare(
+                "SELECT id, code, name, monthly_quota, is_active FROM leave_types WHERE code = 'corporate' LIMIT 1"
+            );
+            $stmt->execute();
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($row) {
+                if (!(int)($row['is_active'] ?? 1)) {
+                    $this->conn->prepare(
+                        "UPDATE leave_types SET is_active = 1, name = 'Official Leave', monthly_quota = 0 WHERE code = 'corporate'"
+                    )->execute();
+                }
+                return [
+                    'id' => (int)$row['id'],
+                    'code' => 'corporate',
+                    'name' => 'Official Leave',
+                    'monthly_quota' => 0.0,
+                ];
+            }
+            $this->conn->prepare(
+                "INSERT INTO leave_types (code, name, monthly_quota, is_active) VALUES ('corporate', 'Official Leave', 0.00, 1)"
+            )->execute();
+            $id = (int)$this->conn->lastInsertId();
+            if ($id <= 0) {
+                $stmt->execute();
+                $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                $id = $row ? (int)$row['id'] : 0;
+            }
+            return $id > 0
+                ? ['id' => $id, 'code' => 'corporate', 'name' => 'Official Leave', 'monthly_quota' => 0.0]
+                : null;
+        } catch (Throwable $e) {
+            error_log('ensureCorporateLeaveType: ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function listActiveEmployeeIds(): array
+    {
+        $hasDeleted = false;
+        $hasActive = false;
+        try {
+            $c = $this->conn->query("SHOW COLUMNS FROM users LIKE 'deleted_at'");
+            $hasDeleted = (bool)($c && $c->fetch(PDO::FETCH_ASSOC));
+        } catch (Throwable $e) {
+            $hasDeleted = false;
+        }
+        try {
+            $c = $this->conn->query("SHOW COLUMNS FROM users LIKE 'account_active'");
+            $hasActive = (bool)($c && $c->fetch(PDO::FETCH_ASSOC));
+        } catch (Throwable $e) {
+            $hasActive = false;
+        }
+
+        $sql = 'SELECT id FROM users WHERE 1=1';
+        if ($hasDeleted) {
+            $sql .= ' AND deleted_at IS NULL';
+        }
+        if ($hasActive) {
+            $sql .= ' AND COALESCE(account_active, 1) = 1';
+        }
+        $sql .= ' ORDER BY username ASC';
+        $stmt = $this->conn->query($sql);
+        $rows = $stmt ? $stmt->fetchAll(PDO::FETCH_ASSOC) : [];
+        $ids = [];
+        foreach ($rows as $row) {
+            $id = trim((string)($row['id'] ?? ''));
+            if ($id !== '') {
+                $ids[] = $id;
+            }
+        }
+        return $ids;
     }
 
     /**
