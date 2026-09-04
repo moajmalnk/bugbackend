@@ -1639,4 +1639,66 @@ function sendProjectAccessRequestEmail(
 
     return sendEmail($recipientEmail, $subject, $html_body, $text_body);
 }
+
+/**
+ * Why: Company Official Leave (8h) — professional email companion to push/WhatsApp.
+ */
+function sendOfficialLeaveEmail($userEmail, $username, $leaveTitle, $startDate, $endDate = null)
+{
+    $username = trim((string)$username) !== '' ? (string)$username : 'teammate';
+    $leaveTitle = trim((string)$leaveTitle) !== '' ? (string)$leaveTitle : 'Official Leave';
+    $startDate = (string)$startDate;
+    $endDate = $endDate !== null && $endDate !== '' ? (string)$endDate : $startDate;
+    $rangeLabel = $startDate === $endDate
+        ? date('D, M j, Y', strtotime($startDate))
+        : date('D, M j, Y', strtotime($startDate)) . ' – ' . date('D, M j, Y', strtotime($endDate));
+
+    $safeName = htmlspecialchars($username, ENT_QUOTES, 'UTF-8');
+    $safeTitle = htmlspecialchars($leaveTitle, ENT_QUOTES, 'UTF-8');
+    $safeRange = htmlspecialchars($rangeLabel, ENT_QUOTES, 'UTF-8');
+    $subject = "Official Leave · {$leaveTitle} · 8 hours credited";
+
+    $base = 'https://bugs.bugricer.com';
+    if (function_exists('getFrontendBaseUrl')) {
+        $base = rtrim(getFrontendBaseUrl(), '/');
+    } elseif (
+        isset($_SERVER['HTTP_HOST']) &&
+        (strpos((string)$_SERVER['HTTP_HOST'], 'localhost') !== false ||
+            strpos((string)$_SERVER['HTTP_HOST'], '127.0.0.1') !== false)
+    ) {
+        $base = 'http://localhost:8080';
+    }
+    $url = $base . '/daily-update';
+    $safeUrl = htmlspecialchars($url, ENT_QUOTES, 'UTF-8');
+
+    $html_body = "
+    <div style=\"font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto;\">
+      <div style=\"background: linear-gradient(135deg,#f59e0b,#ea580c); padding: 20px; border-radius: 12px 12px 0 0;\">
+        <h2 style=\"margin:0;color:#fff;\">Official Leave · 8 hours credited</h2>
+      </div>
+      <div style=\"border:1px solid #e5e7eb;border-top:0;padding:20px;border-radius:0 0 12px 12px;\">
+        <p>Hi {$safeName},</p>
+        <p>Company <strong>Official Leave</strong> has been recorded for you:</p>
+        <p style=\"margin:12px 0;padding:12px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:12px;\">
+          <strong>{$safeTitle}</strong><br/>
+          <span style=\"color:#92400e;\">{$safeRange}</span><br/>
+          <span style=\"color:#b45309;font-weight:600;\">8 work hours credited per day</span>
+        </p>
+        <p>You do not need to check in. Your Daily Update will show this as Official Leave.</p>
+        <p style=\"margin-top:16px;\">
+          <a href=\"{$safeUrl}\" style=\"display:inline-block;background:#f59e0b;color:#fff;text-decoration:none;padding:10px 16px;border-radius:10px;font-weight:600;\">
+            Open Daily Update
+          </a>
+        </p>
+        <p style=\"margin-top:12px;color:#64748b;font-size:12px;\">BugRicer · Attendance · Asia/Kolkata</p>
+      </div>
+    </div>";
+
+    $text_body = "Official Leave · 8 hours credited — BugRicer\n\n"
+        . "Hi {$username},\n\n"
+        . "{$leaveTitle}\n{$rangeLabel}\n8 work hours credited per day.\n\n"
+        . "No check-in needed. Open Daily Update: {$url}\n";
+
+    return sendEmail($userEmail, $subject, $html_body, $text_body);
+}
 ?>

@@ -2098,6 +2098,38 @@ function sendWfhRequestNotificationWhatsApp($adminPhone, $username, $date, $user
 }
 
 /**
+ * Why: Company Official Leave (8h) — WhatsApp companion to push/email.
+ */
+function sendOfficialLeaveWhatsApp($userPhone, $username, $leaveTitle, $startDate, $endDate = null)
+{
+    $username = trim((string)$username) !== '' ? (string)$username : 'teammate';
+    $leaveTitle = trim((string)$leaveTitle) !== '' ? (string)$leaveTitle : 'Official Leave';
+    $startDate = (string)$startDate;
+    $endDate = $endDate !== null && $endDate !== '' ? (string)$endDate : $startDate;
+    $rangeLabel = $startDate === $endDate
+        ? date('D, M j, Y', strtotime($startDate))
+        : date('D, M j, Y', strtotime($startDate)) . ' – ' . date('D, M j, Y', strtotime($endDate));
+
+    $base = function_exists('getFrontendBaseUrl')
+        ? rtrim(getFrontendBaseUrl(), '/')
+        : 'https://bugs.bugricer.com';
+    $url = $base . '/daily-update';
+
+    $message = "🏖 *OFFICIAL LEAVE*\n"
+        . "━━━━━━━━━━━━━━━━━━━━\n\n"
+        . "Hi {$username},\n\n"
+        . "📅 *{$rangeLabel}*\n"
+        . "🏷 *{$leaveTitle}*\n"
+        . "✅ *8 work hours* credited per day\n\n"
+        . "No check-in needed. Your Daily Update will show Official Leave.\n\n"
+        . "{$url}\n\n"
+        . "━━━━━━━━━━━━━━━━━━━━\n"
+        . "🐞 BugRicer · Attendance · Asia/Kolkata";
+
+    return sendWhatsAppMessage($userPhone, $message);
+}
+
+/**
  * Why: Notify the requester on WhatsApp after approve/reject.
  */
 function sendWfhRequestDecisionWhatsApp($userPhone, $username, $date, $status, $adminNote = null)

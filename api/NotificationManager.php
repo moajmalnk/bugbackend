@@ -1571,6 +1571,45 @@ class NotificationManager extends BaseAPI {
         );
     }
 
+    /**
+     * Why: Company Official Leave (8h) must reach staff via in-app + FCM push.
+     * WhatsApp / email are sent by the caller after this returns.
+     */
+    public function notifyOfficialLeaveGranted(
+        $userId,
+        $title,
+        $startDate,
+        $endDate = null,
+        $requestId = null
+    ) {
+        $userId = (string)$userId;
+        $leaveTitle = trim((string)$title);
+        if ($leaveTitle === '') {
+            $leaveTitle = 'Official Leave';
+        }
+        $startDate = (string)$startDate;
+        $endDate = $endDate !== null && $endDate !== '' ? (string)$endDate : $startDate;
+        $range = $startDate === $endDate
+            ? $startDate
+            : "{$startDate} to {$endDate}";
+        $notificationType = $this->getValidNotificationType('leave', 'status_change');
+        $entityId = $userId . ':corporate:' . ($requestId ?: ($startDate . '_' . $endDate));
+
+        return $this->createNotification(
+            $notificationType,
+            'Official Leave · 8 hours credited',
+            "{$leaveTitle} · {$range}. Your Daily Update shows Official Leave with 8 work hours for this day.",
+            [$userId],
+            [
+                'entity_type' => 'leave',
+                'entity_id' => $entityId,
+                'created_by' => 'system',
+                'leave_type' => 'corporate',
+                'url' => '/daily-update',
+            ]
+        );
+    }
+
     public function notifyUserRegistered($newUserId, $username, $createdBy = null) {
         $newUserId = (string) $newUserId;
         $createdBy = $createdBy !== null ? (string) $createdBy : null;

@@ -668,6 +668,8 @@ class LeaveController extends BaseAPI
             $title = trim((string)($payload['title'] ?? $payload['reason'] ?? ''));
             $scope = strtolower(trim((string)($payload['scope'] ?? 'all')));
             $userIdsRaw = $payload['user_ids'] ?? [];
+            $doNotify = !isset($payload['notify']) || !empty($payload['notify']);
+            $replaceAdminHours = !empty($payload['replace_admin_hours']);
 
             if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $startDate) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $endDate)) {
                 $this->sendJsonResponse(400, 'date or start_date/end_date (YYYY-MM-DD) are required');
@@ -731,6 +733,16 @@ class LeaveController extends BaseAPI
             $created = 0;
             $skipped = [];
             $createdRows = [];
+            $adminHoursRemoved = 0;
+
+            if ($replaceAdminHours) {
+                $adminHoursRemoved = $this->removeAdminHoursEntriesForUsers(
+                    $targetIds,
+                    $startDate,
+                    $endDate,
+                    $adminId
+                );
+            }
 
             $hasHalfCols = false;
             try {
@@ -815,7 +827,7 @@ class LeaveController extends BaseAPI
                 }
             }
 
-            $this->sendJsonResponse(200, 'Official Leave granted', [
+            $responsePayload = [
                 'title' => $title,
                 'start_date' => $startDate,
                 'end_date' => $endDate,
@@ -824,11 +836,146 @@ class LeaveController extends BaseAPI
                 'created' => $created,
                 'skipped' => $skipped,
                 'requests' => $createdRows,
-            ]);
+                'admin_hours_removed' => $adminHoursRemoved,
+                'notify' => $doNotify,
+            ];
+
+            $notifyRows = $createdRows;
+            $notifyTitle = $title;
+            $this->sendJsonThen(
+                function () use ($doNotify, $notifyRows, $notifyTitle, $startDate, $endDate) {
+                    if (!$doNotify || $notifyRows === []) {
+                        return;
+                    }
+                    try {
+                        require_once __DIR__ . '/../NotificationManager.php';
+                        require_once __DIR__ . '/../../utils/email.php';
+                        require_once __DIR__ . '/../../utils/whatsapp.php';
+                        $nm = NotificationManager::getInstance();
+                        foreach ($notifyRows as $row) {
+                            $uid = (string)($row['user_id'] ?? '');
+                            if ($uid === '') {
+                                continue;
+                            }
+                            try {
+                                $nm->notifyOfficialLeaveGranted(
+                                    $uid,
+                                    $notifyTitle,
+                                    (string)($row['start_date'] ?? $startDate),
+                                    (string)($row['end_date'] ?? $endDate),
+                                    $row['id'] ?? null
+                                );
+                            } catch (Throwable $e) {
+                                error_log('notifyOfficialLeaveGranted push: ' . $e->getMessage());
+                            }
+                            try {
+                                $uStmt = $this->conn->prepare(
+                                    'SELECT username, email, phone FROM users WHERE id = ? LIMIT 1'
+                                );
+                                $uStmt->execute([$uid]);
+                                $u = $uStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+                                $uname = trim((string)($u['username'] ?? '')) ?: 'teammate';
+                                $email = trim((string)($u['email'] ?? ''));
+                                $phone = trim((string)($u['phone'] ?? ''));
+                                $sDate = (string)($row['start_date'] ?? $startDate);
+                                $eDate = (string)($row['end_date'] ?? $endDate);
+                                if ($email !== '') {
+                                    sendOfficialLeaveEmail($email, $uname, $notifyTitle, $sDate, $eDate);
+                                }
+                                if ($phone !== '') {
+                                    sendOfficialLeaveWhatsApp($phone, $uname, $notifyTitle, $sDate, $eDate);
+                                }
+                            } catch (Throwable $chanErr) {
+                                error_log('official leave mail/wa: ' . $chanErr->getMessage());
+                            }
+                        }
+                    } catch (Throwable $e) {
+                        error_log('adminGrantOfficialLeave notify batch: ' . $e->getMessage());
+                    }
+                },
+                200,
+                'Official Leave granted',
+                $responsePayload
+            );
         } catch (Throwable $e) {
             error_log('adminGrantOfficialLeave: ' . $e->getMessage());
             $this->sendJsonResponse(500, 'Failed to grant Official Leave');
         }
+    }
+
+    /**
+     * Soft-delete (or hard-delete) forgot-checkout admin hours rows for the date range.
+     * Why: Converting Meelad Nabi-style admin entries into Official Leave must clear the red admin cards.
+     *
+     * @param list<string> $userIds
+     */
+    private function removeAdminHoursEntriesForUsers(
+        array $userIds,
+        string $startDate,
+        string $endDate,
+        string $adminId
+    ): int {
+        if ($userIds === []) {
+            return 0;
+        }
+        $hasDeletedAt = false;
+        try {
+            $c = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'deleted_at'");
+            $hasDeletedAt = (bool)($c && $c->fetch(PDO::FETCH_ASSOC));
+        } catch (Throwable $e) {
+            $hasDeletedAt = false;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($userIds), '?'));
+        $params = array_merge($userIds, [$startDate, $endDate]);
+        $live = $hasDeletedAt ? ' AND deleted_at IS NULL' : '';
+        $sel = $this->conn->prepare(
+            "SELECT id FROM work_submissions
+             WHERE user_id IN ({$placeholders})
+               AND submission_date BETWEEN ? AND ?
+               AND notes LIKE '%[ADMIN HOURS ENTRY%'
+               {$live}"
+        );
+        $sel->execute($params);
+        $ids = $sel->fetchAll(PDO::FETCH_COLUMN) ?: [];
+        if ($ids === []) {
+            return 0;
+        }
+
+        $removed = 0;
+        if ($hasDeletedAt) {
+            require_once __DIR__ . '/../recycle_bin/RecycleBinService.php';
+            $rb = new RecycleBinService($this->conn);
+            foreach ($ids as $id) {
+                try {
+                    $rb->softDelete('work_submission', (string)$id, $adminId !== '' ? $adminId : 'system');
+                    $removed += 1;
+                } catch (Throwable $e) {
+                    if (stripos($e->getMessage(), 'already in the recycle bin') !== false) {
+                        $removed += 1;
+                        continue;
+                    }
+                    // Fallback: mark deleted_at without recycle bin row
+                    try {
+                        $upd = $this->conn->prepare(
+                            'UPDATE work_submissions SET deleted_at = NOW(), deleted_by = ? WHERE id = ? AND deleted_at IS NULL'
+                        );
+                        $upd->execute([$adminId !== '' ? $adminId : null, $id]);
+                        if ($upd->rowCount() > 0) {
+                            $removed += 1;
+                        }
+                    } catch (Throwable $e2) {
+                        error_log('removeAdminHoursEntriesForUsers soft: ' . $e2->getMessage());
+                    }
+                }
+            }
+            return $removed;
+        }
+
+        $idPlaceholders = implode(',', array_fill(0, count($ids), '?'));
+        $del = $this->conn->prepare("DELETE FROM work_submissions WHERE id IN ({$idPlaceholders})");
+        $del->execute(array_values($ids));
+        return (int)$del->rowCount();
     }
 
     /**
