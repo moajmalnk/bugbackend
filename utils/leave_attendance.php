@@ -229,11 +229,13 @@ function br_leave_day_map(PDO $conn, string $userId, string $from, string $to): 
 
 /**
  * Hours credited toward work stats for an approved leave day.
- * Paid leave counts as a full workday (8h); other leave types credit 0.
+ * Why: Casual/Paid Leave (code=paid) and legacy Personal Leave both count as a
+ * full workday (8h). Sick, unpaid, on-duty, and other types credit 0.
  */
 function br_leave_credited_hours(?string $leaveTypeCode): float
 {
-    return strtolower(trim((string)$leaveTypeCode)) === 'paid' ? 8.0 : 0.0;
+    $code = strtolower(trim((string)$leaveTypeCode));
+    return ($code === 'paid' || $code === 'personal') ? 8.0 : 0.0;
 }
 
 /**
