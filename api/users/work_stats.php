@@ -889,7 +889,7 @@ class UserWorkStatsController extends BaseAPI {
                     $entry['leave_type_name'] = $leaveMap[$d]['leave_type_name'];
                     $entry['leave_request_id'] = $leaveMap[$d]['leave_request_id'];
                     $entry['leave_reason'] = $leaveMap[$d]['leave_reason'] ?? null;
-                    $credited = br_leave_credited_hours($leaveMap[$d]['leave_type_code'] ?? null);
+                    $credited = br_leave_info_credited_hours($leaveMap[$d]);
                     if ($credited > (float)($entry['hours_today'] ?? 0)) {
                         $entry['hours_today'] = $credited;
                         $entry['hours'] = $credited;
@@ -902,7 +902,7 @@ class UserWorkStatsController extends BaseAPI {
                 if (isset($submissionDates[$leaveDate])) {
                     continue;
                 }
-                $credited = br_leave_credited_hours($leaveInfo['leave_type_code'] ?? null);
+                $credited = br_leave_info_credited_hours($leaveInfo);
                 $dailyBreakdown[] = $this->buildDailySubmissionEntry([
                     'id' => null,
                     'submission_date' => $leaveDate,

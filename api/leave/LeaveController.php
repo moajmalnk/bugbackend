@@ -58,6 +58,9 @@ class LeaveController extends BaseAPI
             'start_date' => $row['start_date'],
             'end_date' => $row['end_date'],
             'days_count' => (float)$row['days_count'],
+            'hours_per_day' => array_key_exists('hours_per_day', $row) && $row['hours_per_day'] !== null && $row['hours_per_day'] !== ''
+                ? (float)$row['hours_per_day']
+                : null,
             'is_half_day' => (bool)(int)($row['is_half_day'] ?? 0),
             'half_day_type' => $row['half_day_type'] ?? null,
             'reason' => $row['reason'] ?? null,
@@ -670,6 +673,17 @@ class LeaveController extends BaseAPI
             $userIdsRaw = $payload['user_ids'] ?? [];
             $doNotify = !isset($payload['notify']) || !empty($payload['notify']);
             $replaceAdminHours = !empty($payload['replace_admin_hours']);
+            $hoursPerDay = 8.0;
+            if (array_key_exists('hours_per_day', $payload) || array_key_exists('hours', $payload)) {
+                $rawH = $payload['hours_per_day'] ?? $payload['hours'] ?? 8;
+                $hoursPerDay = round((float)$rawH, 2);
+                if ($hoursPerDay < 0) {
+                    $hoursPerDay = 0.0;
+                }
+                if ($hoursPerDay > 24) {
+                    $hoursPerDay = 24.0;
+                }
+            }
 
             if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $startDate) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $endDate)) {
                 $this->sendJsonResponse(400, 'date or start_date/end_date (YYYY-MM-DD) are required');
@@ -751,8 +765,21 @@ class LeaveController extends BaseAPI
             } catch (Throwable $e) {
                 $hasHalfCols = false;
             }
+            $hasHoursCol = $this->ensureHoursPerDayColumn();
 
-            if ($hasHalfCols) {
+            if ($hasHoursCol && $hasHalfCols) {
+                $ins = $this->conn->prepare(
+                    "INSERT INTO leave_requests
+                     (user_id, leave_type_id, start_date, end_date, days_count, hours_per_day, is_half_day, half_day_type, reason, status, reviewed_by, reviewed_at, admin_note)
+                     VALUES (?, ?, ?, ?, ?, ?, 0, NULL, ?, 'approved', ?, NOW(), ?)"
+                );
+            } elseif ($hasHoursCol) {
+                $ins = $this->conn->prepare(
+                    "INSERT INTO leave_requests
+                     (user_id, leave_type_id, start_date, end_date, days_count, hours_per_day, reason, status, reviewed_by, reviewed_at, admin_note)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', ?, NOW(), ?)"
+                );
+            } elseif ($hasHalfCols) {
                 $ins = $this->conn->prepare(
                     "INSERT INTO leave_requests
                      (user_id, leave_type_id, start_date, end_date, days_count, is_half_day, half_day_type, reason, status, reviewed_by, reviewed_at, admin_note)
@@ -789,7 +816,31 @@ class LeaveController extends BaseAPI
 
                 $adminNote = 'Official Leave granted by admin';
                 try {
-                    if ($hasHalfCols) {
+                    if ($hasHoursCol && $hasHalfCols) {
+                        $ins->execute([
+                            $uid,
+                            (int)$type['id'],
+                            $effectiveStart,
+                            $endDate,
+                            $segDays,
+                            $hoursPerDay,
+                            $title,
+                            $adminId !== '' ? $adminId : null,
+                            $adminNote,
+                        ]);
+                    } elseif ($hasHoursCol) {
+                        $ins->execute([
+                            $uid,
+                            (int)$type['id'],
+                            $effectiveStart,
+                            $endDate,
+                            $segDays,
+                            $hoursPerDay,
+                            $title,
+                            $adminId !== '' ? $adminId : null,
+                            $adminNote,
+                        ]);
+                    } elseif ($hasHalfCols) {
                         $ins->execute([
                             $uid,
                             (int)$type['id'],
@@ -820,6 +871,7 @@ class LeaveController extends BaseAPI
                         'start_date' => $effectiveStart,
                         'end_date' => $endDate,
                         'days_count' => $segDays,
+                        'hours_per_day' => $hoursPerDay,
                     ];
                 } catch (Throwable $e) {
                     error_log('adminGrantOfficialLeave insert: ' . $e->getMessage());
@@ -832,7 +884,7 @@ class LeaveController extends BaseAPI
                 'start_date' => $startDate,
                 'end_date' => $endDate,
                 'leave_type_code' => 'corporate',
-                'credited_hours_per_day' => 8,
+                'credited_hours_per_day' => $hoursPerDay,
                 'created' => $created,
                 'skipped' => $skipped,
                 'requests' => $createdRows,
@@ -1027,6 +1079,20 @@ class LeaveController extends BaseAPI
                     ? trim((string)$payload['reason'])
                     : trim((string)($row['reason'] ?? '')));
 
+            $hoursPerDay = 8.0;
+            if (array_key_exists('hours_per_day', $payload) || array_key_exists('hours', $payload)) {
+                $rawH = $payload['hours_per_day'] ?? $payload['hours'] ?? 8;
+                $hoursPerDay = round((float)$rawH, 2);
+            } elseif (array_key_exists('hours_per_day', $row) && $row['hours_per_day'] !== null && $row['hours_per_day'] !== '') {
+                $hoursPerDay = round((float)$row['hours_per_day'], 2);
+            }
+            if ($hoursPerDay < 0) {
+                $hoursPerDay = 0.0;
+            }
+            if ($hoursPerDay > 24) {
+                $hoursPerDay = 24.0;
+            }
+
             if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $startDate) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $endDate)) {
                 $this->sendJsonResponse(400, 'start_date and end_date must be YYYY-MM-DD');
                 return;
@@ -1072,22 +1138,43 @@ class LeaveController extends BaseAPI
                 $adminNote = 'Official Leave updated by admin';
             }
 
-            $upd = $this->conn->prepare(
-                "UPDATE leave_requests
-                 SET start_date = ?, end_date = ?, days_count = ?, reason = ?,
-                     reviewed_by = ?, reviewed_at = NOW(), admin_note = ?,
-                     updated_at = NOW()
-                 WHERE id = ?"
-            );
-            $upd->execute([
-                $startDate,
-                $endDate,
-                $daysCount,
-                $title,
-                $adminId !== '' ? $adminId : null,
-                $adminNote,
-                $id,
-            ]);
+            $hasHoursCol = $this->ensureHoursPerDayColumn();
+            if ($hasHoursCol) {
+                $upd = $this->conn->prepare(
+                    "UPDATE leave_requests
+                     SET start_date = ?, end_date = ?, days_count = ?, hours_per_day = ?, reason = ?,
+                         reviewed_by = ?, reviewed_at = NOW(), admin_note = ?,
+                         updated_at = NOW()
+                     WHERE id = ?"
+                );
+                $upd->execute([
+                    $startDate,
+                    $endDate,
+                    $daysCount,
+                    $hoursPerDay,
+                    $title,
+                    $adminId !== '' ? $adminId : null,
+                    $adminNote,
+                    $id,
+                ]);
+            } else {
+                $upd = $this->conn->prepare(
+                    "UPDATE leave_requests
+                     SET start_date = ?, end_date = ?, days_count = ?, reason = ?,
+                         reviewed_by = ?, reviewed_at = NOW(), admin_note = ?,
+                         updated_at = NOW()
+                     WHERE id = ?"
+                );
+                $upd->execute([
+                    $startDate,
+                    $endDate,
+                    $daysCount,
+                    $title,
+                    $adminId !== '' ? $adminId : null,
+                    $adminNote,
+                    $id,
+                ]);
+            }
 
             $fetch = $this->conn->prepare($this->selectSql() . ' WHERE lr.id = ? LIMIT 1');
             $fetch->execute([$id]);
@@ -1275,6 +1362,25 @@ class LeaveController extends BaseAPI
         $del = $this->conn->prepare("DELETE FROM work_submissions WHERE id IN ({$idPlaceholders})");
         $del->execute(array_values($ids));
         return (int)$del->rowCount();
+    }
+
+    /**
+     * Ensure leave_requests.hours_per_day exists (migration 099).
+     */
+    private function ensureHoursPerDayColumn(): bool
+    {
+        if (br_leave_has_hours_per_day_col($this->conn)) {
+            return true;
+        }
+        try {
+            $this->conn->exec(
+                'ALTER TABLE leave_requests ADD COLUMN hours_per_day DECIMAL(5,2) NULL DEFAULT NULL AFTER days_count'
+            );
+            return br_leave_has_hours_per_day_col($this->conn, true);
+        } catch (Throwable $e) {
+            error_log('ensureHoursPerDayColumn: ' . $e->getMessage());
+            return br_leave_has_hours_per_day_col($this->conn, true);
+        }
     }
 
     /**

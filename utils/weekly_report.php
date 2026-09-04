@@ -346,7 +346,7 @@ function br_weekly_attendance_summary(PDO $conn, string $userId, string $weekSta
         $overtimeHours = $submission ? br_effective_overtime_hours_for_stats($submission) : 0.0;
 
         if ($leave) {
-            $credited = br_leave_credited_hours($leave['leave_type_code'] ?? null);
+            $credited = br_leave_info_credited_hours($leave);
             if ($credited > $hours) {
                 $hours = $credited;
             }

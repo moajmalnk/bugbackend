@@ -175,8 +175,10 @@ function br_approved_leaves_in_range(PDO $conn, string $userId, string $from, st
     if (!br_leave_tables_ready($conn)) {
         return [];
     }
+    $hoursCol = br_leave_has_hours_per_day_col($conn) ? ', lr.hours_per_day' : '';
     $stmt = $conn->prepare(
-        "SELECT lr.id, lr.user_id, lr.leave_type_id, lr.start_date, lr.end_date, lr.days_count,
+        "SELECT lr.id, lr.user_id, lr.leave_type_id, lr.start_date, lr.end_date, lr.days_count
+                {$hoursCol},
                 lr.reason, lr.status, lt.code AS leave_type_code, lt.name AS leave_type_name
          FROM leave_requests lr
          LEFT JOIN leave_types lt ON lt.id = lr.leave_type_id
@@ -191,9 +193,30 @@ function br_approved_leaves_in_range(PDO $conn, string $userId, string $from, st
 }
 
 /**
+ * Whether leave_requests.hours_per_day exists (migration 099).
+ */
+function br_leave_has_hours_per_day_col(PDO $conn, bool $refresh = false): bool
+{
+    static $cached = null;
+    if ($refresh) {
+        $cached = null;
+    }
+    if ($cached !== null) {
+        return $cached;
+    }
+    try {
+        $c = $conn->query("SHOW COLUMNS FROM leave_requests LIKE 'hours_per_day'");
+        $cached = (bool)($c && $c->fetch(PDO::FETCH_ASSOC));
+    } catch (Throwable $e) {
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
  * Expand approved leave rows into per-day map within [from, to].
  *
- * @return array<string, array{day_status:string,leave_type_code:?string,leave_type_name:?string,leave_request_id:int,leave_reason:?string}>
+ * @return array<string, array{day_status:string,leave_type_code:?string,leave_type_name:?string,leave_request_id:int,leave_reason:?string,hours_per_day:?float}>
  */
 function br_leave_day_map(PDO $conn, string $userId, string $from, string $to): array
 {
@@ -214,12 +237,17 @@ function br_leave_day_map(PDO $conn, string $userId, string $from, string $to): 
         while ($cursor <= $endDt) {
             $key = $cursor->format('Y-m-d');
             if (!isset($map[$key])) {
+                $hoursPerDay = null;
+                if (array_key_exists('hours_per_day', $leave) && $leave['hours_per_day'] !== null && $leave['hours_per_day'] !== '') {
+                    $hoursPerDay = (float)$leave['hours_per_day'];
+                }
                 $map[$key] = [
                     'day_status' => 'leave',
                     'leave_type_code' => $leave['leave_type_code'] ?? null,
                     'leave_type_name' => $leave['leave_type_name'] ?? null,
                     'leave_request_id' => (int)$leave['id'],
                     'leave_reason' => isset($leave['reason']) ? (string)$leave['reason'] : null,
+                    'hours_per_day' => $hoursPerDay,
                 ];
             }
             $cursor->modify('+1 day');
@@ -231,12 +259,35 @@ function br_leave_day_map(PDO $conn, string $userId, string $from, string $to): 
 /**
  * Hours credited toward work stats for an approved leave day.
  * Why: Casual/Paid (paid), legacy Personal, and admin Official Leave (corporate)
- * each count as a full workday (8h). Sick, unpaid, on-duty, and others credit 0.
+ * each count as a full workday (8h) unless hours_per_day is set on the request.
+ *
+ * @param mixed $hoursPerDayOverride null = use type default
  */
-function br_leave_credited_hours(?string $leaveTypeCode): float
+function br_leave_credited_hours(?string $leaveTypeCode, $hoursPerDayOverride = null): float
 {
+    if ($hoursPerDayOverride !== null && $hoursPerDayOverride !== '') {
+        $h = round((float)$hoursPerDayOverride, 2);
+        if ($h < 0) {
+            $h = 0.0;
+        }
+        if ($h > 24) {
+            $h = 24.0;
+        }
+        return $h;
+    }
     $code = strtolower(trim((string)$leaveTypeCode));
     return in_array($code, ['paid', 'personal', 'corporate'], true) ? 8.0 : 0.0;
+}
+
+/**
+ * @param array<string,mixed> $info leave day map entry or leave row
+ */
+function br_leave_info_credited_hours(array $info): float
+{
+    return br_leave_credited_hours(
+        isset($info['leave_type_code']) ? (string)$info['leave_type_code'] : null,
+        $info['hours_per_day'] ?? null
+    );
 }
 
 /**
@@ -270,7 +321,7 @@ function br_merge_leave_into_submission_rows(PDO $conn, string $userId, string $
         $row['leave_type_name'] = $info['leave_type_name'];
         $row['leave_request_id'] = $info['leave_request_id'];
         $row['leave_reason'] = $info['leave_reason'] ?? null;
-        $credited = br_leave_credited_hours($info['leave_type_code'] ?? null);
+        $credited = br_leave_info_credited_hours($info);
         if ($credited > (float)($row['hours_today'] ?? 0)) {
             $row['hours_today'] = $credited;
         }
@@ -281,7 +332,7 @@ function br_merge_leave_into_submission_rows(PDO $conn, string $userId, string $
         if (isset($seen[$leaveDate])) {
             continue;
         }
-        $credited = br_leave_credited_hours($info['leave_type_code'] ?? null);
+        $credited = br_leave_info_credited_hours($info);
         $rows[] = [
             'id' => null,
             'user_id' => $userId,
@@ -322,7 +373,7 @@ function br_apply_leave_to_work_totals(array $submissionHoursByDate, array $leav
     $days = count($submissionHoursByDate);
     $hours = array_sum($submissionHoursByDate);
     foreach ($leaveMap as $date => $info) {
-        $credited = br_leave_credited_hours($info['leave_type_code'] ?? null);
+        $credited = br_leave_info_credited_hours($info);
         if (!isset($submissionHoursByDate[$date])) {
             $days += 1;
             $hours += $credited;

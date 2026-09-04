@@ -353,10 +353,11 @@ class BugDatesController extends BaseAPI
             }
 
             $halfCols = $hasHalf ? ', lr.is_half_day, lr.half_day_type' : '';
+            $hoursCol = br_leave_has_hours_per_day_col($this->conn) ? ', lr.hours_per_day' : '';
             $stmt = $this->conn->prepare(
                 "SELECT lr.id, lr.user_id, lr.start_date, lr.end_date, lr.days_count, lr.reason, lr.status,
                         lt.code AS leave_type_code, lt.name AS leave_type_name, u.username
-                        {$halfCols}
+                        {$halfCols}{$hoursCol}
                  FROM leave_requests lr
                  LEFT JOIN leave_types lt ON lt.id = lr.leave_type_id
                  LEFT JOIN users u
@@ -398,7 +399,7 @@ class BugDatesController extends BaseAPI
                 if ($isOfficial) {
                     $typeName = 'Official Leave';
                 }
-                $creditedHours = br_leave_credited_hours($typeCode);
+                $creditedHours = br_leave_credited_hours($typeCode, $row['hours_per_day'] ?? null);
                 $revealDetails = $showReason || $isOfficial;
                 $item = [
                     'source' => 'leave',
