@@ -971,13 +971,16 @@ class LeaveController extends BaseAPI
 
             $status = isset($_GET['status']) ? trim((string)$_GET['status']) : '';
             $q = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
+            $title = isset($_GET['title']) ? trim((string)$_GET['title']) : '';
+            $startDate = isset($_GET['start_date']) ? trim((string)$_GET['start_date']) : '';
+            $endDate = isset($_GET['end_date']) ? trim((string)$_GET['end_date']) : '';
             $page = max(1, (int)($_GET['page'] ?? 1));
             $limit = (int)($_GET['limit'] ?? 30);
             if ($limit < 1) {
                 $limit = 30;
             }
-            if ($limit > 100) {
-                $limit = 100;
+            if ($limit > 200) {
+                $limit = 200;
             }
             $offset = ($page - 1) * $limit;
 
@@ -986,6 +989,23 @@ class LeaveController extends BaseAPI
             if ($status !== '' && in_array($status, ['pending', 'approved', 'rejected', 'cancelled'], true)) {
                 $where .= ' AND lr.status = ?';
                 $params[] = $status;
+            }
+            if ($title !== '') {
+                if (strcasecmp($title, 'Official Leave') === 0) {
+                    $where .= " AND (TRIM(COALESCE(lr.reason, '')) = '' OR lr.reason = ?)";
+                    $params[] = $title;
+                } else {
+                    $where .= ' AND lr.reason = ?';
+                    $params[] = $title;
+                }
+            }
+            if ($startDate !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $startDate)) {
+                $where .= ' AND lr.start_date = ?';
+                $params[] = $startDate;
+            }
+            if ($endDate !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $endDate)) {
+                $where .= ' AND lr.end_date = ?';
+                $params[] = $endDate;
             }
             if ($q !== '') {
                 $where .= ' AND (u.username LIKE ? OR lr.reason LIKE ? OR CAST(lr.user_id AS CHAR) LIKE ?)';
@@ -1024,6 +1044,122 @@ class LeaveController extends BaseAPI
         } catch (Throwable $e) {
             error_log('adminListOfficialLeave: ' . $e->getMessage());
             $this->sendJsonResponse(500, 'Failed to list Official Leave');
+        }
+    }
+
+    /**
+     * Admin: list Official Leave celebrations grouped by title + date range.
+     * Why: History should show "Onam" / "Independence Day" as entries; drill into users on a detail page.
+     */
+    public function adminListOfficialLeaveGroups()
+    {
+        try {
+            $decoded = $this->requireAuth();
+            if (!$decoded || !$this->ensureLeaveReady()) {
+                return;
+            }
+            if (!$this->requireAdmin($decoded)) {
+                return;
+            }
+
+            $this->ensureHoursPerDayColumn();
+
+            $status = isset($_GET['status']) ? trim((string)$_GET['status']) : '';
+            $q = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
+            $page = max(1, (int)($_GET['page'] ?? 1));
+            $limit = (int)($_GET['limit'] ?? 30);
+            if ($limit < 1) {
+                $limit = 30;
+            }
+            if ($limit > 100) {
+                $limit = 100;
+            }
+            $offset = ($page - 1) * $limit;
+
+            $where = " WHERE lt.code = 'corporate'";
+            $params = [];
+            if ($status !== '' && in_array($status, ['pending', 'approved', 'rejected', 'cancelled'], true)) {
+                $where .= ' AND lr.status = ?';
+                $params[] = $status;
+            }
+            if ($q !== '') {
+                $where .= ' AND lr.reason LIKE ?';
+                $params[] = '%' . $q . '%';
+            }
+
+            $hoursExpr = br_leave_has_hours_per_day_col($this->conn)
+                ? 'COALESCE(lr.hours_per_day, 8)'
+                : '8';
+
+            $countSql = "SELECT COUNT(*) AS cnt FROM (
+                SELECT lr.reason, lr.start_date, lr.end_date
+                FROM leave_requests lr
+                LEFT JOIN leave_types lt ON lt.id = lr.leave_type_id
+                {$where}
+                GROUP BY lr.reason, lr.start_date, lr.end_date
+            ) g";
+            $countStmt = $this->conn->prepare($countSql);
+            $countStmt->execute($params);
+            $total = (int)(($countStmt->fetch(PDO::FETCH_ASSOC) ?: [])['cnt'] ?? 0);
+
+            $sql = "SELECT
+                        COALESCE(NULLIF(TRIM(lr.reason), ''), 'Official Leave') AS title,
+                        lr.start_date,
+                        lr.end_date,
+                        COUNT(*) AS user_count,
+                        SUM(CASE WHEN lr.status IN ('approved', 'pending') THEN 1 ELSE 0 END) AS active_count,
+                        SUM(CASE WHEN lr.status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_count,
+                        AVG({$hoursExpr}) AS hours_per_day,
+                        MAX(lr.days_count) AS days_count,
+                        MAX(lr.created_at) AS last_granted_at,
+                        MIN(lr.created_at) AS first_granted_at
+                    FROM leave_requests lr
+                    LEFT JOIN leave_types lt ON lt.id = lr.leave_type_id
+                    {$where}
+                    GROUP BY COALESCE(NULLIF(TRIM(lr.reason), ''), 'Official Leave'), lr.start_date, lr.end_date
+                    ORDER BY MAX(lr.created_at) DESC
+                    LIMIT ? OFFSET ?";
+            $stmt = $this->conn->prepare($sql);
+            $i = 1;
+            foreach ($params as $p) {
+                $stmt->bindValue($i++, $p);
+            }
+            $stmt->bindValue($i++, $limit, PDO::PARAM_INT);
+            $stmt->bindValue($i, $offset, PDO::PARAM_INT);
+            $stmt->execute();
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+            $items = [];
+            foreach ($rows as $row) {
+                $title = (string)($row['title'] ?? 'Official Leave');
+                $start = (string)($row['start_date'] ?? '');
+                $end = (string)($row['end_date'] ?? '');
+                $days = (float)($row['days_count'] ?? 1);
+                $hpd = round((float)($row['hours_per_day'] ?? 8), 2);
+                $items[] = [
+                    'title' => $title,
+                    'start_date' => $start,
+                    'end_date' => $end,
+                    'user_count' => (int)($row['user_count'] ?? 0),
+                    'active_count' => (int)($row['active_count'] ?? 0),
+                    'cancelled_count' => (int)($row['cancelled_count'] ?? 0),
+                    'hours_per_day' => $hpd,
+                    'days_count' => $days,
+                    'total_hours_per_user' => round($days * $hpd, 2),
+                    'last_granted_at' => $row['last_granted_at'] ?? null,
+                    'first_granted_at' => $row['first_granted_at'] ?? null,
+                ];
+            }
+
+            $this->sendJsonResponse(200, 'OK', [
+                'items' => $items,
+                'total' => $total,
+                'page' => $page,
+                'limit' => $limit,
+            ]);
+        } catch (Throwable $e) {
+            error_log('adminListOfficialLeaveGroups: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Failed to list Official Leave groups');
         }
     }
 
