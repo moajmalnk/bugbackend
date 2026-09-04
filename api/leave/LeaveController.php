@@ -904,6 +904,305 @@ class LeaveController extends BaseAPI
     }
 
     /**
+     * Admin: list Official Leave (corporate) grants for history / edit / delete.
+     */
+    public function adminListOfficialLeave()
+    {
+        try {
+            $decoded = $this->requireAuth();
+            if (!$decoded || !$this->ensureLeaveReady()) {
+                return;
+            }
+            if (!$this->requireAdmin($decoded)) {
+                return;
+            }
+
+            $status = isset($_GET['status']) ? trim((string)$_GET['status']) : '';
+            $q = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
+            $page = max(1, (int)($_GET['page'] ?? 1));
+            $limit = (int)($_GET['limit'] ?? 30);
+            if ($limit < 1) {
+                $limit = 30;
+            }
+            if ($limit > 100) {
+                $limit = 100;
+            }
+            $offset = ($page - 1) * $limit;
+
+            $where = " WHERE lt.code = 'corporate'";
+            $params = [];
+            if ($status !== '' && in_array($status, ['pending', 'approved', 'rejected', 'cancelled'], true)) {
+                $where .= ' AND lr.status = ?';
+                $params[] = $status;
+            }
+            if ($q !== '') {
+                $where .= ' AND (u.username LIKE ? OR lr.reason LIKE ? OR CAST(lr.user_id AS CHAR) LIKE ?)';
+                $like = '%' . $q . '%';
+                $params[] = $like;
+                $params[] = $like;
+                $params[] = $like;
+            }
+
+            $countSql = "SELECT COUNT(*) AS cnt
+                FROM leave_requests lr
+                LEFT JOIN users u ON u.id = lr.user_id
+                LEFT JOIN leave_types lt ON lt.id = lr.leave_type_id
+                {$where}";
+            $countStmt = $this->conn->prepare($countSql);
+            $countStmt->execute($params);
+            $total = (int)(($countStmt->fetch(PDO::FETCH_ASSOC) ?: [])['cnt'] ?? 0);
+
+            $sql = $this->selectSql() . $where . ' ORDER BY lr.created_at DESC, lr.id DESC LIMIT ? OFFSET ?';
+            $stmt = $this->conn->prepare($sql);
+            $i = 1;
+            foreach ($params as $p) {
+                $stmt->bindValue($i++, $p);
+            }
+            $stmt->bindValue($i++, $limit, PDO::PARAM_INT);
+            $stmt->bindValue($i, $offset, PDO::PARAM_INT);
+            $stmt->execute();
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+            $this->sendJsonResponse(200, 'OK', [
+                'items' => array_map([$this, 'formatRequestRow'], $rows),
+                'total' => $total,
+                'page' => $page,
+                'limit' => $limit,
+            ]);
+        } catch (Throwable $e) {
+            error_log('adminListOfficialLeave: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Failed to list Official Leave');
+        }
+    }
+
+    /**
+     * Admin: update an Official Leave grant (dates + title).
+     *
+     * @param array<string,mixed> $payload
+     */
+    public function adminUpdateOfficialLeave($payload)
+    {
+        try {
+            $decoded = $this->requireAuth();
+            if (!$decoded || !$this->ensureLeaveReady()) {
+                return;
+            }
+            if (!$this->requireAdmin($decoded)) {
+                return;
+            }
+
+            $id = isset($payload['id']) ? (int)$payload['id'] : 0;
+            if ($id <= 0) {
+                $this->sendJsonResponse(400, 'id is required');
+                return;
+            }
+
+            $stmt = $this->conn->prepare(
+                $this->selectSql() . ' WHERE lr.id = ? LIMIT 1'
+            );
+            $stmt->execute([$id]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$row) {
+                $this->sendJsonResponse(404, 'Official Leave not found');
+                return;
+            }
+            if (strtolower((string)($row['leave_type_code'] ?? '')) !== 'corporate') {
+                $this->sendJsonResponse(400, 'Only Official Leave records can be edited here');
+                return;
+            }
+            if (!in_array((string)$row['status'], ['approved', 'pending'], true)) {
+                $this->sendJsonResponse(400, 'Only active Official Leave can be edited');
+                return;
+            }
+
+            $startDate = array_key_exists('start_date', $payload)
+                ? trim((string)$payload['start_date'])
+                : (string)$row['start_date'];
+            $endDate = array_key_exists('end_date', $payload)
+                ? trim((string)$payload['end_date'])
+                : (string)$row['end_date'];
+            $title = array_key_exists('title', $payload)
+                ? trim((string)$payload['title'])
+                : (array_key_exists('reason', $payload)
+                    ? trim((string)$payload['reason'])
+                    : trim((string)($row['reason'] ?? '')));
+
+            if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $startDate) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $endDate)) {
+                $this->sendJsonResponse(400, 'start_date and end_date must be YYYY-MM-DD');
+                return;
+            }
+            if ($endDate < $startDate) {
+                $this->sendJsonResponse(400, 'end_date cannot be before start_date');
+                return;
+            }
+            if ($title === '') {
+                $this->sendJsonResponse(400, 'title is required');
+                return;
+            }
+            if (mb_strlen($title) > 255) {
+                $title = mb_substr($title, 0, 255);
+            }
+
+            $userId = (string)$row['user_id'];
+            $joining = br_user_joining_date($this->conn, $userId);
+            if ($joining !== null && $endDate < $joining) {
+                $this->sendJsonResponse(400, "Leave ends before joining date ({$joining}).");
+                return;
+            }
+            if ($joining !== null && $startDate < $joining) {
+                $startDate = $joining;
+            }
+
+            if (br_leave_has_overlap($this->conn, $userId, $startDate, $endDate, $id)) {
+                $this->sendJsonResponse(409, 'Overlapping leave already exists for these dates.');
+                return;
+            }
+
+            $tz = new DateTimeZone('Asia/Kolkata');
+            $startDt = DateTime::createFromFormat('Y-m-d', $startDate, $tz);
+            $endDt = DateTime::createFromFormat('Y-m-d', $endDate, $tz);
+            if (!$startDt || !$endDt) {
+                $this->sendJsonResponse(400, 'Invalid date format');
+                return;
+            }
+            $daysCount = (float)($startDt->diff($endDt)->days + 1);
+            $adminId = (string)($decoded->user_id ?? '');
+            $adminNote = trim((string)($row['admin_note'] ?? ''));
+            if ($adminNote === '') {
+                $adminNote = 'Official Leave updated by admin';
+            }
+
+            $upd = $this->conn->prepare(
+                "UPDATE leave_requests
+                 SET start_date = ?, end_date = ?, days_count = ?, reason = ?,
+                     reviewed_by = ?, reviewed_at = NOW(), admin_note = ?,
+                     updated_at = NOW()
+                 WHERE id = ?"
+            );
+            $upd->execute([
+                $startDate,
+                $endDate,
+                $daysCount,
+                $title,
+                $adminId !== '' ? $adminId : null,
+                $adminNote,
+                $id,
+            ]);
+
+            $fetch = $this->conn->prepare($this->selectSql() . ' WHERE lr.id = ? LIMIT 1');
+            $fetch->execute([$id]);
+            $out = $fetch->fetch(PDO::FETCH_ASSOC);
+            $this->sendJsonResponse(
+                200,
+                'Official Leave updated',
+                $out ? $this->formatRequestRow($out) : null
+            );
+        } catch (Throwable $e) {
+            error_log('adminUpdateOfficialLeave: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Failed to update Official Leave');
+        }
+    }
+
+    /**
+     * Admin: cancel Official Leave grant(s) (removes credited hours from attendance views).
+     *
+     * @param array<string,mixed> $payload
+     */
+    public function adminDeleteOfficialLeave($payload)
+    {
+        try {
+            $decoded = $this->requireAuth();
+            if (!$decoded || !$this->ensureLeaveReady()) {
+                return;
+            }
+            if (!$this->requireAdmin($decoded)) {
+                return;
+            }
+
+            $ids = [];
+            if (isset($payload['ids']) && is_array($payload['ids'])) {
+                foreach ($payload['ids'] as $raw) {
+                    $n = (int)$raw;
+                    if ($n > 0) {
+                        $ids[$n] = true;
+                    }
+                }
+            }
+            $single = isset($payload['id']) ? (int)$payload['id'] : 0;
+            if ($single > 0) {
+                $ids[$single] = true;
+            }
+            $ids = array_keys($ids);
+            if ($ids === []) {
+                $this->sendJsonResponse(400, 'id or ids is required');
+                return;
+            }
+
+            $adminId = (string)($decoded->user_id ?? '');
+            $note = trim((string)($payload['admin_note'] ?? ''));
+            if ($note === '') {
+                $note = 'Official Leave cancelled by admin';
+            }
+            if (mb_strlen($note) > 500) {
+                $note = mb_substr($note, 0, 500);
+            }
+
+            $placeholders = implode(',', array_fill(0, count($ids), '?'));
+            $check = $this->conn->prepare(
+                "SELECT lr.id, lt.code AS leave_type_code, lr.status
+                 FROM leave_requests lr
+                 LEFT JOIN leave_types lt ON lt.id = lr.leave_type_id
+                 WHERE lr.id IN ({$placeholders})"
+            );
+            $check->execute($ids);
+            $rows = $check->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            if (count($rows) === 0) {
+                $this->sendJsonResponse(404, 'Official Leave not found');
+                return;
+            }
+
+            $cancelled = 0;
+            $skipped = [];
+            $upd = $this->conn->prepare(
+                "UPDATE leave_requests
+                 SET status = 'cancelled', reviewed_by = ?, reviewed_at = NOW(),
+                     admin_note = ?, updated_at = NOW()
+                 WHERE id = ? AND status IN ('approved', 'pending')"
+            );
+
+            foreach ($rows as $row) {
+                $rid = (int)$row['id'];
+                if (strtolower((string)($row['leave_type_code'] ?? '')) !== 'corporate') {
+                    $skipped[] = ['id' => $rid, 'reason' => 'not_official'];
+                    continue;
+                }
+                if (!in_array((string)$row['status'], ['approved', 'pending'], true)) {
+                    $skipped[] = ['id' => $rid, 'reason' => 'already_' . (string)$row['status']];
+                    continue;
+                }
+                $upd->execute([
+                    $adminId !== '' ? $adminId : null,
+                    $note,
+                    $rid,
+                ]);
+                if ($upd->rowCount() > 0) {
+                    $cancelled += 1;
+                } else {
+                    $skipped[] = ['id' => $rid, 'reason' => 'unchanged'];
+                }
+            }
+
+            $this->sendJsonResponse(200, 'Official Leave cancelled', [
+                'cancelled' => $cancelled,
+                'skipped' => $skipped,
+            ]);
+        } catch (Throwable $e) {
+            error_log('adminDeleteOfficialLeave: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Failed to cancel Official Leave');
+        }
+    }
+
+    /**
      * Soft-delete (or hard-delete) forgot-checkout admin hours rows for the date range.
      * Why: Converting Meelad Nabi-style admin entries into Official Leave must clear the red admin cards.
      *
