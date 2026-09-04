@@ -220,6 +220,16 @@ class WorkSubmissionController extends BaseAPI {
             // Keep overtime aligned with explicit extra-hours requests.
             $overtime = max(($hours > 8 ? $hours - 8 : 0), $requestedExtraHours);
 
+            // Revive soft-deleted row for this date so ON DUPLICATE KEY reuses a live record.
+            $reviveStmt = $this->conn->prepare(
+                'SELECT id, deleted_at FROM work_submissions WHERE user_id = ? AND submission_date = ? LIMIT 1'
+            );
+            $reviveStmt->execute([$userId, $date]);
+            $reviveRow = $reviveStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+            if ($reviveRow && br_work_submission_is_soft_deleted($reviveRow)) {
+                br_work_submission_revive($this->conn, (string)$reviveRow['id']);
+            }
+
             // Check if this is an update before inserting
             $checkStmt = $this->conn->prepare("SELECT COUNT(*) as cnt FROM work_submissions WHERE user_id = ? AND submission_date = ?");
             $checkStmt->execute([$userId, $date]);
@@ -1369,11 +1379,15 @@ class WorkSubmissionController extends BaseAPI {
 
             $this->ensureExtraHoursApprovalColumns();
 
-            $existingStmt = $this->conn->prepare('SELECT * FROM work_submissions WHERE user_id = ? AND submission_date = ? LIMIT 1');
+            $existingStmt = $this->conn->prepare(
+                'SELECT * FROM work_submissions WHERE user_id = ? AND submission_date = ? LIMIT 1'
+            );
             $existingStmt->execute([$targetUserId, $date]);
             $existing = $existingStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+            $existingSoftDeleted = $existing ? br_work_submission_is_soft_deleted($existing) : false;
 
-            if ($existing) {
+            // Live row with hours already recorded → block. Soft-deleted (recycle bin) → revive & replace.
+            if ($existing && !$existingSoftDeleted) {
                 $existingHours = (float)($existing['hours_today'] ?? 0);
                 if ($existingHours >= 1) {
                     $this->sendJsonResponse(
@@ -1382,6 +1396,14 @@ class WorkSubmissionController extends BaseAPI {
                     );
                     return;
                 }
+            }
+
+            if ($existing && $existingSoftDeleted) {
+                br_work_submission_revive($this->conn, (string)$existing['id']);
+                // Why: Deleted content was intentionally removed — treat as a fresh admin entry.
+                $existing['notes'] = '';
+                $existing['completed_tasks'] = '';
+                $existing['hours_today'] = 0;
             }
 
             $adminUsername = (string)($decoded->username ?? 'admin');

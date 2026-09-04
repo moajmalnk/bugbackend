@@ -15,6 +15,7 @@ require_once __DIR__ . '/../../utils/work_period.php';
 require_once __DIR__ . '/../../utils/leave_attendance.php';
 require_once __DIR__ . '/../../utils/checkin_policy.php';
 require_once __DIR__ . '/../../utils/user_onboarding.php';
+require_once __DIR__ . '/../../utils/work_submission_ot.php';
 
 error_log("🚀 check_in.php - BaseAPI.php loaded");
 
@@ -267,9 +268,10 @@ class CheckInController extends BaseAPI {
 
             // Use check-then-update/insert pattern for better compatibility
             error_log("🔍 CheckInController - Checking for existing record...");
+            $deletedSelect = br_work_submission_deleted_at_supported($this->conn) ? ', deleted_at' : '';
             $checkStmt = $this->conn->prepare(
-                'SELECT id, check_in_time, work_mode, is_late, check_in_lat, check_in_lng, check_in_accuracy_m, check_in_distance_m
-                 FROM work_submissions WHERE user_id = ? AND submission_date = ?'
+                "SELECT id, check_in_time, work_mode, is_late, check_in_lat, check_in_lng, check_in_accuracy_m, check_in_distance_m{$deletedSelect}
+                 FROM work_submissions WHERE user_id = ? AND submission_date = ?"
             );
             if (!$checkStmt) {
                 throw new Exception("Failed to prepare check statement: " . implode(", ", $this->conn->errorInfo()));
@@ -281,6 +283,12 @@ class CheckInController extends BaseAPI {
             }
 
             $existing = $checkStmt->fetch(PDO::FETCH_ASSOC);
+            if ($existing && br_work_submission_is_soft_deleted($existing)) {
+                br_work_submission_revive($this->conn, (string)$existing['id']);
+                // Soft-deleted check-in should not count as a prior live check-in.
+                $existing['check_in_time'] = null;
+                $existing['deleted_at'] = null;
+            }
             $hadPriorCheckIn = $existing && !empty($existing['check_in_time']);
 
             if ($existing) {

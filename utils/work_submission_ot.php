@@ -31,6 +31,48 @@ function br_work_submission_live_and(PDO $conn, string $alias = ''): string
     return " AND {$p}deleted_at IS NULL";
 }
 
+/**
+ * Revive a soft-deleted work_submissions row and clear its recycle-bin listing.
+ * Why: Unique (user_id, submission_date) keeps the soft-deleted row; re-adding hours
+ * must reuse that row instead of 409 / insert failure after admin recycle-bin delete.
+ */
+function br_work_submission_revive(PDO $conn, string|int $submissionId): void
+{
+    if (!br_work_submission_deleted_at_supported($conn)) {
+        return;
+    }
+    $id = (string)$submissionId;
+    if ($id === '') {
+        return;
+    }
+    try {
+        $upd = $conn->prepare(
+            'UPDATE work_submissions SET deleted_at = NULL, deleted_by = NULL WHERE id = ? AND deleted_at IS NOT NULL'
+        );
+        $upd->execute([$id]);
+
+        $bin = $conn->prepare(
+            "UPDATE recycle_bin_items
+             SET restored_at = NOW()
+             WHERE entity_type = 'work_submission'
+               AND entity_id = ?
+               AND restored_at IS NULL
+               AND purged_at IS NULL"
+        );
+        $bin->execute([$id]);
+    } catch (Throwable $e) {
+        error_log('br_work_submission_revive: ' . $e->getMessage());
+    }
+}
+
+/**
+ * True when a work_submissions row is soft-deleted (in recycle bin).
+ */
+function br_work_submission_is_soft_deleted(array $row): bool
+{
+    return trim((string)($row['deleted_at'] ?? '')) !== '';
+}
+
 function br_work_submission_has_extra_request(array $s): bool
 {
     $req = (float)($s['requested_extra_hours'] ?? 0) > 0;

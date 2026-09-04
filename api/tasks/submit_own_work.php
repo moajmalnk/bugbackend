@@ -136,6 +136,15 @@ class OwnWorkSubmissionController extends WorkSubmissionController {
         
         // Keep overtime aligned with explicit extra-hours requests.
         $overtime = max(($hours > 8 ? $hours - 8 : 0), $requestedExtraHours);
+
+        $reviveStmt = $this->conn->prepare(
+            'SELECT id, deleted_at FROM work_submissions WHERE user_id = ? AND submission_date = ? LIMIT 1'
+        );
+        $reviveStmt->execute([$userId, $date]);
+        $reviveRow = $reviveStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+        if ($reviveRow && br_work_submission_is_soft_deleted($reviveRow)) {
+            br_work_submission_revive($this->conn, (string)$reviveRow['id']);
+        }
         
         // Check if this is an update before inserting
         $checkStmt = $this->conn->prepare("SELECT COUNT(*) as cnt FROM work_submissions WHERE user_id = ? AND submission_date = ?");
