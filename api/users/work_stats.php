@@ -335,6 +335,7 @@ class UserWorkStatsController extends BaseAPI {
             'leave_type_code' => $submission['leave_type_code'] ?? null,
             'leave_type_name' => $submission['leave_type_name'] ?? null,
             'leave_request_id' => isset($submission['leave_request_id']) ? (int)$submission['leave_request_id'] : null,
+            'leave_reason' => $submission['leave_reason'] ?? null,
             'tasks' => [
                 'completed' => $completedLines,
                 'pending' => $pendingLines,
@@ -887,6 +888,7 @@ class UserWorkStatsController extends BaseAPI {
                     $entry['leave_type_code'] = $leaveMap[$d]['leave_type_code'];
                     $entry['leave_type_name'] = $leaveMap[$d]['leave_type_name'];
                     $entry['leave_request_id'] = $leaveMap[$d]['leave_request_id'];
+                    $entry['leave_reason'] = $leaveMap[$d]['leave_reason'] ?? null;
                     $credited = br_leave_credited_hours($leaveMap[$d]['leave_type_code'] ?? null);
                     if ($credited > (float)($entry['hours_today'] ?? 0)) {
                         $entry['hours_today'] = $credited;
@@ -910,6 +912,7 @@ class UserWorkStatsController extends BaseAPI {
                     'leave_type_code' => $leaveInfo['leave_type_code'],
                     'leave_type_name' => $leaveInfo['leave_type_name'],
                     'leave_request_id' => $leaveInfo['leave_request_id'],
+                    'leave_reason' => $leaveInfo['leave_reason'] ?? null,
                 ], $projectNameMap);
             }
 
