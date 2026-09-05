@@ -68,10 +68,41 @@ function runBugCreatedNotifications($conn, $id, $data, $decoded, $priority, $exp
             $userIds = array_filter(getAllAdmins($conn), fn($uid) => (string)$uid !== (string)$decoded->user_id);
             if (empty($userIds)) $userIds = [$decoded->user_id];
         }
+        $sentPhones = [];
         if (!empty($userIds)) {
-            sendBugAssignmentWhatsApp($conn, array_values($userIds), $id, $data['title'], $priority, $projectName, $decoded->user_id, $data['description'] ?? null, $expectedResult, $actualResult, $bugLevel, $alreadyRaised);
+            $sentPhones = sendBugAssignmentWhatsApp(
+                $conn,
+                array_values($userIds),
+                $id,
+                $data['title'],
+                $priority,
+                $projectName,
+                $decoded->user_id,
+                $data['description'] ?? null,
+                $expectedResult,
+                $actualResult,
+                $bugLevel,
+                $alreadyRaised
+            );
+            if (!is_array($sentPhones)) {
+                $sentPhones = [];
+            }
         }
-        sendNewBugToAdminNumbers($id, $data['title'], $priority, $projectName, $creatorName, $data['description'] ?? null, $expectedResult, $actualResult, $bugLevel, $alreadyRaised);
+        // Why: Skip WHATSAPP_ADMIN_NUMBERS already messaged above — duplicate
+        // campaigns under load stay Pending on Notify.
+        sendNewBugToAdminNumbers(
+            $id,
+            $data['title'],
+            $priority,
+            $projectName,
+            $creatorName,
+            $data['description'] ?? null,
+            $expectedResult,
+            $actualResult,
+            $bugLevel,
+            $alreadyRaised,
+            $sentPhones
+        );
     } catch (Exception $e) {
         error_log("⚠️ Bug $id: WhatsApp failed: " . $e->getMessage());
     }

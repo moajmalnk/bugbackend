@@ -141,28 +141,8 @@ class SendEmergencyOtpAPI extends BaseAPI
 
     private function sendWhatsAppFast(string $number, string $message): void
     {
-        if (!defined('WHATSAPP_API_URL') || !defined('WHATSAPP_API_KEY')) {
-            return;
-        }
-        $number = preg_replace('/\D/', '', $number);
-        $url = WHATSAPP_API_URL
-            . '?apikey=' . urlencode(WHATSAPP_API_KEY)
-            . '&number=' . urlencode($number)
-            . '&msg=' . urlencode($message);
-
-        $ch = curl_init();
-        curl_setopt_array($ch, [
-            CURLOPT_URL => $url,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => '',
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_CONNECTTIMEOUT => 3,
-            CURLOPT_TIMEOUT => 6,
-        ]);
-        $response = curl_exec($ch);
-        $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-        error_log("send_emergency_otp fast WA HTTP {$httpCode}: " . substr((string) $response, 0, 200));
+        require_once __DIR__ . '/../../utils/whatsapp.php';
+        sendWhatsAppMessage($number, $message);
     }
 }
 

@@ -27,163 +27,305 @@ if (!defined('WHATSAPP_API_KEY')) define('WHATSAPP_API_KEY', 'dfedcb5f0d514809f4
 if (!defined('WHATSAPP_ADMIN_NUMBERS')) define('WHATSAPP_ADMIN_NUMBERS', '919497792540,918848676627');
 
 /**
- * Normalize phone number for WhatsApp API
- * Removes + signs, spaces, and other non-digit characters
- * Also tries to identify and format Qatar numbers correctly
- * 
+ * Why: Multi-format retries used to queue duplicate Notify campaigns when the first
+ * attempt returned Pending (treated as failure). One canonical E.164 digit string
+ * prevents Pending piles and "No valid Mobile Found" from concatenated numbers.
+ *
  * @param string $phone Phone number to normalize
- * @return array Array of possible formats to try
+ * @return array Array with at most one international format (digits only, no +)
  */
 function getPhoneFormatsForWhatsApp($phone) {
-    // Remove all non-digit characters (+, spaces, dashes, etc.)
-    $digits = preg_replace('/\D/', '', $phone);
-    error_log("📱 Phone normalization: '$phone' -> digits only: '$digits'");
-    
-    $formats = [];
-    
-    // Check if it's a Qatar number (starts with 974)
-    if (strlen($digits) == 11 && substr($digits, 0, 3) == '974') {
-        // Qatar number: 97450372450
-        // Try different formats that WhatsApp API might accept
-        $formats[] = $digits; // 97450372450 (full with country code - primary)
-        $localNumber = substr($digits, 3); // 50372450
-        $formats[] = '0' . $localNumber; // 050372450 (with leading 0, local format)
-        $formats[] = $localNumber; // 50372450 (local number without country code)
-        error_log("📱 Qatar number detected (11 digits). Formats to try: " . implode(', ', $formats));
-    } elseif (strlen($digits) == 8) {
-        // Might be local Qatar number
-        $formats[] = '974' . $digits; // Add country code (primary)
-        $formats[] = '0' . $digits; // Add leading zero
-        $formats[] = $digits; // Try as-is
-        error_log("📱 Possible local Qatar number (8 digits). Formats to try: " . implode(', ', $formats));
-    } elseif (strlen($digits) == 10 && substr($digits, 0, 1) !== '0') {
-        // Likely Indian number (10 digits) - API needs international format without +
-        $formats[] = '91' . $digits; // India country code (primary)
-        $formats[] = $digits; // Try as-is
-        error_log("📱 Possible Indian number (10 digits). Formats to try: " . implode(', ', $formats));
-    } else {
-        // For other numbers, just use the cleaned digits
-        $formats[] = $digits;
+    $canonical = br_whatsapp_canonical_number($phone);
+    if ($canonical === null) {
+        error_log("📱 Phone normalization failed for: '$phone'");
+        return [];
     }
-    
-    // Remove duplicates and return
-    return array_values(array_unique($formats));
+    error_log("📱 Phone normalization: '$phone' -> canonical: '$canonical'");
+    return [$canonical];
 }
 
 /**
- * Send WhatsApp message using the API (single attempt)
- * 
+ * @return string|null Digits-only international number, or null if invalid
+ */
+function br_whatsapp_canonical_number($phone) {
+    $digits = preg_replace('/\D/', '', (string) $phone);
+    if ($digits === null || $digits === '') {
+        return null;
+    }
+
+    // Reject concatenated / garbage numbers (E.164 max 15 digits)
+    if (strlen($digits) > 15 || strlen($digits) < 8) {
+        error_log("📱 Rejecting invalid phone length " . strlen($digits) . ": $digits");
+        return null;
+    }
+
+    // India local 10-digit (starts 6–9)
+    if (strlen($digits) === 10 && preg_match('/^[6-9]/', $digits)) {
+        return '91' . $digits;
+    }
+
+    // India with leading 0: 0XXXXXXXXXX
+    if (strlen($digits) === 11 && $digits[0] === '0' && preg_match('/^0[6-9]/', $digits)) {
+        return '91' . substr($digits, 1);
+    }
+
+    // Qatar local 8-digit
+    if (strlen($digits) === 8) {
+        return '974' . $digits;
+    }
+
+    // Already international (91… / 974… / other)
+    return $digits;
+}
+
+/**
+ * Serialize Notify sends across PHP workers so bursts do not leave campaigns Pending.
+ *
+ * @template T
+ * @param callable():T $fn
+ * @return T
+ */
+function br_whatsapp_with_send_lock(callable $fn, int $minGapMs = 900) {
+    $lockPath = rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'bugricer_whatsapp_send.lock';
+    $fp = @fopen($lockPath, 'c+');
+    if ($fp) {
+        @flock($fp, LOCK_EX);
+        rewind($fp);
+        $lastMs = (int) trim((string) stream_get_contents($fp));
+        $nowMs = (int) floor(microtime(true) * 1000);
+        $waitMs = $minGapMs - ($nowMs - $lastMs);
+        if ($waitMs > 0 && $waitMs <= 8000) {
+            usleep($waitMs * 1000);
+        }
+        try {
+            return $fn();
+        } finally {
+            $doneMs = (int) floor(microtime(true) * 1000);
+            ftruncate($fp, 0);
+            rewind($fp);
+            fwrite($fp, (string) $doneMs);
+            fflush($fp);
+            @flock($fp, LOCK_UN);
+            @fclose($fp);
+        }
+    }
+
+    usleep($minGapMs * 1000);
+    return $fn();
+}
+
+/**
+ * Parse BugRicer Notify / legacy gateway JSON into a delivery outcome.
+ *
+ * Why: Pending/Queued means Notify accepted the campaign. Treating that as failure
+ * caused alternate-format retries and duplicate stuck Pending rows.
+ *
+ * @return array{accepted:bool,delivered:bool,pending:bool,error:?string,status:string}
+ */
+function br_whatsapp_parse_notify_response(int $httpCode, string $response): array {
+    $out = [
+        'accepted' => false,
+        'delivered' => false,
+        'pending' => false,
+        'error' => null,
+        'status' => '',
+    ];
+
+    $json = json_decode($response, true);
+    if (!is_array($json)) {
+        $lower = strtolower($response);
+        if ($httpCode === 200 && (
+            strpos($lower, 'success') !== false
+            || strpos($lower, 'sent') !== false
+            || strpos($lower, 'finished') !== false
+            || trim($response) === ''
+        )) {
+            $out['accepted'] = true;
+            $out['delivered'] = true;
+            $out['status'] = 'finished';
+            return $out;
+        }
+        if ($httpCode >= 400 || $httpCode === 0) {
+            $out['error'] = substr($response !== '' ? $response : 'HTTP ' . $httpCode, 0, 300);
+        }
+        return $out;
+    }
+
+    $status = strtolower(trim((string) ($json['status'] ?? '')));
+    $out['status'] = $status;
+    $err = $json['error'] ?? $json['errormsg'] ?? null;
+    if (is_string($err) && $err !== '') {
+        $errLower = strtolower($err);
+        // Legacy gateway used status=success with errormsg "1 saved sucessfully"
+        $isLegacySaved = strpos($errLower, 'saved') !== false || strpos($errLower, 'sucess') !== false;
+        if (!$isLegacySaved && ($httpCode >= 400 || $status === 'error' || $status === 'failed')) {
+            $out['error'] = substr($err, 0, 300);
+            return $out;
+        }
+    }
+
+    if ($httpCode >= 400 || $status === 'error' || $status === 'failed') {
+        $out['error'] = substr(
+            is_string($err) && $err !== '' ? $err : ('HTTP ' . $httpCode . ' ' . $status),
+            0,
+            300
+        );
+        return $out;
+    }
+
+    $details = $json['details'] ?? null;
+    $detailsHay = is_array($details) ? strtolower(implode(' ', $details)) : '';
+
+    if (in_array($status, ['finished', 'success', 'sent', 'delivered', 'ok'], true)
+        || strpos($detailsHay, 'sent') !== false
+    ) {
+        $out['accepted'] = true;
+        $out['delivered'] = true;
+        return $out;
+    }
+
+    if (in_array($status, ['pending', 'queued', 'processing', 'accepted'], true)) {
+        $out['accepted'] = true;
+        $out['pending'] = true;
+        return $out;
+    }
+
+    // Legacy: status=success / empty status with HTTP 200 and no hard error
+    if ($httpCode === 200 && ($status === '' || $status === 'success') && empty($json['error'])) {
+        $out['accepted'] = true;
+        $out['delivered'] = ($status === 'success' || $status === '');
+        return $out;
+    }
+
+    return $out;
+}
+
+/**
+ * Send WhatsApp message using the API (single attempt).
+ *
+ * Why: Put number/msg in POST body (not query string) so long bug texts are not
+ * truncated by URL limits, and wait long enough for Notify to return Finished.
+ *
  * @param string $mobile Phone number in exact format
  * @param string $message The message to send
- * @return array ['success' => bool, 'response' => string, 'httpCode' => int]
+ * @return array{success:bool,accepted:bool,pending:bool,response:string,httpCode:int,format?:string,error?:string}
  */
 function sendWhatsAppMessageSingle($mobile, $message) {
     try {
-        // API requires POST (per BugRicer Notify API docs). Use international format WITHOUT + sign.
-        $mobile = preg_replace('/\D/', '', $mobile); // Strip + and any non-digits
-        if (empty($mobile)) {
-            error_log("📱 Invalid/empty phone number");
-            return ['success' => false, 'response' => 'Invalid phone', 'httpCode' => 0, 'error' => 'invalid_phone'];
+        $mobile = preg_replace('/\D/', '', (string) $mobile);
+        if ($mobile === null || $mobile === '') {
+            error_log('📱 Invalid/empty phone number');
+            return ['success' => false, 'accepted' => false, 'pending' => false, 'response' => 'Invalid phone', 'httpCode' => 0, 'error' => 'invalid_phone'];
         }
-        $url = WHATSAPP_API_URL . '?apikey=' . urlencode(WHATSAPP_API_KEY) . 
-               '&number=' . urlencode($mobile) . 
-               '&msg=' . urlencode($message);
-        
-        error_log("📱 Trying format: $mobile");
-        
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, '');
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 15);
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 8);
-        
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $curlError = curl_error($ch);
-        curl_close($ch);
-        
-        if ($curlError) {
-            error_log("❌ WhatsApp API cURL error for $mobile: $curlError");
-            return ['success' => false, 'response' => $curlError, 'httpCode' => 0, 'error' => 'curl_error'];
-        }
-        
-        error_log("📱 WhatsApp API Response for $mobile (HTTP $httpCode): " . substr($response, 0, 500));
-        
-        // Consider success if HTTP code is 200
-        $isSuccess = false;
-        if ($httpCode == 200) {
-            // Check response content for success indicators
-            $responseLower = strtolower($response);
-            if (strpos($responseLower, 'success') !== false || 
-                strpos($responseLower, 'sent') !== false ||
-                strpos($responseLower, 'ok') !== false ||
-                empty(trim($response))) {
-                $isSuccess = true;
+
+        return br_whatsapp_with_send_lock(function () use ($mobile, $message) {
+            // Why: Notify historically reads query params; long bug texts blow URL limits.
+            // Send number/msg in POST body always, and mirror short msgs into the query
+            // so older GET-only gateways keep working.
+            $url = WHATSAPP_API_URL . '?apikey=' . urlencode(WHATSAPP_API_KEY)
+                . '&number=' . urlencode($mobile);
+            $encodedMsg = urlencode($message);
+            if (strlen($encodedMsg) <= 1800) {
+                $url .= '&msg=' . $encodedMsg;
             }
-        }
-        
-        return [
-            'success' => $isSuccess, 
-            'response' => $response, 
-            'httpCode' => $httpCode,
-            'format' => $mobile
-        ];
-        
+            $postFields = http_build_query([
+                'number' => $mobile,
+                'msg' => $message,
+            ]);
+
+            error_log("📱 Sending WhatsApp to: $mobile (POST+query, msg_len=" . strlen((string) $message) . ')');
+
+            $ch = curl_init();
+            curl_setopt($ch, CURLOPT_URL, $url);
+            curl_setopt($ch, CURLOPT_POST, true);
+            curl_setopt($ch, CURLOPT_POSTFIELDS, $postFields);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/x-www-form-urlencoded']);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 45);
+            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+
+            $response = curl_exec($ch);
+            $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $curlError = curl_error($ch);
+            curl_close($ch);
+
+            if ($curlError) {
+                error_log("❌ WhatsApp API cURL error for $mobile: $curlError");
+                return ['success' => false, 'accepted' => false, 'pending' => false, 'response' => $curlError, 'httpCode' => 0, 'error' => 'curl_error', 'format' => $mobile];
+            }
+
+            $response = (string) $response;
+            error_log("📱 WhatsApp API Response for $mobile (HTTP $httpCode): " . substr($response, 0, 500));
+
+            $parsed = br_whatsapp_parse_notify_response($httpCode, $response);
+
+            if ($parsed['pending']) {
+                error_log("⏳ WhatsApp accepted but still Pending for $mobile — not retrying other formats");
+            }
+
+            return [
+                'success' => $parsed['accepted'],
+                'accepted' => $parsed['accepted'],
+                'pending' => $parsed['pending'],
+                'delivered' => $parsed['delivered'],
+                'response' => $response,
+                'httpCode' => $httpCode,
+                'format' => $mobile,
+                'error' => $parsed['error'],
+                'notify_status' => $parsed['status'],
+            ];
+        }, 900);
     } catch (Exception $e) {
-        error_log("❌ WhatsApp exception for $mobile: " . $e->getMessage());
-        return ['success' => false, 'response' => $e->getMessage(), 'httpCode' => 0, 'error' => 'exception'];
+        error_log('❌ WhatsApp exception for ' . $mobile . ': ' . $e->getMessage());
+        return ['success' => false, 'accepted' => false, 'pending' => false, 'response' => $e->getMessage(), 'httpCode' => 0, 'error' => 'exception'];
     }
 }
 
 /**
- * Send WhatsApp message using the API
- * Tries multiple formats for Qatar numbers if needed
- * 
+ * Send WhatsApp message using the API (single canonical number — no format spam).
+ *
  * @param string $mobile Phone number
  * @param string $message The message to send
- * @return bool Success status
+ * @return bool Success status (true if Notify accepted: Finished or Pending)
  */
 function sendWhatsAppMessage($mobile, $message) {
     require_once __DIR__ . '/notification_delivery_log.php';
 
-    // Get all possible formats for this phone number
     $formats = getPhoneFormatsForWhatsApp($mobile);
-    
-    error_log("📱 sendWhatsAppMessage called - Original: $mobile, Will try " . count($formats) . " format(s)");
-    
-    // Try each format until one succeeds
-    $lastError = 'All formats failed';
-    foreach ($formats as $format) {
-        $result = sendWhatsAppMessageSingle($format, $message);
-        
-        if ($result['success']) {
-            error_log("✅ WhatsApp message sent successfully using format: $format");
-            br_log_notification_delivery(
-                'whatsapp',
-                'sent',
-                (string)$mobile,
-                null,
-                null,
-                null,
-                ['format' => $format, 'httpCode' => $result['httpCode'] ?? null]
-            );
-            return true;
-        } else {
-            $lastError = substr((string)($result['response'] ?? 'failed'), 0, 200);
-            error_log("❌ Format '$format' failed (HTTP {$result['httpCode']}): " . $lastError);
-        }
-        
-        // Small delay between attempts
-        if (count($formats) > 1) {
-            usleep(300000); // 0.3 second delay
-        }
+    if ($formats === []) {
+        error_log("❌ Invalid WhatsApp phone number: $mobile");
+        br_log_notification_delivery('whatsapp', 'failed', (string) $mobile, 'invalid_phone');
+        return false;
     }
-    
-    // If we get here, all formats failed
-    error_log("❌ All formats failed for phone number: $mobile");
-    br_log_notification_delivery('whatsapp', 'failed', (string)$mobile, $lastError);
+
+    $format = $formats[0];
+    error_log("📱 sendWhatsAppMessage called - Original: $mobile, canonical: $format");
+
+    $result = sendWhatsAppMessageSingle($format, $message);
+
+    if (!empty($result['success'])) {
+        $state = !empty($result['pending']) ? 'pending' : 'sent';
+        error_log("✅ WhatsApp message accepted ($state) using format: $format");
+        br_log_notification_delivery(
+            'whatsapp',
+            'sent',
+            (string) $mobile,
+            !empty($result['pending']) ? 'notify_status_pending' : null,
+            null,
+            null,
+            [
+                'format' => $format,
+                'httpCode' => $result['httpCode'] ?? null,
+                'notify_status' => $result['notify_status'] ?? null,
+                'pending' => !empty($result['pending']),
+            ]
+        );
+        return true;
+    }
+
+    $lastError = substr((string) ($result['error'] ?? $result['response'] ?? 'failed'), 0, 200);
+    error_log("❌ WhatsApp send failed for $mobile (HTTP " . ($result['httpCode'] ?? 0) . "): $lastError");
+    br_log_notification_delivery('whatsapp', 'failed', (string) $mobile, $lastError);
     return false;
 }
 
@@ -899,15 +1041,16 @@ function formatTaskAssignmentForWhatsApp($taskTitle, $priority, $dueDate = null,
  * @param string|null $description Bug description (optional)
  * @param string|null $expectedResult Expected result (optional)
  * @param string|null $actualResult Actual result (optional)
- * @return bool Success status (true if at least one message sent)
+ * @return array<int, string> Canonical phone numbers that Notify accepted (for dedupe)
  */
 function sendBugAssignmentWhatsApp($conn, $assignedUserIds, $bugId, $bugTitle, $priority = 'medium', $projectName = null, $assignedById = null, $description = null, $expectedResult = null, $actualResult = null, $bugLevel = null, $alreadyRaised = null) {
+    $acceptedPhones = [];
     try {
         error_log("📱 sendBugAssignmentWhatsApp called for bug: $bugId");
         
         if (empty($assignedUserIds)) {
             error_log("⚠️ No assigned users provided, skipping WhatsApp notification");
-            return false;
+            return [];
         }
         
         // Get phone numbers and roles for assigned users
@@ -915,7 +1058,7 @@ function sendBugAssignmentWhatsApp($conn, $assignedUserIds, $bugId, $bugTitle, $
         
         if (empty($usersWithPhones)) {
             error_log("⚠️ No phone numbers found for assigned users");
-            return false;
+            return [];
         }
         
         // Get assigner name if provided
@@ -935,13 +1078,16 @@ function sendBugAssignmentWhatsApp($conn, $assignedUserIds, $bugId, $bugTitle, $
         
         error_log("📱 Formatted bug assignment WhatsApp message for " . count($usersWithPhones) . " users");
         
-        // Send to each assigned user with personalized role-based URL
-        $results = [];
         foreach ($usersWithPhones as $userId => $userData) {
             $phoneNumber = trim($userData['phone']);
             $userRole = $userData['role'] ?? 'user';
             
             if (empty($phoneNumber)) {
+                continue;
+            }
+
+            $canonical = br_whatsapp_canonical_number($phoneNumber);
+            if ($canonical !== null && isset($acceptedPhones[$canonical])) {
                 continue;
             }
             
@@ -955,28 +1101,23 @@ function sendBugAssignmentWhatsApp($conn, $assignedUserIds, $bugId, $bugTitle, $
             error_log("📱 Role-based URL: $bugLink");
             
             $result = sendWhatsAppMessage($phoneNumber, $message);
-            $results[$userId] = $result;
             
             if ($result) {
                 error_log("✅ Successfully sent bug assignment WhatsApp to user $userId");
+                if ($canonical !== null) {
+                    $acceptedPhones[$canonical] = $canonical;
+                }
             } else {
                 error_log("❌ Failed to send bug assignment WhatsApp to user $userId");
             }
-            
-            // Add delay between messages
-            if (count($usersWithPhones) > 1) {
-                usleep(500000); // 0.5 second delay
-            }
         }
         
-        // Return true if at least one message was sent successfully
-        $success = in_array(true, $results);
-        return $success;
+        return array_values($acceptedPhones);
         
     } catch (Exception $e) {
         error_log("⚠️ Exception in sendBugAssignmentWhatsApp: " . $e->getMessage());
         error_log("⚠️ Exception trace: " . $e->getTraceAsString());
-        return false;
+        return array_values($acceptedPhones);
     }
 }
 
@@ -992,14 +1133,22 @@ function sendBugAssignmentWhatsApp($conn, $assignedUserIds, $bugId, $bugTitle, $
  * @param string|null $description Bug description
  * @param string|null $expectedResult Expected result
  * @param string|null $actualResult Actual result
+ * @param array<int, string> $skipPhones Canonical numbers already notified (assignment path)
  * @return bool True if at least one message sent
  */
-function sendNewBugToAdminNumbers($bugId, $bugTitle, $priority = 'medium', $projectName = null, $reportedByName = null, $description = null, $expectedResult = null, $actualResult = null, $bugLevel = null, $alreadyRaised = null) {
-    $adminNumbers = explode(',', WHATSAPP_ADMIN_NUMBERS);
-    $adminNumbers = array_map('trim', array_filter($adminNumbers));
+function sendNewBugToAdminNumbers($bugId, $bugTitle, $priority = 'medium', $projectName = null, $reportedByName = null, $description = null, $expectedResult = null, $actualResult = null, $bugLevel = null, $alreadyRaised = null, $skipPhones = []) {
+    $adminNumbers = preg_split('/[\s,;]+/', (string) WHATSAPP_ADMIN_NUMBERS) ?: [];
+    $adminNumbers = array_values(array_filter(array_map('trim', $adminNumbers)));
     if (empty($adminNumbers)) {
         error_log("📱 sendNewBugToAdminNumbers: No admin numbers configured");
         return false;
+    }
+    $skipSet = [];
+    foreach ((array) $skipPhones as $p) {
+        $c = br_whatsapp_canonical_number($p);
+        if ($c !== null) {
+            $skipSet[$c] = true;
+        }
     }
     $bugLink = getFrontendBaseUrl() . '/bugs/' . $bugId;
     $message = formatNewBugReportedForWhatsApp(
@@ -1015,13 +1164,26 @@ function sendNewBugToAdminNumbers($bugId, $bugTitle, $priority = 'medium', $proj
         $alreadyRaised
     );
     $sent = 0;
+    $attempted = 0;
     foreach ($adminNumbers as $phone) {
-        if (empty($phone)) continue;
+        if ($phone === '') {
+            continue;
+        }
+        $canonical = br_whatsapp_canonical_number($phone);
+        if ($canonical !== null && isset($skipSet[$canonical])) {
+            error_log("📱 sendNewBugToAdminNumbers: skip duplicate $canonical");
+            continue;
+        }
+        $attempted++;
         $result = sendWhatsAppMessage($phone, $message);
-        if ($result) $sent++;
-        if (count($adminNumbers) > 1) usleep(400000);
+        if ($result) {
+            $sent++;
+            if ($canonical !== null) {
+                $skipSet[$canonical] = true;
+            }
+        }
     }
-    error_log("📱 sendNewBugToAdminNumbers: Sent to $sent/" . count($adminNumbers) . " admin numbers");
+    error_log("📱 sendNewBugToAdminNumbers: Sent to $sent/$attempted admin numbers");
     return $sent > 0;
 }
 
