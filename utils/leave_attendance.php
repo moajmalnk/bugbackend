@@ -388,6 +388,141 @@ function br_apply_leave_to_work_totals(array $submissionHoursByDate, array $leav
 }
 
 /**
+ * Why: Analytics cards need work vs leave vs Official Leave (holiday) breakdown,
+ * not only a blended total.
+ *
+ * @param array<string, float> $submissionHoursByDate
+ * @param array<string, array<string,mixed>> $leaveMap
+ * @return array{
+ *   days:int,hours:float,work_hours:float,work_days:int,
+ *   leave_hours:float,leave_days:int,
+ *   official_leave_hours:float,official_leave_days:int,
+ *   other_leave_hours:float,other_leave_days:int
+ * }
+ */
+function br_leave_credit_breakdown(array $submissionHoursByDate, array $leaveMap): array
+{
+    $workHours = round((float) array_sum($submissionHoursByDate), 2);
+    $workDays = count($submissionHoursByDate);
+    $officialHours = 0.0;
+    $officialDays = 0;
+    $otherHours = 0.0;
+    $otherDays = 0;
+
+    foreach ($leaveMap as $date => $info) {
+        $credited = br_leave_info_credited_hours($info);
+        $code = strtolower(trim((string) ($info['leave_type_code'] ?? '')));
+        $existing = (float) ($submissionHoursByDate[$date] ?? 0);
+        $added = !isset($submissionHoursByDate[$date])
+            ? $credited
+            : max(0.0, $credited - $existing);
+
+        if ($code === 'corporate') {
+            $officialDays++;
+            $officialHours += $added;
+        } else {
+            $otherDays++;
+            $otherHours += $added;
+        }
+    }
+
+    $leaveHours = $officialHours + $otherHours;
+    $leaveDays = $officialDays + $otherDays;
+    $totals = br_apply_leave_to_work_totals($submissionHoursByDate, $leaveMap);
+
+    return [
+        'days' => (int) $totals['days'],
+        'hours' => round((float) $totals['hours'], 2),
+        'work_hours' => $workHours,
+        'work_days' => (int) $workDays,
+        'leave_hours' => round($leaveHours, 2),
+        'leave_days' => (int) $leaveDays,
+        'official_leave_hours' => round($officialHours, 2),
+        'official_leave_days' => (int) $officialDays,
+        'other_leave_hours' => round($otherHours, 2),
+        'other_leave_days' => (int) $otherDays,
+    ];
+}
+
+/**
+ * Batch leave day maps for many users (one query).
+ *
+ * @param list<string|int> $userIds
+ * @return array<string, array<string, array<string,mixed>>>
+ */
+function br_leave_day_maps_for_users(PDO $conn, array $userIds, string $from, string $to): array
+{
+    $out = [];
+    $userIds = array_values(array_unique(array_filter(array_map('strval', $userIds), static function ($id) {
+        return $id !== '';
+    })));
+    foreach ($userIds as $uid) {
+        $out[$uid] = [];
+    }
+    if ($userIds === [] || !br_leave_tables_ready($conn)) {
+        return $out;
+    }
+
+    $placeholders = implode(',', array_fill(0, count($userIds), '?'));
+    $hoursCol = br_leave_has_hours_per_day_col($conn) ? ', lr.hours_per_day' : '';
+    $stmt = $conn->prepare(
+        "SELECT lr.id, lr.user_id, lr.start_date, lr.end_date, lr.reason
+                {$hoursCol},
+                lt.code AS leave_type_code, lt.name AS leave_type_name
+         FROM leave_requests lr
+         LEFT JOIN leave_types lt ON lt.id = lr.leave_type_id
+         WHERE lr.user_id IN ($placeholders)
+           AND lr.status = 'approved'
+           AND lr.start_date <= ?
+           AND lr.end_date >= ?
+         ORDER BY lr.start_date ASC, lr.id ASC"
+    );
+    $params = $userIds;
+    $params[] = $to;
+    $params[] = $from;
+    $stmt->execute($params);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+    $tz = new DateTimeZone('Asia/Kolkata');
+    foreach ($rows as $leave) {
+        $uid = (string) ($leave['user_id'] ?? '');
+        if ($uid === '' || !isset($out[$uid])) {
+            continue;
+        }
+        $start = max($from, (string) $leave['start_date']);
+        $end = min($to, (string) $leave['end_date']);
+        if ($start > $end) {
+            continue;
+        }
+        $cursor = DateTime::createFromFormat('Y-m-d', $start, $tz);
+        $endDt = DateTime::createFromFormat('Y-m-d', $end, $tz);
+        if (!$cursor || !$endDt) {
+            continue;
+        }
+        while ($cursor <= $endDt) {
+            $key = $cursor->format('Y-m-d');
+            if (!isset($out[$uid][$key])) {
+                $hoursPerDay = null;
+                if (array_key_exists('hours_per_day', $leave) && $leave['hours_per_day'] !== null && $leave['hours_per_day'] !== '') {
+                    $hoursPerDay = (float) $leave['hours_per_day'];
+                }
+                $out[$uid][$key] = [
+                    'day_status' => 'leave',
+                    'leave_type_code' => $leave['leave_type_code'] ?? null,
+                    'leave_type_name' => $leave['leave_type_name'] ?? null,
+                    'leave_request_id' => (int) $leave['id'],
+                    'leave_reason' => isset($leave['reason']) ? (string) $leave['reason'] : null,
+                    'hours_per_day' => $hoursPerDay,
+                ];
+            }
+            $cursor->modify('+1 day');
+        }
+    }
+
+    return $out;
+}
+
+/**
  * Whether pending/approved leave overlaps the given range (excluding optional request id).
  */
 function br_leave_has_overlap(PDO $conn, string $userId, string $startDate, string $endDate, ?int $excludeId = null): bool

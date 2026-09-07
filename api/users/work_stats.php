@@ -920,15 +920,35 @@ class UserWorkStatsController extends BaseAPI {
                 return strcmp((string)($b['date'] ?? ''), (string)($a['date'] ?? ''));
             });
 
+            $hoursByDate = [];
+            foreach ($submissions as $submission) {
+                $d = (string)($submission['submission_date'] ?? '');
+                if ($d === '') {
+                    continue;
+                }
+                $hoursByDate[$d] = (float)($submission['hours_today'] ?? 0);
+            }
+            $leaveBreakdown = br_leave_credit_breakdown($hoursByDate, $leaveMap);
+
             $details = [
                 'period_start' => $periodStart,
                 'period_end' => $periodEnd,
                 'summary' => [
+                    'hours' => $leaveBreakdown['hours'],
+                    'days' => $leaveBreakdown['days'],
+                    'work_hours' => $leaveBreakdown['work_hours'],
+                    'work_days' => $leaveBreakdown['work_days'],
+                    'leave_hours' => $leaveBreakdown['leave_hours'],
+                    'leave_days' => $leaveBreakdown['leave_days'],
+                    'official_leave_hours' => $leaveBreakdown['official_leave_hours'],
+                    'official_leave_days' => $leaveBreakdown['official_leave_days'],
+                    'other_leave_hours' => $leaveBreakdown['other_leave_hours'],
+                    'other_leave_days' => $leaveBreakdown['other_leave_days'],
                     'overtime_hours' => round($totalOvertimeHours, 2),
                     'requested_extra_hours' => round($totalRequestedExtraHours, 2),
                     'approval_requests' => (int)$totalApprovalRequests,
                     'break_minutes' => (int)$totalBreakMinutes,
-                    'leave_days' => count($leaveMap),
+                    'net_hours' => round($leaveBreakdown['hours'] + $totalOvertimeHours, 2),
                 ],
                 'submissions' => $dailyBreakdown,
                 'leave_days' => array_values(array_map(static function ($date, $info) {
@@ -1039,11 +1059,145 @@ class UserWorkStatsController extends BaseAPI {
                 $dailyBreakdown[] = $this->buildDailySubmissionEntry($submission, $projectNameMap);
             }
 
-            $uniqueDays = [];
-            foreach ($dailyBreakdown as $row) {
-                $d = $row['date'] ?? null;
-                if ($d) $uniqueDays[$d] = true;
+            // Include users who only have approved leave (no work row) in this period
+            try {
+                if (br_leave_tables_ready($this->conn)) {
+                    $leaveUidStmt = $this->conn->prepare(
+                        "SELECT DISTINCT user_id FROM leave_requests
+                         WHERE status = 'approved'
+                           AND start_date <= ?
+                           AND end_date >= ?"
+                    );
+                    $leaveUidStmt->execute([$periodEnd, $periodStart]);
+                    foreach ($leaveUidStmt->fetchAll(PDO::FETCH_COLUMN) as $leaveUid) {
+                        $leaveUid = (string)$leaveUid;
+                        if ($leaveUid !== '') {
+                            $userIds[$leaveUid] = true;
+                        }
+                    }
+                }
+            } catch (Throwable $e) {
+                error_log('getTeamPeriodDetails leave user ids: ' . $e->getMessage());
             }
+
+            // Credit approved leave / Official Leave (holiday) across the team
+            $teamUserIds = array_keys($userIds);
+            $leaveMaps = br_leave_day_maps_for_users($this->conn, $teamUserIds, (string)$periodStart, (string)$periodEnd);
+            $submissionKeys = [];
+            $hoursByUserDate = [];
+            foreach ($dailyBreakdown as $row) {
+                $uid = (string)($row['user_id'] ?? '');
+                $d = (string)($row['date'] ?? '');
+                if ($uid === '' || $d === '') {
+                    continue;
+                }
+                $submissionKeys[$uid . '|' . $d] = true;
+                $hoursByUserDate[$uid][$d] = (float)($row['hours_today'] ?? $row['hours'] ?? 0);
+            }
+
+            $teamLeaveDays = 0;
+            $teamLeaveHours = 0.0;
+            $teamOfficialDays = 0;
+            $teamOfficialHours = 0.0;
+            $teamOtherLeaveDays = 0;
+            $teamOtherLeaveHours = 0.0;
+            $teamWorkHours = 0.0;
+            $teamTotalHours = 0.0;
+            $teamCreditedDays = [];
+
+            foreach ($teamUserIds as $uid) {
+                $uid = (string)$uid;
+                $map = $leaveMaps[$uid] ?? [];
+                $hoursByDate = $hoursByUserDate[$uid] ?? [];
+                $breakdown = br_leave_credit_breakdown($hoursByDate, $map);
+                $teamWorkHours += $breakdown['work_hours'];
+                $teamLeaveHours += $breakdown['leave_hours'];
+                $teamLeaveDays += $breakdown['leave_days'];
+                $teamOfficialHours += $breakdown['official_leave_hours'];
+                $teamOfficialDays += $breakdown['official_leave_days'];
+                $teamOtherLeaveHours += $breakdown['other_leave_hours'];
+                $teamOtherLeaveDays += $breakdown['other_leave_days'];
+                $teamTotalHours += $breakdown['hours'];
+
+                foreach ($hoursByDate as $d => $_h) {
+                    $teamCreditedDays[$d] = true;
+                }
+                foreach ($map as $leaveDate => $leaveInfo) {
+                    $teamCreditedDays[$leaveDate] = true;
+                    $key = $uid . '|' . $leaveDate;
+                    if (isset($submissionKeys[$key])) {
+                        // Tag existing row
+                        foreach ($dailyBreakdown as &$entry) {
+                            if ((string)($entry['user_id'] ?? '') === $uid && (string)($entry['date'] ?? '') === $leaveDate) {
+                                $entry['day_status'] = 'leave';
+                                $entry['leave_type_code'] = $leaveInfo['leave_type_code'];
+                                $entry['leave_type_name'] = $leaveInfo['leave_type_name'];
+                                $entry['leave_request_id'] = $leaveInfo['leave_request_id'];
+                                $entry['leave_reason'] = $leaveInfo['leave_reason'] ?? null;
+                                $credited = br_leave_info_credited_hours($leaveInfo);
+                                if ($credited > (float)($entry['hours_today'] ?? 0)) {
+                                    $entry['hours_today'] = $credited;
+                                    $entry['hours'] = $credited;
+                                }
+                                break;
+                            }
+                        }
+                        unset($entry);
+                        continue;
+                    }
+                    $credited = br_leave_info_credited_hours($leaveInfo);
+                    $uname = '';
+                    $urole = '';
+                    // username/role already known from submissions; leave-only may need lookup later
+                    $dailyBreakdown[] = $this->buildDailySubmissionEntry([
+                        'id' => null,
+                        'submission_date' => $leaveDate,
+                        'user_id' => $uid,
+                        'username' => $uname,
+                        'role' => $urole,
+                        'hours_today' => $credited,
+                        'day_status' => 'leave',
+                        'leave_type_code' => $leaveInfo['leave_type_code'],
+                        'leave_type_name' => $leaveInfo['leave_type_name'],
+                        'leave_request_id' => $leaveInfo['leave_request_id'],
+                        'leave_reason' => $leaveInfo['leave_reason'] ?? null,
+                    ], $projectNameMap);
+                }
+            }
+
+            // Fill usernames for leave-only rows
+            if ($teamUserIds !== []) {
+                try {
+                    $ph = implode(',', array_fill(0, count($teamUserIds), '?'));
+                    $uStmt = $this->conn->prepare("SELECT id, username, role FROM users WHERE id IN ($ph)");
+                    $uStmt->execute($teamUserIds);
+                    $nameById = [];
+                    foreach ($uStmt->fetchAll(PDO::FETCH_ASSOC) as $u) {
+                        $nameById[(string)$u['id']] = $u;
+                    }
+                    foreach ($dailyBreakdown as &$entry) {
+                        if (!empty($entry['username'])) {
+                            continue;
+                        }
+                        $uid = (string)($entry['user_id'] ?? '');
+                        if (isset($nameById[$uid])) {
+                            $entry['username'] = $nameById[$uid]['username'] ?? '';
+                            $entry['role'] = $nameById[$uid]['role'] ?? ($entry['role'] ?? '');
+                        }
+                    }
+                    unset($entry);
+                } catch (Throwable $e) {
+                    error_log('getTeamPeriodDetails leave usernames: ' . $e->getMessage());
+                }
+            }
+
+            usort($dailyBreakdown, static function ($a, $b) {
+                $cmp = strcmp((string)($b['date'] ?? ''), (string)($a['date'] ?? ''));
+                if ($cmp !== 0) {
+                    return $cmp;
+                }
+                return strcmp((string)($a['username'] ?? ''), (string)($b['username'] ?? ''));
+            });
 
             $details = [
                 'scope' => 'team',
@@ -1051,12 +1205,21 @@ class UserWorkStatsController extends BaseAPI {
                 'period_end' => $periodEnd,
                 'summary' => [
                     'users' => count($userIds),
-                    'submission_days' => count($uniqueDays),
+                    'submission_days' => count($teamCreditedDays),
                     'submissions' => count($dailyBreakdown),
+                    'hours' => round($teamTotalHours, 2),
+                    'work_hours' => round($teamWorkHours, 2),
+                    'leave_hours' => round($teamLeaveHours, 2),
+                    'leave_days' => (int)$teamLeaveDays,
+                    'official_leave_hours' => round($teamOfficialHours, 2),
+                    'official_leave_days' => (int)$teamOfficialDays,
+                    'other_leave_hours' => round($teamOtherLeaveHours, 2),
+                    'other_leave_days' => (int)$teamOtherLeaveDays,
                     'overtime_hours' => round($totalOvertimeHours, 2),
                     'requested_extra_hours' => round($totalRequestedExtraHours, 2),
                     'approval_requests' => (int)$totalApprovalRequests,
                     'break_minutes' => (int)$totalBreakMinutes,
+                    'net_hours' => round($teamTotalHours + $totalOvertimeHours, 2),
                 ],
                 'submissions' => $dailyBreakdown,
                 'tasks' => [
@@ -1122,6 +1285,13 @@ class UserWorkStatsController extends BaseAPI {
             'current_period' => [
                 'days' => 0,
                 'hours' => 0.0,
+                'work_hours' => 0.0,
+                'leave_hours' => 0.0,
+                'leave_days' => 0,
+                'official_leave_hours' => 0.0,
+                'official_leave_days' => 0,
+                'other_leave_hours' => 0.0,
+                'other_leave_days' => 0,
                 'avg_hours_per_day' => 0.0,
                 'tasks_completed' => 0,
                 'tasks_pending' => 0,
@@ -1133,6 +1303,7 @@ class UserWorkStatsController extends BaseAPI {
                 'bugs_reported' => 0,
                 'bugs_fixed' => 0,
                 'projects' => [],
+                'net_hours' => 0.0,
             ],
             'lookback' => [
                 'months' => 0,
@@ -1146,11 +1317,17 @@ class UserWorkStatsController extends BaseAPI {
 
     private function accumulateSubmissionMetrics(array &$bucket, array $submission, $includeCheckIn = true) {
         $date = (string)($submission['submission_date'] ?? '');
+        $hoursToday = (float)($submission['hours_today'] ?? 0);
         if ($date !== '') {
             $bucket['dates'][$date] = true;
+            if (!isset($bucket['hours_by_date']) || !is_array($bucket['hours_by_date'])) {
+                $bucket['hours_by_date'] = [];
+            }
+            $bucket['hours_by_date'][$date] = (float)($bucket['hours_by_date'][$date] ?? 0) + $hoursToday;
         }
 
-        $bucket['hours'] += (float)($submission['hours_today'] ?? 0);
+        $bucket['hours'] += $hoursToday;
+        $bucket['work_hours'] = (float)($bucket['work_hours'] ?? 0) + $hoursToday;
         $bucket['tasks_completed'] += count($this->splitTaskLines($submission['completed_tasks'] ?? ''));
         $bucket['tasks_pending'] += count($this->splitTaskLines($submission['pending_tasks'] ?? ''));
         $bucket['tasks_ongoing'] += count($this->splitTaskLines($submission['ongoing_tasks'] ?? ''));
@@ -1185,6 +1362,41 @@ class UserWorkStatsController extends BaseAPI {
         }
     }
 
+    /**
+     * Why: Team analytics previously ignored leave/Official Leave, so totals disagreed
+     * with individual work-stats pages.
+     *
+     * @param array<string,mixed> $bucket
+     * @param array<string,array<string,mixed>> $leaveMap
+     */
+    private function applyLeaveCreditsToAnalyticsBucket(array &$bucket, array $leaveMap): void
+    {
+        if ($leaveMap === []) {
+            if (!isset($bucket['work_hours'])) {
+                $bucket['work_hours'] = (float)($bucket['hours'] ?? 0);
+            }
+            return;
+        }
+        $hoursByDate = [];
+        if (!empty($bucket['hours_by_date']) && is_array($bucket['hours_by_date'])) {
+            foreach ($bucket['hours_by_date'] as $d => $h) {
+                $hoursByDate[(string)$d] = (float)$h;
+            }
+        }
+        $breakdown = br_leave_credit_breakdown($hoursByDate, $leaveMap);
+        $bucket['work_hours'] = $breakdown['work_hours'];
+        $bucket['hours'] = $breakdown['hours'];
+        $bucket['leave_hours'] = $breakdown['leave_hours'];
+        $bucket['leave_days'] = $breakdown['leave_days'];
+        $bucket['official_leave_hours'] = $breakdown['official_leave_hours'];
+        $bucket['official_leave_days'] = $breakdown['official_leave_days'];
+        $bucket['other_leave_hours'] = $breakdown['other_leave_hours'];
+        $bucket['other_leave_days'] = $breakdown['other_leave_days'];
+        foreach ($leaveMap as $date => $_info) {
+            $bucket['dates'][(string)$date] = true;
+        }
+    }
+
     private function finalizeAnalyticsBucket(array $bucket, $monthDivisor = 1, array $projectNameMap = []) {
         $days = count($bucket['dates'] ?? []);
         $hours = round((float)($bucket['hours'] ?? 0), 2);
@@ -1216,6 +1428,13 @@ class UserWorkStatsController extends BaseAPI {
         return [
             'days' => $days,
             'hours' => $hours,
+            'work_hours' => round((float)($bucket['work_hours'] ?? $hours), 2),
+            'leave_hours' => round((float)($bucket['leave_hours'] ?? 0), 2),
+            'leave_days' => (int)($bucket['leave_days'] ?? 0),
+            'official_leave_hours' => round((float)($bucket['official_leave_hours'] ?? 0), 2),
+            'official_leave_days' => (int)($bucket['official_leave_days'] ?? 0),
+            'other_leave_hours' => round((float)($bucket['other_leave_hours'] ?? 0), 2),
+            'other_leave_days' => (int)($bucket['other_leave_days'] ?? 0),
             'avg_hours_per_day' => $avgHoursPerDay,
             'tasks_completed' => (int)($bucket['tasks_completed'] ?? 0),
             'tasks_pending' => (int)($bucket['tasks_pending'] ?? 0),
@@ -1280,6 +1499,13 @@ class UserWorkStatsController extends BaseAPI {
                 'avg_tasks_completed' => 0.0,
                 'avg_overtime_hours' => 0.0,
                 'total_hours' => 0.0,
+                'total_work_hours' => 0.0,
+                'total_leave_hours' => 0.0,
+                'total_official_leave_hours' => 0.0,
+                'total_leave_days' => 0,
+                'total_official_leave_days' => 0,
+                'total_overtime_hours' => 0.0,
+                'total_net_hours' => 0.0,
             ];
         }
 
@@ -1289,6 +1515,11 @@ class UserWorkStatsController extends BaseAPI {
         $sumTasks = 0.0;
         $sumOvertime = 0.0;
         $sumHours = 0.0;
+        $sumWork = 0.0;
+        $sumLeave = 0.0;
+        $sumOfficial = 0.0;
+        $sumLeaveDays = 0;
+        $sumOfficialDays = 0;
 
         foreach ($users as $user) {
             $current = $user['current_period'] ?? [];
@@ -1297,6 +1528,11 @@ class UserWorkStatsController extends BaseAPI {
             $sumTasks += (float)($current['tasks_completed'] ?? 0);
             $sumOvertime += (float)($current['overtime_hours'] ?? 0);
             $sumHours += (float)($current['hours'] ?? 0);
+            $sumWork += (float)($current['work_hours'] ?? $current['hours'] ?? 0);
+            $sumLeave += (float)($current['leave_hours'] ?? 0);
+            $sumOfficial += (float)($current['official_leave_hours'] ?? 0);
+            $sumLeaveDays += (int)($current['leave_days'] ?? 0);
+            $sumOfficialDays += (int)($current['official_leave_days'] ?? 0);
         }
 
         return [
@@ -1306,6 +1542,13 @@ class UserWorkStatsController extends BaseAPI {
             'avg_tasks_completed' => round($sumTasks / $count, 1),
             'avg_overtime_hours' => round($sumOvertime / $count, 2),
             'total_hours' => round($sumHours, 2),
+            'total_work_hours' => round($sumWork, 2),
+            'total_leave_hours' => round($sumLeave, 2),
+            'total_official_leave_hours' => round($sumOfficial, 2),
+            'total_leave_days' => (int)$sumLeaveDays,
+            'total_official_leave_days' => (int)$sumOfficialDays,
+            'total_overtime_hours' => round($sumOvertime, 2),
+            'total_net_hours' => round($sumHours + $sumOvertime, 2),
         ];
     }
 
@@ -1382,8 +1625,9 @@ class UserWorkStatsController extends BaseAPI {
             $lookbackBuckets = [];
             foreach ($allUsers as $user) {
                 $uid = (string)$user['id'];
-                $emptyBucket = [
+                $currentBuckets[$uid] = [
                     'dates' => [],
+                    'hours_by_date' => [],
                     'hours' => 0.0,
                     'tasks_completed' => 0,
                     'tasks_pending' => 0,
@@ -1392,10 +1636,17 @@ class UserWorkStatsController extends BaseAPI {
                     'break_minutes' => 0,
                     'check_in_minutes' => [],
                     'project_ids' => [],
+                    'leave_days' => 0,
+                    'leave_hours' => 0.0,
+                    'official_leave_days' => 0,
+                    'official_leave_hours' => 0.0,
+                    'other_leave_days' => 0,
+                    'other_leave_hours' => 0.0,
+                    'work_hours' => 0.0,
                 ];
-                $currentBuckets[$uid] = $emptyBucket;
                 $lookbackBuckets[$uid] = [
                     'dates' => [],
+                    'hours_by_date' => [],
                     'hours' => 0.0,
                     'tasks_completed' => 0,
                     'tasks_pending' => 0,
@@ -1404,6 +1655,13 @@ class UserWorkStatsController extends BaseAPI {
                     'break_minutes' => 0,
                     'check_in_minutes' => [],
                     'project_ids' => [],
+                    'leave_days' => 0,
+                    'leave_hours' => 0.0,
+                    'official_leave_days' => 0,
+                    'official_leave_hours' => 0.0,
+                    'other_leave_days' => 0,
+                    'other_leave_hours' => 0.0,
+                    'work_hours' => 0.0,
                 ];
             }
 
@@ -1435,6 +1693,31 @@ class UserWorkStatsController extends BaseAPI {
                 if ($date >= $periodStart && $date <= $periodEnd) {
                     $this->accumulateSubmissionMetrics($currentBuckets[$uid], $submission, true);
                 }
+            }
+
+            // Apply leave / Official Leave hour credits so analytics match individual work-stats
+            $analyticsUserIds = array_map(static function ($u) {
+                return (string)($u['id'] ?? '');
+            }, $allUsers);
+            $leaveMapsLookback = br_leave_day_maps_for_users(
+                $this->conn,
+                $analyticsUserIds,
+                (string)$lookbackStart,
+                (string)$periodEnd
+            );
+            foreach ($analyticsUserIds as $uid) {
+                if ($uid === '' || !isset($lookbackBuckets[$uid])) {
+                    continue;
+                }
+                $fullMap = $leaveMapsLookback[$uid] ?? [];
+                $currentMap = [];
+                foreach ($fullMap as $d => $info) {
+                    if ($d >= $periodStart && $d <= $periodEnd) {
+                        $currentMap[$d] = $info;
+                    }
+                }
+                $this->applyLeaveCreditsToAnalyticsBucket($lookbackBuckets[$uid], $fullMap);
+                $this->applyLeaveCreditsToAnalyticsBucket($currentBuckets[$uid], $currentMap);
             }
 
             $bugsReported = [];
@@ -1487,6 +1770,13 @@ class UserWorkStatsController extends BaseAPI {
                 $row['current_period'] = [
                     'days' => $current['days'],
                     'hours' => $current['hours'],
+                    'work_hours' => $current['work_hours'],
+                    'leave_hours' => $current['leave_hours'],
+                    'leave_days' => $current['leave_days'],
+                    'official_leave_hours' => $current['official_leave_hours'],
+                    'official_leave_days' => $current['official_leave_days'],
+                    'other_leave_hours' => $current['other_leave_hours'],
+                    'other_leave_days' => $current['other_leave_days'],
                     'avg_hours_per_day' => $current['avg_hours_per_day'],
                     'tasks_completed' => $current['tasks_completed'],
                     'tasks_pending' => $current['tasks_pending'],
@@ -1498,6 +1788,7 @@ class UserWorkStatsController extends BaseAPI {
                     'bugs_reported' => (int)($bugsReported[$uid] ?? 0),
                     'bugs_fixed' => (int)($bugsFixed[$uid] ?? 0),
                     'projects' => $current['projects'] ?? [],
+                    'net_hours' => round((float)$current['hours'] + (float)$current['overtime_hours'], 2),
                 ];
                 $row['lookback'] = [
                     'months' => $lookbackMonths,
