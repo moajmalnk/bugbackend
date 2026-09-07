@@ -218,6 +218,7 @@ function sendWhatsAppMessageSingle($mobile, $message) {
             return ['success' => false, 'accepted' => false, 'pending' => false, 'response' => 'Invalid phone', 'httpCode' => 0, 'error' => 'invalid_phone'];
         }
 
+        
         return br_whatsapp_with_send_lock(function () use ($mobile, $message) {
             // Why: Notify historically reads query params; long bug texts blow URL limits.
             // Send number/msg in POST body always, and mirror short msgs into the query
@@ -600,7 +601,7 @@ function formatWorkUpdateForWhatsApp($userName, $userEmail, $submissionData) {
 
 /**
  * Send daily work update WhatsApp notification to admins
- * 
+ *
  * @param string $userName User's name
  * @param string $userEmail User's email
  * @param array $submissionData Submission data
@@ -610,52 +611,52 @@ function sendDailyWorkUpdateWhatsAppToAdmins($userName, $userEmail, $submissionD
     try {
         error_log("📱 sendDailyWorkUpdateWhatsAppToAdmins called");
         error_log("📱 User: $userName ($userEmail)");
-        
+
         // Format the message
         $message = formatWorkUpdateForWhatsApp($userName, $userEmail, $submissionData);
-        
+
         error_log("📱 Formatted WhatsApp message length: " . strlen($message) . " characters");
         error_log("📱 WhatsApp message preview: " . substr($message, 0, 200) . "...");
-        
+
         // Split phone numbers and send individually
         $phoneNumbers = explode(',', WHATSAPP_ADMIN_NUMBERS);
         $results = [];
-        
+
         foreach ($phoneNumbers as $phoneNumber) {
             $phoneNumber = trim($phoneNumber);
             if (empty($phoneNumber)) {
                 error_log("⚠️ Skipping empty phone number");
                 continue;
             }
-            
+
             error_log("📱 Processing phone number: '$phoneNumber'");
-            
+
             $result = sendWhatsAppMessage($phoneNumber, $message);
             $results[$phoneNumber] = $result;
-            
+
             if ($result) {
                 error_log("✅ Successfully sent daily work update WhatsApp to: $phoneNumber");
             } else {
                 error_log("❌ Failed to send daily work update WhatsApp to: $phoneNumber (tried multiple formats)");
             }
-            
+
             // Add a small delay between messages to avoid rate limiting
             if (count($phoneNumbers) > 1) {
                 usleep(500000); // 0.5 second delay
             }
         }
-        
+
         // Return true if at least one message was sent successfully
         $success = in_array(true, $results);
-        
+
         if ($success) {
             error_log("✅ At least one WhatsApp message sent successfully to admins");
         } else {
             error_log("❌ Failed to send WhatsApp messages to all admin numbers");
         }
-        
+
         return $success;
-        
+
     } catch (Exception $e) {
         // Don't fail the submission if WhatsApp fails
         error_log("⚠️ Exception in sendDailyWorkUpdateWhatsAppToAdmins: " . $e->getMessage());
@@ -666,7 +667,7 @@ function sendDailyWorkUpdateWhatsAppToAdmins($userName, $userEmail, $submissionD
 
 /**
  * Get project developers for a project
- * 
+ *
  * @param PDO $conn Database connection
  * @param string $projectId Project ID
  * @return array Array of developer user IDs
@@ -675,9 +676,9 @@ function getProjectDevelopers($conn, $projectId) {
     if (empty($projectId)) {
         return [];
     }
-    
+
     try {
-        $query = "SELECT pm.user_id 
+        $query = "SELECT pm.user_id
                   FROM project_members pm
                   JOIN users u ON pm.user_id = u.id
                   WHERE pm.project_id = ? AND u.role = 'developer' AND u.account_active = 1";
@@ -693,7 +694,7 @@ function getProjectDevelopers($conn, $projectId) {
 
 /**
  * Get all admin user IDs
- * 
+ *
  * @param PDO $conn Database connection
  * @return array Array of admin user IDs
  */
@@ -712,7 +713,7 @@ function getAllAdmins($conn) {
 
 /**
  * Get project name by ID
- * 
+ *
  * @param PDO $conn Database connection
  * @param string $projectId Project ID
  * @return string|null Project name
@@ -721,7 +722,7 @@ function getProjectName($conn, $projectId) {
     if (empty($projectId)) {
         return null;
     }
-    
+
     try {
         $stmt = $conn->prepare("SELECT name FROM projects WHERE id = ? LIMIT 1");
         $stmt->execute([$projectId]);
@@ -735,13 +736,13 @@ function getProjectName($conn, $projectId) {
 
 /**
  * Get frontend base URL for generating shareable links
- * 
+ *
  * @return string Frontend base URL
  */
 function getFrontendBaseUrl() {
     $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
     $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-    
+
     // Determine if we're in development or production
     $isLocal = false;
     $localHosts = ['localhost', '127.0.0.1', '::1'];
@@ -751,7 +752,7 @@ function getFrontendBaseUrl() {
             break;
         }
     }
-    
+
     if ($isLocal) {
         // Development - use localhost
         return 'http://localhost:8080';
@@ -763,7 +764,7 @@ function getFrontendBaseUrl() {
 
 /**
  * Get phone numbers for user IDs from database
- * 
+ *
  * @param PDO $conn Database connection
  * @param array $userIds Array of user IDs
  * @return array Associative array of userId => phone (only users with phones)
@@ -772,27 +773,27 @@ function getUserPhoneNumbers($conn, $userIds) {
     if (empty($userIds)) {
         return [];
     }
-    
+
     // Remove duplicates and empty values
     $userIds = array_values(array_unique(array_filter($userIds)));
-    
+
     if (empty($userIds)) {
         return [];
     }
-    
+
     try {
         // Create placeholders for IN clause
         $placeholders = str_repeat('?,', count($userIds) - 1) . '?';
         $stmt = $conn->prepare("SELECT id, phone FROM users WHERE id IN ($placeholders) AND account_active = 1 AND phone IS NOT NULL AND phone != ''");
         $stmt->execute($userIds);
-        
+
         $result = [];
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
             if (!empty($row['phone'])) {
                 $result[$row['id']] = $row['phone'];
             }
         }
-        
+
         error_log("📱 Retrieved " . count($result) . " phone numbers for " . count($userIds) . " users");
         return $result;
     } catch (Exception $e) {
@@ -803,7 +804,7 @@ function getUserPhoneNumbers($conn, $userIds) {
 
 /**
  * Get user phone numbers and roles from database
- * 
+ *
  * @param PDO $conn Database connection
  * @param array $userIds Array of user IDs
  * @return array Associative array of userId => ['phone' => string, 'role' => string] (only users with phones)
@@ -812,20 +813,20 @@ function getUserPhoneNumbersWithRoles($conn, $userIds) {
     if (empty($userIds)) {
         return [];
     }
-    
+
     // Remove duplicates and empty values
     $userIds = array_values(array_unique(array_filter($userIds)));
-    
+
     if (empty($userIds)) {
         return [];
     }
-    
+
     try {
         // Create placeholders for IN clause
         $placeholders = str_repeat('?,', count($userIds) - 1) . '?';
         $stmt = $conn->prepare("SELECT id, phone, role FROM users WHERE id IN ($placeholders) AND account_active = 1 AND phone IS NOT NULL AND phone != ''");
         $stmt->execute($userIds);
-        
+
         $result = [];
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
             if (!empty($row['phone'])) {
@@ -835,7 +836,7 @@ function getUserPhoneNumbersWithRoles($conn, $userIds) {
                 ];
             }
         }
-        
+
         error_log("📱 Retrieved " . count($result) . " users with phone numbers and roles for " . count($userIds) . " users");
         return $result;
     } catch (Exception $e) {
@@ -846,45 +847,45 @@ function getUserPhoneNumbersWithRoles($conn, $userIds) {
 
 /**
  * Generate role-based task URL
- * 
+ *
  * @param string $role User role (admin, developer, tester, user)
  * @param int|string $taskId Task ID
  * @return string Role-based task URL
  */
 function generateRoleBasedTaskUrl($role, $taskId) {
     $baseUrl = getFrontendBaseUrl();
-    
+
     // Normalize role to lowercase
     $role = strtolower($role ?? 'user');
-    
+
     // Map roles to URL paths
     $rolePath = 'user'; // Default fallback
     if (in_array($role, ['admin', 'developer', 'tester', 'user', 'creator'])) {
         $rolePath = $role;
     }
-    
+
     return $baseUrl . "/" . $rolePath . "/my-tasks?tab=shared-tasks&task=" . $taskId;
 }
 
 /**
  * Generate role-based bug URL
- * 
+ *
  * @param string $role User role (admin, developer, tester, user)
  * @param int|string $bugId Bug ID
  * @return string Role-based bug URL
  */
 function generateRoleBasedBugUrl($role, $bugId) {
     $baseUrl = getFrontendBaseUrl();
-    
+
     // Normalize role to lowercase
     $role = strtolower($role ?? 'user');
-    
+
     // Map roles to URL paths
     $rolePath = 'user'; // Default fallback
     if (in_array($role, ['admin', 'developer', 'tester', 'user', 'creator'])) {
         $rolePath = $role;
     }
-    
+
     return $baseUrl . "/" . $rolePath . "/bugs/" . $bugId;
 }
 
@@ -920,7 +921,7 @@ function formatNewBugReportedForWhatsApp($bugTitle, $priority, $projectName = nu
 
 /**
  * Format bug assignment message for WhatsApp
- * 
+ *
  * @param string $bugTitle Bug title
  * @param string $priority Bug priority
  * @param string|null $projectName Project name (optional)
@@ -936,18 +937,18 @@ function formatBugAssignmentForWhatsApp($bugTitle, $priority, $projectName = nul
     $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
     $message .= "📌 *Title:* " . $bugTitle . "\n";
     $message .= "🎯 *Priority:* " . ucfirst(strtolower($priority ?: 'Medium')) . "\n";
-    
+
     if ($projectName) {
         $message .= "📁 *Project:* " . $projectName . "\n";
     }
-    
+
     if ($assignedByName) {
         $message .= "👤 *Assigned by:* " . $assignedByName . "\n";
     }
 
     require_once __DIR__ . '/bug_meta.php';
     $message = appendBugMetaToWhatsAppMessage($message, $bugLevel, $alreadyRaised);
-    
+
     // Add description if provided
     if ($description && !empty(trim($description))) {
         $message .= "\n📝 *Description:*\n";
@@ -958,7 +959,7 @@ function formatBugAssignmentForWhatsApp($bugTitle, $priority, $projectName = nul
         }
         $message .= $descText . "\n";
     }
-    
+
     // Add expected result if provided
     if ($expectedResult && !empty(trim($expectedResult))) {
         $message .= "\n✅ *Expected Result:*\n";
@@ -968,7 +969,7 @@ function formatBugAssignmentForWhatsApp($bugTitle, $priority, $projectName = nul
         }
         $message .= $expText . "\n";
     }
-    
+
     // Add actual result if provided
     if ($actualResult && !empty(trim($actualResult))) {
         $message .= "\n❌ *Actual Result:*\n";
@@ -978,21 +979,21 @@ function formatBugAssignmentForWhatsApp($bugTitle, $priority, $projectName = nul
         }
         $message .= $actText . "\n";
     }
-    
+
     $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
-    
+
     if ($bugLink) {
         $message .= "🔗 View Bug:\n" . $bugLink . "\n";
     }
-    
+
     $message .= "\n🐞 _BugRicer Automated Notification_";
-    
+
     return $message;
 }
 
 /**
  * Format shared task assignment message for WhatsApp
- * 
+ *
  * @param string $taskTitle Task title
  * @param string $priority Task priority
  * @param string $dueDate Due date (optional)
@@ -1005,32 +1006,32 @@ function formatTaskAssignmentForWhatsApp($taskTitle, $priority, $dueDate = null,
     $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
     $message .= "📌 *Title:* " . $taskTitle . "\n";
     $message .= "🎯 *Priority:* " . ucfirst(strtolower($priority ?: 'Medium')) . "\n";
-    
+
     if ($dueDate) {
         $formattedDate = date('d/m/Y', strtotime($dueDate));
         $message .= "📅 *Due Date:* " . $formattedDate . "\n";
     } else {
         $message .= "📅 *Due Date:* Not set\n";
     }
-    
+
     if ($assignedByName) {
         $message .= "👤 *Assigned by:* " . $assignedByName . "\n";
     }
-    
+
     $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
-    
+
     if ($taskLink) {
         $message .= "🔗 View Task:\n" . $taskLink . "\n";
     }
-    
+
     $message .= "\n🐞 _BugRicer Automated Notification_";
-    
+
     return $message;
 }
 
 /**
  * Send bug assignment WhatsApp notification to assigned users
- * 
+ *
  * @param PDO $conn Database connection
  * @param array $assignedUserIds Array of user IDs assigned to the bug
  * @param string $bugId Bug ID
@@ -1047,20 +1048,20 @@ function sendBugAssignmentWhatsApp($conn, $assignedUserIds, $bugId, $bugTitle, $
     $acceptedPhones = [];
     try {
         error_log("📱 sendBugAssignmentWhatsApp called for bug: $bugId");
-        
+
         if (empty($assignedUserIds)) {
             error_log("⚠️ No assigned users provided, skipping WhatsApp notification");
             return [];
         }
-        
+
         // Get phone numbers and roles for assigned users
         $usersWithPhones = getUserPhoneNumbersWithRoles($conn, $assignedUserIds);
-        
+
         if (empty($usersWithPhones)) {
             error_log("⚠️ No phone numbers found for assigned users");
             return [];
         }
-        
+
         // Get assigner name if provided
         $assignedByName = null;
         if ($assignedById) {
@@ -1075,13 +1076,13 @@ function sendBugAssignmentWhatsApp($conn, $assignedUserIds, $bugId, $bugTitle, $
                 error_log("⚠️ Could not get assigner name: " . $e->getMessage());
             }
         }
-        
+
         error_log("📱 Formatted bug assignment WhatsApp message for " . count($usersWithPhones) . " users");
-        
+
         foreach ($usersWithPhones as $userId => $userData) {
             $phoneNumber = trim($userData['phone']);
             $userRole = $userData['role'] ?? 'user';
-            
+
             if (empty($phoneNumber)) {
                 continue;
             }
@@ -1090,18 +1091,18 @@ function sendBugAssignmentWhatsApp($conn, $assignedUserIds, $bugId, $bugTitle, $
             if ($canonical !== null && isset($acceptedPhones[$canonical])) {
                 continue;
             }
-            
+
             // Generate role-based bug URL for this user
             $bugLink = generateRoleBasedBugUrl($userRole, $bugId);
-            
+
             // Format personalized message with role-based URL and bug details
             $message = formatBugAssignmentForWhatsApp($bugTitle, $priority, $projectName, $assignedByName, $bugLink, $description, $expectedResult, $actualResult, $bugLevel, $alreadyRaised);
-            
+
             error_log("📱 Sending bug assignment WhatsApp to user $userId (role: $userRole): $phoneNumber");
             error_log("📱 Role-based URL: $bugLink");
-            
+
             $result = sendWhatsAppMessage($phoneNumber, $message);
-            
+
             if ($result) {
                 error_log("✅ Successfully sent bug assignment WhatsApp to user $userId");
                 if ($canonical !== null) {
@@ -1111,9 +1112,9 @@ function sendBugAssignmentWhatsApp($conn, $assignedUserIds, $bugId, $bugTitle, $
                 error_log("❌ Failed to send bug assignment WhatsApp to user $userId");
             }
         }
-        
+
         return array_values($acceptedPhones);
-        
+
     } catch (Exception $e) {
         error_log("⚠️ Exception in sendBugAssignmentWhatsApp: " . $e->getMessage());
         error_log("⚠️ Exception trace: " . $e->getTraceAsString());
@@ -1189,7 +1190,7 @@ function sendNewBugToAdminNumbers($bugId, $bugTitle, $priority = 'medium', $proj
 
 /**
  * Send shared task assignment WhatsApp notification to assigned users
- * 
+ *
  * @param PDO $conn Database connection
  * @param array $assignedUserIds Array of user IDs assigned to the task
  * @param int|string $taskId Task ID
@@ -1202,20 +1203,20 @@ function sendNewBugToAdminNumbers($bugId, $bugTitle, $priority = 'medium', $proj
 function sendTaskAssignmentWhatsApp($conn, $assignedUserIds, $taskId, $taskTitle, $priority = 'medium', $dueDate = null, $assignedById = null) {
     try {
         error_log("📱 sendTaskAssignmentWhatsApp called for task: $taskId");
-        
+
         if (empty($assignedUserIds)) {
             error_log("⚠️ No assigned users provided, skipping WhatsApp notification");
             return false;
         }
-        
+
         // Get phone numbers and roles for assigned users
         $usersWithPhones = getUserPhoneNumbersWithRoles($conn, $assignedUserIds);
-        
+
         if (empty($usersWithPhones)) {
             error_log("⚠️ No phone numbers found for assigned users");
             return false;
         }
-        
+
         // Get assigner name if provided
         $assignedByName = null;
         if ($assignedById) {
@@ -1230,47 +1231,47 @@ function sendTaskAssignmentWhatsApp($conn, $assignedUserIds, $taskId, $taskTitle
                 error_log("⚠️ Could not get assigner name: " . $e->getMessage());
             }
         }
-        
+
         error_log("📱 Formatted task assignment WhatsApp message for " . count($usersWithPhones) . " users");
-        
+
         // Send to each assigned user with personalized role-based URL
         $results = [];
         foreach ($usersWithPhones as $userId => $userData) {
             $phoneNumber = trim($userData['phone']);
             $userRole = $userData['role'] ?? 'user';
-            
+
             if (empty($phoneNumber)) {
                 continue;
             }
-            
+
             // Generate role-based task URL for this user
             $taskLink = generateRoleBasedTaskUrl($userRole, $taskId);
-            
+
             // Format personalized message with role-based URL
             $message = formatTaskAssignmentForWhatsApp($taskTitle, $priority, $dueDate, $assignedByName, $taskLink);
-            
+
             error_log("📱 Sending task assignment WhatsApp to user $userId (role: $userRole): $phoneNumber");
             error_log("📱 Role-based URL: $taskLink");
-            
+
             $result = sendWhatsAppMessage($phoneNumber, $message);
             $results[$userId] = $result;
-            
+
             if ($result) {
                 error_log("✅ Successfully sent task assignment WhatsApp to user $userId");
             } else {
                 error_log("❌ Failed to send task assignment WhatsApp to user $userId");
             }
-            
+
             // Add delay between messages
             if (count($usersWithPhones) > 1) {
                 usleep(500000); // 0.5 second delay
             }
         }
-        
+
         // Return true if at least one message was sent successfully
         $success = in_array(true, $results);
         return $success;
-        
+
     } catch (Exception $e) {
         error_log("⚠️ Exception in sendTaskAssignmentWhatsApp: " . $e->getMessage());
         error_log("⚠️ Exception trace: " . $e->getTraceAsString());
@@ -1280,29 +1281,29 @@ function sendTaskAssignmentWhatsApp($conn, $assignedUserIds, $taskId, $taskTitle
 
 /**
  * Generate role-based update URL
- * 
+ *
  * @param string $role User role (admin, developer, tester, user)
  * @param int|string $updateId Update ID
  * @return string Role-based update URL
  */
 function generateRoleBasedUpdateUrl($role, $updateId) {
     $baseUrl = getFrontendBaseUrl();
-    
+
     // Normalize role to lowercase
     $role = strtolower($role ?? 'user');
-    
+
     // Map roles to URL paths
     $rolePath = 'user'; // Default fallback
     if (in_array($role, ['admin', 'developer', 'tester', 'user', 'creator'])) {
         $rolePath = $role;
     }
-    
+
     return $baseUrl . "/" . $rolePath . "/updates/" . $updateId;
 }
 
 /**
  * Format update notification message for WhatsApp
- * 
+ *
  * @param string $updateTitle Update title
  * @param string $updateType Update type (feature/updation/maintenance)
  * @param string|null $projectName Project name (optional)
@@ -1314,34 +1315,34 @@ function formatUpdateForWhatsApp($updateTitle, $updateType, $projectName = null,
     $message = "📢 *New Update Posted*\n";
     $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
     $message .= "📌 *Title:* " . $updateTitle . "\n";
-    
+
     // Format update type with emoji
     $typeEmoji = "🏷️";
     $typeLabel = ucfirst(strtolower($updateType ?: 'Update'));
     $message .= $typeEmoji . " *Type:* " . $typeLabel . "\n";
-    
+
     if ($projectName) {
         $message .= "📁 *Project:* " . $projectName . "\n";
     }
-    
+
     if ($createdByName) {
         $message .= "👤 *Created by:* " . $createdByName . "\n";
     }
-    
+
     $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
-    
+
     if ($updateLink) {
         $message .= "🔗 View Update:\n" . $updateLink . "\n";
     }
-    
+
     $message .= "\n🐞 _BugRicer Automated Notification_";
-    
+
     return $message;
 }
 
 /**
  * Send update creation WhatsApp notification to developers and admins
- * 
+ *
  * @param PDO $conn Database connection
  * @param string $updateId Update ID
  * @param string $updateTitle Update title
@@ -1353,11 +1354,11 @@ function formatUpdateForWhatsApp($updateTitle, $updateType, $projectName = null,
 function sendUpdateCreationWhatsApp($conn, $updateId, $updateTitle, $updateType, $projectId, $createdById = null) {
     try {
         error_log("📱 sendUpdateCreationWhatsApp called for update: $updateId");
-        
+
         // Get project developers and admins (same logic as NotificationManager)
         $developers = getProjectDevelopers($conn, $projectId);
         $admins = getAllAdmins($conn);
-        
+
         // Combine and remove duplicates, exclude creator
         $userIds = array_unique(array_merge($developers, $admins));
         if ($createdById) {
@@ -1365,7 +1366,7 @@ function sendUpdateCreationWhatsApp($conn, $updateId, $updateTitle, $updateType,
                 return (string)$userId !== (string)$createdById;
             });
         }
-        
+
         // Fallback to admins if no users
         if (empty($userIds)) {
             $allAdmins = getAllAdmins($conn);
@@ -1376,20 +1377,20 @@ function sendUpdateCreationWhatsApp($conn, $updateId, $updateTitle, $updateType,
                 $userIds = [$createdById]; // Notify creator as fallback
             }
         }
-        
+
         if (empty($userIds)) {
             error_log("⚠️ No users to notify for update creation");
             return false;
         }
-        
+
         // Get phone numbers and roles for users
         $usersWithPhones = getUserPhoneNumbersWithRoles($conn, array_values($userIds));
-        
+
         if (empty($usersWithPhones)) {
             error_log("⚠️ No phone numbers found for users");
             return false;
         }
-        
+
         // Get creator name if provided
         $createdByName = null;
         if ($createdById) {
@@ -1404,50 +1405,50 @@ function sendUpdateCreationWhatsApp($conn, $updateId, $updateTitle, $updateType,
                 error_log("⚠️ Could not get creator name: " . $e->getMessage());
             }
         }
-        
+
         // Get project name
         $projectName = getProjectName($conn, $projectId);
-        
+
         error_log("📱 Sending WhatsApp notifications for update creation to " . count($usersWithPhones) . " users");
-        
+
         // Send to each user with personalized role-based URL
         $results = [];
         foreach ($usersWithPhones as $userId => $userData) {
             $phoneNumber = trim($userData['phone']);
             $userRole = $userData['role'] ?? 'user';
-            
+
             if (empty($phoneNumber)) {
                 continue;
             }
-            
+
             // Generate role-based update URL for this user
             $updateLink = generateRoleBasedUpdateUrl($userRole, $updateId);
-            
+
             // Format personalized message with role-based URL
             $message = formatUpdateForWhatsApp($updateTitle, $updateType, $projectName, $createdByName, $updateLink);
-            
+
             error_log("📱 Sending update creation WhatsApp to user $userId (role: $userRole): $phoneNumber");
             error_log("📱 Role-based URL: $updateLink");
-            
+
             $result = sendWhatsAppMessage($phoneNumber, $message);
             $results[$userId] = $result;
-            
+
             if ($result) {
                 error_log("✅ Successfully sent update creation WhatsApp to user $userId");
             } else {
                 error_log("❌ Failed to send update creation WhatsApp to user $userId");
             }
-            
+
             // Add delay between messages
             if (count($usersWithPhones) > 1) {
                 usleep(500000); // 0.5 second delay
             }
         }
-        
+
         // Return true if at least one message was sent successfully
         $success = in_array(true, $results);
         return $success;
-        
+
     } catch (Exception $e) {
         error_log("⚠️ Exception in sendUpdateCreationWhatsApp: " . $e->getMessage());
         error_log("⚠️ Exception trace: " . $e->getTraceAsString());
@@ -1457,7 +1458,7 @@ function sendUpdateCreationWhatsApp($conn, $updateId, $updateTitle, $updateType,
 
 /**
  * Format welcome message for WhatsApp
- * 
+ *
  * @param string $username User's username
  * @param string|null $loginLink Login link (optional)
  * @param string|null $email User's email (optional)
@@ -1525,20 +1526,20 @@ function formatWelcomeForWhatsApp($username, $loginLink = null, $email = null, $
             $message .= "💡 *Note:* This link signs you in automatically. Password above is a backup.\n";
         }
     }
-    
+
     $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
     $message .= "💬 If you have any questions or need assistance, please don't hesitate to contact our support team.\n\n";
     $message .= "Best regards,\n";
     $message .= "The BugRicer Team\n\n";
     $message .= "━━━━━━━━━━━━━━━━━━━━\n";
     $message .= "🐞 _BugRicer Automated Notification_";
-    
+
     return $message;
 }
 
 /**
  * Send welcome WhatsApp notification to new user
- * 
+ *
  * @param string $phoneNumber User's phone number
  * @param string $username User's username
  * @param string|null $loginLink Login link (optional)
@@ -1550,28 +1551,28 @@ function formatWelcomeForWhatsApp($username, $loginLink = null, $email = null, $
 function sendWelcomeWhatsApp($phoneNumber, $username, $loginLink = null, $email = null, $password = null, $role = null) {
     try {
         error_log("📱 sendWelcomeWhatsApp called for user: $username ($phoneNumber)");
-        
+
         if (empty(trim($phoneNumber))) {
             error_log("⚠️ No phone number provided for welcome WhatsApp");
             return false;
         }
-        
+
         // Format welcome message
         $message = formatWelcomeForWhatsApp($username, $loginLink, $email, $password, $role);
-        
+
         error_log("📱 Formatted welcome WhatsApp message length: " . strlen($message) . " characters");
-        
+
         // Send WhatsApp message
         $result = sendWhatsAppMessage($phoneNumber, $message);
-        
+
         if ($result) {
             error_log("✅ Successfully sent welcome WhatsApp to $username");
         } else {
             error_log("❌ Failed to send welcome WhatsApp to $username");
         }
-        
+
         return $result;
-        
+
     } catch (Exception $e) {
         error_log("⚠️ Exception in sendWelcomeWhatsApp: " . $e->getMessage());
         error_log("⚠️ Exception trace: " . $e->getTraceAsString());
@@ -1581,29 +1582,29 @@ function sendWelcomeWhatsApp($phoneNumber, $username, $loginLink = null, $email 
 
 /**
  * Generate role-based project URL
- * 
+ *
  * @param string $role User role (admin, developer, tester, user)
  * @param int|string $projectId Project ID
  * @return string Role-based project URL
  */
 function generateRoleBasedProjectUrl($role, $projectId) {
     $baseUrl = getFrontendBaseUrl();
-    
+
     // Normalize role to lowercase
     $role = strtolower($role ?? 'user');
-    
+
     // Map roles to URL paths
     $rolePath = 'user'; // Default fallback
     if (in_array($role, ['admin', 'developer', 'tester', 'user', 'creator'])) {
         $rolePath = $role;
     }
-    
+
     return $baseUrl . "/" . $rolePath . "/projects/" . $projectId;
 }
 
 /**
  * Format project member added message for WhatsApp
- * 
+ *
  * @param string $projectName Project name
  * @param string $projectRole Member's role in the project
  * @param string|null $addedByName Name of person who added them
@@ -1616,37 +1617,37 @@ function formatProjectMemberAddedForWhatsApp($projectName, $projectRole, $addedB
     $message .= "Hello! Great news! You've been added to a project on BugRicer.\n\n";
     $message .= "🏢 *Project:* " . $projectName . "\n";
     $message .= "👤 *Your Role:* " . ucfirst(strtolower($projectRole ?: 'Member')) . "\n";
-    
+
     if ($addedByName) {
         $message .= "✍️ *Added by:* " . $addedByName . "\n";
     }
-    
+
     $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
     $message .= "🎯 *What You Can Do:*\n\n";
     $message .= "✅ View and manage project bugs\n";
     $message .= "📋 Access shared tasks and updates\n";
     $message .= "👥 Collaborate with team members\n";
     $message .= "📊 Track project progress\n";
-    
+
     $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
-    
+
     if ($projectLink) {
         $message .= "🔗 *View Project:*\n";
         $message .= "$projectLink\n\n";
     }
-    
+
     $message .= "━━━━━━━━━━━━━━━━━━━━\n";
     $message .= "💬 If you have any questions, please contact our support team.\n\n";
     $message .= "Best regards,\n";
     $message .= "The BugRicer Team\n\n";
     $message .= "🐞 _BugRicer Automated Notification_";
-    
+
     return $message;
 }
 
 /**
  * Send project member added WhatsApp notification to the newly added member
- * 
+ *
  * @param PDO $conn Database connection
  * @param string $userId User ID of the newly added member
  * @param string $projectId Project ID
@@ -1657,28 +1658,28 @@ function formatProjectMemberAddedForWhatsApp($projectName, $projectRole, $addedB
 function sendProjectMemberAddedWhatsApp($conn, $userId, $projectId, $projectRole, $addedById = null) {
     try {
         error_log("📱 sendProjectMemberAddedWhatsApp called for user: $userId, project: $projectId");
-        
+
         // Get user details (phone and role) — skip deactivated accounts
         $userStmt = $conn->prepare("SELECT username, phone, role FROM users WHERE id = ? AND account_active = 1 LIMIT 1");
         $userStmt->execute([$userId]);
         $user = $userStmt->fetch(PDO::FETCH_ASSOC);
-        
+
         if (!$user || empty($user['phone'])) {
             error_log("⚠️ User $userId is inactive or has no phone number for WhatsApp notification");
             return false;
         }
-        
+
         $phoneNumber = trim($user['phone']);
         $userRole = $user['role'] ?? 'user';
         $username = $user['username'] ?? 'User';
-        
+
         // Get project name
         $projectName = getProjectName($conn, $projectId);
         if (!$projectName) {
             error_log("⚠️ Could not get project name for project: $projectId");
             $projectName = 'Project';
         }
-        
+
         // Get admin name who added the member
         $addedByName = null;
         if ($addedById) {
@@ -1693,27 +1694,27 @@ function sendProjectMemberAddedWhatsApp($conn, $userId, $projectId, $projectRole
                 error_log("⚠️ Could not get admin name: " . $e->getMessage());
             }
         }
-        
+
         // Generate role-based project URL
         $projectLink = generateRoleBasedProjectUrl($userRole, $projectId);
-        
+
         // Format message
         $message = formatProjectMemberAddedForWhatsApp($projectName, $projectRole, $addedByName, $projectLink);
-        
+
         error_log("📱 Sending project member added WhatsApp to user $username (role: $userRole): $phoneNumber");
         error_log("📱 Role-based project URL: $projectLink");
-        
+
         // Send WhatsApp message
         $result = sendWhatsAppMessage($phoneNumber, $message);
-        
+
         if ($result) {
             error_log("✅ Successfully sent project member added WhatsApp to user $username");
         } else {
             error_log("❌ Failed to send project member added WhatsApp to user $username");
         }
-        
+
         return $result;
-        
+
     } catch (Exception $e) {
         error_log("⚠️ Exception in sendProjectMemberAddedWhatsApp: " . $e->getMessage());
         error_log("⚠️ Exception trace: " . $e->getTraceAsString());
@@ -1723,7 +1724,7 @@ function sendProjectMemberAddedWhatsApp($conn, $userId, $projectId, $projectRole
 
 /**
  * Format meeting invitation message for WhatsApp
- * 
+ *
  * @param string $meetingTitle Meeting title
  * @param string $meetingCode Meeting code
  * @param string|null $meetingUri Meeting URI/link
@@ -1737,17 +1738,17 @@ function formatMeetingInvitationForWhatsApp($meetingTitle, $meetingCode, $meetin
     $message .= "You've been invited to join a meeting on BugMeet!\n\n";
     $message .= "📌 *Meeting:* " . $meetingTitle . "\n";
     $message .= "🔢 *Code:* " . $meetingCode . "\n";
-    
+
     if ($creatorName) {
         $message .= "👤 *Created by:* " . $creatorName . "\n";
     }
-    
+
     if ($startTime) {
         $message .= "⏰ *Time:* " . $startTime . "\n";
     }
-    
+
     $message .= "\n━━━━━━━━━━━━━━━━━━━━\n";
-    
+
     if ($meetingUri) {
         $message .= "🔗 *Join Meeting:*\n";
         $message .= "$meetingUri\n\n";
@@ -1755,19 +1756,19 @@ function formatMeetingInvitationForWhatsApp($meetingTitle, $meetingCode, $meetin
         $message .= "🔗 *Join Meeting:*\n";
         $message .= "https://meet.google.com/" . strtolower($meetingCode) . "\n\n";
     }
-    
+
     $message .= "━━━━━━━━━━━━━━━━━━━━\n";
     $message .= "💡 You can join using the link above or enter the meeting code manually.\n\n";
     $message .= "Best regards,\n";
     $message .= "The BugRicer Team\n\n";
     $message .= "🐞 _BugRicer Automated Notification_";
-    
+
     return $message;
 }
 
 /**
  * Send meeting invitation WhatsApp notifications to participants
- * 
+ *
  * @param PDO $conn Database connection
  * @param array $participantEmails Array of participant email addresses
  * @param string $meetingTitle Meeting title
@@ -1780,15 +1781,15 @@ function formatMeetingInvitationForWhatsApp($meetingTitle, $meetingCode, $meetin
 function sendMeetingInvitationWhatsApp($conn, $participantEmails, $meetingTitle, $meetingCode, $meetingUri = null, $creatorId = null, $startTime = null) {
     try {
         error_log("📱 sendMeetingInvitationWhatsApp called for meeting: $meetingTitle");
-        
+
         if (empty($participantEmails)) {
             error_log("⚠️ No participant emails provided, skipping WhatsApp notification");
             return [];
         }
-        
+
         // Remove duplicates
         $participantEmails = array_values(array_unique(array_filter($participantEmails)));
-        
+
         // Get creator name if provided
         $creatorName = null;
         if ($creatorId) {
@@ -1803,52 +1804,52 @@ function sendMeetingInvitationWhatsApp($conn, $participantEmails, $meetingTitle,
                 error_log("⚠️ Could not get creator name: " . $e->getMessage());
             }
         }
-        
+
         // Get phone numbers for participant emails (active accounts only)
         $placeholders = str_repeat('?,', count($participantEmails) - 1) . '?';
         $phoneStmt = $conn->prepare("SELECT email, phone FROM users WHERE email IN ($placeholders) AND account_active = 1 AND phone IS NOT NULL AND phone != ''");
         $phoneStmt->execute($participantEmails);
         $usersWithPhones = $phoneStmt->fetchAll(PDO::FETCH_ASSOC);
-        
+
         if (empty($usersWithPhones)) {
             error_log("⚠️ No phone numbers found for participant emails");
             return [];
         }
-        
+
         error_log("📱 Sending meeting invitation WhatsApp to " . count($usersWithPhones) . " participants");
-        
+
         // Send to each participant
         $results = [];
         foreach ($usersWithPhones as $user) {
             $email = $user['email'];
             $phoneNumber = trim($user['phone']);
-            
+
             if (empty($phoneNumber)) {
                 continue;
             }
-            
+
             // Format message
             $message = formatMeetingInvitationForWhatsApp($meetingTitle, $meetingCode, $meetingUri, $creatorName, $startTime);
-            
+
             error_log("📱 Sending meeting invitation WhatsApp to: $email ($phoneNumber)");
-            
+
             $result = sendWhatsAppMessage($phoneNumber, $message);
             $results[$email] = $result;
-            
+
             if ($result) {
                 error_log("✅ Successfully sent meeting invitation WhatsApp to: $email");
             } else {
                 error_log("❌ Failed to send meeting invitation WhatsApp to: $email");
             }
-            
+
             // Add delay between messages
             if (count($usersWithPhones) > 1) {
                 usleep(500000); // 0.5 second delay
             }
         }
-        
+
         return $results;
-        
+
     } catch (Exception $e) {
         error_log("⚠️ Exception in sendMeetingInvitationWhatsApp: " . $e->getMessage());
         error_log("⚠️ Exception trace: " . $e->getTraceAsString());
