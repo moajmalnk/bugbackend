@@ -218,7 +218,6 @@ function sendWhatsAppMessageSingle($mobile, $message) {
             return ['success' => false, 'accepted' => false, 'pending' => false, 'response' => 'Invalid phone', 'httpCode' => 0, 'error' => 'invalid_phone'];
         }
 
-        
         return br_whatsapp_with_send_lock(function () use ($mobile, $message) {
             // Why: Notify historically reads query params; long bug texts blow URL limits.
             // Send number/msg in POST body always, and mirror short msgs into the query
