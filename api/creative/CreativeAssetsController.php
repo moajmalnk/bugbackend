@@ -68,6 +68,16 @@ class CreativeAssetsController extends BaseAPI
         }
     }
 
+    private function foldersColumnReady(): bool
+    {
+        try {
+            $stmt = $this->conn->query("SHOW COLUMNS FROM creative_assets LIKE 'folder_id'");
+            return (bool)$stmt->fetch(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) {
+            return false;
+        }
+    }
+
     /**
      * Why: Production may ship API files before an admin runs 089 manually.
      */
@@ -98,6 +108,16 @@ class CreativeAssetsController extends BaseAPI
         }
     }
 
+    private function ensureFoldersSchema(): void
+    {
+        if ($this->foldersColumnReady()) {
+            return;
+        }
+        require_once __DIR__ . '/CreativeFoldersController.php';
+        $folders = new CreativeFoldersController();
+        $folders->ensureFoldersSchema();
+    }
+
     private function ensureReady(): bool
     {
         $this->ensureSchema();
@@ -108,7 +128,30 @@ class CreativeAssetsController extends BaseAPI
             );
             return false;
         }
+        $this->ensureFoldersSchema();
         return true;
+    }
+
+    /**
+     * Why: Resolve destination folder for create/move/copy (null = root / Unfiled).
+     */
+    private function resolveFolderId($raw, bool $requiredExist = true): ?string
+    {
+        if ($raw === null || $raw === '' || $raw === 'root') {
+            return null;
+        }
+        $id = trim(strip_tags((string)$raw));
+        if (!Utils::isValidUUID($id)) {
+            throw new InvalidArgumentException('Valid folder id is required');
+        }
+        if ($requiredExist) {
+            $stmt = $this->conn->prepare('SELECT id FROM creative_folders WHERE id = ? LIMIT 1');
+            $stmt->execute([$id]);
+            if (!$stmt->fetchColumn()) {
+                throw new InvalidArgumentException('Folder not found');
+            }
+        }
+        return $id;
     }
 
     private function sanitizeText(?string $value, int $maxLen): ?string
@@ -180,6 +223,8 @@ class CreativeAssetsController extends BaseAPI
             'id' => $row['id'],
             'project_id' => $row['project_id'] ?? null,
             'project_name' => $row['project_name'] ?? null,
+            'folder_id' => $row['folder_id'] ?? null,
+            'folder_name' => $row['folder_name'] ?? null,
             'creator_id' => $row['creator_id'],
             'creator_name' => $row['creator_name'] ?? null,
             'title' => $row['title'],
@@ -202,10 +247,18 @@ class CreativeAssetsController extends BaseAPI
 
     private function assetSelectSql(): string
     {
+        $folderJoin = $this->foldersColumnReady()
+            ? 'LEFT JOIN creative_folders cf ON cf.id = a.folder_id'
+            : '';
+        $folderName = $this->foldersColumnReady()
+            ? 'cf.name AS folder_name,'
+            : 'NULL AS folder_name,';
         return "SELECT a.*,
+            {$folderName}
             p.name AS project_name,
             u.username AS creator_name
             FROM creative_assets a
+            {$folderJoin}
             LEFT JOIN projects p ON p.id = a.project_id
             LEFT JOIN users u ON u.id = a.creator_id";
     }
@@ -389,6 +442,7 @@ class CreativeAssetsController extends BaseAPI
         $material = isset($_GET['material_type']) ? trim((string)$_GET['material_type']) : '';
         $platform = isset($_GET['platform']) ? trim((string)$_GET['platform']) : '';
         $projectId = isset($_GET['project_id']) ? trim((string)$_GET['project_id']) : '';
+        $folderRaw = isset($_GET['folder_id']) ? trim((string)$_GET['folder_id']) : null;
         $from = isset($_GET['from']) ? (string)$_GET['from'] : null;
         $to = isset($_GET['to']) ? (string)$_GET['to'] : null;
         $page = max(1, (int)($_GET['page'] ?? 1));
@@ -404,6 +458,17 @@ class CreativeAssetsController extends BaseAPI
             $where[] = '(a.title LIKE ? OR a.hook_content LIKE ? OR u.username LIKE ? OR p.name LIKE ?)';
             $like = '%' . $q . '%';
             array_push($params, $like, $like, $like, $like);
+        } elseif ($this->foldersColumnReady() && $folderRaw !== null) {
+            // Why: Search is global across folders; browse scopes to current folder / root.
+            if ($folderRaw === '' || $folderRaw === 'root') {
+                $where[] = 'a.folder_id IS NULL';
+            } elseif (Utils::isValidUUID($folderRaw)) {
+                $where[] = 'a.folder_id = ?';
+                $params[] = $folderRaw;
+            } else {
+                $this->sendJsonResponse(400, 'Valid folder_id is required');
+                return;
+            }
         }
         if ($status !== '' && $status !== 'all' && in_array($status, self::STATUSES, true)) {
             $where[] = 'a.status = ?';
@@ -504,30 +569,67 @@ class CreativeAssetsController extends BaseAPI
             $payload['status'] = 'Draft';
         }
 
+        $folderId = null;
+        if ($this->foldersColumnReady() && array_key_exists('folder_id', $data)) {
+            try {
+                $folderId = $this->resolveFolderId($data['folder_id']);
+            } catch (InvalidArgumentException $e) {
+                $this->sendJsonResponse(400, $e->getMessage());
+                return;
+            }
+        }
+
         $id = Utils::generateUUID();
-        $stmt = $this->conn->prepare(
-            'INSERT INTO creative_assets (
-                id, project_id, creator_id, title, material_type, platform,
-                hook_content, asset_source, drive_link, uploaded_file_path,
-                preview_thumbnail_url, status, scheduled_date, published_date
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-        );
-        $stmt->execute([
-            $id,
-            $payload['project_id'],
-            $payload['creator_id'],
-            $payload['title'],
-            $payload['material_type'],
-            $payload['platform'],
-            $payload['hook_content'],
-            $payload['asset_source'],
-            $payload['drive_link'],
-            $payload['uploaded_file_path'],
-            $payload['preview_thumbnail_url'],
-            $payload['status'],
-            $payload['scheduled_date'],
-            $payload['published_date'],
-        ]);
+        if ($this->foldersColumnReady()) {
+            $stmt = $this->conn->prepare(
+                'INSERT INTO creative_assets (
+                    id, project_id, folder_id, creator_id, title, material_type, platform,
+                    hook_content, asset_source, drive_link, uploaded_file_path,
+                    preview_thumbnail_url, status, scheduled_date, published_date
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            );
+            $stmt->execute([
+                $id,
+                $payload['project_id'],
+                $folderId,
+                $payload['creator_id'],
+                $payload['title'],
+                $payload['material_type'],
+                $payload['platform'],
+                $payload['hook_content'],
+                $payload['asset_source'],
+                $payload['drive_link'],
+                $payload['uploaded_file_path'],
+                $payload['preview_thumbnail_url'],
+                $payload['status'],
+                $payload['scheduled_date'],
+                $payload['published_date'],
+            ]);
+        } else {
+            $stmt = $this->conn->prepare(
+                'INSERT INTO creative_assets (
+                    id, project_id, creator_id, title, material_type, platform,
+                    hook_content, asset_source, drive_link, uploaded_file_path,
+                    preview_thumbnail_url, status, scheduled_date, published_date
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            );
+            $stmt->execute([
+                $id,
+                $payload['project_id'],
+                $payload['creator_id'],
+                $payload['title'],
+                $payload['material_type'],
+                $payload['platform'],
+                $payload['hook_content'],
+                $payload['asset_source'],
+                $payload['drive_link'],
+                $payload['uploaded_file_path'],
+                $payload['preview_thumbnail_url'],
+                $payload['status'],
+                $payload['scheduled_date'],
+                $payload['published_date'],
+            ]);
+        }
 
         $row = $this->fetchAsset($id);
         $this->sendJsonResponse(201, 'Asset created', $this->formatAsset($row, []));
@@ -839,11 +941,20 @@ class CreativeAssetsController extends BaseAPI
 
         $from = isset($_GET['from']) ? (string)$_GET['from'] : null;
         $to = isset($_GET['to']) ? (string)$_GET['to'] : null;
+        $folderRaw = isset($_GET['folder_id']) ? trim((string)$_GET['folder_id']) : null;
 
         $where = ['1=1'];
         $params = [];
         $this->applyOwnerScope($decoded, $where, $params);
         $this->applyCreatedPeriod($from, $to, $where, $params);
+        if ($this->foldersColumnReady() && $folderRaw !== null) {
+            if ($folderRaw === '' || $folderRaw === 'root') {
+                $where[] = 'a.folder_id IS NULL';
+            } elseif (Utils::isValidUUID($folderRaw)) {
+                $where[] = 'a.folder_id = ?';
+                $params[] = $folderRaw;
+            }
+        }
         $whereSql = implode(' AND ', $where);
 
         $counts = [];
@@ -884,6 +995,231 @@ class CreativeAssetsController extends BaseAPI
             'due_this_week' => $dueThisWeek,
             'published_in_period' => $publishedInPeriod,
             'in_review' => $inReview,
+        ]);
+    }
+
+    /**
+     * Why: All-or-nothing move keeps library organization consistent under ownership rules.
+     */
+    public function move()
+    {
+        $decoded = $this->requireAuth();
+        if (!$decoded || !$this->ensureReady()) {
+            return;
+        }
+        if (!$this->foldersColumnReady()) {
+            $this->sendJsonResponse(503, 'Folders are not available');
+            return;
+        }
+        if (!$this->can($decoded, 'CREATIVE_CREATE') && !$this->can($decoded, 'CREATIVE_MANAGE') && !$this->isAdmin($decoded)) {
+            $this->sendJsonResponse(403, 'Access denied');
+            return;
+        }
+
+        $data = $this->getRequestData() ?: [];
+        $ids = $data['asset_ids'] ?? [];
+        if (!is_array($ids) || count($ids) === 0) {
+            $this->sendJsonResponse(400, 'asset_ids is required');
+            return;
+        }
+        $ids = array_values(array_unique(array_filter(array_map(static function ($id) {
+            return is_string($id) ? trim($id) : '';
+        }, $ids))));
+        if (count($ids) === 0 || count($ids) > 100) {
+            $this->sendJsonResponse(400, 'Provide between 1 and 100 asset ids');
+            return;
+        }
+        foreach ($ids as $id) {
+            if (!Utils::isValidUUID($id)) {
+                $this->sendJsonResponse(400, 'Valid asset ids are required');
+                return;
+            }
+        }
+
+        try {
+            $folderId = $this->resolveFolderId(
+                array_key_exists('folder_id', $data) ? $data['folder_id'] : 'root'
+            );
+        } catch (InvalidArgumentException $e) {
+            $this->sendJsonResponse(400, $e->getMessage());
+            return;
+        }
+
+        try {
+            $this->conn->beginTransaction();
+            $placeholders = implode(',', array_fill(0, count($ids), '?'));
+            $stmt = $this->conn->prepare(
+                "SELECT id, creator_id, status FROM creative_assets WHERE id IN ({$placeholders}) FOR UPDATE"
+            );
+            $stmt->execute($ids);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            if (count($rows) !== count($ids)) {
+                $this->conn->rollBack();
+                $this->sendJsonResponse(404, 'One or more assets were not found');
+                return;
+            }
+            foreach ($rows as $row) {
+                if (!$this->canEditAsset($decoded, $row)) {
+                    $this->conn->rollBack();
+                    $this->sendJsonResponse(403, 'You cannot move one or more of the selected assets');
+                    return;
+                }
+            }
+            $upd = $this->conn->prepare(
+                "UPDATE creative_assets SET folder_id = ? WHERE id IN ({$placeholders})"
+            );
+            $upd->execute(array_merge([$folderId], $ids));
+            $this->conn->commit();
+        } catch (Throwable $e) {
+            if ($this->conn->inTransaction()) {
+                $this->conn->rollBack();
+            }
+            error_log('CreativeAssetsController::move: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Move failed');
+            return;
+        }
+
+        $this->sendJsonResponse(200, 'Assets moved', [
+            'moved' => count($ids),
+            'folder_id' => $folderId,
+        ]);
+    }
+
+    /**
+     * Why: Copy duplicates rows into a destination folder for reuse without altering originals.
+     * Admin/manage keeps original creator_id; creators become owner of their copies.
+     */
+    public function copy()
+    {
+        $decoded = $this->requireAuth();
+        if (!$decoded || !$this->ensureReady()) {
+            return;
+        }
+        if (!$this->foldersColumnReady()) {
+            $this->sendJsonResponse(503, 'Folders are not available');
+            return;
+        }
+        if (!$this->can($decoded, 'CREATIVE_CREATE') && !$this->can($decoded, 'CREATIVE_MANAGE') && !$this->isAdmin($decoded)) {
+            $this->sendJsonResponse(403, 'Access denied');
+            return;
+        }
+
+        $data = $this->getRequestData() ?: [];
+        $ids = $data['asset_ids'] ?? [];
+        if (!is_array($ids) || count($ids) === 0) {
+            $this->sendJsonResponse(400, 'asset_ids is required');
+            return;
+        }
+        $ids = array_values(array_unique(array_filter(array_map(static function ($id) {
+            return is_string($id) ? trim($id) : '';
+        }, $ids))));
+        if (count($ids) === 0 || count($ids) > 100) {
+            $this->sendJsonResponse(400, 'Provide between 1 and 100 asset ids');
+            return;
+        }
+        foreach ($ids as $id) {
+            if (!Utils::isValidUUID($id)) {
+                $this->sendJsonResponse(400, 'Valid asset ids are required');
+                return;
+            }
+        }
+
+        try {
+            $folderId = $this->resolveFolderId(
+                array_key_exists('folder_id', $data) ? $data['folder_id'] : 'root'
+            );
+        } catch (InvalidArgumentException $e) {
+            $this->sendJsonResponse(400, $e->getMessage());
+            return;
+        }
+
+        $keepCreator = $this->isAdmin($decoded) || $this->can($decoded, 'CREATIVE_MANAGE');
+        $created = [];
+
+        try {
+            $this->conn->beginTransaction();
+            $placeholders = implode(',', array_fill(0, count($ids), '?'));
+            $stmt = $this->conn->prepare(
+                "SELECT * FROM creative_assets WHERE id IN ({$placeholders}) FOR UPDATE"
+            );
+            $stmt->execute($ids);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            if (count($rows) !== count($ids)) {
+                $this->conn->rollBack();
+                $this->sendJsonResponse(404, 'One or more assets were not found');
+                return;
+            }
+
+            $byId = [];
+            foreach ($rows as $row) {
+                $byId[$row['id']] = $row;
+            }
+
+            $ins = $this->conn->prepare(
+                'INSERT INTO creative_assets (
+                    id, project_id, folder_id, creator_id, title, material_type, platform,
+                    hook_content, asset_source, drive_link, uploaded_file_path,
+                    preview_thumbnail_url, status, admin_feedback, scheduled_date, published_date
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            );
+
+            foreach ($ids as $id) {
+                $row = $byId[$id];
+                if (!$this->canSeeAsset($decoded, $row) || !$this->canEditAsset($decoded, $row)) {
+                    $this->conn->rollBack();
+                    $this->sendJsonResponse(403, 'You cannot copy one or more of the selected assets');
+                    return;
+                }
+
+                $newId = Utils::generateUUID();
+                $title = (string)$row['title'];
+                if (!preg_match('/ \(copy\)$/i', $title)) {
+                    $title = mb_substr($title . ' (copy)', 0, 255);
+                }
+                $creatorId = $keepCreator ? $row['creator_id'] : $decoded->user_id;
+                // Why: Copies start as Draft so the workflow is intentional, not a status clone.
+                $ins->execute([
+                    $newId,
+                    $row['project_id'] ?? null,
+                    $folderId,
+                    $creatorId,
+                    $title,
+                    $row['material_type'],
+                    $row['platform'],
+                    $row['hook_content'] ?? null,
+                    $row['asset_source'] ?? 'link',
+                    $row['drive_link'] ?? null,
+                    $row['uploaded_file_path'] ?? null,
+                    $row['preview_thumbnail_url'] ?? null,
+                    'Draft',
+                    null,
+                    $row['scheduled_date'] ?? null,
+                    null,
+                ]);
+                $created[] = $newId;
+            }
+            $this->conn->commit();
+        } catch (Throwable $e) {
+            if ($this->conn->inTransaction()) {
+                $this->conn->rollBack();
+            }
+            error_log('CreativeAssetsController::copy: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Copy failed');
+            return;
+        }
+
+        $items = [];
+        foreach ($created as $newId) {
+            $row = $this->fetchAsset($newId);
+            if ($row) {
+                $items[] = $this->formatAsset($row, []);
+            }
+        }
+
+        $this->sendJsonResponse(201, 'Assets copied', [
+            'items' => $items,
+            'copied' => count($items),
+            'folder_id' => $folderId,
         ]);
     }
 }
