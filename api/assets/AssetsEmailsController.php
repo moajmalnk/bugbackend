@@ -34,26 +34,32 @@ class AssetsEmailsController extends AssetsAuth
             $params[] = $like;
         }
         $sqlWhere = implode(' AND ', $where);
-        $count = $this->conn->prepare(
-            "SELECT COUNT(*) FROM assets_emails e JOIN assets_domains d ON d.id = e.domain_id WHERE {$sqlWhere}"
-        );
-        $count->execute($params);
-        $total = (int) $count->fetchColumn();
-        $stmt = $this->conn->prepare(
-            "SELECT e.*, d.fqdn AS domain_fqdn, d.client_id, c.client_code, c.corporate_name AS client_name,
-                    u.name AS assigned_user_name
-             FROM assets_emails e
-             JOIN assets_domains d ON d.id = e.domain_id
-             LEFT JOIN clients c ON c.id = d.client_id
-             LEFT JOIN users u ON u.id = e.assigned_user_id
-             WHERE {$sqlWhere}
-             ORDER BY e.created_at DESC
-             LIMIT {$p['limit']} OFFSET {$p['offset']}"
-        );
-        $stmt->execute($params);
-        $rows = $this->mapFinance($stmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
-        $rows = $this->attachHasSecret('email', $rows);
-        $this->sendPage($rows, $total, $p['page'], $p['limit']);
+        try {
+            $count = $this->conn->prepare(
+                "SELECT COUNT(*) FROM assets_emails e JOIN assets_domains d ON d.id = e.domain_id WHERE {$sqlWhere}"
+            );
+            $count->execute($params);
+            $total = (int) $count->fetchColumn();
+            // Why: users table uses username (not name) across BugRicer.
+            $stmt = $this->conn->prepare(
+                "SELECT e.*, d.fqdn AS domain_fqdn, d.client_id, c.client_code, c.corporate_name AS client_name,
+                        u.username AS assigned_user_name
+                 FROM assets_emails e
+                 JOIN assets_domains d ON d.id = e.domain_id
+                 LEFT JOIN clients c ON c.id = d.client_id
+                 LEFT JOIN users u ON u.id = e.assigned_user_id
+                 WHERE {$sqlWhere}
+                 ORDER BY e.created_at DESC
+                 LIMIT {$p['limit']} OFFSET {$p['offset']}"
+            );
+            $stmt->execute($params);
+            $rows = $this->mapFinance($stmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
+            $rows = $this->attachHasSecret('email', $rows);
+            $this->sendPage($rows, $total, $p['page'], $p['limit']);
+        } catch (Throwable $e) {
+            error_log('assets emails list failed: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Unable to load mailboxes');
+        }
     }
 
     public function create(): void

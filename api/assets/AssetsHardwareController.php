@@ -37,22 +37,28 @@ class AssetsHardwareController extends AssetsAuth
             array_push($params, $like, $like, $like, $like, $like);
         }
         $sqlWhere = implode(' AND ', $where);
-        $count = $this->conn->prepare("SELECT COUNT(*) FROM assets_hardware h WHERE {$sqlWhere}");
-        $count->execute($params);
-        $total = (int) $count->fetchColumn();
-        $stmt = $this->conn->prepare(
-            "SELECT h.*, u.name AS assigned_user_name, c.client_code, c.corporate_name AS client_name
-             FROM assets_hardware h
-             LEFT JOIN users u ON u.id = h.assigned_user_id
-             LEFT JOIN clients c ON c.id = h.client_id
-             WHERE {$sqlWhere}
-             ORDER BY h.created_at DESC
-             LIMIT {$p['limit']} OFFSET {$p['offset']}"
-        );
-        $stmt->execute($params);
-        $rows = $this->mapFinance($stmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
-        $rows = $this->attachHasSecret('hardware', $rows);
-        $this->sendPage($rows, $total, $p['page'], $p['limit']);
+        try {
+            $count = $this->conn->prepare("SELECT COUNT(*) FROM assets_hardware h WHERE {$sqlWhere}");
+            $count->execute($params);
+            $total = (int) $count->fetchColumn();
+            // Why: users table uses username (not name) across BugRicer.
+            $stmt = $this->conn->prepare(
+                "SELECT h.*, u.username AS assigned_user_name, c.client_code, c.corporate_name AS client_name
+                 FROM assets_hardware h
+                 LEFT JOIN users u ON u.id = h.assigned_user_id
+                 LEFT JOIN clients c ON c.id = h.client_id
+                 WHERE {$sqlWhere}
+                 ORDER BY h.created_at DESC
+                 LIMIT {$p['limit']} OFFSET {$p['offset']}"
+            );
+            $stmt->execute($params);
+            $rows = $this->mapFinance($stmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
+            $rows = $this->attachHasSecret('hardware', $rows);
+            $this->sendPage($rows, $total, $p['page'], $p['limit']);
+        } catch (Throwable $e) {
+            error_log('assets hardware list failed: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Unable to load hardware');
+        }
     }
 
     public function getOne(): void
@@ -61,7 +67,25 @@ class AssetsHardwareController extends AssetsAuth
             return;
         }
         $id = trim((string) ($_GET['id'] ?? ''));
-        $row = $id !== '' ? $this->fetchLive('assets_hardware', $id) : null;
+        if ($id === '') {
+            $this->sendJsonResponse(404, 'Hardware not found');
+            return;
+        }
+        try {
+            $stmt = $this->conn->prepare(
+                "SELECT h.*, u.username AS assigned_user_name, c.client_code, c.corporate_name AS client_name
+                 FROM assets_hardware h
+                 LEFT JOIN users u ON u.id = h.assigned_user_id
+                 LEFT JOIN clients c ON c.id = h.client_id
+                 WHERE h.id = ? AND h.deleted_at IS NULL
+                 LIMIT 1"
+            );
+            $stmt->execute([$id]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+        } catch (Throwable $e) {
+            error_log('assets hardware get failed: ' . $e->getMessage());
+            $row = $this->fetchLive('assets_hardware', $id);
+        }
         if (!$row) {
             $this->sendJsonResponse(404, 'Hardware not found');
             return;
