@@ -225,6 +225,11 @@ class NotificationManager extends BaseAPI {
             case 'codo':
             case 'codo_rule':
                 return '/common-codo';
+            case 'asset':
+            case 'asset_renewal':
+                $kind = isset($extra['kind']) ? (string) $extra['kind'] : 'domains';
+                $safeKind = preg_replace('/[^a-z]/', '', strtolower($kind)) ?: 'domains';
+                return $entityId ? '/bugassets/' . $safeKind . '/' . $entityId : '/bugassets';
             default:
                 return '/notifications';
         }
@@ -406,6 +411,7 @@ class NotificationManager extends BaseAPI {
             $path = $this->resolveDeepLink($entityType, $entityId, [
                 'code' => $data['meet_code'] ?? $data['code'] ?? null,
                 'project_id' => $data['project_id'] ?? null,
+                'kind' => $data['kind'] ?? null,
             ]);
 
             $url = $this->getFrontendAbsoluteUrl($path);
@@ -1040,6 +1046,51 @@ class NotificationManager extends BaseAPI {
                 'milestone_label' => $label,
                 'milestone_date' => (string) $milestoneDate,
                 'reminder_offset' => $offset,
+                'created_by' => 'system',
+            ]
+        );
+    }
+
+    /**
+     * Why: Admin-only infrastructure expiry alerts (in-app + FCM) with BugAssets deep link.
+     */
+    public function notifyAssetRenewal(
+        $entityType,
+        $entityId,
+        $kind,
+        $label,
+        $expiryDate,
+        $reminderOffset,
+        $clientCode = ''
+    ) {
+        $userIds = $this->filterActiveUserIds($this->getAllAdmins());
+        if (empty($userIds)) {
+            return false;
+        }
+        $offset = (int) $reminderOffset;
+        $name = trim((string) $label) !== '' ? trim((string) $label) : 'Asset';
+        $code = trim((string) $clientCode);
+        $dateLabel = $this->formatReminderDateLabel($expiryDate);
+        $suffix = $code !== '' ? " ({$code})" : '';
+        if ($offset > 0) {
+            $title = $offset === 1 ? 'Asset renewal tomorrow' : "Asset renewal in {$offset} days";
+            $message = "{$name}{$suffix} expires on {$dateLabel}";
+        } else {
+            $title = 'Asset renewal due today';
+            $message = "{$name}{$suffix} expires today ({$dateLabel})";
+        }
+        $notificationType = $this->getValidNotificationType('asset_renewal', 'info');
+        $kindPath = preg_replace('/[^a-z]/', '', strtolower((string) $kind)) ?: 'domains';
+        return $this->createNotification(
+            $notificationType,
+            $title,
+            $message,
+            $userIds,
+            [
+                'entity_type' => 'asset_renewal',
+                'entity_id' => (string) $entityId,
+                'kind' => $kindPath,
+                'status' => (string) $entityType,
                 'created_by' => 'system',
             ]
         );

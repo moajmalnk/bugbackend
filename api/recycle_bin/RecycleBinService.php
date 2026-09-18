@@ -30,6 +30,12 @@ class RecycleBinService
         'shared_task' => ['table' => 'shared_tasks', 'label' => 'Shared Task'],
         'user_task' => ['table' => 'user_tasks', 'label' => 'Task'],
         'codo_rule' => ['table' => 'codo_common_rules', 'label' => 'CODO Rule'],
+        'asset_domain' => ['table' => 'assets_domains', 'label' => 'Domain'],
+        'asset_server' => ['table' => 'assets_servers', 'label' => 'Server'],
+        'asset_hosting' => ['table' => 'assets_hosting', 'label' => 'Hosting'],
+        'asset_vercel' => ['table' => 'assets_vercel', 'label' => 'Vercel project'],
+        'asset_hardware' => ['table' => 'assets_hardware', 'label' => 'Hardware'],
+        'asset_email' => ['table' => 'assets_emails', 'label' => 'Mailbox'],
     ];
 
     public function __construct(PDO $conn)
@@ -466,8 +472,50 @@ class RecycleBinService
                 ];
             case 'client':
                 return [
-                    'title' => (string) ($row['name'] ?? $row['client_name'] ?? 'Client'),
-                    'subtitle' => (string) ($row['location'] ?? $row['client_location'] ?? ''),
+                    'title' => (string) ($row['corporate_name'] ?? $row['name'] ?? $row['client_name'] ?? 'Client'),
+                    'subtitle' => (string) ($row['client_code'] ?? $row['hq_location'] ?? $row['location'] ?? $row['client_location'] ?? ''),
+                    'project_id' => null,
+                    'metadata' => null,
+                ];
+            case 'asset_domain':
+                return [
+                    'title' => (string) ($row['fqdn'] ?? 'Domain'),
+                    'subtitle' => (string) ($row['client_id'] ?? ''),
+                    'project_id' => $row['project_id'] ?? null,
+                    'metadata' => ['status' => $row['status'] ?? null],
+                ];
+            case 'asset_server':
+                return [
+                    'title' => (string) ($row['hostname'] ?? 'Server'),
+                    'subtitle' => (string) ($row['public_ipv4'] ?? ''),
+                    'project_id' => null,
+                    'metadata' => null,
+                ];
+            case 'asset_hosting':
+                return [
+                    'title' => (string) ($row['label'] ?? 'Hosting'),
+                    'subtitle' => (string) ($row['primary_domain'] ?? ''),
+                    'project_id' => null,
+                    'metadata' => null,
+                ];
+            case 'asset_vercel':
+                return [
+                    'title' => (string) ($row['project_name'] ?? 'Vercel project'),
+                    'subtitle' => (string) ($row['production_domain'] ?? ''),
+                    'project_id' => null,
+                    'metadata' => null,
+                ];
+            case 'asset_hardware':
+                return [
+                    'title' => (string) ($row['asset_tag'] ?? 'Hardware'),
+                    'subtitle' => trim(($row['brand'] ?? '') . ' ' . ($row['model'] ?? '')),
+                    'project_id' => null,
+                    'metadata' => ['status' => $row['status'] ?? null],
+                ];
+            case 'asset_email':
+                return [
+                    'title' => (string) ($row['address'] ?? 'Mailbox'),
+                    'subtitle' => (string) ($row['provider'] ?? ''),
                     'project_id' => null,
                     'metadata' => null,
                 ];

@@ -242,6 +242,18 @@ class ClientController extends BaseAPI
             $placeholders = ['?', '?'];
             $values = [$id, $decoded->user_id];
 
+            try {
+                $col = $this->conn->query("SHOW COLUMNS FROM clients LIKE 'client_code'");
+                if ($col && $col->rowCount() > 0) {
+                    require_once __DIR__ . '/../../utils/asset_billing.php';
+                    $columns[] = 'client_code';
+                    $placeholders[] = '?';
+                    $values[] = assetNextClientCode($this->conn);
+                }
+            } catch (Throwable $e) {
+                // client_code optional until migration 101
+            }
+
             foreach (self::$CLIENT_FIELDS as $field) {
                 if (array_key_exists($field, $data)) {
                     $columns[] = $field;

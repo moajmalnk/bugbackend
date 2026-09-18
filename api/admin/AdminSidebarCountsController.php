@@ -66,6 +66,7 @@ class AdminSidebarCountsController extends BaseAPI
             'backup' => 0,
             'recycleBin' => 0,
             'creative' => 0,
+            'assets' => 0,
         ];
     }
 
@@ -448,6 +449,19 @@ class AdminSidebarCountsController extends BaseAPI
                     [$userId]
                 );
             }
+        }
+
+        if ($can('ASSETS_VIEW') && $this->dbTableExists('assets_domains')) {
+            $counts['assets'] = $this->countOrZero(
+                "SELECT (
+                    (SELECT COUNT(*) FROM assets_domains WHERE deleted_at IS NULL AND expires_at BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY))
+                  + (SELECT COUNT(*) FROM assets_servers WHERE deleted_at IS NULL AND expires_at BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY))
+                  + (SELECT COUNT(*) FROM assets_hosting WHERE deleted_at IS NULL AND expires_at BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY))
+                  + (SELECT COUNT(*) FROM assets_vercel WHERE deleted_at IS NULL AND expires_at BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY))
+                  + (SELECT COUNT(*) FROM assets_ssl_certs WHERE deleted_at IS NULL AND expires_at BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY))
+                  + (SELECT COUNT(*) FROM assets_hardware WHERE deleted_at IS NULL AND warranty_expires_at BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY))
+                ) AS cnt"
+            );
         }
 
         header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');

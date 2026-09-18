@@ -69,6 +69,27 @@ class RecycleBinPurger
             case 'codo_rule':
                 $this->purgeSimple('codo_common_rules', $entityId);
                 return;
+            case 'asset_domain':
+                $this->purgeSimple('assets_domains', $entityId);
+                return;
+            case 'asset_server':
+                $this->conn->prepare("DELETE FROM assets_client_nodes WHERE node_kind = 'server' AND node_id = ?")->execute([$entityId]);
+                $this->purgeSimple('assets_servers', $entityId);
+                return;
+            case 'asset_hosting':
+                $this->conn->prepare("DELETE FROM assets_client_nodes WHERE node_kind = 'hosting' AND node_id = ?")->execute([$entityId]);
+                $this->purgeSimple('assets_hosting', $entityId);
+                return;
+            case 'asset_vercel':
+                $this->conn->prepare("DELETE FROM assets_client_nodes WHERE node_kind = 'vercel' AND node_id = ?")->execute([$entityId]);
+                $this->purgeSimple('assets_vercel', $entityId);
+                return;
+            case 'asset_hardware':
+                $this->purgeSimple('assets_hardware', $entityId);
+                return;
+            case 'asset_email':
+                $this->purgeSimple('assets_emails', $entityId);
+                return;
             default:
                 throw new RuntimeException('Unsupported purge entity: ' . $entityType);
         }
