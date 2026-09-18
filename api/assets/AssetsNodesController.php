@@ -339,18 +339,27 @@ class AssetsNodesController extends AssetsAuth
      */
     private function inboundSubdomains(string $kind, string $id): array
     {
+        if (!$this->tableReady('assets_subdomains')) {
+            return [];
+        }
         $col = $kind === 'server' ? 'target_server_id' : ($kind === 'hosting' ? 'target_hosting_id' : 'target_vercel_id');
-        $stmt = $this->conn->prepare(
-            "SELECT s.id, s.host, s.fqdn, s.record_type, s.target_value, s.purpose, s.status,
-                    d.fqdn AS apex, d.client_id, c.client_code, c.corporate_name AS client_name
-             FROM assets_subdomains s
-             JOIN assets_domains d ON d.id = s.domain_id AND d.deleted_at IS NULL
-             LEFT JOIN clients c ON c.id = d.client_id
-             WHERE s.deleted_at IS NULL AND s.{$col} = ?
-             ORDER BY s.created_at DESC"
-        );
-        $stmt->execute([$id]);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        $clientCode = $this->clientCodeSql('c');
+        try {
+            $stmt = $this->conn->prepare(
+                "SELECT s.id, s.host, s.fqdn, s.record_type, s.target_value, s.purpose, s.status,
+                        d.fqdn AS apex, d.client_id, {$clientCode}, c.corporate_name AS client_name
+                 FROM assets_subdomains s
+                 JOIN assets_domains d ON d.id = s.domain_id AND d.deleted_at IS NULL
+                 LEFT JOIN clients c ON c.id = d.client_id
+                 WHERE s.deleted_at IS NULL AND s.{$col} = ?
+                 ORDER BY s.created_at DESC"
+            );
+            $stmt->execute([$id]);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        } catch (Throwable $e) {
+            error_log('assets inbound subdomains failed: ' . $e->getMessage());
+            return [];
+        }
     }
 
     /**
@@ -358,14 +367,23 @@ class AssetsNodesController extends AssetsAuth
      */
     private function linkedClients(string $kind, string $id): array
     {
-        $stmt = $this->conn->prepare(
-            "SELECT ln.id AS link_id, ln.role, ln.project_id, c.id AS client_id, c.client_code, c.corporate_name
-             FROM assets_client_nodes ln
-             JOIN clients c ON c.id = ln.client_id AND c.deleted_at IS NULL
-             WHERE ln.node_kind = ? AND ln.node_id = ?
-             ORDER BY ln.created_at DESC"
-        );
-        $stmt->execute([$kind, $id]);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        if (!$this->tableReady('assets_client_nodes')) {
+            return [];
+        }
+        $clientCode = $this->clientCodeSql('c');
+        try {
+            $stmt = $this->conn->prepare(
+                "SELECT ln.id AS link_id, ln.role, ln.project_id, c.id AS client_id, {$clientCode}, c.corporate_name
+                 FROM assets_client_nodes ln
+                 JOIN clients c ON c.id = ln.client_id AND c.deleted_at IS NULL
+                 WHERE ln.node_kind = ? AND ln.node_id = ?
+                 ORDER BY ln.created_at DESC"
+            );
+            $stmt->execute([$kind, $id]);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        } catch (Throwable $e) {
+            error_log('assets linked clients failed: ' . $e->getMessage());
+            return [];
+        }
     }
 }

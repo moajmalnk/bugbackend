@@ -164,6 +164,28 @@ class AssetsAuth extends BaseAPI
         }
     }
 
+    protected function columnReady(string $table, string $column): bool
+    {
+        try {
+            $stmt = $this->conn->prepare(
+                'SELECT COUNT(*) FROM information_schema.COLUMNS
+                 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?'
+            );
+            $stmt->execute([$table, $column]);
+            return (int) $stmt->fetchColumn() > 0;
+        } catch (Throwable $e) {
+            return false;
+        }
+    }
+
+    /** client_code may be absent until migration 101 finishes — keep SELECTs safe. */
+    protected function clientCodeSql(string $alias = 'c'): string
+    {
+        return $this->columnReady('clients', 'client_code')
+            ? "{$alias}.client_code"
+            : 'NULL AS client_code';
+    }
+
     /**
      * @param list<array<string, mixed>> $rows
      * @return list<array<string, mixed>>

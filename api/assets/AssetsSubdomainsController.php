@@ -54,8 +54,9 @@ class AssetsSubdomainsController extends AssetsAuth
         $count->execute($params);
         $total = (int) $count->fetchColumn();
 
+        $clientCode = $this->clientCodeSql('c');
         $stmt = $this->conn->prepare(
-            "SELECT s.*, d.fqdn AS apex, d.client_id, c.client_code, c.corporate_name AS client_name
+            "SELECT s.*, d.fqdn AS apex, d.client_id, {$clientCode}, c.corporate_name AS client_name
              FROM assets_subdomains s
              JOIN assets_domains d ON d.id = s.domain_id
              LEFT JOIN clients c ON c.id = d.client_id

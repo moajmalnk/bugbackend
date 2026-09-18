@@ -42,8 +42,9 @@ class AssetsHardwareController extends AssetsAuth
             $count->execute($params);
             $total = (int) $count->fetchColumn();
             // Why: users table uses username (not name) across BugRicer.
+            $clientCode = $this->clientCodeSql('c');
             $stmt = $this->conn->prepare(
-                "SELECT h.*, u.username AS assigned_user_name, c.client_code, c.corporate_name AS client_name
+                "SELECT h.*, u.username AS assigned_user_name, {$clientCode}, c.corporate_name AS client_name
                  FROM assets_hardware h
                  LEFT JOIN users u ON u.id = h.assigned_user_id
                  LEFT JOIN clients c ON c.id = h.client_id
@@ -72,8 +73,9 @@ class AssetsHardwareController extends AssetsAuth
             return;
         }
         try {
+            $clientCode = $this->clientCodeSql('c');
             $stmt = $this->conn->prepare(
-                "SELECT h.*, u.username AS assigned_user_name, c.client_code, c.corporate_name AS client_name
+                "SELECT h.*, u.username AS assigned_user_name, {$clientCode}, c.corporate_name AS client_name
                  FROM assets_hardware h
                  LEFT JOIN users u ON u.id = h.assigned_user_id
                  LEFT JOIN clients c ON c.id = h.client_id

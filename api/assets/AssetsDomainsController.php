@@ -29,11 +29,17 @@ class AssetsDomainsController extends AssetsAuth
         }
         $q = trim((string) ($_GET['q'] ?? ''));
         if ($q !== '') {
-            $where[] = '(d.fqdn LIKE ? OR c.corporate_name LIKE ? OR c.client_code LIKE ?)';
             $like = '%' . $q . '%';
-            $params[] = $like;
-            $params[] = $like;
-            $params[] = $like;
+            if ($this->columnReady('clients', 'client_code')) {
+                $where[] = '(d.fqdn LIKE ? OR c.corporate_name LIKE ? OR c.client_code LIKE ?)';
+                $params[] = $like;
+                $params[] = $like;
+                $params[] = $like;
+            } else {
+                $where[] = '(d.fqdn LIKE ? OR c.corporate_name LIKE ?)';
+                $params[] = $like;
+                $params[] = $like;
+            }
         }
         $expiresIn = (int) ($_GET['expires_in'] ?? 0);
         if ($expiresIn > 0) {
@@ -42,29 +48,35 @@ class AssetsDomainsController extends AssetsAuth
         }
         $sqlWhere = implode(' AND ', $where);
 
-        $count = $this->conn->prepare(
-            "SELECT COUNT(*) FROM assets_domains d
-             LEFT JOIN clients c ON c.id = d.client_id
-             WHERE {$sqlWhere}"
-        );
-        $count->execute($params);
-        $total = (int) $count->fetchColumn();
+        try {
+            $count = $this->conn->prepare(
+                "SELECT COUNT(*) FROM assets_domains d
+                 LEFT JOIN clients c ON c.id = d.client_id
+                 WHERE {$sqlWhere}"
+            );
+            $count->execute($params);
+            $total = (int) $count->fetchColumn();
 
-        $stmt = $this->conn->prepare(
-            "SELECT d.*, c.corporate_name AS client_name, c.client_code,
-                    p.name AS project_name
-             FROM assets_domains d
-             LEFT JOIN clients c ON c.id = d.client_id
-             LEFT JOIN projects p ON p.id = d.project_id
-             WHERE {$sqlWhere}
-             ORDER BY d.created_at DESC
-             LIMIT {$p['limit']} OFFSET {$p['offset']}"
-        );
-        $stmt->execute($params);
-        $rows = $this->mapFinance($stmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
-        $rows = $this->attachHasSecret('domain', $rows);
-        $this->decodeNameservers($rows);
-        $this->sendPage($rows, $total, $p['page'], $p['limit']);
+            $clientCode = $this->clientCodeSql('c');
+            $stmt = $this->conn->prepare(
+                "SELECT d.*, c.corporate_name AS client_name, {$clientCode},
+                        p.name AS project_name
+                 FROM assets_domains d
+                 LEFT JOIN clients c ON c.id = d.client_id
+                 LEFT JOIN projects p ON p.id = d.project_id
+                 WHERE {$sqlWhere}
+                 ORDER BY d.created_at DESC
+                 LIMIT {$p['limit']} OFFSET {$p['offset']}"
+            );
+            $stmt->execute($params);
+            $rows = $this->mapFinance($stmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
+            $rows = $this->attachHasSecret('domain', $rows);
+            $this->decodeNameservers($rows);
+            $this->sendPage($rows, $total, $p['page'], $p['limit']);
+        } catch (Throwable $e) {
+            error_log('assets domains list failed: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Unable to load domains');
+        }
     }
 
     public function getOne(): void
@@ -77,42 +89,61 @@ class AssetsDomainsController extends AssetsAuth
             $this->sendJsonResponse(400, 'id is required');
             return;
         }
-        $stmt = $this->conn->prepare(
-            "SELECT d.*, c.corporate_name AS client_name, c.client_code, p.name AS project_name
-             FROM assets_domains d
-             LEFT JOIN clients c ON c.id = d.client_id
-             LEFT JOIN projects p ON p.id = d.project_id
-             WHERE d.id = ? AND d.deleted_at IS NULL"
-        );
-        $stmt->execute([$id]);
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        if (!$row) {
-            $this->sendJsonResponse(404, 'Domain not found');
-            return;
+        try {
+            $clientCode = $this->clientCodeSql('c');
+            $stmt = $this->conn->prepare(
+                "SELECT d.*, c.corporate_name AS client_name, {$clientCode}, p.name AS project_name
+                 FROM assets_domains d
+                 LEFT JOIN clients c ON c.id = d.client_id
+                 LEFT JOIN projects p ON p.id = d.project_id
+                 WHERE d.id = ? AND d.deleted_at IS NULL
+                 LIMIT 1"
+            );
+            $stmt->execute([$id]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$row) {
+                $this->sendJsonResponse(404, 'Domain not found');
+                return;
+            }
+            $row = $this->maybeStripFinance($row);
+            $row = $this->attachHasSecret('domain', [$row])[0];
+            $nsRows = [$row];
+            $this->decodeNameservers($nsRows);
+            $row = $nsRows[0];
+
+            $row['subdomains'] = [];
+            if ($this->tableReady('assets_subdomains')) {
+                $subs = $this->conn->prepare(
+                    'SELECT * FROM assets_subdomains WHERE domain_id = ? AND deleted_at IS NULL ORDER BY created_at DESC'
+                );
+                $subs->execute([$id]);
+                $row['subdomains'] = $subs->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            }
+
+            $row['emails'] = [];
+            if ($this->tableReady('assets_emails')) {
+                $mails = $this->conn->prepare(
+                    'SELECT * FROM assets_emails WHERE domain_id = ? AND deleted_at IS NULL ORDER BY created_at DESC'
+                );
+                $mails->execute([$id]);
+                $row['emails'] = $this->mapFinance($mails->fetchAll(PDO::FETCH_ASSOC) ?: []);
+                $row['emails'] = $this->attachHasSecret('email', $row['emails']);
+            }
+
+            $row['ssl_certs'] = [];
+            if ($this->tableReady('assets_ssl_certs')) {
+                $ssl = $this->conn->prepare(
+                    'SELECT * FROM assets_ssl_certs WHERE domain_id = ? AND deleted_at IS NULL ORDER BY expires_at ASC'
+                );
+                $ssl->execute([$id]);
+                $row['ssl_certs'] = $this->mapFinance($ssl->fetchAll(PDO::FETCH_ASSOC) ?: []);
+            }
+
+            $this->sendJsonResponse(200, 'OK', $row);
+        } catch (Throwable $e) {
+            error_log('assets domain get failed: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Unable to load domain');
         }
-        $row = $this->maybeStripFinance($row);
-        $row = $this->attachHasSecret('domain', [$row])[0];
-        $this->decodeNameservers([$row]);
-
-        $subs = $this->conn->prepare(
-            "SELECT * FROM assets_subdomains WHERE domain_id = ? AND deleted_at IS NULL ORDER BY created_at DESC"
-        );
-        $subs->execute([$id]);
-        $row['subdomains'] = $subs->fetchAll(PDO::FETCH_ASSOC) ?: [];
-
-        $mails = $this->conn->prepare(
-            "SELECT * FROM assets_emails WHERE domain_id = ? AND deleted_at IS NULL ORDER BY created_at DESC"
-        );
-        $mails->execute([$id]);
-        $row['emails'] = $this->mapFinance($mails->fetchAll(PDO::FETCH_ASSOC) ?: []);
-
-        $ssl = $this->conn->prepare(
-            "SELECT * FROM assets_ssl_certs WHERE domain_id = ? AND deleted_at IS NULL ORDER BY expires_at ASC"
-        );
-        $ssl->execute([$id]);
-        $row['ssl_certs'] = $this->mapFinance($ssl->fetchAll(PDO::FETCH_ASSOC) ?: []);
-
-        $this->sendJsonResponse(200, 'OK', $row);
     }
 
     public function create(): void

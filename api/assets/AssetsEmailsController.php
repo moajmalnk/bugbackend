@@ -41,8 +41,9 @@ class AssetsEmailsController extends AssetsAuth
             $count->execute($params);
             $total = (int) $count->fetchColumn();
             // Why: users table uses username (not name) across BugRicer.
+            $clientCode = $this->clientCodeSql('c');
             $stmt = $this->conn->prepare(
-                "SELECT e.*, d.fqdn AS domain_fqdn, d.client_id, c.client_code, c.corporate_name AS client_name,
+                "SELECT e.*, d.fqdn AS domain_fqdn, d.client_id, {$clientCode}, c.corporate_name AS client_name,
                         u.username AS assigned_user_name
                  FROM assets_emails e
                  JOIN assets_domains d ON d.id = e.domain_id
