@@ -51,6 +51,7 @@ class AdminSidebarCountsController extends BaseAPI
             'messages' => 0,
             'commonBugs' => 0,
             'codo' => 0,
+            'cursorTips' => 0,
             'users' => 0,
             'clients' => 0,
             'ot' => 0,
@@ -336,6 +337,12 @@ class AdminSidebarCountsController extends BaseAPI
         if ($can('CODO_VIEW') && $this->dbTableExists('codo_common_rules')) {
             $counts['codo'] = $this->countOrZero(
                 'SELECT COUNT(*) FROM codo_common_rules WHERE COALESCE(is_active, 1) = 1'
+            );
+        }
+
+        if ($can('CURSOR_TIPS_VIEW') && $this->dbTableExists('cursor_tips')) {
+            $counts['cursorTips'] = $this->countOrZero(
+                'SELECT COUNT(*) FROM cursor_tips WHERE COALESCE(is_active, 1) = 1 AND deleted_at IS NULL'
             );
         }
 

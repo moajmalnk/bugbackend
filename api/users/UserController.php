@@ -414,6 +414,8 @@ class UserController extends BaseAPI {
             'UPDATE client_attachments SET uploaded_by = NULL WHERE uploaded_by = ?',
             'UPDATE codo_common_rules SET created_by = NULL WHERE created_by = ?',
             'UPDATE codo_common_rules SET updated_by = NULL WHERE updated_by = ?',
+            'UPDATE cursor_tips SET created_by = NULL WHERE created_by = ?',
+            'UPDATE cursor_tips SET updated_by = NULL WHERE updated_by = ?',
             'UPDATE project_compliance_custom_rules SET created_by = NULL WHERE created_by = ?',
             'UPDATE disappearing_messages_settings SET enabled_by = NULL WHERE enabled_by = ?',
             'UPDATE leave_requests SET approved_by = NULL WHERE approved_by = ?',

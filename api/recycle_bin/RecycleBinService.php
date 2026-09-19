@@ -30,6 +30,7 @@ class RecycleBinService
         'shared_task' => ['table' => 'shared_tasks', 'label' => 'Shared Task'],
         'user_task' => ['table' => 'user_tasks', 'label' => 'Task'],
         'codo_rule' => ['table' => 'codo_common_rules', 'label' => 'CODO Rule'],
+        'cursor_tip' => ['table' => 'cursor_tips', 'label' => 'Cursor Tip'],
         'asset_domain' => ['table' => 'assets_domains', 'label' => 'Domain'],
         'asset_server' => ['table' => 'assets_servers', 'label' => 'Server'],
         'asset_hosting' => ['table' => 'assets_hosting', 'label' => 'Hosting'],
@@ -184,6 +185,9 @@ class RecycleBinService
             if ($entityType === 'codo_rule') {
                 $this->conn->prepare('UPDATE codo_common_rules SET is_active = 0 WHERE id = ?')->execute([$entityId]);
             }
+            if ($entityType === 'cursor_tip') {
+                $this->conn->prepare('UPDATE cursor_tips SET is_active = 0 WHERE id = ?')->execute([$entityId]);
+            }
 
             $ins = $this->conn->prepare(
                 'INSERT INTO recycle_bin_items
@@ -229,6 +233,9 @@ class RecycleBinService
 
             if ($entityType === 'codo_rule') {
                 $this->conn->prepare('UPDATE codo_common_rules SET is_active = 1 WHERE id = ?')->execute([$entityId]);
+            }
+            if ($entityType === 'cursor_tip') {
+                $this->conn->prepare('UPDATE cursor_tips SET is_active = 1 WHERE id = ?')->execute([$entityId]);
             }
 
             $this->conn->prepare(
@@ -608,6 +615,13 @@ class RecycleBinService
                 return [
                     'title' => (string) ($row['title'] ?? $row['rule_title'] ?? 'CODO Rule'),
                     'subtitle' => (string) ($row['category'] ?? ''),
+                    'project_id' => null,
+                    'metadata' => null,
+                ];
+            case 'cursor_tip':
+                return [
+                    'title' => (string) ($row['title'] ?? 'Cursor Tip'),
+                    'subtitle' => (string) ($row['subtitle'] ?? $row['phase'] ?? ''),
                     'project_id' => null,
                     'metadata' => null,
                 ];

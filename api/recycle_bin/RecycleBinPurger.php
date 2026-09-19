@@ -69,6 +69,9 @@ class RecycleBinPurger
             case 'codo_rule':
                 $this->purgeSimple('codo_common_rules', $entityId);
                 return;
+            case 'cursor_tip':
+                $this->purgeSimple('cursor_tips', $entityId);
+                return;
             case 'asset_domain':
                 $this->purgeSimple('assets_domains', $entityId);
                 return;
