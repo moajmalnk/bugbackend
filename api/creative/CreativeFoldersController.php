@@ -240,6 +240,64 @@ class CreativeFoldersController extends BaseAPI
         return false;
     }
 
+    /**
+     * Why: Folder cards must show assets in nested subfolders too — direct-only
+     * counts stay at 0 after creators file work under Mockup → project folders.
+     *
+     * @param string[] $folderIds
+     * @return array<string, int> folder id → subtree asset count
+     */
+    private function subtreeAssetCounts(array $folderIds): array
+    {
+        $folderIds = array_values(array_unique(array_filter($folderIds)));
+        if (count($folderIds) === 0) {
+            return [];
+        }
+
+        $treeStmt = $this->conn->query('SELECT id, parent_id FROM creative_folders');
+        $rows = $treeStmt ? ($treeStmt->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
+        $children = [];
+        foreach ($rows as $row) {
+            $pid = $row['parent_id'] ?? null;
+            $key = $pid === null || $pid === '' ? '' : (string)$pid;
+            if (!isset($children[$key])) {
+                $children[$key] = [];
+            }
+            $children[$key][] = (string)$row['id'];
+        }
+
+        $direct = [];
+        $countStmt = $this->conn->query(
+            'SELECT folder_id, COUNT(*) AS cnt
+             FROM creative_assets
+             WHERE folder_id IS NOT NULL
+             GROUP BY folder_id'
+        );
+        foreach ($countStmt ? ($countStmt->fetchAll(PDO::FETCH_ASSOC) ?: []) : [] as $row) {
+            $direct[(string)$row['folder_id']] = (int)$row['cnt'];
+        }
+
+        $result = [];
+        foreach ($folderIds as $rootId) {
+            $sum = 0;
+            $stack = [(string)$rootId];
+            $guard = [];
+            while ($stack) {
+                $id = array_pop($stack);
+                if (isset($guard[$id])) {
+                    continue;
+                }
+                $guard[$id] = true;
+                $sum += $direct[$id] ?? 0;
+                foreach ($children[$id] ?? [] as $childId) {
+                    $stack[] = $childId;
+                }
+            }
+            $result[(string)$rootId] = $sum;
+        }
+        return $result;
+    }
+
     public function listAll()
     {
         $decoded = $this->requireAuth();
@@ -269,8 +327,7 @@ class CreativeFoldersController extends BaseAPI
         $whereSql = implode(' AND ', $where);
         $sql = "SELECT f.*,
                 u.username AS created_by_name,
-                (SELECT COUNT(*) FROM creative_folders c WHERE c.parent_id = f.id) AS child_count,
-                (SELECT COUNT(*) FROM creative_assets a WHERE a.folder_id = f.id) AS asset_count
+                (SELECT COUNT(*) FROM creative_folders c WHERE c.parent_id = f.id) AS child_count
              FROM creative_folders f
              LEFT JOIN users u ON u.id = f.created_by
              WHERE {$whereSql}
@@ -279,7 +336,12 @@ class CreativeFoldersController extends BaseAPI
         $stmt->execute($params);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
-        $items = array_map(function ($row) {
+        $subtreeCounts = $this->subtreeAssetCounts(array_map(static function ($row) {
+            return (string)$row['id'];
+        }, $rows));
+
+        $items = array_map(function ($row) use ($subtreeCounts) {
+            $row['asset_count'] = $subtreeCounts[(string)$row['id']] ?? 0;
             return $this->formatFolder($row);
         }, $rows);
 
