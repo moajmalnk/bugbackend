@@ -307,8 +307,132 @@ class CreativeAssetsController extends BaseAPI
     }
 
     /**
-     * Why: Dashboard-style period filter scopes counts and lists to created_at.
+     * Why: Folder browse and tab counts must include nested assets; parent folders
+     * would otherwise show 0 while children hold the work.
+     *
+     * @return string[] folder id plus every descendant id
      */
+    private function folderSubtreeIds(string $rootId): array
+    {
+        $stmt = $this->conn->query('SELECT id, parent_id FROM creative_folders');
+        $rows = $stmt ? ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
+        $children = [];
+        foreach ($rows as $row) {
+            $pid = $row['parent_id'] ?? null;
+            $key = $pid === null || $pid === '' ? '' : (string)$pid;
+            if (!isset($children[$key])) {
+                $children[$key] = [];
+            }
+            $children[$key][] = (string)$row['id'];
+        }
+
+        $out = [];
+        $stack = [$rootId];
+        $guard = [];
+        while ($stack) {
+            $id = array_pop($stack);
+            if (isset($guard[$id])) {
+                continue;
+            }
+            $guard[$id] = true;
+            $out[] = $id;
+            foreach ($children[$id] ?? [] as $childId) {
+                $stack[] = $childId;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * @param 'list'|'stats' $mode list keeps root = unfiled only; stats omits folder at root (library-wide)
+     * @return bool false when folder_id is invalid
+     */
+    private function applyFolderFilter(
+        ?string $folderRaw,
+        array &$where,
+        array &$params,
+        string $mode = 'list'
+    ): bool {
+        if (!$this->foldersColumnReady() || $folderRaw === null) {
+            return true;
+        }
+        if ($folderRaw === '' || $folderRaw === 'root') {
+            // Why: Root grid stays "unfiled + folders"; root stats stay library-wide when omitted.
+            if ($mode === 'list') {
+                $where[] = 'a.folder_id IS NULL';
+            }
+            return true;
+        }
+        if (!Utils::isValidUUID($folderRaw)) {
+            return false;
+        }
+        $ids = $this->folderSubtreeIds($folderRaw);
+        if (count($ids) === 0) {
+            $where[] = '1=0';
+            return true;
+        }
+        if (count($ids) === 1) {
+            $where[] = 'a.folder_id = ?';
+            $params[] = $ids[0];
+            return true;
+        }
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        $where[] = "a.folder_id IN ({$placeholders})";
+        foreach ($ids as $id) {
+            $params[] = $id;
+        }
+        return true;
+    }
+
+    private function applyListFilters(
+        object $decoded,
+        array &$where,
+        array &$params,
+        array $opts
+    ): bool {
+        $this->applyOwnerScope($decoded, $where, $params);
+        $this->applyCreatedPeriod(
+            $opts['from'] ?? null,
+            $opts['to'] ?? null,
+            $where,
+            $params
+        );
+
+        $q = isset($opts['q']) ? trim((string)$opts['q']) : '';
+        $folderRaw = array_key_exists('folder_id', $opts) ? $opts['folder_id'] : null;
+        if ($q !== '') {
+            $where[] = '(a.title LIKE ? OR a.hook_content LIKE ? OR u.username LIKE ? OR p.name LIKE ?)';
+            $like = '%' . $q . '%';
+            array_push($params, $like, $like, $like, $like);
+        } elseif ($folderRaw !== null) {
+            if (!$this->applyFolderFilter($folderRaw, $where, $params, $opts['folder_mode'] ?? 'list')) {
+                return false;
+            }
+        }
+
+        $status = isset($opts['status']) ? trim((string)$opts['status']) : '';
+        if ($status !== '' && $status !== 'all' && in_array($status, self::STATUSES, true)) {
+            $where[] = 'a.status = ?';
+            $params[] = $status;
+        }
+        $material = isset($opts['material_type']) ? trim((string)$opts['material_type']) : '';
+        if ($material !== '' && $material !== 'all' && in_array($material, self::MATERIAL_TYPES, true)) {
+            $where[] = 'a.material_type = ?';
+            $params[] = $material;
+        }
+        $platform = isset($opts['platform']) ? trim((string)$opts['platform']) : '';
+        if ($platform !== '' && $platform !== 'all' && in_array($platform, self::PLATFORMS, true)) {
+            $where[] = 'a.platform = ?';
+            $params[] = $platform;
+        }
+        $projectId = isset($opts['project_id']) ? trim((string)$opts['project_id']) : '';
+        if ($projectId !== '' && $projectId !== 'all' && Utils::isValidUUID($projectId)) {
+            $where[] = 'a.project_id = ?';
+            $params[] = $projectId;
+        }
+        return true;
+    }
+
     private function applyCreatedPeriod(?string $from, ?string $to, array &$where, array &$params): void
     {
         $from = $this->sanitizeDate($from);
@@ -451,40 +575,19 @@ class CreativeAssetsController extends BaseAPI
 
         $where = ['1=1'];
         $params = [];
-        $this->applyOwnerScope($decoded, $where, $params);
-        $this->applyCreatedPeriod($from, $to, $where, $params);
-
-        if ($q !== '') {
-            $where[] = '(a.title LIKE ? OR a.hook_content LIKE ? OR u.username LIKE ? OR p.name LIKE ?)';
-            $like = '%' . $q . '%';
-            array_push($params, $like, $like, $like, $like);
-        } elseif ($this->foldersColumnReady() && $folderRaw !== null) {
-            // Why: Search is global across folders; browse scopes to current folder / root.
-            if ($folderRaw === '' || $folderRaw === 'root') {
-                $where[] = 'a.folder_id IS NULL';
-            } elseif (Utils::isValidUUID($folderRaw)) {
-                $where[] = 'a.folder_id = ?';
-                $params[] = $folderRaw;
-            } else {
-                $this->sendJsonResponse(400, 'Valid folder_id is required');
-                return;
-            }
-        }
-        if ($status !== '' && $status !== 'all' && in_array($status, self::STATUSES, true)) {
-            $where[] = 'a.status = ?';
-            $params[] = $status;
-        }
-        if ($material !== '' && $material !== 'all' && in_array($material, self::MATERIAL_TYPES, true)) {
-            $where[] = 'a.material_type = ?';
-            $params[] = $material;
-        }
-        if ($platform !== '' && $platform !== 'all' && in_array($platform, self::PLATFORMS, true)) {
-            $where[] = 'a.platform = ?';
-            $params[] = $platform;
-        }
-        if ($projectId !== '' && $projectId !== 'all' && Utils::isValidUUID($projectId)) {
-            $where[] = 'a.project_id = ?';
-            $params[] = $projectId;
+        if (!$this->applyListFilters($decoded, $where, $params, [
+            'q' => $q,
+            'status' => $status,
+            'material_type' => $material,
+            'platform' => $platform,
+            'project_id' => $projectId,
+            'folder_id' => $folderRaw,
+            'folder_mode' => 'list',
+            'from' => $from,
+            'to' => $to,
+        ])) {
+            $this->sendJsonResponse(400, 'Valid folder_id is required');
+            return;
         }
 
         $whereSql = implode(' AND ', $where);
@@ -941,33 +1044,46 @@ class CreativeAssetsController extends BaseAPI
 
         $from = isset($_GET['from']) ? (string)$_GET['from'] : null;
         $to = isset($_GET['to']) ? (string)$_GET['to'] : null;
-        $folderRaw = isset($_GET['folder_id']) ? trim((string)$_GET['folder_id']) : null;
+        $q = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
+        $material = isset($_GET['material_type']) ? trim((string)$_GET['material_type']) : '';
+        $platform = isset($_GET['platform']) ? trim((string)$_GET['platform']) : '';
+        $projectId = isset($_GET['project_id']) ? trim((string)$_GET['project_id']) : '';
+        $folderRaw = array_key_exists('folder_id', $_GET)
+            ? trim((string)$_GET['folder_id'])
+            : null;
 
         $where = ['1=1'];
         $params = [];
-        $this->applyOwnerScope($decoded, $where, $params);
-        $this->applyCreatedPeriod($from, $to, $where, $params);
-        if ($this->foldersColumnReady() && $folderRaw !== null) {
-            if ($folderRaw === '' || $folderRaw === 'root') {
-                $where[] = 'a.folder_id IS NULL';
-            } elseif (Utils::isValidUUID($folderRaw)) {
-                $where[] = 'a.folder_id = ?';
-                $params[] = $folderRaw;
-            }
+        if (!$this->applyListFilters($decoded, $where, $params, [
+            'q' => $q,
+            'material_type' => $material,
+            'platform' => $platform,
+            'project_id' => $projectId,
+            // Why: omit folder_id → library-wide; UUID → recursive subtree; root → no folder clamp in stats mode
+            'folder_id' => $folderRaw,
+            'folder_mode' => 'stats',
+            'from' => $from,
+            'to' => $to,
+        ])) {
+            $this->sendJsonResponse(400, 'Valid folder_id is required');
+            return;
         }
         $whereSql = implode(' AND ', $where);
+        $fromSql = 'FROM creative_assets a
+             LEFT JOIN projects p ON p.id = a.project_id
+             LEFT JOIN users u ON u.id = a.creator_id';
 
         $counts = [];
         foreach (self::STATUSES as $status) {
             $stmt = $this->conn->prepare(
-                "SELECT COUNT(*) FROM creative_assets a WHERE {$whereSql} AND a.status = ?"
+                "SELECT COUNT(*) {$fromSql} WHERE {$whereSql} AND a.status = ?"
             );
             $stmt->execute(array_merge($params, [$status]));
             $counts[$status] = (int)$stmt->fetchColumn();
         }
 
         $dueStmt = $this->conn->prepare(
-            "SELECT COUNT(*) FROM creative_assets a
+            "SELECT COUNT(*) {$fromSql}
              WHERE {$whereSql}
                AND a.scheduled_date IS NOT NULL
                AND a.scheduled_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 7 DAY)
@@ -977,13 +1093,13 @@ class CreativeAssetsController extends BaseAPI
         $dueThisWeek = (int)$dueStmt->fetchColumn();
 
         $pubStmt = $this->conn->prepare(
-            "SELECT COUNT(*) FROM creative_assets a WHERE {$whereSql} AND a.status = 'Published'"
+            "SELECT COUNT(*) {$fromSql} WHERE {$whereSql} AND a.status = 'Published'"
         );
         $pubStmt->execute($params);
         $publishedInPeriod = (int)$pubStmt->fetchColumn();
 
         $feedbackStmt = $this->conn->prepare(
-            "SELECT COUNT(*) FROM creative_assets a
+            "SELECT COUNT(*) {$fromSql}
              WHERE {$whereSql} AND a.status = 'In Review'"
         );
         $feedbackStmt->execute($params);
