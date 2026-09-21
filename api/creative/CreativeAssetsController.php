@@ -344,7 +344,9 @@ class CreativeAssetsController extends BaseAPI
     }
 
     /**
-     * @param 'list'|'stats' $mode list keeps root = unfiled only; stats omits folder at root (library-wide)
+     * @param 'list'|'stats' $mode
+     *   list  = exact folder only (Drive-like: parents must not re-show moved children)
+     *   stats = recursive subtree for tab counts; root omit = library-wide
      * @return bool false when folder_id is invalid
      */
     private function applyFolderFilter(
@@ -366,6 +368,14 @@ class CreativeAssetsController extends BaseAPI
         if (!Utils::isValidUUID($folderRaw)) {
             return false;
         }
+
+        // Why: Browse/list must be exact — recursive list made moved assets still appear in parents.
+        if ($mode === 'list') {
+            $where[] = 'a.folder_id = ?';
+            $params[] = $folderRaw;
+            return true;
+        }
+
         $ids = $this->folderSubtreeIds($folderRaw);
         if (count($ids) === 0) {
             $where[] = '1=0';
