@@ -310,9 +310,9 @@ class BugDatesController extends BaseAPI
             );
         }
 
-        // 5) Project timeline milestones
+        // 5) Project timeline milestones (assigned projects only unless real admin)
         if ($want('project_milestone') || $want('milestone') || empty($categoryFilter)) {
-            $items = array_merge($items, $this->projectMilestoneItems($from, $to));
+            $items = array_merge($items, $this->projectMilestoneItems($from, $to, $decoded));
         }
 
         usort($items, static function ($a, $b) {
@@ -600,12 +600,17 @@ class BugDatesController extends BaseAPI
     }
 
     /**
+     * Why: Project deadlines/publish dates are confidential to the delivery team.
+     * Real admins see all live projects; everyone else (including impersonation)
+     * only sees milestones for projects they belong to or created.
+     *
      * @return list<array>
      */
-    private function projectMilestoneItems(string $from, string $to): array
+    private function projectMilestoneItems(string $from, string $to, object $decoded): array
     {
         $fields = ['deadline_date', 'expected_publish_date'];
         $existing = [];
+        $hasDeletedAt = false;
         try {
             $cols = $this->conn->query('SHOW COLUMNS FROM projects');
             $all = [];
@@ -614,6 +619,7 @@ class BugDatesController extends BaseAPI
                     $all[] = $c['Field'];
                 }
             }
+            $hasDeletedAt = in_array('deleted_at', $all, true);
             foreach ($fields as $f) {
                 if (in_array($f, $all, true)) {
                     $existing[] = $f;
@@ -626,24 +632,41 @@ class BugDatesController extends BaseAPI
             return [];
         }
 
-        $select = array_merge(['id', 'name'], $existing);
-        $conditions = [];
+        $liveClause = $hasDeletedAt ? 'p.deleted_at IS NULL' : '1=1';
+        $dateConditions = [];
         foreach ($existing as $f) {
-            $conditions[] = "({$f} IS NOT NULL AND {$f} BETWEEN ? AND ?)";
+            $dateConditions[] = "(p.{$f} IS NOT NULL AND p.{$f} BETWEEN ? AND ?)";
         }
-        $sql = 'SELECT ' . implode(', ', $select)
-            . ' FROM projects WHERE ' . implode(' OR ', $conditions)
-            . ' ORDER BY name ASC';
         $params = [];
         foreach ($existing as $_) {
             $params[] = $from;
             $params[] = $to;
         }
+
+        $select = array_merge(['p.id', 'p.name'], array_map(static fn ($f) => "p.{$f}", $existing));
+        $sql = 'SELECT ' . implode(', ', $select) . ' FROM projects p WHERE ('
+            . implode(' OR ', $dateConditions) . ') AND ' . $liveClause;
+
+        if (!BaseAPI::hasGlobalDataScope($decoded)) {
+            $sql .= ' AND (
+                EXISTS (
+                    SELECT 1 FROM project_members pm
+                    WHERE pm.project_id = p.id AND pm.user_id = ?
+                )
+                OR p.created_by = ?
+            )';
+            $params[] = (string) $decoded->user_id;
+            $params[] = (string) $decoded->user_id;
+        }
+
+        $sql .= ' ORDER BY p.name ASC';
+
         try {
             $stmt = $this->conn->prepare($sql);
             $stmt->execute($params);
             $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
         } catch (Throwable $e) {
+            error_log('BugDates project milestones: ' . $e->getMessage());
             return [];
         }
 
