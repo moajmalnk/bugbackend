@@ -114,9 +114,33 @@ try {
                 600
             );
 
+            // Why: Stale project filters (e.g. admin filter left in localStorage during
+            // impersonation) used to 403 the whole Retests page. Return an empty page
+            // instead so the UI can reset the filter without an auth error toast.
             if (!$hasAccess) {
-                http_response_code(403);
-                echo json_encode(['success' => false, 'message' => 'You do not have access to this project']);
+                http_response_code(200);
+                echo json_encode([
+                    'success' => true,
+                    'message' => 'Bugs retrieved successfully',
+                    'data' => [
+                        'bugs' => [],
+                        'pagination' => [
+                            'currentPage' => $page,
+                            'totalPages' => 1,
+                            'totalBugs' => 0,
+                            'limit' => $limit,
+                            'pendingBugsCount' => 0,
+                            'counts' => [
+                                'open' => 0,
+                                'resolved' => 0,
+                                'myOpen' => 0,
+                                'myResolved' => 0,
+                                'retestPending' => 0,
+                                'myRetestPending' => 0,
+                            ],
+                        ],
+                    ],
+                ]);
                 exit;
             }
         }

@@ -317,19 +317,32 @@ class BaseAPI {
             if ($result && isset($result->purpose) && $result->purpose === 'dashboard_access' && isset($result->admin_id)) {
                 try {
                     error_log("🔍 BaseAPI::validateToken - Processing impersonation token - Original user_id: " . $result->user_id . ", Admin ID: " . $result->admin_id);
-                    
-                    // This is an impersonation token - the user_id in the token is the impersonated user
+
+                    // Why: JWT `role` is the *target* user (e.g. tester). Never copy it into
+                    // admin_role — that made `$isAdmin` false and project checks 403 while
+                    // impersonating. Prefer JWT admin_role, else look up the issuing admin.
+                    $adminRole = 'admin';
+                    if (!empty($result->admin_role) && is_string($result->admin_role)) {
+                        $adminRole = strtolower(trim((string) $result->admin_role));
+                    } else {
+                        $adminStmt = $this->conn->prepare("SELECT role FROM users WHERE id = ? LIMIT 1");
+                        $adminStmt->execute([(string) $result->admin_id]);
+                        $adminRow = $adminStmt->fetch(PDO::FETCH_ASSOC);
+                        if ($adminRow && isset($adminRow['role']) && $adminRow['role'] !== '') {
+                            $adminRole = strtolower(trim((string) $adminRow['role']));
+                        }
+                    }
+                    $result->admin_role = $adminRole !== '' ? $adminRole : 'admin';
+
                     // Fetch the impersonated user's actual role from database
                     $stmt = $this->conn->prepare("SELECT role FROM users WHERE id = ? LIMIT 1");
                     $stmt->execute([$result->user_id]);
                     $row = $stmt->fetch(PDO::FETCH_ASSOC);
                     if ($row && isset($row['role'])) {
-                        $result->admin_role = $result->role ?? 'admin'; // Store original admin role
-                        $result->role = $row['role']; // Update to impersonated user's role
+                        $result->role = $row['role'];
                     }
                     $result->impersonated = true;
-                    $result->admin_id = $result->admin_id; // Keep admin_id for logging
-                    error_log("🔑 Impersonation token detected - Admin: " . $result->admin_id . ", Acting as: " . $result->user_id . " (" . $result->username . ", " . $result->role . ")");
+                    error_log("🔑 Impersonation token detected - Admin: " . $result->admin_id . " (" . $result->admin_role . "), Acting as: " . $result->user_id . " (" . ($result->username ?? '') . ", " . ($result->role ?? '') . ")");
                     error_log("🔍 BaseAPI::validateToken - Final result user_id: " . $result->user_id);
                 } catch (Exception $e) {
                     error_log("❌ Impersonation token processing error: " . $e->getMessage());

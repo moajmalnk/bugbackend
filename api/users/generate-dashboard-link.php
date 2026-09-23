@@ -58,7 +58,8 @@ try {
         $expiration = $issuedAt + (7 * 24 * 60 * 60); // 7 days
     }
     
-    // Use the existing JWT generation method but with custom payload
+    // Why: `role` is the target user; `admin_role` must stay the issuing admin's role
+    // so APIs that gate with "$isAdmin while impersonating" do not 403.
     $payload = [
         'iat' => $issuedAt,
         'exp' => $expiration,
@@ -66,6 +67,7 @@ try {
         'username' => $targetUser['username'],
         'role' => $targetUser['role'],
         'admin_id' => $adminId,
+        'admin_role' => $decoded->role ?? 'admin',
         'purpose' => 'dashboard_access'
     ];
     
