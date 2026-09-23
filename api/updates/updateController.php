@@ -681,10 +681,10 @@ class UpdateController extends BaseAPI
                 return;
             }
             $userId = $decoded->user_id;
-            $userRole = $decoded->role;
+            $userRole = strtolower(trim((string) ($decoded->role ?? '')));
             $pmc = new ProjectMemberController();
-            // Admin: get all updates
-            if ($userRole === 'admin') {
+            // Why: Real admins see all updates; impersonation / non-admins see assigned only.
+            if (BaseAPI::hasGlobalDataScope($decoded)) {
                 $stmt = $this->conn->prepare("SELECT u.*, p.name as project_name, us.username as created_by_name FROM updates u JOIN projects p ON u.project_id = p.id LEFT JOIN users us ON u.created_by = us.id WHERE u.deleted_at IS NULL AND p.deleted_at IS NULL ORDER BY u.created_at DESC");
                 $stmt->execute();
                 $updates = $stmt->fetchAll(PDO::FETCH_ASSOC);

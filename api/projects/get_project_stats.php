@@ -14,24 +14,14 @@ try {
     $user_id = (int) $decoded->user_id;
     $user_role = $decoded->role;
 
-    $is_impersonated = false;
-    if (isset($decoded->impersonated)) {
-        $is_impersonated = $decoded->impersonated === true
-            || $decoded->impersonated === 'true'
-            || $decoded->impersonated === 1;
-    }
-    if (!$is_impersonated && isset($decoded->admin_id) && !empty($decoded->admin_id)) {
-        $is_impersonated = true;
-    }
-
     $conn = $api->getConnection();
     $user_role_lower = strtolower(trim((string) $user_role));
-    $admin_role = isset($decoded->admin_role) ? strtolower(trim((string) $decoded->admin_role)) : null;
-    $is_admin = ($user_role_lower === 'admin' && !$is_impersonated)
-        || ($is_impersonated && $admin_role === 'admin');
-    $is_developer = ($user_role_lower === 'developer');
+    $is_admin = BaseAPI::hasGlobalDataScope($decoded);
+    // Why: Developers browse all projects when not impersonating; impersonation
+    // uses the target user's membership only.
+    $is_developer = ($user_role_lower === 'developer' && !BaseAPI::isImpersonating($decoded));
 
-    $cacheKey = 'project_stats_' . $user_id . '_' . ($is_admin ? 'admin' : $user_role_lower);
+    $cacheKey = 'project_stats_' . $user_id . '_' . ($is_admin ? 'admin' : ($is_developer ? 'developer' : $user_role_lower));
     $cached = $api->getCache($cacheKey);
     if ($cached !== null) {
         $api->sendJsonResponse(200, 'Project stats retrieved successfully (cached)', $cached);

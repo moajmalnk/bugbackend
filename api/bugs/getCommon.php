@@ -45,18 +45,8 @@ try {
 
     $user_role = $decoded->role ?? '';
     $userId = $decoded->user_id ?? null;
-
-    $is_impersonated = false;
-    if (isset($decoded->impersonated)) {
-        $is_impersonated = $decoded->impersonated === true || $decoded->impersonated === 'true' || $decoded->impersonated === 1;
-    }
-    if (!$is_impersonated && isset($decoded->admin_id) && !empty($decoded->admin_id)) {
-        $is_impersonated = true;
-    }
-
-    $admin_role = isset($decoded->admin_role) ? strtolower(trim($decoded->admin_role)) : null;
     $user_role_lower = strtolower(trim((string) $user_role));
-    $isAdmin = ($user_role_lower === 'admin' && !$is_impersonated) || ($is_impersonated && $admin_role === 'admin');
+    $isAdmin = BaseAPI::hasGlobalDataScope($decoded);
     $isDeveloper = $user_role_lower === 'developer';
     $isTester = $user_role_lower === 'tester';
 

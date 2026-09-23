@@ -79,114 +79,16 @@ try {
     $userId = $decoded->user_id;
     $userRole = $decoded->role;
     
-    // Check impersonation (BaseAPI should handle query param impersonation)
-    $is_impersonated = false;
-    if (isset($decoded->impersonated)) {
-        $is_impersonated = $decoded->impersonated === true || $decoded->impersonated === 'true' || $decoded->impersonated === 1;
-    }
-    if (!$is_impersonated && isset($decoded->admin_id) && !empty($decoded->admin_id)) {
-        $is_impersonated = true;
-    }
-    
-    // Also check for query param impersonation directly (in case BaseAPI didn't process it)
-    $queryImpersonateId = isset($_GET['impersonate']) ? trim($_GET['impersonate']) : null;
-    if ($queryImpersonateId && $queryImpersonateId === $userId) {
-        // Query param matches current user_id, meaning we're impersonating
-        $is_impersonated = true;
-        error_log("BUG UPDATE - Query param impersonation detected: impersonating user {$userId}");
-    }
-    
-    // Check if the actual admin (not the impersonated user) has admin role
-    $admin_role = isset($decoded->admin_role) ? strtolower(trim($decoded->admin_role)) : null;
-    $admin_id = isset($decoded->admin_id) ? $decoded->admin_id : null;
-    $user_role_lower = strtolower(trim($userRole));
-    
-    // CRITICAL: If query param impersonation exists, check token owner is admin FIRST
-    // This must happen before other checks to ensure admin access is granted
-    if ($queryImpersonateId && !$admin_role) {
-        try {
-            // Get Authorization header to extract token
-            $headers = null;
-            if (isset($_SERVER['Authorization'])) {
-                $headers = trim($_SERVER['Authorization']);
-            } elseif (isset($_SERVER['HTTP_AUTHORIZATION'])) {
-                $headers = trim($_SERVER['HTTP_AUTHORIZATION']);
-            } elseif (function_exists('apache_request_headers')) {
-                $requestHeaders = apache_request_headers();
-                $requestHeaders = array_combine(array_map('ucwords', array_keys($requestHeaders)), array_values($requestHeaders));
-                if (isset($requestHeaders['Authorization'])) {
-                    $headers = trim($requestHeaders['Authorization']);
-                }
-            }
-            
-            if ($headers && preg_match('/Bearer\s(\S+)/', $headers, $matches)) {
-                $token = $matches[1];
-                // Utils::validateJWT is a static method
-                $tempDecoded = Utils::validateJWT($token);
-                if ($tempDecoded && isset($tempDecoded->role) && strtolower(trim($tempDecoded->role)) === 'admin') {
-                    $admin_role = 'admin';
-                    $admin_id = $tempDecoded->user_id;
-                    $is_impersonated = true;
-                    error_log("BUG UPDATE - Query param check: Token owner is admin. Admin ID: {$admin_id}, Impersonating: {$userId}");
-                }
-            }
-        } catch (Exception $e) {
-            error_log("BUG UPDATE - Query param admin check failed: " . $e->getMessage());
-        }
-    }
-    
-    // If impersonating and admin_role is still not set, try to get it from database
-    if ($is_impersonated && !$admin_role && $admin_id) {
-        try {
-            $adminStmt = $controller->getConnection()->prepare("SELECT role FROM users WHERE id = ? LIMIT 1");
-            $adminStmt->execute([$admin_id]);
-            $adminRow = $adminStmt->fetch(PDO::FETCH_ASSOC);
-            if ($adminRow && isset($adminRow['role'])) {
-                $admin_role = strtolower(trim($adminRow['role']));
-                error_log("BUG UPDATE - Fetched admin_role from database: {$admin_role}");
-            }
-        } catch (Exception $e) {
-            error_log("BUG UPDATE - Failed to fetch admin role: " . $e->getMessage());
-        }
-    }
-    
-    // Final admin check
-    $isAdmin = ($user_role_lower === 'admin' && !$is_impersonated) || ($is_impersonated && $admin_role === 'admin');
-    
-    // Final safety: if query param exists and we still don't have admin, check token one more time
-    if (!$isAdmin && $queryImpersonateId) {
-        try {
-            $headers = null;
-            if (isset($_SERVER['HTTP_AUTHORIZATION'])) {
-                $headers = trim($_SERVER['HTTP_AUTHORIZATION']);
-            } elseif (function_exists('apache_request_headers')) {
-                $requestHeaders = apache_request_headers();
-                if (isset($requestHeaders['Authorization'])) {
-                    $headers = trim($requestHeaders['Authorization']);
-                }
-            }
-            
-            if ($headers && preg_match('/Bearer\s(\S+)/', $headers, $matches)) {
-                $token = $matches[1];
-                $tempDecoded = Utils::validateJWT($token);
-                if ($tempDecoded && isset($tempDecoded->role) && strtolower(trim($tempDecoded->role)) === 'admin') {
-                    $isAdmin = true;
-                    $admin_role = 'admin';
-                    $admin_id = $tempDecoded->user_id;
-                    $is_impersonated = true;
-                    error_log("BUG UPDATE - Final safety check: Granting admin access. Admin ID: {$admin_id}, Impersonating: {$userId}");
-                }
-            }
-        } catch (Exception $e) {
-            error_log("BUG UPDATE - Final safety check failed: " . $e->getMessage());
-        }
-    }
-    
-    // Check if user is developer (the impersonated user's role)
+    // Why: While impersonating, act as the target user (tester/developer) — no
+    // elevated admin edit rights. That keeps retests/bug edits scoped to assigned projects.
+    $is_impersonated = BaseAPI::isImpersonating($decoded);
+    $user_role_lower = strtolower(trim((string) $userRole));
+    $isAdmin = BaseAPI::hasGlobalDataScope($decoded);
     $isDeveloper = $user_role_lower === 'developer';
-    
-    // Debug logging for impersonation
-    error_log("BUG UPDATE - Impersonation check: is_impersonated={$is_impersonated}, admin_role={$admin_role}, user_role={$user_role_lower}, isAdmin=" . ($isAdmin ? 'true' : 'false') . ", admin_id={$admin_id}");
+    $admin_id = isset($decoded->admin_id) ? $decoded->admin_id : null;
+    $admin_role = isset($decoded->admin_role) ? strtolower(trim((string) $decoded->admin_role)) : null;
+
+    error_log("BUG UPDATE - Impersonation check: is_impersonated=" . ($is_impersonated ? 'true' : 'false') . ", admin_role={$admin_role}, user_role={$user_role_lower}, isAdmin=" . ($isAdmin ? 'true' : 'false') . ", admin_id={$admin_id}");
     
     // Fetch bug to check reported_by and compare field changes
     $stmt = $controller->getConnection()->prepare("SELECT * FROM bugs WHERE id = ?");
@@ -292,8 +194,7 @@ try {
     $isCreator = (string)($bug['reported_by'] ?? '') === (string)$userId;
     
     // Check if developer is a member of the project
-    // In impersonation mode, if admin is impersonating, they should have admin privileges
-    // But we still check project membership for the impersonated developer
+    // In impersonation mode, require project membership as the target user
     $isProjectMember = false;
     if (($isDeveloper || $isTester) && !$isAdmin && isset($bug['project_id']) && $bug['project_id']) {
         $projectMemberController = new ProjectMemberController();
@@ -303,16 +204,13 @@ try {
         error_log("BUG UPDATE PERMISSION CHECK - Role user: {$userId}, Project: {$bug['project_id']}, IsMember: " . ($isProjectMember ? 'true' : 'false'));
         error_log("BUG UPDATE PERMISSION CHECK - Fields being changed: " . json_encode($fieldsBeingChanged));
         error_log("BUG UPDATE PERMISSION CHECK - IsStatusUpdate: " . ($isStatusUpdate ? 'true' : 'false') . ", IsRetestUpdate: " . ($isRetestUpdate ? 'true' : 'false'));
-    } elseif ($isAdmin && $is_impersonated) {
-        // Admin impersonating - they have full access, so skip project membership check
-        error_log("BUG UPDATE PERMISSION CHECK - Admin impersonating, granting full access");
     }
     
     // Permission logic:
-    // 1. Admins can edit everything (including when impersonating)
+    // 1. Real admins (not impersonating) can edit everything
     // 2. Bug creators can edit everything
     // 3. Developers can edit status/fix fields if they are members of the project
-    // 4. Testers/admins can save retest verification on fixed bugs
+    // 4. Testers can save retest verification on fixed bugs in assigned projects
     $canEdit = false;
     $errorMessage = 'You do not have permission to edit this bug.';
     
@@ -320,7 +218,7 @@ try {
     error_log("BUG UPDATE PERMISSION - isAdmin: " . ($isAdmin ? 'true' : 'false') . ", isCreator: " . ($isCreator ? 'true' : 'false') . ", isDeveloper: " . ($isDeveloper ? 'true' : 'false') . ", isTester: " . ($isTester ? 'true' : 'false') . ", isStatusUpdate: " . ($isStatusUpdate ? 'true' : 'false') . ", isProjectMember: " . ($isProjectMember ? 'true' : 'false'));
     
     if ($isAdmin) {
-        // Admins can edit all fields (including when impersonating a developer)
+        // Real admins can edit all fields
         $canEdit = true;
         error_log("BUG UPDATE PERMISSION - Granted: Admin access");
     } elseif ($isCreator) {

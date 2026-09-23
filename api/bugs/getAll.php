@@ -49,21 +49,12 @@ try {
     
     $user_id = $decoded->user_id;
     $user_role = $decoded->role;
-    
-    // Check impersonation
-    $is_impersonated = false;
-    if (isset($decoded->impersonated)) {
-        $is_impersonated = $decoded->impersonated === true || $decoded->impersonated === 'true' || $decoded->impersonated === 1;
-    }
-    if (!$is_impersonated && isset($decoded->admin_id) && !empty($decoded->admin_id)) {
-        $is_impersonated = true;
-    }
-    
-    // Check if the actual admin (not the impersonated user) has admin role
-    $admin_role = isset($decoded->admin_role) ? strtolower(trim($decoded->admin_role)) : null;
-    $user_role_lower = strtolower(trim($user_role));
-    $isAdmin = ($user_role_lower === 'admin' && !$is_impersonated) || ($is_impersonated && $admin_role === 'admin');
-    
+    $user_role_lower = strtolower(trim((string) $user_role));
+    $is_impersonated = BaseAPI::isImpersonating($decoded);
+    // Why: Impersonation must use the target user's assigned projects — never the
+    // issuing admin's global catalog (that caused 1340 "All Retests" for testers).
+    $isAdmin = BaseAPI::hasGlobalDataScope($decoded);
+
     $projectId = isset($_GET['project_id']) && $_GET['project_id'] !== '' && $_GET['project_id'] !== 'all'
         ? $_GET['project_id']
         : null;

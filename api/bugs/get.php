@@ -50,20 +50,9 @@ try {
     $decoded = $api->validateToken();
     $user_id = $decoded->user_id;
     $user_role = $decoded->role;
-    
-    // Check impersonation
-    $is_impersonated = false;
-    if (isset($decoded->impersonated)) {
-        $is_impersonated = $decoded->impersonated === true || $decoded->impersonated === 'true' || $decoded->impersonated === 1;
-    }
-    if (!$is_impersonated && isset($decoded->admin_id) && !empty($decoded->admin_id)) {
-        $is_impersonated = true;
-    }
-    
-    // Check if the actual admin (not the impersonated user) has admin role
-    $admin_role = isset($decoded->admin_role) ? strtolower(trim($decoded->admin_role)) : null;
-    $user_role_lower = strtolower(trim($user_role));
-    $isAdmin = ($user_role_lower === 'admin' && !$is_impersonated) || ($is_impersonated && $admin_role === 'admin');
+    $user_role_lower = strtolower(trim((string) $user_role));
+    $is_impersonated = BaseAPI::isImpersonating($decoded);
+    $isAdmin = BaseAPI::hasGlobalDataScope($decoded);
     $isDeveloper = $user_role_lower === 'developer';
     $isTester = $user_role_lower === 'tester';
 
@@ -100,7 +89,7 @@ try {
     
     $projectId = $bug['project_id'];
     
-    // Admin users can access all bugs (real admins or admins impersonating)
+    // Real admins (not impersonating) can access all bugs
     if ($isAdmin) {
         $controller->getById($bugId);
         exit;

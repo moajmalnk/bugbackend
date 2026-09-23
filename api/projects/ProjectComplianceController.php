@@ -143,18 +143,8 @@ class ProjectComplianceController extends BaseAPI
 
     public function userHasProjectAccess(string $userId, string $userRole, $decoded, string $projectId): bool
     {
-        $userRole = strtolower(trim($userRole));
-        $isImpersonated = false;
-        if (isset($decoded->impersonated)) {
-            $isImpersonated = $decoded->impersonated === true || $decoded->impersonated === 'true' || $decoded->impersonated === 1;
-        }
-        if (!$isImpersonated && isset($decoded->admin_id) && !empty($decoded->admin_id)) {
-            $isImpersonated = true;
-        }
-        $adminRole = isset($decoded->admin_role) ? strtolower(trim($decoded->admin_role)) : null;
-        $isAdmin = ($userRole === 'admin' && !$isImpersonated) || ($isImpersonated && $adminRole === 'admin');
-
-        if ($isAdmin) {
+        // Why: Impersonation must check membership as the target user.
+        if (BaseAPI::hasGlobalDataScope($decoded)) {
             return true;
         }
 

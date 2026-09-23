@@ -1089,22 +1089,7 @@ class ProjectController extends BaseAPI
     /** Real admin session — not impersonating another user. */
     private function isRealAdmin($decoded): bool
     {
-        $userRole = strtolower(trim((string) ($decoded->role ?? '')));
-        if ($userRole !== 'admin') {
-            return false;
-        }
-
-        $isImpersonated = false;
-        if (isset($decoded->impersonated)) {
-            $isImpersonated = $decoded->impersonated === true
-                || $decoded->impersonated === 'true'
-                || $decoded->impersonated === 1;
-        }
-        if (!$isImpersonated && isset($decoded->admin_id) && !empty($decoded->admin_id)) {
-            $isImpersonated = true;
-        }
-
-        return !$isImpersonated;
+        return BaseAPI::hasGlobalDataScope($decoded);
     }
 
     private function userCanViewProject($decoded, string $projectId): bool
@@ -1114,8 +1099,7 @@ class ProjectController extends BaseAPI
             return false;
         }
 
-        $userRole = strtolower(trim($decoded->role ?? ''));
-        if ($userRole === 'admin') {
+        if (BaseAPI::hasGlobalDataScope($decoded)) {
             return true;
         }
 

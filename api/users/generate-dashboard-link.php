@@ -58,8 +58,9 @@ try {
         $expiration = $issuedAt + (7 * 24 * 60 * 60); // 7 days
     }
     
-    // Why: `role` is the target user; `admin_role` must stay the issuing admin's role
-    // so APIs that gate with "$isAdmin while impersonating" do not 403.
+    // Why: `role` is the target user; `admin_role` records the issuing admin for
+    // audit. Data APIs must NOT grant global scope while impersonating — they use
+    // BaseAPI::hasGlobalDataScope() so lists stay on assigned projects.
     $payload = [
         'iat' => $issuedAt,
         'exp' => $expiration,

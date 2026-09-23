@@ -45,16 +45,7 @@ try {
 
     $user_id = $decoded->user_id;
     $user_role = strtolower(trim((string) ($decoded->role ?? '')));
-
-    $is_impersonated = false;
-    if (isset($decoded->impersonated)) {
-        $is_impersonated = $decoded->impersonated === true || $decoded->impersonated === 'true' || $decoded->impersonated === 1;
-    }
-    if (!$is_impersonated && isset($decoded->admin_id) && !empty($decoded->admin_id)) {
-        $is_impersonated = true;
-    }
-    $admin_role = isset($decoded->admin_role) ? strtolower(trim($decoded->admin_role)) : null;
-    $isAdmin = ($user_role === 'admin' && !$is_impersonated) || ($is_impersonated && $admin_role === 'admin');
+    $isAdmin = BaseAPI::hasGlobalDataScope($decoded);
 
     $from = isset($_GET['from']) ? trim((string) $_GET['from']) : null;
     $to = isset($_GET['to']) ? trim((string) $_GET['to']) : null;

@@ -623,5 +623,46 @@ class BaseAPI {
             exit();
         }
     }
+
+    /**
+     * Why: Detect dashboard-access / query-param impersonation so data APIs can
+     * mirror the *target* user's scope instead of the issuing admin's catalog.
+     */
+    public static function isImpersonating($decoded): bool
+    {
+        if (!$decoded) {
+            return false;
+        }
+        if (isset($decoded->impersonated)) {
+            $flag = $decoded->impersonated;
+            if ($flag === true || $flag === 'true' || $flag === 1 || $flag === '1') {
+                return true;
+            }
+        }
+        if (isset($decoded->admin_id) && $decoded->admin_id !== '' && $decoded->admin_id !== null) {
+            return true;
+        }
+        if (isset($decoded->purpose) && $decoded->purpose === 'dashboard_access' && isset($decoded->admin_id)) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Why: Global lists (all bugs/projects/stats) are for real admin sessions only.
+     * While impersonating a tester/developer, APIs must use assigned-project scope
+     * so Retests/Bugs/Updates match what that user actually sees.
+     */
+    public static function hasGlobalDataScope($decoded): bool
+    {
+        if (!$decoded) {
+            return false;
+        }
+        if (self::isImpersonating($decoded)) {
+            return false;
+        }
+        $role = strtolower(trim((string) ($decoded->role ?? '')));
+        return $role === 'admin';
+    }
 }
 ?>
