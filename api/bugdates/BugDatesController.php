@@ -44,7 +44,8 @@ class BugDatesController extends BaseAPI
 
     private function isAdmin(object $decoded): bool
     {
-        return strtolower(trim((string)($decoded->role ?? ''))) === 'admin';
+        // Why: Impersonation must not inherit the issuing admin's global calendar scope.
+        return BaseAPI::hasGlobalDataScope($decoded);
     }
 
     private function ensureReady(): bool
