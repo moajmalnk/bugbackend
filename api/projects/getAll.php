@@ -25,16 +25,12 @@ if (!$is_impersonated && isset($decoded->admin_id) && !empty($decoded->admin_id)
 $conn = $api->getConnection();
 $user_role_lower = strtolower(trim($user_role));
 
-// Check if the actual admin (not the impersonated user) has admin role
-$admin_role = isset($decoded->admin_role) ? strtolower(trim($decoded->admin_role)) : null;
-$is_admin = ($user_role_lower === 'admin' && !$is_impersonated) || ($is_impersonated && $admin_role === 'admin');
+$is_real_admin = ($user_role_lower === 'admin' && !$is_impersonated);
+$is_developer = ($user_role_lower === 'developer' && !$is_impersonated);
 
-// Filter projects based on user role
-// Admins (either real admins or admins impersonating) see all projects
-// Developers see all projects (frontend handles filtering for "my-projects" tab)
-// Other non-admins only see projects they are members of
-$is_developer = ($user_role_lower === 'developer');
-$includeArchived = $is_admin || $is_developer;
+// Why: While impersonating, always show the *target* user's assigned projects —
+// not the admin's full catalog — so bug forms match tester UX.
+$includeArchived = $is_real_admin || $is_developer;
 $archivedClause = $includeArchived ? '' : " AND (p.status != 'archived' OR p.status IS NULL)";
 
 // Why: Soft-deleted recycle-bin projects must never appear in the live Projects list/counts.
@@ -48,8 +44,8 @@ try {
 $liveClause = $hasDeletedAt ? 'deleted_at IS NULL' : '1=1';
 $liveClauseP = $hasDeletedAt ? 'p.deleted_at IS NULL' : '1=1';
 
-if ($is_admin || $is_developer) {
-    // Admin/developer: return live projects; archived hidden on frontend unless filtered/searched
+if ($is_real_admin || $is_developer) {
+    // Real admin/developer: return live projects; archived hidden on frontend unless filtered/searched
     $query = $includeArchived
         ? "SELECT * FROM projects WHERE {$liveClause} ORDER BY created_at DESC"
         : "SELECT * FROM projects WHERE {$liveClause} AND (status != 'archived' OR status IS NULL) ORDER BY created_at DESC";
@@ -57,7 +53,7 @@ if ($is_admin || $is_developer) {
     $stmt->execute();
     $projects = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } else {
-    // Non-admin, non-developer — assigned live projects only (archived excluded)
+    // Testers, other roles, and any impersonation — assigned live projects only
     $query = "SELECT DISTINCT p.* FROM projects p
               INNER JOIN project_members pm ON p.id = pm.project_id
               WHERE pm.user_id = ? AND {$liveClauseP}{$archivedClause}
