@@ -66,30 +66,30 @@ class AssetsSummaryController extends AssetsAuth
              FROM assets_domains d
              LEFT JOIN projects p ON p.id = d.project_id
              WHERE d.client_id = ? AND d.deleted_at IS NULL
-             ORDER BY d.created_at DESC"
+             ORDER BY d.fqdn ASC"
         );
         $dstmt->execute([$clientId]);
         $domains = $this->mapFinance($dstmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
         $domains = $this->attachHasSecret('domain', $domains);
+        $this->attachDomainChildren($domains);
 
         $estmt = $this->conn->prepare(
-            "SELECT e.id, e.address, e.provider, e.status, e.domain_id, d.fqdn AS domain_fqdn
+            "SELECT e.id, e.address, e.provider, e.status, e.expires_at, e.storage_quota_mb,
+                    e.domain_id, d.fqdn AS domain_fqdn
              FROM assets_emails e
              JOIN assets_domains d ON d.id = e.domain_id AND d.deleted_at IS NULL
              WHERE d.client_id = ? AND e.deleted_at IS NULL
-             ORDER BY e.created_at DESC"
+             ORDER BY e.address ASC"
         );
         $estmt->execute([$clientId]);
         $emails = $estmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
         $nodes = $this->nodesForClient($clientId);
 
-        $subCount = $this->scalar(
-            "SELECT COUNT(*) FROM assets_subdomains s
-             JOIN assets_domains d ON d.id = s.domain_id AND d.deleted_at IS NULL
-             WHERE d.client_id = ? AND s.deleted_at IS NULL",
-            [$clientId]
-        );
+        $subCount = 0;
+        foreach ($domains as $d) {
+            $subCount += count($d['subdomains'] ?? []);
+        }
 
         $payload = [
             'client' => $client,
@@ -199,6 +199,83 @@ class AssetsSummaryController extends AssetsAuth
             'emails' => [],
             'nodes' => [],
         ];
+    }
+
+    /**
+     * Attach subdomain + mailbox lists under each domain for client inventory views.
+     *
+     * @param list<array<string, mixed>> $domains
+     */
+    private function attachDomainChildren(array &$domains): void
+    {
+        if ($domains === []) {
+            return;
+        }
+        $ids = [];
+        foreach ($domains as $d) {
+            if (!empty($d['id'])) {
+                $ids[] = (string) $d['id'];
+            }
+        }
+        if ($ids === []) {
+            return;
+        }
+
+        $subsByDomain = [];
+        $mailsByDomain = [];
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+
+        if ($this->tableReady('assets_subdomains')) {
+            $subs = $this->conn->prepare(
+                "SELECT id, domain_id, host, fqdn, purpose, record_type, target_kind, status
+                 FROM assets_subdomains
+                 WHERE deleted_at IS NULL AND domain_id IN ({$placeholders})
+                 ORDER BY fqdn ASC"
+            );
+            $subs->execute($ids);
+            foreach ($subs->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+                $did = (string) ($row['domain_id'] ?? '');
+                if ($did === '') {
+                    continue;
+                }
+                if (!isset($subsByDomain[$did])) {
+                    $subsByDomain[$did] = [];
+                }
+                $subsByDomain[$did][] = $row;
+            }
+        }
+
+        if ($this->tableReady('assets_emails')) {
+            $mails = $this->conn->prepare(
+                "SELECT id, domain_id, address, provider, status, expires_at, storage_quota_mb
+                 FROM assets_emails
+                 WHERE deleted_at IS NULL AND domain_id IN ({$placeholders})
+                 ORDER BY address ASC"
+            );
+            $mails->execute($ids);
+            foreach ($mails->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+                $did = (string) ($row['domain_id'] ?? '');
+                if ($did === '') {
+                    continue;
+                }
+                if (!isset($mailsByDomain[$did])) {
+                    $mailsByDomain[$did] = [];
+                }
+                $mailsByDomain[$did][] = $row;
+            }
+        }
+
+        foreach ($domains as $i => $d) {
+            $id = (string) ($d['id'] ?? '');
+            if (array_key_exists('nameservers', $d) && is_string($d['nameservers']) && $d['nameservers'] !== '') {
+                $decoded = json_decode($d['nameservers'], true);
+                $domains[$i]['nameservers'] = is_array($decoded) ? $decoded : [];
+            } elseif (!isset($d['nameservers']) || !is_array($d['nameservers'])) {
+                $domains[$i]['nameservers'] = [];
+            }
+            $domains[$i]['subdomains'] = $subsByDomain[$id] ?? [];
+            $domains[$i]['emails'] = $mailsByDomain[$id] ?? [];
+        }
     }
 
     /**
