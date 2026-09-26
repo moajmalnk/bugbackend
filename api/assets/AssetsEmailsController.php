@@ -171,7 +171,9 @@ class AssetsEmailsController extends AssetsAuth
             $fields['assigned_contact'] = assetNullableString($data['assigned_contact'] ?? null, 255);
         }
         if (array_key_exists('signed_in_from', $data) || $isCreate) {
-            $fields['signed_in_from'] = assetNullableString($data['signed_in_from'] ?? null, 150);
+            if ($this->columnReady('assets_emails', 'signed_in_from')) {
+                $fields['signed_in_from'] = assetNullableString($data['signed_in_from'] ?? null, 150);
+            }
         }
         if (array_key_exists('notes', $data)) {
             $fields['notes'] = assetNullableString($data['notes'], 5000);

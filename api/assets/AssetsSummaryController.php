@@ -247,7 +247,8 @@ class AssetsSummaryController extends AssetsAuth
 
         if ($this->tableReady('assets_emails')) {
             $mails = $this->conn->prepare(
-                "SELECT id, domain_id, address, provider, status, expires_at, storage_quota_mb
+                "SELECT id, domain_id, address, provider, status, expires_at, storage_quota_mb,
+                        assigned_user_id, assigned_contact, signed_in_from
                  FROM assets_emails
                  WHERE deleted_at IS NULL AND domain_id IN ({$placeholders})
                  ORDER BY address ASC"
