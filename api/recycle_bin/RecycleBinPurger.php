@@ -93,6 +93,17 @@ class RecycleBinPurger
             case 'asset_email':
                 $this->purgeSimple('assets_emails', $entityId);
                 return;
+            case 'asset_tool':
+                // seats cascade via FK; vault secrets cleaned separately if present
+                try {
+                    $this->conn->prepare(
+                        "DELETE FROM assets_vault_secrets WHERE entity_type = 'tool' AND entity_id = ?"
+                    )->execute([$entityId]);
+                } catch (Throwable $e) {
+                    // table may lack tool enum on old DBs
+                }
+                $this->purgeSimple('assets_tools', $entityId);
+                return;
             default:
                 throw new RuntimeException('Unsupported purge entity: ' . $entityType);
         }

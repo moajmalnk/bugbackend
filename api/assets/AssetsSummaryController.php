@@ -26,6 +26,9 @@ class AssetsSummaryController extends AssetsAuth
             'hosting' => $this->scalar("SELECT COUNT(*) FROM assets_hosting WHERE {$live} AND status = 'active'"),
             'vercel' => $this->scalar("SELECT COUNT(*) FROM assets_vercel WHERE {$live} AND status = 'active'"),
             'hardware' => $this->scalar("SELECT COUNT(*) FROM assets_hardware WHERE {$live}"),
+            'tools' => $this->tableReady('assets_tools')
+                ? $this->scalar("SELECT COUNT(*) FROM assets_tools WHERE {$live}")
+                : 0,
             'renewals_30' => $this->renewalsDueCount($today, $soon),
         ];
 
@@ -179,6 +182,7 @@ class AssetsSummaryController extends AssetsAuth
             'hosting' => 0,
             'vercel' => 0,
             'hardware' => 0,
+            'tools' => 0,
             'renewals_30' => 0,
         ];
     }
@@ -298,6 +302,9 @@ class AssetsSummaryController extends AssetsAuth
     private function renewalsDueCount(string $today, string $soon): int
     {
         try {
+            $toolsPart = $this->tableReady('assets_tools')
+                ? '+ (SELECT COUNT(*) FROM assets_tools WHERE deleted_at IS NULL AND expires_at BETWEEN ? AND ?)'
+                : '';
             $sql = "
                 SELECT (
                   (SELECT COUNT(*) FROM assets_domains WHERE deleted_at IS NULL AND expires_at BETWEEN ? AND ?)
@@ -306,10 +313,16 @@ class AssetsSummaryController extends AssetsAuth
                 + (SELECT COUNT(*) FROM assets_hosting WHERE deleted_at IS NULL AND expires_at BETWEEN ? AND ?)
                 + (SELECT COUNT(*) FROM assets_vercel WHERE deleted_at IS NULL AND expires_at BETWEEN ? AND ?)
                 + (SELECT COUNT(*) FROM assets_hardware WHERE deleted_at IS NULL AND warranty_expires_at BETWEEN ? AND ?)
+                {$toolsPart}
                 ) AS cnt
             ";
+            $params = [$today, $soon, $today, $soon, $today, $soon, $today, $soon, $today, $soon, $today, $soon];
+            if ($toolsPart !== '') {
+                $params[] = $today;
+                $params[] = $soon;
+            }
             $stmt = $this->conn->prepare($sql);
-            $stmt->execute([$today, $soon, $today, $soon, $today, $soon, $today, $soon, $today, $soon, $today, $soon]);
+            $stmt->execute($params);
             return (int) $stmt->fetchColumn();
         } catch (Throwable $e) {
             return 0;

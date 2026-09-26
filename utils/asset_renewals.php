@@ -46,6 +46,18 @@ function assetRenewalExpiringRows(PDO $conn): array
                client_id, NULL, warranty_expires_at, 0, vendor_cost, client_charge, 'hardware'
         FROM assets_hardware WHERE deleted_at IS NULL AND warranty_expires_at IS NOT NULL
     ";
+    try {
+        $chk = $conn->query("SHOW TABLES LIKE 'assets_tools'");
+        if ($chk && $chk->fetchColumn()) {
+            $sql .= "
+        UNION ALL
+        SELECT 'tool', id, name, NULL, NULL, expires_at, auto_renew, vendor_cost, client_charge, 'tools'
+        FROM assets_tools WHERE deleted_at IS NULL AND expires_at IS NOT NULL
+            ";
+        }
+    } catch (Throwable $e) {
+        // ignore — tools table may not exist yet
+    }
     $stmt = $conn->query($sql);
     return $stmt ? $stmt->fetchAll(PDO::FETCH_ASSOC) : [];
 }

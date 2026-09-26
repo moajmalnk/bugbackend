@@ -459,6 +459,9 @@ class AdminSidebarCountsController extends BaseAPI
         }
 
         if ($can('ASSETS_VIEW') && $this->dbTableExists('assets_domains')) {
+            $toolsDue = $this->dbTableExists('assets_tools')
+                ? "+ (SELECT COUNT(*) FROM assets_tools WHERE deleted_at IS NULL AND expires_at BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY))"
+                : '';
             $counts['assets'] = $this->countOrZero(
                 "SELECT (
                     (SELECT COUNT(*) FROM assets_domains WHERE deleted_at IS NULL AND expires_at BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY))
@@ -467,6 +470,7 @@ class AdminSidebarCountsController extends BaseAPI
                   + (SELECT COUNT(*) FROM assets_vercel WHERE deleted_at IS NULL AND expires_at BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY))
                   + (SELECT COUNT(*) FROM assets_ssl_certs WHERE deleted_at IS NULL AND expires_at BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY))
                   + (SELECT COUNT(*) FROM assets_hardware WHERE deleted_at IS NULL AND warranty_expires_at BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY))
+                  {$toolsDue}
                 ) AS cnt"
             );
         }

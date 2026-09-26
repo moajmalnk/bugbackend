@@ -37,6 +37,7 @@ class RecycleBinService
         'asset_vercel' => ['table' => 'assets_vercel', 'label' => 'Vercel project'],
         'asset_hardware' => ['table' => 'assets_hardware', 'label' => 'Hardware'],
         'asset_email' => ['table' => 'assets_emails', 'label' => 'Mailbox'],
+        'asset_tool' => ['table' => 'assets_tools', 'label' => 'Premium tool'],
     ];
 
     public function __construct(PDO $conn)

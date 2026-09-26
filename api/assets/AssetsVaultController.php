@@ -4,7 +4,7 @@ require_once __DIR__ . '/../../utils/asset_vault.php';
 
 class AssetsVaultController extends AssetsAuth
 {
-    private const ENTITY_TYPES = ['server', 'hosting', 'vercel', 'domain', 'email', 'hardware'];
+    private const ENTITY_TYPES = ['server', 'hosting', 'vercel', 'domain', 'email', 'hardware', 'tool'];
     private const KINDS = ['password', 'ssh_private_key', 'api_token', 'recovery_code', 'other'];
 
     public function store(): void
