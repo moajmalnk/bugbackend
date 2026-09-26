@@ -28,10 +28,17 @@ class AssetsEmailsController extends AssetsAuth
         }
         $q = trim((string) ($_GET['q'] ?? ''));
         if ($q !== '') {
-            $where[] = '(e.address LIKE ? OR e.assigned_contact LIKE ?)';
             $like = '%' . $q . '%';
-            $params[] = $like;
-            $params[] = $like;
+            if ($this->columnReady('assets_emails', 'signed_in_from')) {
+                $where[] = '(e.address LIKE ? OR e.assigned_contact LIKE ? OR e.signed_in_from LIKE ?)';
+                $params[] = $like;
+                $params[] = $like;
+                $params[] = $like;
+            } else {
+                $where[] = '(e.address LIKE ? OR e.assigned_contact LIKE ?)';
+                $params[] = $like;
+                $params[] = $like;
+            }
         }
         $sqlWhere = implode(' AND ', $where);
         try {
@@ -162,6 +169,9 @@ class AssetsEmailsController extends AssetsAuth
         }
         if (array_key_exists('assigned_contact', $data) || $isCreate) {
             $fields['assigned_contact'] = assetNullableString($data['assigned_contact'] ?? null, 255);
+        }
+        if (array_key_exists('signed_in_from', $data) || $isCreate) {
+            $fields['signed_in_from'] = assetNullableString($data['signed_in_from'] ?? null, 150);
         }
         if (array_key_exists('notes', $data)) {
             $fields['notes'] = assetNullableString($data['notes'], 5000);
