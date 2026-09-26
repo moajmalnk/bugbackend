@@ -1,10 +1,14 @@
 -- =============================================================================
 -- BugRicer Migration 109 — CODO Premium Tools (SaaS inventory)
 -- Safe to re-run. Adds assets_tools + assets_tool_seats; extends vault/renewals ENUMs.
+--
+-- Why utf8mb4_general_ci: matches assets_* (101) and users.id so FKs form correctly.
+-- errno 150 on seats = collation mismatch (unicode_ci vs general_ci).
 -- =============================================================================
 
 SET @db := DATABASE();
-SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
+SET NAMES utf8mb4 COLLATE utf8mb4_general_ci;
+SET collation_connection = 'utf8mb4_general_ci';
 
 CREATE TABLE IF NOT EXISTS `assets_tools` (
   `id` VARCHAR(36) NOT NULL,
@@ -39,12 +43,24 @@ CREATE TABLE IF NOT EXISTS `assets_tools` (
   KEY `idx_tools_status_expires` (`status`, `expires_at`),
   KEY `idx_tools_category_created` (`category`, `created_at`),
   KEY `idx_tools_deleted_at` (`deleted_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- Heal partial run: tools may exist as unicode_ci from the failed attempt
+SET @tools_collation := (
+  SELECT TABLE_COLLATION FROM information_schema.TABLES
+  WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'assets_tools'
+);
+SET @sql := IF(
+  @tools_collation IS NOT NULL AND @tools_collation <> 'utf8mb4_general_ci',
+  'ALTER TABLE `assets_tools` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci',
+  'SELECT 1'
+);
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
 
 CREATE TABLE IF NOT EXISTS `assets_tool_seats` (
   `id` VARCHAR(36) NOT NULL,
-  `tool_id` VARCHAR(36) NOT NULL,
-  `user_id` VARCHAR(36) NULL DEFAULT NULL,
+  `tool_id` VARCHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `user_id` VARCHAR(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL,
   `external_name` VARCHAR(120) NULL DEFAULT NULL,
   `external_email` VARCHAR(255) NULL DEFAULT NULL,
   `seat_role` VARCHAR(80) NULL DEFAULT NULL,
@@ -56,7 +72,7 @@ CREATE TABLE IF NOT EXISTS `assets_tool_seats` (
   KEY `idx_tool_seats_user` (`user_id`),
   CONSTRAINT `fk_tool_seats_tool` FOREIGN KEY (`tool_id`) REFERENCES `assets_tools` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_tool_seats_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- Extend vault entity_type with tool
 SET @vault_enum := (
