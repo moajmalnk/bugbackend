@@ -114,7 +114,20 @@ class AssetsDomainsController extends AssetsAuth
             $row['subdomains'] = [];
             if ($this->tableReady('assets_subdomains')) {
                 $subs = $this->conn->prepare(
-                    'SELECT * FROM assets_subdomains WHERE domain_id = ? AND deleted_at IS NULL ORDER BY created_at DESC'
+                    'SELECT s.*,
+                            srv.hostname AS target_server_hostname,
+                            srv.public_ipv4 AS target_server_ipv4,
+                            h.label AS target_hosting_label,
+                            v.project_name AS target_vercel_project
+                     FROM assets_subdomains s
+                     LEFT JOIN assets_servers srv
+                       ON srv.id = s.target_server_id AND srv.deleted_at IS NULL
+                     LEFT JOIN assets_hosting h
+                       ON h.id = s.target_hosting_id AND h.deleted_at IS NULL
+                     LEFT JOIN assets_vercel v
+                       ON v.id = s.target_vercel_id AND v.deleted_at IS NULL
+                     WHERE s.domain_id = ? AND s.deleted_at IS NULL
+                     ORDER BY s.fqdn ASC'
                 );
                 $subs->execute([$id]);
                 $row['subdomains'] = $subs->fetchAll(PDO::FETCH_ASSOC) ?: [];
@@ -123,7 +136,12 @@ class AssetsDomainsController extends AssetsAuth
             $row['emails'] = [];
             if ($this->tableReady('assets_emails')) {
                 $mails = $this->conn->prepare(
-                    'SELECT * FROM assets_emails WHERE domain_id = ? AND deleted_at IS NULL ORDER BY created_at DESC'
+                    'SELECT e.*,
+                            u.username AS assigned_user_name
+                     FROM assets_emails e
+                     LEFT JOIN users u ON u.id = e.assigned_user_id
+                     WHERE e.domain_id = ? AND e.deleted_at IS NULL
+                     ORDER BY e.address ASC'
                 );
                 $mails->execute([$id]);
                 $row['emails'] = $this->mapFinance($mails->fetchAll(PDO::FETCH_ASSOC) ?: []);
