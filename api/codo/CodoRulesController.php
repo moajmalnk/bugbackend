@@ -702,6 +702,48 @@ class CodoRulesController extends BaseAPI
         return [];
     }
 
+    /**
+     * Why: Rules 44–50 were added in a SQL file that is not auto-applied.
+     * The acknowledgement gate must see them on the next check, including an
+     * already-open developer session.
+     */
+    private function ensureCrossBrowserRules(): void
+    {
+        if (!$this->tablesReady()) {
+            return;
+        }
+        $check = $this->conn->query(
+            "SELECT 1 FROM codo_common_rules WHERE rule_key = 'dev_rule_44' LIMIT 1"
+        );
+        if ($check && $check->fetch(PDO::FETCH_NUM)) {
+            return;
+        }
+        $path = __DIR__ . '/../../migrations/110_codo_cross_browser_api_rules.sql';
+        if (!is_file($path)) {
+            return;
+        }
+        $sql = file_get_contents($path);
+        if ($sql === false) {
+            return;
+        }
+        $parts = preg_split('/;\s*(?:\r?\n|$)/', $sql) ?: [];
+        foreach ($parts as $statement) {
+            $lines = preg_split('/\r?\n/', $statement) ?: [];
+            $kept = [];
+            foreach ($lines as $line) {
+                if (preg_match('/^\s*--/', $line)) {
+                    continue;
+                }
+                $kept[] = $line;
+            }
+            $statement = trim(implode("\n", $kept));
+            if ($statement === '') {
+                continue;
+            }
+            $this->conn->exec($statement);
+        }
+    }
+
     public function pendingAcknowledgements()
     {
         $decoded = $this->requireTeamAuth();
@@ -714,6 +756,13 @@ class CodoRulesController extends BaseAPI
 
         $role = strtolower(trim((string)($decoded->role ?? '')));
         $phases = $this->acknowledgementPhasesForRole($role);
+        if ($phases !== [] && $this->tablesReady()) {
+            try {
+                $this->ensureCrossBrowserRules();
+            } catch (Throwable $e) {
+                error_log('CodoRulesController::ensureCrossBrowserRules: ' . $e->getMessage());
+            }
+        }
         if ($phases === [] || !$this->tablesReady() || !$this->ackTableReady()) {
             $this->sendJsonResponse(200, 'No acknowledgements required', [
                 'required' => false,
