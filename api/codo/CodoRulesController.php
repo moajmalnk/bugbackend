@@ -685,6 +685,71 @@ class CodoRulesController extends BaseAPI
         }
     }
 
+    /**
+     * Why: Login must not reach the dashboard while this user still owes a
+     * response on an active rule for their role. Any saved status counts as done.
+     *
+     * @return string[]
+     */
+    private function acknowledgementPhasesForRole(string $role): array
+    {
+        if ($role === 'developer') {
+            return ['developer', 'project'];
+        }
+        if ($role === 'tester') {
+            return ['tester', 'project'];
+        }
+        return [];
+    }
+
+    public function pendingAcknowledgements()
+    {
+        $decoded = $this->requireTeamAuth();
+        if (!$decoded) {
+            return;
+        }
+
+        header('Cache-Control: private, no-store');
+        header('Vary: Authorization');
+
+        $role = strtolower(trim((string)($decoded->role ?? '')));
+        $phases = $this->acknowledgementPhasesForRole($role);
+        if ($phases === [] || !$this->tablesReady() || !$this->ackTableReady()) {
+            $this->sendJsonResponse(200, 'No acknowledgements required', [
+                'required' => false,
+                'total_pending' => 0,
+                'rules' => [],
+            ]);
+            return;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($phases), '?'));
+        $sql = "SELECT r.*
+                FROM codo_common_rules r
+                WHERE r.is_active = 1
+                  AND r.phase IN ($placeholders)
+                  AND NOT EXISTS (
+                    SELECT 1 FROM codo_rule_acknowledgements a
+                    WHERE a.rule_id = r.id AND a.user_id = ?
+                  )
+                ORDER BY FIELD(r.phase, 'developer', 'tester', 'project'), r.sort_order ASC, r.id ASC";
+
+        try {
+            $stmt = $this->conn->prepare($sql);
+            $stmt->execute(array_merge($phases, [(string)$decoded->user_id]));
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            $items = array_map([$this, 'formatRow'], $rows);
+            $this->sendJsonResponse(200, 'Pending acknowledgements', [
+                'required' => true,
+                'total_pending' => count($items),
+                'rules' => $items,
+            ]);
+        } catch (Throwable $e) {
+            error_log('CodoRulesController::pendingAcknowledgements: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Failed to load pending rules');
+        }
+    }
+
     public function list()
     {
         $decoded = $this->requireTeamAuth();
