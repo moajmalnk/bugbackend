@@ -6,7 +6,7 @@ require_once __DIR__ . '/../../utils/email.php';
 
 class ProjectComplianceController extends BaseAPI
 {
-    private const DEV_RULE_COUNT = 32;
+    private const DEV_RULE_COUNT = 46;
     private const QA_RULE_COUNT = 13;
 
     private static $DEV_RULE_KEYS = [
@@ -16,7 +16,10 @@ class ProjectComplianceController extends BaseAPI
         'dev_rule_16', 'dev_rule_17', 'dev_rule_18', 'dev_rule_19', 'dev_rule_20',
         'dev_rule_21', 'dev_rule_22', 'dev_rule_23', 'dev_rule_24', 'dev_rule_25',
         'dev_rule_26', 'dev_rule_27', 'dev_rule_28', 'dev_rule_29', 'dev_rule_30',
-        'dev_rule_31', 'dev_rule_32',
+        'dev_rule_31', 'dev_rule_32', 'dev_rule_33', 'dev_rule_35', 'dev_rule_36',
+        'dev_rule_37', 'dev_rule_38', 'dev_rule_40', 'dev_rule_43', 'dev_rule_44',
+        'dev_rule_45', 'dev_rule_46', 'dev_rule_47', 'dev_rule_48', 'dev_rule_49',
+        'dev_rule_50',
     ];
 
     private static $QA_RULE_KEYS = [
@@ -68,6 +71,20 @@ class ProjectComplianceController extends BaseAPI
         'dev_rule_30' => 'RTL Typography Safeguards',
         'dev_rule_31' => 'Native Scrollbar Preservation',
         'dev_rule_32' => 'Immutable Array Sorting',
+        'dev_rule_33' => 'Canonical Tag Injection',
+        'dev_rule_35' => 'Heading Hierarchy Enforcement',
+        'dev_rule_36' => 'Image WebP & Alt Text Standard',
+        'dev_rule_37' => 'Structured Data JSON-LD',
+        'dev_rule_38' => 'Conversion Telemetry & GA4 Event Tracking',
+        'dev_rule_40' => 'Core Web Vitals Optimization',
+        'dev_rule_43' => 'Custom 404 Routing',
+        'dev_rule_44' => 'Cross-Browser API Consistency',
+        'dev_rule_45' => 'No Manual Hard Refresh Dependency',
+        'dev_rule_46' => 'Explicit API Cache Policy',
+        'dev_rule_47' => 'Cache Invalidation After Mutations',
+        'dev_rule_48' => 'Frontend Query Cache Ownership',
+        'dev_rule_49' => 'Service Worker Cache Safety',
+        'dev_rule_50' => 'Request Identity & Credentials',
         'qa_apple_sandbox' => 'The Apple Ecosystem Sandbox',
         'qa_click_attack' => 'The Click Attack Safeguard',
         'qa_theme_interruption' => 'The Theme Interruption Matrix',
