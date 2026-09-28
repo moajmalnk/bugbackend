@@ -152,6 +152,8 @@ class BackupController {
             
             // Send response IMMEDIATELY - don't wait for backup to start
             http_response_code(200);
+            header('Cache-Control: no-store');
+            ob_start();
             echo json_encode([
                 'success' => true,
                 'message' => 'Backup process started. You will receive an email when it\'s ready.',
@@ -166,15 +168,20 @@ class BackupController {
                 ]
             ]);
             
-            // Flush all output buffers immediately
+            // Close the HTTP response before the (long) backup runs, otherwise the
+            // gateway waits for the whole job and returns 504.
+            header('Content-Length: ' . ob_get_length());
+            header('Connection: close');
             while (ob_get_level()) {
                 ob_end_flush();
             }
             flush();
             
-            // For FastCGI, finish request immediately to free up connection
             if (function_exists('fastcgi_finish_request')) {
                 fastcgi_finish_request();
+            } elseif (function_exists('litespeed_finish_request')) {
+                // Hostinger runs LiteSpeed (lsphp), which has no fastcgi_finish_request
+                litespeed_finish_request();
             }
             
             // Run backup after the client already has the response.
@@ -744,7 +751,8 @@ class BackupController {
                 fwrite($fp, "DROP TABLE IF EXISTS `{$table}`;\n");
                 fwrite($fp, $createTable['Create Table'] . ";\n\n");
                 
-                // Get table data - use unbuffered query for large tables
+                // Stream rows unbuffered so large tables are not loaded into PHP memory
+                $conn->setAttribute(PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, false);
                 $stmt = $conn->query("SELECT * FROM `{$table}`");
                 $rowCount = 0;
                 $firstRow = true;
@@ -776,6 +784,9 @@ class BackupController {
                     }
                 }
                 
+                $stmt->closeCursor();
+                $conn->setAttribute(PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, true);
+                
                 if (!$firstRow) {
                     fwrite($fp, ";\n\n");
                 }
@@ -789,6 +800,12 @@ class BackupController {
             
         } catch (Exception $e) {
             error_log("❌ Database backup failed: " . $e->getMessage());
+            if (isset($stmt) && $stmt instanceof PDOStatement) {
+                $stmt->closeCursor();
+            }
+            if (isset($conn) && $conn instanceof PDO) {
+                $conn->setAttribute(PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, true);
+            }
             throw $e;
         }
     }

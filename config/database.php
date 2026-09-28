@@ -119,9 +119,13 @@ class Database {
             return true;
         }
         
-        // Check if running from command line (for our test script)
+        // CLI workers (e.g. backup jobs) also run on production, so only treat CLI as
+        // local when the code lives inside a local XAMPP/LAMPP/WAMP install.
         if (php_sapi_name() === 'cli') {
-            return true;
+            $scriptDir = strtolower(__DIR__);
+            return strpos($scriptDir, 'xampp') !== false
+                || strpos($scriptDir, 'lampp') !== false
+                || strpos($scriptDir, 'wamp') !== false;
         }
         
         return false;
@@ -220,17 +224,20 @@ class Database {
                 "u262074081_bugfixer"
             ];
 
+            $connectionLimitHit = false;
             foreach ($passwordsToTry as $password) {
                 try {
                     $dsn = "mysql:host=" . $this->host . ";dbname=" . $this->db_name . ";charset=utf8";
                     error_log("Attempting production connection with password variant...");
                     
+                    // Non-persistent: shared hosting caps max_user_connections and idle
+                    // persistent links held by every PHP worker exhaust that cap.
                     $this->conn = new PDO($dsn, $this->username, $password, [
                         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                         PDO::ATTR_EMULATE_PREPARES => false,
                         PDO::ATTR_TIMEOUT => 10,
-                        PDO::ATTR_PERSISTENT => true,
+                        PDO::ATTR_PERSISTENT => false,
                         PDO::MYSQL_ATTR_USE_BUFFERED_QUERY => true
                     ]);
                     
@@ -245,12 +252,16 @@ class Database {
                     
                 } catch(PDOException $e) {
                     error_log("Production password attempt failed: " . $e->getMessage());
+                    if ($this->isConnectionLimitError($e)) {
+                        $connectionLimitHit = true;
+                        break;
+                    }
                     continue;
                 }
             }
             
-            // If localhost failed, try alternative host
-            foreach ($passwordsToTry as $password) {
+            // If localhost failed, try alternative host (pointless when the server is saturated)
+            foreach ($connectionLimitHit ? [] : $passwordsToTry as $password) {
                 try {
                     error_log("Trying alternative host: auth-db1555.hstgr.io");
                     $altDsn = "mysql:host=auth-db1555.hstgr.io;dbname=" . $this->db_name . ";charset=utf8";
@@ -260,7 +271,7 @@ class Database {
                         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                         PDO::ATTR_EMULATE_PREPARES => false,
                         PDO::ATTR_TIMEOUT => 10,
-                        PDO::ATTR_PERSISTENT => true
+                        PDO::ATTR_PERSISTENT => false
                     ]);
                     
                     $this->conn->query("SELECT 1");
@@ -271,6 +282,10 @@ class Database {
                     
                 } catch(PDOException $altE) {
                     error_log("Alternative host attempt failed: " . $altE->getMessage());
+                    if ($this->isConnectionLimitError($altE)) {
+                        $connectionLimitHit = true;
+                        break;
+                    }
                     continue;
                 }
             }
@@ -282,6 +297,17 @@ class Database {
         // Only send JSON response if not running from CLI
         if (php_sapi_name() !== 'cli') {
             header('Content-Type: application/json');
+            header('Cache-Control: no-store');
+            if (!empty($connectionLimitHit)) {
+                header('Retry-After: 5');
+                http_response_code(503);
+                echo json_encode([
+                    "success" => false,
+                    "message" => "Server is busy - please retry in a few seconds",
+                    "error" => "Database connection limit reached",
+                ]);
+                exit();
+            }
             http_response_code(500);
             echo json_encode([
                 "success" => false,
@@ -295,6 +321,18 @@ class Database {
         }
     }
     
+    /**
+     * Why: MySQL 1040/1203 mean the server or account is saturated, not that the
+     * credentials are wrong — retrying other passwords/hosts only adds load.
+     */
+    private function isConnectionLimitError(PDOException $e): bool {
+        $msg = $e->getMessage();
+        return stripos($msg, 'max_user_connections') !== false
+            || stripos($msg, 'Too many connections') !== false
+            || strpos($msg, '[1040]') !== false
+            || strpos($msg, '[1203]') !== false;
+    }
+
     private function testConnection($conn) {
         try {
             $conn->query("SELECT 1");
