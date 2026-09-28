@@ -37,6 +37,12 @@ vendor.zip
 ehthumbs.db
 Thumbs.db .env
 
+# Backup archives and signing key (contain the full database and uploads)
+backups/*
+!backups/.htaccess
+!backups/index.html
+temp_backups/
+
 # Database dumps (may contain secrets)
 currentdb.sql
 *.sql.backup

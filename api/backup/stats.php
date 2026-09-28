@@ -14,6 +14,8 @@ class BackupStatsController extends BaseAPI
         backup_require_settings_permission($this);
         backup_ensure_jobs_table($this->conn);
         backup_reap_stale_jobs($this->conn);
+        header('Cache-Control: private, no-store');
+        header('Vary: Authorization');
 
         $tableCount = backup_count_tables($this->conn);
         $databaseBytes = backup_estimate_database_size($this->conn);
@@ -30,6 +32,7 @@ class BackupStatsController extends BaseAPI
             $lastStmt = $this->conn->query(
                 "SELECT id, status, backup_name, file_size_bytes, email, completed_at, created_at
                  FROM backup_jobs
+                 WHERE status = 'completed'
                  ORDER BY created_at DESC
                  LIMIT 1"
             );
