@@ -224,6 +224,12 @@ class Database {
                 "u262074081_bugfixer"
             ];
 
+            // Why: the hosting account caps concurrent MySQL links (~20). A dashboard load
+            // fires more parallel requests than that; most finish in milliseconds, so a
+            // short jittered wait almost always gets a free slot instead of failing.
+            $limitRetryDelaysMs = [120, 250, 400, 600, 800, 1000, 1200];
+            $limitAttempt = 0;
+            retry_on_limit:
             $connectionLimitHit = false;
             foreach ($passwordsToTry as $password) {
                 try {
@@ -288,6 +294,12 @@ class Database {
                     }
                     continue;
                 }
+            }
+
+            if ($connectionLimitHit && $limitAttempt < count($limitRetryDelaysMs)) {
+                usleep(($limitRetryDelaysMs[$limitAttempt] + random_int(0, 150)) * 1000);
+                $limitAttempt++;
+                goto retry_on_limit;
             }
         }
         

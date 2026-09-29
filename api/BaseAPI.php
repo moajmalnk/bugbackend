@@ -272,12 +272,42 @@ class BaseAPI {
         return (bool)$stmt->fetch(PDO::FETCH_ASSOC);
     }
 
+    /**
+     * Strict auth gate: returns the decoded JWT or exits with 401 JSON.
+     *
+     * Why: callers historically ignored a `false` return, so a forged/expired token
+     * was treated as authenticated on endpoints like users/getAll and clients/get.
+     * Rejecting here protects every endpoint without auditing each caller.
+     */
     public function validateToken() {
+        if (!$this->getBearerToken()) {
+            $this->sendJsonResponse(401, "Authentication required", null, false, 'TOKEN_MISSING');
+        }
+        $result = $this->resolveTokenClaims();
+        if (!is_object($result) || empty($result->user_id)) {
+            $this->sendJsonResponse(401, "Invalid or expired token", null, false, 'TOKEN_INVALID');
+        }
+        return $result;
+    }
+
+    /**
+     * Guest-friendly variant for endpoints that also serve anonymous users
+     * (public meeting links, OAuth callback). Returns null instead of exiting.
+     */
+    public function validateTokenOptional() {
+        if (!$this->getBearerToken()) {
+            return null;
+        }
+        $result = $this->resolveTokenClaims();
+        return (is_object($result) && !empty($result->user_id)) ? $result : null;
+    }
+
+    private function resolveTokenClaims() {
         // Cache token validation for 5 minutes
         $token = $this->getBearerToken();
         
         if (!$token) {
-            throw new Exception('No token provided');
+            return false;
         }
 
         // Support admin impersonation via header or query param; include in cache key
@@ -299,8 +329,14 @@ class BaseAPI {
             
             if ($cachedResult !== null) {
                 if (isset($cachedResult->user_id)) {
-                    $this->ensureUserAccountAllowed($cachedResult->user_id);
-                    $this->ensureAuthTokenStillValid($cachedResult);
+                    try {
+                        $this->ensureUserAccountAllowed($cachedResult->user_id);
+                        $this->ensureAuthTokenStillValid($cachedResult);
+                    } catch (PDOException $e) {
+                        error_log("BaseAPI::validateToken account check failed: " . $e->getMessage());
+                        header('Retry-After: 3');
+                        $this->sendJsonResponse(503, "Server is busy - please retry in a few seconds", null, false, 'SERVER_BUSY');
+                    }
                 }
                 return $cachedResult;
             }
@@ -395,9 +431,12 @@ class BaseAPI {
 
             return $result;
         } catch (Exception $e) {
-            $msg = $e->getMessage();
-            $code = (strpos($msg, 'expired') !== false || strpos($msg, 'invalid') !== false || strpos($msg, 'No token') !== false) ? 401 : 500;
-            $this->sendJsonResponse($code, "Token validation failed: " . $msg);
+            error_log("BaseAPI::validateToken failed: " . $e->getMessage());
+            if ($e instanceof PDOException) {
+                header('Retry-After: 3');
+                $this->sendJsonResponse(503, "Server is busy - please retry in a few seconds", null, false, 'SERVER_BUSY');
+            }
+            $this->sendJsonResponse(401, "Invalid or expired token", null, false, 'TOKEN_INVALID');
         }
     }
 

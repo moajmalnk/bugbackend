@@ -133,7 +133,7 @@ try {
             $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . $jwtToken;
             $userData = null;
             try {
-                $userData = $baseAPI->validateToken();
+                $userData = $baseAPI->validateTokenOptional();
             } catch (Exception $e) {
                 error_log("JWT validation failed: " . $e->getMessage());
                 // If we have return_url, we should still try to redirect there
