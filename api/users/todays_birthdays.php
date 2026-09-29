@@ -35,27 +35,30 @@ try {
     $today = br_ist_today_ymd();
     $birthdays = br_fetch_todays_birthdays($conn, $today);
 
-    // Mark which entries the viewer already wished today (when table exists).
-    $wishedIds = [];
-    try {
-        $t = $conn->query("SHOW TABLES LIKE 'birthday_wishes'");
-        $hasWishTable = $t && $t->fetch(PDO::FETCH_NUM);
-        if ($hasWishTable && count($birthdays) > 0) {
-            $stmt = $conn->prepare(
-                'SELECT to_user_id FROM birthday_wishes
-                 WHERE from_user_id = ? AND wish_date = ?'
+    $wishesByCelebrant = [];
+    if (count($birthdays) > 0) {
+        try {
+            $wishesByCelebrant = br_fetch_birthday_wishes(
+                $conn,
+                array_column($birthdays, 'id'),
+                $today,
+                $viewerId
             );
-            $stmt->execute([$viewerId, $today]);
-            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-                $wishedIds[(string) $row['to_user_id']] = true;
-            }
+        } catch (Throwable $e) {
+            error_log('todays_birthdays wishes: ' . $e->getMessage());
         }
-    } catch (Throwable $e) {
-        // Table may not exist until migration 069 runs / auto-create on send.
     }
 
-    $payload = array_map(static function (array $person) use ($viewerId, $wishedIds) {
+    $payload = array_map(static function (array $person) use ($viewerId, $wishesByCelebrant) {
         $id = (string) $person['id'];
+        $wishes = $wishesByCelebrant[$id] ?? [];
+        $alreadyWished = false;
+        foreach ($wishes as $wish) {
+            if ($wish['is_mine']) {
+                $alreadyWished = true;
+                break;
+            }
+        }
         return [
             'id' => $id,
             'username' => $person['username'],
@@ -64,10 +67,14 @@ try {
             'department' => $person['department'],
             'avatar' => $person['avatar'],
             'is_self' => $id === $viewerId,
-            'already_wished' => isset($wishedIds[$id]),
+            'already_wished' => $alreadyWished,
+            'wish_count' => count($wishes),
+            'wishes' => array_slice($wishes, 0, 100),
         ];
     }, $birthdays);
 
+    header('Cache-Control: private, no-cache');
+    header('Vary: Authorization');
     http_response_code(200);
     echo json_encode([
         'success' => true,
@@ -77,7 +84,7 @@ try {
             'birthdays' => $payload,
         ],
     ]);
-} catch (Exception $e) {
+} catch (Throwable $e) {
     error_log('todays_birthdays: ' . $e->getMessage());
     http_response_code(500);
     echo json_encode(['success' => false, 'message' => 'Failed to load birthdays.']);

@@ -23,41 +23,6 @@ require_once __DIR__ . '/../NotificationManager.php';
 require_once __DIR__ . '/../../config/utils.php';
 require_once __DIR__ . '/../../utils/todays_birthdays.php';
 
-/**
- * Why: PDO MySQL rowCount() is unreliable for SHOW TABLES — use fetch().
- * Auto-create matches migration 069 so Send wish works before manual migrate.
- */
-function br_ensure_birthday_wishes_table(PDO $conn): bool
-{
-    try {
-        $t = $conn->query("SHOW TABLES LIKE 'birthday_wishes'");
-        if ($t && $t->fetch(PDO::FETCH_NUM)) {
-            return true;
-        }
-    } catch (Throwable $e) {
-        // fall through to create
-    }
-
-    try {
-        $conn->exec(
-            "CREATE TABLE IF NOT EXISTS `birthday_wishes` (
-              `id` CHAR(36) NOT NULL,
-              `from_user_id` VARCHAR(64) NOT NULL,
-              `to_user_id` VARCHAR(64) NOT NULL,
-              `wish_date` DATE NOT NULL,
-              `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              PRIMARY KEY (`id`),
-              UNIQUE KEY `uq_birthday_wish_day` (`from_user_id`, `to_user_id`, `wish_date`),
-              KEY `idx_birthday_wishes_to_date` (`to_user_id`, `wish_date`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci"
-        );
-        return true;
-    } catch (Throwable $e) {
-        error_log('br_ensure_birthday_wishes_table: ' . $e->getMessage());
-        return false;
-    }
-}
-
 try {
     $api = new BaseAPI();
     $decoded = $api->validateToken();
@@ -72,6 +37,16 @@ try {
 
     $data = $api->getRequestData();
     $toUserId = trim((string) ($data['user_id'] ?? $data['to_user_id'] ?? ''));
+    $rawMessage = (string) ($data['message'] ?? '');
+    if (mb_strlen(trim($rawMessage)) > BR_BIRTHDAY_WISH_MESSAGE_MAX) {
+        http_response_code(422);
+        echo json_encode([
+            'success' => false,
+            'message' => 'Keep your wish under ' . BR_BIRTHDAY_WISH_MESSAGE_MAX . ' characters.',
+        ]);
+        exit;
+    }
+    $message = br_sanitize_birthday_wish_message($rawMessage);
 
     if ($toUserId === '') {
         http_response_code(400);
@@ -112,23 +87,29 @@ try {
          LIMIT 1'
     );
     $existing->execute([$fromUserId, $toUserId, $today]);
-    if ($existing->fetch(PDO::FETCH_ASSOC)) {
+    $existingRow = $existing->fetch(PDO::FETCH_ASSOC);
+    if ($existingRow) {
+        // Why: one wish per day, but the sender may add or edit the note afterwards.
+        if ($message !== null) {
+            $upd = $conn->prepare('UPDATE birthday_wishes SET message = ? WHERE id = ?');
+            $upd->execute([$message, $existingRow['id']]);
+        }
         http_response_code(200);
         echo json_encode([
             'success' => true,
-            'message' => 'Already wished.',
-            'data' => ['already_wished' => true],
+            'message' => $message !== null ? 'Wish message updated.' : 'Already wished.',
+            'data' => ['already_wished' => true, 'id' => (string) $existingRow['id'], 'message' => $message],
         ]);
         exit;
     }
 
     $wishId = Utils::generateUUID();
     $insert = $conn->prepare(
-        'INSERT INTO birthday_wishes (id, from_user_id, to_user_id, wish_date)
-         VALUES (?, ?, ?, ?)'
+        'INSERT INTO birthday_wishes (id, from_user_id, to_user_id, wish_date, message)
+         VALUES (?, ?, ?, ?, ?)'
     );
     try {
-        $ok = $insert->execute([$wishId, $fromUserId, $toUserId, $today]);
+        $ok = $insert->execute([$wishId, $fromUserId, $toUserId, $today, $message]);
     } catch (PDOException $e) {
         // Race: unique key — treat as already wished
         if (stripos($e->getMessage(), 'Duplicate') !== false) {
@@ -152,7 +133,7 @@ try {
     // Why: Wish is already persisted — never fail the HTTP response on notify/push.
     try {
         $nm = new NotificationManager();
-        $nm->notifyBirthdayWish($toUserId, $fromUserId, $fromUsername);
+        $nm->notifyBirthdayWish($toUserId, $fromUserId, $fromUsername, $message);
     } catch (Throwable $notifyErr) {
         error_log('send_birthday_wish notify: ' . $notifyErr->getMessage());
     }
@@ -161,7 +142,7 @@ try {
     echo json_encode([
         'success' => true,
         'message' => 'Birthday wish sent.',
-        'data' => ['already_wished' => true],
+        'data' => ['already_wished' => true, 'id' => $wishId, 'message' => $message],
     ]);
 } catch (Throwable $e) {
     error_log('send_birthday_wish: ' . $e->getMessage());
@@ -169,6 +150,5 @@ try {
     echo json_encode([
         'success' => false,
         'message' => 'Failed to send birthday wish.',
-        'error' => $e->getMessage(),
     ]);
 }

@@ -1683,7 +1683,7 @@ class NotificationManager extends BaseAPI {
     /**
      * Why: Teammate birthday wish from dashboard sticky — notify celebrant only.
      */
-    public function notifyBirthdayWish($toUserId, $fromUserId, $fromUsername = null) {
+    public function notifyBirthdayWish($toUserId, $fromUserId, $fromUsername = null, $message = null) {
         $toUserId = (string) $toUserId;
         $fromUserId = (string) $fromUserId;
         $fromName = trim((string) ($fromUsername ?: $this->getUserName($fromUserId)));
@@ -1695,7 +1695,9 @@ class NotificationManager extends BaseAPI {
         return $this->createNotification(
             $notificationType,
             'Happy birthday wish',
-            "{$fromName} wished you a happy birthday.",
+            $message !== null && $message !== ''
+                ? "{$fromName} wished you a happy birthday: \"" . mb_substr((string) $message, 0, 140) . "\""
+                : "{$fromName} wished you a happy birthday.",
             [$toUserId],
             [
                 'entity_type' => 'user',
