@@ -26,6 +26,25 @@ header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-W
 header("Access-Control-Allow-Credentials: true");
 header("Access-Control-Max-Age: 3600");
 header('Content-Type: application/json');
+header('Cache-Control: private, no-cache');
+header('Vary: Authorization, Origin');
+
+// Fatal errors (memory, timeouts, type errors) otherwise surface as an empty 500.
+register_shutdown_function(static function () {
+    $error = error_get_last();
+    if (!$error || !in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
+        return;
+    }
+    error_log('bugs/getAll.php fatal: ' . $error['message'] . ' in ' . $error['file'] . ':' . $error['line']);
+    if (!headers_sent()) {
+        http_response_code(500);
+        header('Content-Type: application/json');
+    }
+    echo json_encode([
+        'success' => false,
+        'message' => 'Server error: ' . $error['message'],
+    ]);
+});
 
 // Handle preflight requests
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
@@ -45,7 +64,18 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
 
 try {
     $api = new BaseAPI();
-    $decoded = $api->validateToken();
+    try {
+        $decoded = $api->validateToken();
+    } catch (Exception $authError) {
+        http_response_code(401);
+        echo json_encode(['success' => false, 'message' => 'Authentication required: ' . $authError->getMessage()]);
+        exit;
+    }
+    if (!is_object($decoded) || empty($decoded->user_id)) {
+        http_response_code(401);
+        echo json_encode(['success' => false, 'message' => 'Invalid or expired token']);
+        exit;
+    }
     
     $user_id = $decoded->user_id;
     $user_role = $decoded->role;
@@ -147,7 +177,8 @@ try {
         'data' => $result
     ]);
     
-} catch (Exception $e) {
+} catch (Throwable $e) {
+    error_log('bugs/getAll.php error: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
     http_response_code(500);
     echo json_encode(['success' => false, 'message' => 'Server error: ' . $e->getMessage()]);
 }
