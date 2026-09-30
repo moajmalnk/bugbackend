@@ -7,6 +7,7 @@
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../utils/weekly_report.php';
 require_once __DIR__ . '/../../utils/work_period.php';
+require_once __DIR__ . '/../../utils/workforce_access.php';
 
 class WeeklyReportController extends BaseAPI
 {
@@ -15,6 +16,10 @@ class WeeklyReportController extends BaseAPI
         $decoded = $this->validateToken();
         if (!$decoded || !isset($decoded->user_id)) {
             $this->sendJsonResponse(401, 'Authentication failed');
+            return;
+        }
+
+        if (!br_require_workforce($this, $this->conn, $decoded)) {
             return;
         }
 

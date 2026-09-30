@@ -11,7 +11,18 @@ try {
     }
 
     // Validate token
-    $controller->validateToken();
+    $actor = $controller->validateToken();
+    if (!$actor || !isset($actor->user_id)) {
+        throw new Exception('Authentication failed', 401);
+    }
+    $isAdmin = strtolower((string) ($actor->role ?? '')) === 'admin';
+    if (!$isAdmin && !PermissionManager::getInstance()->hasPermissionOrAdmin(
+        (string) $actor->user_id,
+        'USERS_CREATE',
+        $actor->role ?? null
+    )) {
+        throw new Exception('USERS_CREATE permission required', 403);
+    }
 
     // Get request data
     $data = json_decode(file_get_contents('php://input'), true);

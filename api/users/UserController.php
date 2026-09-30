@@ -4,6 +4,7 @@ require_once __DIR__ . '/../ActivityLogger.php';
 require_once __DIR__ . '/../../utils/activity_sessions_schema.php';
 require_once __DIR__ . '/../../utils/user_avatar.php';
 require_once __DIR__ . '/../../utils/employee_id.php';
+require_once __DIR__ . '/../../utils/workforce_access.php';
 
 class UserController extends BaseAPI {
     public function getUsers() {
@@ -22,6 +23,8 @@ class UserController extends BaseAPI {
                 $this->sendJsonResponse(500, "Database connection failed");
                 return;
             }
+
+            br_ensure_tester_type_schema($this->conn);
 
             // Check which columns exist (phone, last_active_at)
             $cols = [];
@@ -45,6 +48,7 @@ class UserController extends BaseAPI {
             $hasDeletedAt = in_array('deleted_at', $cols, true);
 
             $select = ['id', 'username', 'email', 'role', 'role_id', 'created_at', 'updated_at'];
+            if (in_array('tester_type', $cols, true)) $select[] = 'tester_type';
             if ($hasPhone) $select[] = 'phone';
             if ($hasAccountActive) $select[] = 'account_active';
             if ($hasJoiningDate) $select[] = 'joining_date';
@@ -220,6 +224,7 @@ class UserController extends BaseAPI {
                 return;
             }
 
+            br_ensure_tester_type_schema($this->conn);
             $cols = [];
             $res = $this->conn->query("SHOW COLUMNS FROM users");
             if ($res) {
@@ -228,6 +233,9 @@ class UserController extends BaseAPI {
                 }
             }
             $select = ['id', 'username', 'email', 'phone', 'role', 'role_id', 'created_at', 'updated_at'];
+            if (in_array('tester_type', $cols, true)) {
+                $select[] = 'tester_type';
+            }
             if (in_array('account_active', $cols, true)) {
                 $select[] = 'account_active';
             }
@@ -340,6 +348,9 @@ class UserController extends BaseAPI {
                 $cols
             );
             $select = br_user_hr_select_cols($select, $cols);
+            if (in_array('tester_type', $cols, true)) {
+                $select[] = 'tester_type';
+            }
             if (in_array('joining_date', $cols, true) && !in_array('joining_date', $select, true)) {
                 $select[] = 'joining_date';
             }
@@ -780,6 +791,19 @@ class UserController extends BaseAPI {
                 }
             }
 
+            // Why: Testers must be classified at creation — CODO (in-house workforce)
+            // or Client (external, bug reporting only). Other roles never carry a type.
+            $testerType = null;
+            if ($role === 'tester') {
+                $testerType = br_normalize_tester_type($data['tester_type'] ?? null);
+                if ($testerType === null) {
+                    $this->sendJsonResponse(422, "Please choose a tester type: CODO Tester or Client Tester.", [
+                        'errors' => ['tester_type' => ['Tester type is required.']],
+                    ]);
+                    return;
+                }
+            }
+
             /**
              * Why: Only developers must complete statutory onboarding + choose password.
              * Testers/admins get emailed credentials and skip the wizard.
@@ -789,6 +813,7 @@ class UserController extends BaseAPI {
             $mustSetPassword = $requiresOnboarding;
 
             // Insert user
+            br_ensure_tester_type_schema($this->conn);
             $userCols = [];
             $ucRes = $this->conn->query("SHOW COLUMNS FROM users");
             if ($ucRes) {
@@ -802,6 +827,10 @@ class UserController extends BaseAPI {
 
             $insertCols = ['id', 'username', 'email', 'phone', 'password', 'role', 'role_id'];
             $insertVals = [$id, $username, $email, $phone, $hashedPassword, $role, $roleId];
+            if (in_array('tester_type', $userCols, true)) {
+                $insertCols[] = 'tester_type';
+                $insertVals[] = $testerType;
+            }
             if ($hasJoiningDateCol) {
                 $insertCols[] = 'joining_date';
                 $insertVals[] = $joiningDate;
@@ -833,15 +862,17 @@ class UserController extends BaseAPI {
 
             // Log user creation activity
             try {
+                $actorForLog = $this->validateTokenOptional();
                 $logger = ActivityLogger::getInstance();
                 $logger->logUserCreated(
-                    $id, // Current user ID (admin who created the user)
+                    (string) ($actorForLog->user_id ?? $id),
                     null, // No specific project for user creation
                     $id, // The newly created user's ID
                     $username,
                     [
                         'email' => $email,
                         'role' => $role,
+                        'tester_type' => $testerType,
                         'phone' => $phone
                     ]
                 );
@@ -920,6 +951,7 @@ class UserController extends BaseAPI {
                 "phone" => $phone,
                 "role" => $role,
                 "role_id" => $roleId,
+                "tester_type" => $testerType,
                 "email_sent" => $emailSent,
             ];
             // Why: If SMTP fails, admin still needs the temp password to share manually.
@@ -932,9 +964,71 @@ class UserController extends BaseAPI {
         }
     }
 
+    /**
+     * Why: tester_type decides workforce access (BugUpdate, check-in, weekly
+     * report, leave), so it follows the role: required when a user is (or
+     * becomes) a tester, cleared for every other role, and only changeable by
+     * admins / USERS_EDIT holders.
+     *
+     * @param string|null $newRole Normalised role from this request, or null if unchanged.
+     * @return array{value: ?string}|null|false Column update, null for no change, false when a response was sent.
+     */
+    private function resolveTesterTypeUpdate(PDO $conn, string $userId, ?string $newRole, array $data)
+    {
+        $stmt = $conn->prepare('SELECT role, tester_type FROM users WHERE id = ? LIMIT 1');
+        $stmt->execute([$userId]);
+        $current = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$current) {
+            return null;
+        }
+
+        $currentRole = strtolower((string) ($current['role'] ?? ''));
+        $finalRole = $newRole !== null ? strtolower($newRole) : $currentRole;
+        $provided = array_key_exists('tester_type', $data);
+
+        if ($finalRole !== 'tester') {
+            return ($current['tester_type'] ?? null) !== null ? ['value' => null] : null;
+        }
+
+        $currentType = br_normalize_tester_type($current['tester_type'] ?? null);
+        $requestedType = $provided ? br_normalize_tester_type($data['tester_type']) : null;
+
+        if ($provided && $requestedType === null) {
+            $this->sendJsonResponse(422, 'Tester type must be CODO Tester or Client Tester.', [
+                'errors' => ['tester_type' => ['Invalid tester type.']],
+            ]);
+            return false;
+        }
+
+        if (!$provided) {
+            if ($currentRole !== 'tester' || $currentType === null) {
+                $this->sendJsonResponse(422, 'Please choose a tester type: CODO Tester or Client Tester.', [
+                    'errors' => ['tester_type' => ['Tester type is required.']],
+                ]);
+                return false;
+            }
+            return null;
+        }
+
+        if ($requestedType === $currentType && $currentRole === 'tester') {
+            return null;
+        }
+
+        $actor = $this->validateToken();
+        $isAdmin = isset($actor->role) && strtolower((string) $actor->role) === 'admin';
+        $pm = PermissionManager::getInstance();
+        if (!$isAdmin && !$pm->hasPermissionOrAdmin($actor->user_id ?? '', 'USERS_EDIT', $actor->role ?? null)) {
+            $this->sendJsonResponse(403, 'USERS_EDIT permission required to change tester type');
+            return false;
+        }
+
+        return ['value' => $requestedType];
+    }
+
     public function updateUser($id, $data) {
         try {
             $conn = $this->getConnection();
+            br_ensure_tester_type_schema($conn);
             $userCols = [];
             $ucRes = $conn->query("SHOW COLUMNS FROM users");
             if ($ucRes) {
@@ -948,6 +1042,8 @@ class UserController extends BaseAPI {
             $fields = [];
             $params = [];
             $deactivatingAccount = false;
+            $testerTypeChanged = false;
+            $testerTypeResult = null;
             if (isset($data['username'])) {
                 $fields[] = "username = ?";
                 $params[] = $data['username'];
@@ -1005,6 +1101,24 @@ class UserController extends BaseAPI {
                     $params[] = $roleId;
                 }
             }
+
+            if (in_array('tester_type', $userCols, true)) {
+                $testerTypeResult = $this->resolveTesterTypeUpdate(
+                    $conn,
+                    (string) $id,
+                    isset($data['role']) ? (string) $role : null,
+                    $data
+                );
+                if ($testerTypeResult === false) {
+                    return;
+                }
+                if (is_array($testerTypeResult)) {
+                    $fields[] = 'tester_type = ?';
+                    $params[] = $testerTypeResult['value'];
+                    $testerTypeChanged = true;
+                }
+            }
+
             if (isset($data['phone'])) {
                 // Check for duplicate phone (exclude current user)
                 $stmt = $conn->prepare("SELECT id FROM users WHERE phone = ? AND id != ?");
@@ -1309,16 +1423,21 @@ class UserController extends BaseAPI {
                     $currentUser->execute([$id]);
                     $user = $currentUser->fetch(PDO::FETCH_ASSOC);
                     
+                    $actorForLog = $this->validateTokenOptional();
+                    $logDetails = [
+                        'updated_fields' => array_keys($data),
+                        'role' => $data['role'] ?? null,
+                    ];
+                    if ($testerTypeChanged) {
+                        $logDetails['tester_type'] = $testerTypeResult['value'];
+                    }
                     $logger = ActivityLogger::getInstance();
                     $logger->logUserUpdated(
-                        $id, // Current user ID (admin who updated the user)
+                        (string) ($actorForLog->user_id ?? $id),
                         null, // No specific project for user updates
                         $id, // The updated user's ID
                         $user['username'],
-                        [
-                            'updated_fields' => array_keys($data),
-                            'role' => $data['role'] ?? null
-                        ]
+                        $logDetails
                     );
                 } catch (Exception $e) {
                     error_log("Failed to log user update activity: " . $e->getMessage());
@@ -1341,6 +1460,9 @@ class UserController extends BaseAPI {
                 }
                 if ($hasJoiningDateCol) {
                     $selectParts[] = 'joining_date';
+                }
+                if (in_array('tester_type', $userCols, true)) {
+                    $selectParts[] = 'tester_type';
                 }
                 $selectParts = br_user_avatar_select_cols($selectParts, $userCols);
                 $selectParts = br_user_hr_select_cols($selectParts, $userCols);

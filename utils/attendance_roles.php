@@ -24,3 +24,18 @@ function br_workforce_roster_role_sql_in(): string
 {
     return "'" . implode("','", br_workforce_roster_roles()) . "'";
 }
+
+/**
+ * Full roster predicate: workforce role AND not a client tester.
+ * Why: Client testers are external reviewers and are never tracked for attendance.
+ */
+function br_workforce_roster_sql(string $alias = 'u', ?PDO $conn = null): string
+{
+    $p = $alias !== '' ? rtrim($alias, '.') . '.' : '';
+    $sql = "LOWER(TRIM(COALESCE({$p}role, ''))) IN (" . br_workforce_roster_role_sql_in() . ")";
+    if ($conn !== null) {
+        require_once __DIR__ . '/workforce_access.php';
+        $sql .= ' AND ' . br_workforce_tester_sql($alias, $conn);
+    }
+    return $sql;
+}

@@ -16,6 +16,7 @@ require_once __DIR__ . '/../../utils/leave_attendance.php';
 require_once __DIR__ . '/../../utils/checkin_policy.php';
 require_once __DIR__ . '/../../utils/user_onboarding.php';
 require_once __DIR__ . '/../../utils/work_submission_ot.php';
+require_once __DIR__ . '/../../utils/workforce_access.php';
 
 error_log("🚀 check_in.php - BaseAPI.php loaded");
 
@@ -41,6 +42,10 @@ class CheckInController extends BaseAPI {
             if (!$decoded || !isset($decoded->user_id)) {
                 error_log("❌ CheckInController - Invalid token or user_id missing");
                 $this->sendJsonResponse(401, "Invalid token or user_id missing");
+                return;
+            }
+
+            if (!br_require_workforce($this, $this->conn, $decoded)) {
                 return;
             }
 

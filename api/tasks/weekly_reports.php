@@ -1,10 +1,12 @@
 <?php
 /**
- * Why: Admins review team weekly reports; developers read their own history.
+ * Why: Admins review team weekly reports; workforce members (incl. CODO testers)
+ * read their own history. Client testers are blocked.
  */
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../utils/weekly_report.php';
 require_once __DIR__ . '/../../utils/work_period.php';
+require_once __DIR__ . '/../../utils/workforce_access.php';
 
 class WeeklyReportsListController extends BaseAPI
 {
@@ -21,9 +23,7 @@ class WeeklyReportsListController extends BaseAPI
             return;
         }
 
-        $role = strtolower((string)($decoded->role ?? ''));
-        if ($role === 'tester') {
-            $this->sendJsonResponse(403, 'Weekly reports are available to admins and developers.');
+        if (!br_require_workforce($this, $this->conn, $decoded)) {
             return;
         }
 

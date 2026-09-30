@@ -7,6 +7,7 @@
  */
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../utils/docs_sheets_recycle.php';
+require_once __DIR__ . '/../../utils/workforce_access.php';
 
 class AdminSidebarCountsController extends BaseAPI
 {
@@ -264,7 +265,9 @@ class AdminSidebarCountsController extends BaseAPI
             }
         }
 
-        if ($this->dbTableExists('work_submissions')) {
+        $isWorkforce = br_user_is_workforce($this->conn, (string) $userId);
+
+        if ($isWorkforce && $this->dbTableExists('work_submissions')) {
             $counts['bugupdate'] = $this->countOrZero(
                 'SELECT COUNT(*) FROM work_submissions WHERE user_id = ?',
                 [$userId]
@@ -272,7 +275,8 @@ class AdminSidebarCountsController extends BaseAPI
         }
 
         if (
-            ($isAdmin || $role === 'developer'
+            $isWorkforce
+            && ($isAdmin || $role === 'developer'
                 || $can('DAILY_UPDATE_CREATE') || $can('DAILY_UPDATE_VIEW')
                 || $can('UPDATES_VIEW') || $can('UPDATES_CREATE'))
             && $this->dbTableExists('weekly_reports')
@@ -291,7 +295,8 @@ class AdminSidebarCountsController extends BaseAPI
         }
 
         if (
-            ($can('LEAVE_VIEW') || in_array($role, ['developer', 'creator', 'user'], true))
+            $isWorkforce
+            && ($can('LEAVE_VIEW') || in_array($role, ['developer', 'creator', 'user'], true))
             && $this->dbTableExists('leave_requests')
         ) {
             $counts['myleave'] = $this->countOrZero(

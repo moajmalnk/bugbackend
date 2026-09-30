@@ -5,6 +5,9 @@ class OwnWorkSubmissionController extends WorkSubmissionController {
     public function myOwnSubmissions($q) {
         // Use the standard validateToken method which handles impersonation correctly
         $decoded = $this->validateToken();
+        if (!br_require_workforce($this, $this->conn, $decoded)) {
+            return;
+        }
         $userId = $decoded->user_id;
         $from = $q['from'] ?? date('Y-m-01');
         $to = $q['to'] ?? date('Y-m-t');

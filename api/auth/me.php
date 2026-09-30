@@ -2,6 +2,7 @@
 require_once '../BaseAPI.php';
 require_once __DIR__ . '/../../config/fcm_config.php';
 require_once __DIR__ . '/../../utils/user_avatar.php';
+require_once __DIR__ . '/../../utils/workforce_access.php';
 
 class MeController extends BaseAPI {
     public function __construct() {
@@ -78,6 +79,7 @@ class MeController extends BaseAPI {
                     return;
                 }
                 unset($user['account_active']);
+                $user['tester_type'] = br_user_tester_type($this->conn, (string) $user['id']);
                 $user = br_user_with_resolved_avatar($user);
                 $user = FcmConfig::appendEpochToPayload($user);
                 $this->sendJsonResponse(200, "User data retrieved successfully", $user);

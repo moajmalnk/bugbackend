@@ -4,6 +4,7 @@ require_once __DIR__ . '/../NotificationManager.php';
 require_once __DIR__ . '/../../utils/work_period.php';
 require_once __DIR__ . '/../../utils/leave_attendance.php';
 require_once __DIR__ . '/../../utils/bug_dates_recurrence.php';
+require_once __DIR__ . '/../../utils/workforce_access.php';
 
 class LeaveController extends BaseAPI
 {
@@ -34,6 +35,11 @@ class LeaveController extends BaseAPI
             return false;
         }
         return true;
+    }
+
+    private function requireWorkforce($decoded): bool
+    {
+        return br_require_workforce($this, $this->conn, $decoded);
     }
 
     private function ensureLeaveReady(): bool
@@ -85,7 +91,7 @@ class LeaveController extends BaseAPI
     public function types()
     {
         $decoded = $this->requireAuth();
-        if (!$decoded || !$this->ensureLeaveReady()) {
+        if (!$decoded || !$this->requireWorkforce($decoded) || !$this->ensureLeaveReady()) {
             return;
         }
         $month = isset($_GET['month']) && preg_match('/^\d{4}-\d{2}$/', (string)$_GET['month'])
@@ -114,7 +120,7 @@ class LeaveController extends BaseAPI
     public function mine()
     {
         $decoded = $this->requireAuth();
-        if (!$decoded || !$this->ensureLeaveReady()) {
+        if (!$decoded || !$this->requireWorkforce($decoded) || !$this->ensureLeaveReady()) {
             return;
         }
         $userId = (string)$decoded->user_id;
@@ -176,7 +182,7 @@ class LeaveController extends BaseAPI
     {
         try {
             $decoded = $this->requireAuth();
-            if (!$decoded || !$this->ensureLeaveReady()) {
+            if (!$decoded || !$this->requireWorkforce($decoded) || !$this->ensureLeaveReady()) {
                 return;
             }
             $userId = (string)$decoded->user_id;
@@ -517,7 +523,7 @@ class LeaveController extends BaseAPI
     public function cancel($payload)
     {
         $decoded = $this->requireAuth();
-        if (!$decoded || !$this->ensureLeaveReady()) {
+        if (!$decoded || !$this->requireWorkforce($decoded) || !$this->ensureLeaveReady()) {
             return;
         }
         $userId = (string)$decoded->user_id;
@@ -737,9 +743,10 @@ class LeaveController extends BaseAPI
             } else {
                 $targetIds = $this->listActiveEmployeeIds();
             }
+            $targetIds = br_filter_workforce_user_ids($this->conn, $targetIds);
 
             if (count($targetIds) === 0) {
-                $this->sendJsonResponse(400, 'No users to grant Official Leave');
+                $this->sendJsonResponse(400, 'No eligible CODO team members to grant Official Leave');
                 return;
             }
 

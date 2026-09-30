@@ -3,6 +3,7 @@ require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../utils/checkin_policy.php';
 require_once __DIR__ . '/../../utils/work_period.php';
 require_once __DIR__ . '/../../utils/attendance_roles.php';
+require_once __DIR__ . '/../../utils/workforce_access.php';
 
 class AttendanceExceptionController extends BaseAPI
 {
@@ -365,7 +366,7 @@ class AttendanceExceptionController extends BaseAPI
                  WHERE ws.check_in_time IS NOT NULL
                    AND ws.submission_date >= ?
                    AND (ws.work_mode = 'office' OR ws.work_mode IS NULL OR ws.work_mode = '')
-                   AND LOWER(TRIM(COALESCE(u.role, ''))) IN (" . br_workforce_roster_role_sql_in() . ")
+                   AND " . br_workforce_roster_sql('u', $this->conn) . "
                    AND (u.account_active IS NULL OR u.account_active = 1)
                  GROUP BY ws.user_id"
             );
@@ -499,6 +500,11 @@ class AttendanceExceptionController extends BaseAPI
 
         br_ensure_checkin_policy_schema($this->conn);
         $today = br_server_today();
+
+        if ($action !== 'clear' && !br_user_is_workforce($this->conn, $userId)) {
+            $this->sendJsonResponse(422, 'Client Testers are not tracked for attendance, so exceptions cannot be granted to them.');
+            return;
+        }
 
         if ($action === 'clear') {
             $result = br_clear_day_exceptions($this->conn, $userId, $dates);

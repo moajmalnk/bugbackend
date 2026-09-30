@@ -7,6 +7,9 @@ class OwnWorkSubmissionController extends WorkSubmissionController {
     public function submitOwnWork($payload) {
         // Use the standard validateToken method which handles impersonation correctly
         $decoded = $this->validateToken();
+        if (!br_require_workforce($this, $this->conn, $decoded)) {
+            return null;
+        }
         $userId = $decoded->user_id;
         
         // Debug logging to verify user isolation and impersonation

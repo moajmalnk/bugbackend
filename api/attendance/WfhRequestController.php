@@ -2,6 +2,7 @@
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../utils/checkin_policy.php';
 require_once __DIR__ . '/../../utils/work_period.php';
+require_once __DIR__ . '/../../utils/workforce_access.php';
 
 /**
  * Why: Same-day WFH requests need employee submit + admin approve/reject,
@@ -184,6 +185,9 @@ class WfhRequestController extends BaseAPI
         if ($this->isAdmin($decoded) && !empty($_GET['user_id'])) {
             $userId = trim((string)$_GET['user_id']);
         }
+        if ($userId === $actorId && !br_require_workforce($this, $this->conn, $decoded)) {
+            return;
+        }
 
         $request = br_wfh_request_for_day($this->conn, $userId, $date);
         $policy = br_checkin_policy_status($this->conn, $userId, $date);
@@ -285,6 +289,14 @@ class WfhRequestController extends BaseAPI
             $userId = trim((string)$input['user_id']);
         } elseif (!$this->isAdmin($decoded) && !empty($input['user_id']) && (string)$input['user_id'] !== $actorId) {
             $this->sendJsonResponse(403, 'You can only request WFH for yourself');
+            return;
+        }
+        if ($userId === $actorId) {
+            if (!br_require_workforce($this, $this->conn, $decoded)) {
+                return;
+            }
+        } elseif (!br_user_is_workforce($this->conn, $userId)) {
+            $this->sendJsonResponse(422, 'Client Testers are not tracked for attendance, so WFH cannot be requested for them.');
             return;
         }
 

@@ -6,11 +6,15 @@ require_once __DIR__ . '/../../utils/user_onboarding.php';
 require_once __DIR__ . '/../../utils/weekly_report.php';
 require_once __DIR__ . '/../../utils/checkout_time_allocation.php';
 require_once __DIR__ . '/../../utils/work_submission_ot.php';
+require_once __DIR__ . '/../../utils/workforce_access.php';
 
 class WorkSubmissionController extends BaseAPI {
     public function submit($payload) {
         try {
             $decoded = $this->validateToken();
+            if (!br_require_workforce($this, $this->conn, $decoded)) {
+                return null;
+            }
             $userId = $decoded->user_id;
             
             // Debug logging to verify user isolation
@@ -593,6 +597,9 @@ class WorkSubmissionController extends BaseAPI {
         error_log("🔍 WorkSubmissionController::mySubmissions - Request ID: $requestId - Starting");
         
         $decoded = $this->validateToken();
+        if (!br_require_workforce($this, $this->conn, $decoded)) {
+            return;
+        }
         $userId = $decoded->user_id;
         $from = $q['from'] ?? date('Y-m-01');
         $to = $q['to'] ?? date('Y-m-t');
@@ -784,6 +791,9 @@ class WorkSubmissionController extends BaseAPI {
     public function deleteSubmission($payload) {
         try {
             $decoded = $this->validateToken();
+            if (!br_require_workforce($this, $this->conn, $decoded)) {
+                return;
+            }
             $userId = $decoded->user_id;
             $role = strtolower((string)($decoded->role ?? ''));
             $id = $payload['id'] ?? null;
@@ -845,6 +855,9 @@ class WorkSubmissionController extends BaseAPI {
     public function templateText($q) {
         try {
             $decoded = $this->validateToken();
+            if (!br_require_workforce($this, $this->conn, $decoded)) {
+                return;
+            }
             $userId = $decoded->user_id;
 
             $date = $q['date'] ?? date('Y-m-d');
@@ -1368,6 +1381,10 @@ class WorkSubmissionController extends BaseAPI {
             $targetUser = $userStmt->fetch(PDO::FETCH_ASSOC);
             if (!$targetUser) {
                 $this->sendJsonResponse(404, 'User not found');
+                return;
+            }
+            if (!br_user_is_workforce($this->conn, $targetUserId)) {
+                $this->sendJsonResponse(422, 'Client Testers are not tracked for attendance, so hours cannot be recorded for them.');
                 return;
             }
 

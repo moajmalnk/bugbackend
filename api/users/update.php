@@ -17,12 +17,34 @@ try {
     $controller = new UserController();
 
     // Validate token
-    $controller->validateToken();
+    $actor = $controller->validateToken();
+    if (!$actor || !isset($actor->user_id)) {
+        throw new Exception('Authentication failed', 401);
+    }
 
     // Get request data
     $data = json_decode(file_get_contents('php://input'), true);
     if (!$data || !isset($data['id'])) {
         throw new Exception('Invalid request data', 400);
+    }
+
+    // Why: Editing another account or changing any role / tester type must be an
+    // admin action; otherwise any login could escalate its own privileges.
+    $isAdmin = strtolower((string) ($actor->role ?? '')) === 'admin';
+    $touchesPrivileges = array_key_exists('role', $data)
+        || array_key_exists('role_id', $data)
+        || array_key_exists('tester_type', $data);
+    $isOtherUser = (string) $data['id'] !== (string) $actor->user_id;
+    if (
+        !$isAdmin
+        && ($touchesPrivileges || $isOtherUser)
+        && !PermissionManager::getInstance()->hasPermissionOrAdmin(
+            (string) $actor->user_id,
+            'USERS_EDIT',
+            $actor->role ?? null
+        )
+    ) {
+        throw new Exception('USERS_EDIT permission required', 403);
     }
 
     // Update user

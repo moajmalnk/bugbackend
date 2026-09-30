@@ -7,6 +7,7 @@
 require_once __DIR__ . '/../../config/cors.php';
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../NotificationManager.php';
+require_once __DIR__ . '/../../utils/workforce_access.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
@@ -23,6 +24,10 @@ try {
         http_response_code(401);
         header('Content-Type: application/json');
         echo json_encode(['success' => false, 'message' => 'Unauthorized']);
+        exit();
+    }
+
+    if (!br_require_workforce($api, $api->getConnection(), $userData)) {
         exit();
     }
 

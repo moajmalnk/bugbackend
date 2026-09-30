@@ -31,60 +31,9 @@ class AuthController extends BaseAPI {
             return;
         }
 
-        try {
-            $data = $this->getRequestData();
-            
-            // Validate required fields
-            $required = ['username', 'email', 'password', 'role'];
-            foreach ($required as $field) {
-                if (!isset($data[$field]) || empty($data[$field])) {
-                    $this->sendJsonResponse(400, "Missing required field: {$field}");
-                    return;
-                }
-            }
-            
-            // Check if username or email exists
-            $stmt = $this->conn->prepare("SELECT id FROM users WHERE username = ? OR email = ?");
-            $stmt->execute([$data['username'], $data['email']]);
-            
-            if ($stmt->rowCount() > 0) {
-                $this->sendJsonResponse(400, "Username or email already exists");
-                return;
-            }
-            
-            // Create new user
-            $stmt = $this->conn->prepare(
-                "INSERT INTO users (id, username, email, password, role) VALUES (?, ?, ?, ?, ?)"
-            );
-            
-            $user_id = Utils::generateUUID();
-            $hashed_password = password_hash($data['password'], PASSWORD_DEFAULT);
-            
-            $stmt->execute([
-                $user_id,
-                $data['username'],
-                $data['email'],
-                $hashed_password,
-                $data['role']
-            ]);
-            
-            // Generate token
-            $token = Utils::generateJWT($user_id, $data['username'], $data['role']);
-            
-            $this->sendJsonResponse(201, "User registered successfully", [
-                "token" => $token,
-                "user" => FcmConfig::appendEpochToPayload([
-                    "id" => $user_id,
-                    "username" => $data['username'],
-                    "email" => $data['email'],
-                    "role" => $data['role']
-                ])
-            ]);
-            
-        } catch (Exception $e) {
-            error_log("Registration error: " . $e->getMessage());
-            $this->sendJsonResponse(500, "Server error. Please try again later.");
-        }
+        // Why: Accounts (and their role / tester type) are created by admins only.
+        // Self-registration accepted a client-chosen role, allowing privilege escalation.
+        $this->sendJsonResponse(403, "Registration is disabled. Please contact an administrator.");
     }
     
     public function login() {
