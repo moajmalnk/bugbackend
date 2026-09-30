@@ -225,10 +225,11 @@ function sendWelcomeEmail(
     $username,
     $password = null,
     $role = null,
-    $loginLink = null
+    $loginLink = null,
+    $testerType = null
 ) {
     require_once __DIR__ . '/user_onboarding.php';
-    $needsOnboarding = br_role_requires_onboarding($role);
+    $needsOnboarding = br_role_requires_onboarding($role, null, $testerType);
 
     $subject = $needsOnboarding
         ? "Welcome to BugRicer — set up your workspace"

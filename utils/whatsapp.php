@@ -1465,9 +1465,9 @@ function sendUpdateCreationWhatsApp($conn, $updateId, $updateTitle, $updateType,
  * @param string|null $role User's role (optional)
  * @return string Formatted WhatsApp message
  */
-function formatWelcomeForWhatsApp($username, $loginLink = null, $email = null, $password = null, $role = null) {
+function formatWelcomeForWhatsApp($username, $loginLink = null, $email = null, $password = null, $role = null, $testerType = null) {
     require_once __DIR__ . '/user_onboarding.php';
-    $needsOnboarding = br_role_requires_onboarding($role);
+    $needsOnboarding = br_role_requires_onboarding($role, null, $testerType);
 
     $message = "🎉 *Welcome to BugRicer!*\n";
     $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
@@ -1547,7 +1547,7 @@ function formatWelcomeForWhatsApp($username, $loginLink = null, $email = null, $
  * @param string|null $role User's role (optional)
  * @return bool Success status
  */
-function sendWelcomeWhatsApp($phoneNumber, $username, $loginLink = null, $email = null, $password = null, $role = null) {
+function sendWelcomeWhatsApp($phoneNumber, $username, $loginLink = null, $email = null, $password = null, $role = null, $testerType = null) {
     try {
         error_log("📱 sendWelcomeWhatsApp called for user: $username ($phoneNumber)");
 
@@ -1557,7 +1557,7 @@ function sendWelcomeWhatsApp($phoneNumber, $username, $loginLink = null, $email 
         }
 
         // Format welcome message
-        $message = formatWelcomeForWhatsApp($username, $loginLink, $email, $password, $role);
+        $message = formatWelcomeForWhatsApp($username, $loginLink, $email, $password, $role, $testerType);
 
         error_log("📱 Formatted welcome WhatsApp message length: " . strlen($message) . " characters");
 

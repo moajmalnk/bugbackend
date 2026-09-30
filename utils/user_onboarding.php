@@ -1,36 +1,45 @@
 <?php
 /**
- * Why: Mandatory employee onboarding (docs, banking, password) is developer-only.
- * Testers/admins skip the wizard and log in with the emailed credentials.
+ * Why: Mandatory employee onboarding (docs, banking, password) applies to
+ * employees: developers and CODO (in-house) testers. Client testers, admins and
+ * creators skip the wizard and log in with the emailed credentials.
  */
 
 /**
- * @param array<string, mixed>|null $user Row with role / role_id
+ * @param array<string, mixed>|null $user Row with role / role_id / tester_type
  */
 function br_user_requires_onboarding(?array $user): bool
 {
     if (!$user) {
         return false;
     }
-    $roleId = isset($user['role_id']) ? (int) $user['role_id'] : 0;
-    if ($roleId === 2) {
-        return true;
-    }
-    $role = strtolower(trim((string) ($user['role'] ?? '')));
-    return $role === 'developer';
+    return br_role_requires_onboarding(
+        $user['role'] ?? null,
+        $user['role_id'] ?? null,
+        $user['tester_type'] ?? null
+    );
 }
 
-function br_role_requires_onboarding($role, $roleId = null): bool
+/**
+ * @param string|null $testerType 'codo' | 'client' — only meaningful for testers.
+ */
+function br_role_requires_onboarding($role, $roleId = null, $testerType = null): bool
 {
-    if ($roleId !== null && $roleId !== '' && (int) $roleId === 2) {
+    $role = strtolower(trim((string) $role));
+    $roleId = ($roleId !== null && $roleId !== '') ? (int) $roleId : 0;
+
+    if ($roleId === 2 || $role === 'developer') {
         return true;
     }
-    return strtolower(trim((string) $role)) === 'developer';
+    if ($roleId === 3 || $role === 'tester') {
+        return strtolower(trim((string) $testerType)) === 'codo';
+    }
+    return false;
 }
 
 /**
  * Why: Rejected HR verification must block check-in/checkout until docs are fixed
- * and re-verified. Pending and verified (and non-developer roles) stay allowed.
+ * and re-verified. Pending and verified (and roles without onboarding) stay allowed.
  *
  * @return array{ok:bool,message?:string}
  */
@@ -51,6 +60,9 @@ function br_assert_onboarding_allows_attendance(PDO $conn, string $userId): arra
         $select = ['role', 'onboarding_verification_status'];
         if (in_array('role_id', $cols, true)) {
             $select[] = 'role_id';
+        }
+        if (in_array('tester_type', $cols, true)) {
+            $select[] = 'tester_type';
         }
 
         $stmt = $conn->prepare(

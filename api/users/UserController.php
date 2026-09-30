@@ -805,11 +805,11 @@ class UserController extends BaseAPI {
             }
 
             /**
-             * Why: Only developers must complete statutory onboarding + choose password.
-             * Testers/admins get emailed credentials and skip the wizard.
+             * Why: Employees (developers + CODO testers) must complete statutory onboarding
+             * and choose a password. Client testers/admins/creators get emailed credentials.
              */
             require_once __DIR__ . '/../../utils/user_onboarding.php';
-            $requiresOnboarding = br_role_requires_onboarding($role, $roleId);
+            $requiresOnboarding = br_role_requires_onboarding($role, $roleId, $testerType);
             $mustSetPassword = $requiresOnboarding;
 
             // Insert user
@@ -841,7 +841,7 @@ class UserController extends BaseAPI {
             }
             if ($hasOnboardingCompletedCol) {
                 $insertCols[] = 'onboarding_completed';
-                // Non-developers skip the wizard — mark complete so guards never lock them.
+                // Roles without onboarding skip the wizard — mark complete so guards never lock them.
                 $insertVals[] = $requiresOnboarding ? 0 : 1;
             }
             $placeholders = implode(', ', array_fill(0, count($insertCols), '?'));
@@ -899,7 +899,7 @@ class UserController extends BaseAPI {
             try {
                 require_once __DIR__ . '/../../utils/email.php';
                 error_log("📧 Sending welcome email notification to new user: $username ($email)");
-                $emailSent = (bool) sendWelcomeEmail($email, $username, $password, $role, $loginLink);
+                $emailSent = (bool) sendWelcomeEmail($email, $username, $password, $role, $loginLink, $testerType);
 
                 if ($emailSent) {
                     error_log("✅ Successfully sent welcome email to: $email");
@@ -921,7 +921,8 @@ class UserController extends BaseAPI {
                         $loginLink,
                         $email,
                         $password, // Original password before hashing
-                        $role
+                        $role,
+                        $testerType
                     );
 
                     if ($whatsappSent) {
@@ -1025,6 +1026,42 @@ class UserController extends BaseAPI {
         return ['value' => $requestedType];
     }
 
+    /**
+     * Why: Users created in a role without onboarding (e.g. a Client tester) were
+     * stored with onboarding_completed = 1. When an admin moves them into an
+     * employee role (Developer, CODO Tester) they must go through the same
+     * onboarding wizard — unless they already submitted it once before.
+     *
+     * @param string|null $newRole Normalised role from this request, or null if unchanged.
+     * @param int|null $newRoleId Role id from this request, or null if unchanged.
+     * @param string|null|false $newTesterType New tester type, or false if unchanged.
+     */
+    private function shouldStartOnboarding(PDO $conn, string $userId, ?string $newRole, ?int $newRoleId, $newTesterType): bool
+    {
+        require_once __DIR__ . '/../../utils/user_onboarding.php';
+        $hasTesterType = br_ensure_tester_type_schema($conn);
+        $stmt = $conn->prepare(
+            'SELECT role, role_id, onboarding_completed, onboarding_completed_at'
+            . ($hasTesterType ? ', tester_type' : '')
+            . ' FROM users WHERE id = ? LIMIT 1'
+        );
+        $stmt->execute([$userId]);
+        $current = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$current || !empty($current['onboarding_completed_at'])) {
+            return false;
+        }
+        if ((int) ($current['onboarding_completed'] ?? 0) === 0) {
+            return false;
+        }
+
+        $after = [
+            'role' => $newRole ?? $current['role'],
+            'role_id' => $newRoleId ?? $current['role_id'],
+            'tester_type' => $newTesterType !== false ? $newTesterType : ($current['tester_type'] ?? null),
+        ];
+        return !br_user_requires_onboarding($current) && br_user_requires_onboarding($after);
+    }
+
     public function updateUser($id, $data) {
         try {
             $conn = $this->getConnection();
@@ -1117,6 +1154,21 @@ class UserController extends BaseAPI {
                     $params[] = $testerTypeResult['value'];
                     $testerTypeChanged = true;
                 }
+            }
+
+            if (
+                (isset($data['role']) || isset($data['role_id']) || $testerTypeChanged)
+                && in_array('onboarding_completed', $userCols, true)
+                && in_array('onboarding_completed_at', $userCols, true)
+                && $this->shouldStartOnboarding(
+                    $conn,
+                    (string) $id,
+                    isset($data['role']) ? (string) $role : null,
+                    isset($roleId) && $roleId ? (int) $roleId : null,
+                    $testerTypeChanged ? $testerTypeResult['value'] : false
+                )
+            ) {
+                $fields[] = 'onboarding_completed = 0';
             }
 
             if (isset($data['phone'])) {
