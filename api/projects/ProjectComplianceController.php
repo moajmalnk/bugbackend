@@ -6,8 +6,8 @@ require_once __DIR__ . '/../../utils/email.php';
 
 class ProjectComplianceController extends BaseAPI
 {
-    private const DEV_RULE_COUNT = 46;
-    private const QA_RULE_COUNT = 13;
+    private const DEV_RULE_COUNT = 63;
+    private const QA_RULE_COUNT = 34;
 
     private static $DEV_RULE_KEYS = [
         'dev_rule_1', 'dev_rule_2', 'dev_rule_3', 'dev_rule_4', 'dev_rule_5',
@@ -19,7 +19,10 @@ class ProjectComplianceController extends BaseAPI
         'dev_rule_31', 'dev_rule_32', 'dev_rule_33', 'dev_rule_35', 'dev_rule_36',
         'dev_rule_37', 'dev_rule_38', 'dev_rule_40', 'dev_rule_43', 'dev_rule_44',
         'dev_rule_45', 'dev_rule_46', 'dev_rule_47', 'dev_rule_48', 'dev_rule_49',
-        'dev_rule_50',
+        'dev_rule_50', 'dev_rule_51', 'dev_rule_52', 'dev_rule_53', 'dev_rule_54',
+        'dev_rule_55', 'dev_rule_56', 'dev_rule_57', 'dev_rule_58', 'dev_rule_59',
+        'dev_rule_60', 'dev_rule_61', 'dev_rule_62', 'dev_rule_63', 'dev_rule_64',
+        'dev_rule_65', 'dev_rule_66', 'dev_rule_67',
     ];
 
     private static $QA_RULE_KEYS = [
@@ -36,6 +39,27 @@ class ProjectComplianceController extends BaseAPI
         'qa_modal_scope',
         'qa_rtl_stress',
         'qa_browser_back',
+        'qa_loading_lifecycle',
+        'qa_data_reconciliation',
+        'qa_mutation_sync',
+        'qa_race_condition',
+        'qa_navigation_during_requests',
+        'qa_slow_api_timeout',
+        'qa_cross_browser_data',
+        'qa_cache_isolation',
+        'qa_concurrency',
+        'qa_session_expiry',
+        'qa_permission_boundary',
+        'qa_pagination_integrity',
+        'qa_financial_integrity',
+        'qa_api_contract',
+        'qa_production_build_env',
+        'qa_deployment_smoke',
+        'qa_regression',
+        'qa_performance_regression',
+        'qa_accessibility',
+        'qa_responsive_matrix',
+        'qa_release_acceptance',
     ];
 
     private static $BUILTIN_RULE_TITLES = [
@@ -85,6 +109,23 @@ class ProjectComplianceController extends BaseAPI
         'dev_rule_48' => 'Frontend Query Cache Ownership',
         'dev_rule_49' => 'Service Worker Cache Safety',
         'dev_rule_50' => 'Request Identity & Credentials',
+        'dev_rule_51' => 'API Contract & Backward Compatibility',
+        'dev_rule_52' => 'Backend as Source of Truth',
+        'dev_rule_53' => 'Complete API Request Lifecycle',
+        'dev_rule_54' => 'Stale Request & Navigation Safety',
+        'dev_rule_55' => 'Never Display Fake Business Data',
+        'dev_rule_56' => 'Database Transaction Integrity',
+        'dev_rule_57' => 'Concurrency Safety',
+        'dev_rule_58' => 'Idempotent Critical APIs',
+        'dev_rule_59' => 'N+1 Query Prevention',
+        'dev_rule_60' => 'Backend Authorization',
+        'dev_rule_61' => 'Environment Isolation',
+        'dev_rule_62' => 'Safe Database Migrations',
+        'dev_rule_63' => 'Production Observability',
+        'dev_rule_64' => 'AI-Generated Code Verification',
+        'dev_rule_65' => 'Dependency Discipline',
+        'dev_rule_66' => 'Root Cause Over Workarounds',
+        'dev_rule_67' => 'Release Readiness',
         'qa_apple_sandbox' => 'The Apple Ecosystem Sandbox',
         'qa_click_attack' => 'The Click Attack Safeguard',
         'qa_theme_interruption' => 'The Theme Interruption Matrix',
@@ -98,6 +139,27 @@ class ProjectComplianceController extends BaseAPI
         'qa_modal_scope' => 'Modal Overlay Scope',
         'qa_rtl_stress' => 'RTL Language Stress Test',
         'qa_browser_back' => 'Browser Back Button Drill',
+        'qa_loading_lifecycle' => 'Loading Lifecycle Drill',
+        'qa_data_reconciliation' => 'UI / API / Database Reconciliation',
+        'qa_mutation_sync' => 'Mutation Synchronization Audit',
+        'qa_race_condition' => 'Race Condition Drill',
+        'qa_navigation_during_requests' => 'Navigation During Requests',
+        'qa_slow_api_timeout' => 'Slow API & Timeout Test',
+        'qa_cross_browser_data' => 'Cross-Browser Data Consistency',
+        'qa_cache_isolation' => 'Cache Isolation Test',
+        'qa_concurrency' => 'Multi-Tab & Concurrent Operations',
+        'qa_session_expiry' => 'Session Expiry Test',
+        'qa_permission_boundary' => 'Permission Boundary Test',
+        'qa_pagination_integrity' => 'Pagination Integrity Test',
+        'qa_financial_integrity' => 'Financial Data Integrity',
+        'qa_api_contract' => 'API Contract Verification',
+        'qa_production_build_env' => 'Production Build & Environment',
+        'qa_deployment_smoke' => 'Deployment Smoke Test',
+        'qa_regression' => 'Regression Testing',
+        'qa_performance_regression' => 'Performance Regression Check',
+        'qa_accessibility' => 'Accessibility Check',
+        'qa_responsive_matrix' => 'Responsive Device Matrix',
+        'qa_release_acceptance' => 'Final Release Acceptance',
     ];
 
     private static $CLOSED_STATUSES = ['completed', 'release_ready', 'archived'];

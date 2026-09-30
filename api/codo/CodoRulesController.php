@@ -703,22 +703,41 @@ class CodoRulesController extends BaseAPI
     }
 
     /**
-     * Why: Rules 44–50 were added in a SQL file that is not auto-applied.
-     * The acknowledgement gate must see them on the next check, including an
-     * already-open developer session.
+     * Rule-seed migrations the acknowledgement gate applies on demand, keyed by a
+     * sentinel rule_key that only exists once the file has run.
      */
-    private function ensureCrossBrowserRules(): void
+    private const ON_DEMAND_RULE_MIGRATIONS = [
+        'dev_rule_44' => '110_codo_cross_browser_api_rules.sql',
+        'dev_rule_51' => '114_codo_production_engineering_rules.sql',
+    ];
+
+    /**
+     * Why: Rules 44–50 and 51–67 (plus QA Stress 14–34) were added in SQL files
+     * that are not auto-applied. The acknowledgement gate must see them on the
+     * next check, including an already-open developer session. Each file is
+     * idempotent (INSERT IGNORE + guarded UPDATEs), so a partial earlier run is safe.
+     */
+    private function ensureOnDemandRuleMigrations(): void
     {
         if (!$this->tablesReady()) {
             return;
         }
-        $check = $this->conn->query(
-            "SELECT 1 FROM codo_common_rules WHERE rule_key = 'dev_rule_44' LIMIT 1"
+        $sentinel = $this->conn->prepare(
+            'SELECT 1 FROM codo_common_rules WHERE rule_key = ? LIMIT 1'
         );
-        if ($check && $check->fetch(PDO::FETCH_NUM)) {
-            return;
+        foreach (self::ON_DEMAND_RULE_MIGRATIONS as $sentinelKey => $file) {
+            $sentinel->execute([$sentinelKey]);
+            $present = (bool) $sentinel->fetch(PDO::FETCH_NUM);
+            $sentinel->closeCursor();
+            if ($present) {
+                continue;
+            }
+            $this->runMigrationFile(__DIR__ . '/../../migrations/' . $file);
         }
-        $path = __DIR__ . '/../../migrations/110_codo_cross_browser_api_rules.sql';
+    }
+
+    private function runMigrationFile(string $path): void
+    {
         if (!is_file($path)) {
             return;
         }
@@ -758,9 +777,9 @@ class CodoRulesController extends BaseAPI
         $phases = $this->acknowledgementPhasesForRole($role);
         if ($phases !== [] && $this->tablesReady()) {
             try {
-                $this->ensureCrossBrowserRules();
+                $this->ensureOnDemandRuleMigrations();
             } catch (Throwable $e) {
-                error_log('CodoRulesController::ensureCrossBrowserRules: ' . $e->getMessage());
+                error_log('CodoRulesController::ensureOnDemandRuleMigrations: ' . $e->getMessage());
             }
         }
         if ($phases === [] || !$this->tablesReady() || !$this->ackTableReady()) {
