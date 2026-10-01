@@ -1,39 +1,44 @@
 <?php
 require_once __DIR__ . '/../config/cors.php';
 require_once __DIR__ . '/BaseAPI.php';
+require_once __DIR__ . '/../utils/role_directory.php';
 
-// Disable HTML error output to prevent JSON corruption
 error_reporting(E_ALL);
 ini_set('display_errors', 0);
 ini_set('log_errors', 1);
 
-// Handle preflight requests
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit();
 }
 
+header('Content-Type: application/json');
+header('Cache-Control: private, no-cache');
+
 try {
     $api = new BaseAPI();
-    
-    // Use cached query for better performance - include phone number
-    $testers = $api->fetchCached(
-        "SELECT id, username, email, phone, role FROM users WHERE role = 'tester' AND account_active = 1 ORDER BY username ASC",
-        [],
-        'testers_data',
-        600 // Cache for 10 minutes
-    );
-    
-    // Extract just the email values for backward compatibility
-    $emailList = array_column($testers, 'email');
-    
-    // Return both complete user data and email list
+
+    // Why: Staff emails and phone numbers must not be listed to anonymous callers.
+    try {
+        $decoded = $api->validateToken();
+    } catch (Throwable $e) {
+        $decoded = null;
+    }
+    if (!$decoded || !isset($decoded->user_id)) {
+        http_response_code(401);
+        echo json_encode(['success' => false, 'message' => 'Unauthorized']);
+        exit();
+    }
+
+    $users = br_role_directory($api, 'tester', 'testers_directory');
+
     echo json_encode([
-        'success' => true, 
-        'data' => $testers,
-        'emails' => $emailList
+        'success' => true,
+        'emails' => array_column($users, 'email'),
+        'data' => $users,
     ]);
-} catch (Exception $e) {
+} catch (Throwable $e) {
+    error_log('get_all_testers.php: ' . $e->getMessage());
     http_response_code(500);
-    echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+    echo json_encode(['success' => false, 'message' => 'Failed to load users']);
 }

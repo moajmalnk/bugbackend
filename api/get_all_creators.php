@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../config/cors.php';
 require_once __DIR__ . '/BaseAPI.php';
+require_once __DIR__ . '/../utils/role_directory.php';
 
 error_reporting(E_ALL);
 ini_set('display_errors', 0);
@@ -11,24 +12,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit();
 }
 
+header('Content-Type: application/json');
+header('Cache-Control: private, no-cache');
+
 try {
     $api = new BaseAPI();
 
-    $users = $api->fetchCached(
-        "SELECT email, phone FROM users WHERE role = 'creator' AND account_active = 1",
-        [],
-        'creators_data',
-        600
-    );
+    // Why: Staff emails and phone numbers must not be listed to anonymous callers.
+    try {
+        $decoded = $api->validateToken();
+    } catch (Throwable $e) {
+        $decoded = null;
+    }
+    if (!$decoded || !isset($decoded->user_id)) {
+        http_response_code(401);
+        echo json_encode(['success' => false, 'message' => 'Unauthorized']);
+        exit();
+    }
 
-    $emailList = array_column($users, 'email');
+    $users = br_role_directory($api, 'creator', 'creators_directory');
 
     echo json_encode([
         'success' => true,
-        'emails' => $emailList,
-        'data' => $users
+        'emails' => array_column($users, 'email'),
+        'data' => $users,
     ]);
-} catch (Exception $e) {
+} catch (Throwable $e) {
+    error_log('get_all_creators.php: ' . $e->getMessage());
     http_response_code(500);
-    echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+    echo json_encode(['success' => false, 'message' => 'Failed to load users']);
 }
