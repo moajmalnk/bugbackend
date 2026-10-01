@@ -44,7 +44,7 @@ try {
     $baseAPI = new BaseAPI();
     
     // Basic health check - just ensure we can connect to database
-    $stmt = $baseAPI->pdo->query("SELECT 1");
+    $stmt = $baseAPI->getConnection()->query("SELECT 1");
     $dbStatus = $stmt ? 'connected' : 'disconnected';
     
     // Get server info
@@ -64,7 +64,7 @@ try {
         'timestamp' => time()
     ]);
     
-} catch (Exception $e) {
+} catch (Throwable $e) {
     http_response_code(503);
     echo json_encode([
         'success' => false,
