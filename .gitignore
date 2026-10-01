@@ -13,6 +13,9 @@ config/firebase-service-account.json
 # Uploads directory content but keep the directory
 uploads/*
 !uploads/.gitkeep
+!uploads/profile_pictures/
+uploads/profile_pictures/*
+!uploads/profile_pictures/.htaccess
 
 # Composer packages — upload separately on Hostinger to:
 #   public_html/bugbackend_vendor/
