@@ -49,13 +49,14 @@ class GeminiService
 
         $url = 'https://generativelanguage.googleapis.com/v1beta/models/'
             . rawurlencode($this->model)
-            . ':generateContent?key=' . rawurlencode($this->apiKey);
+            . ':generateContent';
 
         $ch = curl_init($url);
         curl_setopt_array($ch, [
             CURLOPT_POST => true,
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+            // Key in a header, not the query string, so it never lands in proxy/access logs.
+            CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'X-goog-api-key: ' . $this->apiKey],
             CURLOPT_POSTFIELDS => json_encode($body),
             CURLOPT_TIMEOUT => 90,
         ]);
@@ -64,7 +65,7 @@ class GeminiService
         $errno = curl_errno($ch);
         $err = curl_error($ch);
         $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
+        unset($ch);
 
         if ($errno) {
             throw new Exception('Gemini request failed: ' . $err);

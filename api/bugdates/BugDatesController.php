@@ -19,7 +19,8 @@ class BugDatesController extends BaseAPI
     private const VISIBILITY = ['company', 'hr_only', 'admins'];
     private const STATUSES = ['approved', 'pending_approval', 'rejected'];
     private const POSTER_TEMPLATES = [
-        'speaker_session', 'heritage_hero', 'product_hero', 'typographic_quote', 'regional_message',
+        'growth_glimpse', 'team_session', 'speaker_session', 'heritage_hero', 'product_hero',
+        'typographic_quote', 'regional_message', 'brand_logo',
     ];
 
     private function requireAuth()

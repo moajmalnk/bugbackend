@@ -2478,6 +2478,47 @@ class BugController extends BaseAPI {
     }
 
     /**
+     * Why: "Fixed in period" must follow when the bug was fixed, not bugs.updated_at.
+     * Housekeeping writes (user force-delete nulling fixed_by, project auto-verify) bump
+     * updated_at on hundreds of old fixed bugs at once, which made Today / This month
+     * report the all-time fixed total. Fix time = latest `bug_fixed` activity, else the
+     * first `bug_updated` logged with status fixed, else updated_at for bugs that predate
+     * activity logging.
+     *
+     * @return array{sql:string,params:array<int,mixed>} WHERE clause (with leading JOINs) for `FROM bugs b`
+     */
+    private function dashboardFixedInPeriodScope(string $from, string $to, $accessUserId = null): array
+    {
+        $sql = "LEFT JOIN (
+                    SELECT CAST(pa.related_id AS CHAR) AS bug_id, MAX(pa.created_at) AS fixed_at
+                    FROM project_activities pa
+                    WHERE pa.activity_type = 'bug_fixed'
+                    GROUP BY CAST(pa.related_id AS CHAR)
+                ) fx ON fx.bug_id = CAST(b.id AS CHAR)
+                LEFT JOIN (
+                    SELECT CAST(pa.related_id AS CHAR) AS bug_id, MIN(pa.created_at) AS fixed_at
+                    FROM project_activities pa
+                    WHERE pa.activity_type = 'bug_updated'
+                      AND pa.metadata LIKE '%\"status\":\"fixed\"%'
+                    GROUP BY CAST(pa.related_id AS CHAR)
+                ) fu ON fu.bug_id = CAST(b.id AS CHAR)
+                WHERE " . $this->bugRecycleBinExclude('b') . "
+                  AND b.status = 'fixed'
+                  AND DATE(COALESCE(fx.fixed_at, fu.fixed_at, b.updated_at)) BETWEEN ? AND ?";
+        $params = [$from, $to];
+        if ($accessUserId) {
+            $sql .= " AND b.project_id IN (
+                    SELECT DISTINCT project_id FROM project_members WHERE user_id = ?
+                    UNION
+                    SELECT DISTINCT id FROM projects WHERE created_by = ?
+                )";
+            $params[] = $accessUserId;
+            $params[] = $accessUserId;
+        }
+        return ['sql' => $sql, 'params' => $params];
+    }
+
+    /**
      * Why: Ops Dashboard KPIs need full DB COUNTs (optionally period-scoped).
      * Sampling rows (e.g. LIMIT 500) falsely caps Fixed at 500.
      *
@@ -2556,6 +2597,14 @@ class BugController extends BaseAPI {
             $rejected = (int) ($row['rejected'] ?? 0);
             $open = (int) ($row['open_count'] ?? ($pending + $inProgress));
 
+            $fixedScope = null;
+            if ($from && $to) {
+                $fixedScope = $this->dashboardFixedInPeriodScope($from, $to, $accessUserId);
+                $fixedStmt = $this->conn->prepare("SELECT COUNT(*) AS total FROM bugs b {$fixedScope['sql']}");
+                $fixedStmt->execute($fixedScope['params']);
+                $fixed = (int) ($fixedStmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
+            }
+
             $retests = [
                 'pending' => 0,
                 'verified_fixed' => 0,
@@ -2569,10 +2618,17 @@ class BugController extends BaseAPI {
                 $retestWhere = $where;
                 $retestParams = $params;
 
-                $pendingWhere = array_merge($retestWhere, ["b.status = 'fixed'", 'b.tester_retested IS NULL']);
-                $pendingSql = ' WHERE ' . implode(' AND ', $pendingWhere);
-                $pendingStmt = $this->conn->prepare("SELECT COUNT(*) AS total FROM bugs b{$pendingSql}");
-                $pendingStmt->execute($retestParams);
+                if ($fixedScope) {
+                    $pendingStmt = $this->conn->prepare(
+                        "SELECT COUNT(*) AS total FROM bugs b {$fixedScope['sql']} AND b.tester_retested IS NULL"
+                    );
+                    $pendingStmt->execute($fixedScope['params']);
+                } else {
+                    $pendingWhere = array_merge($retestWhere, ["b.status = 'fixed'", 'b.tester_retested IS NULL']);
+                    $pendingSql = ' WHERE ' . implode(' AND ', $pendingWhere);
+                    $pendingStmt = $this->conn->prepare("SELECT COUNT(*) AS total FROM bugs b{$pendingSql}");
+                    $pendingStmt->execute($retestParams);
+                }
                 $retests['pending'] = (int) ($pendingStmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
 
                 $historyWhere = array_merge($retestWhere, ['b.tester_retested IS NOT NULL']);
@@ -2609,8 +2665,10 @@ class BugController extends BaseAPI {
                 'declined' => $declined,
                 'rejected' => $rejected,
                 'open' => $open,
-                'resolved' => (int) ($row['resolved'] ?? ($fixed + $rejected)),
-                'total' => (int) ($row['total'] ?? ($pending + $inProgress + $fixed + $declined + $rejected)),
+                'resolved' => $fixedScope ? ($fixed + $rejected) : (int) ($row['resolved'] ?? ($fixed + $rejected)),
+                'total' => $fixedScope
+                    ? ($pending + $inProgress + $fixed + $declined + $rejected)
+                    : (int) ($row['total'] ?? ($pending + $inProgress + $fixed + $declined + $rejected)),
                 'open_priority' => [
                     'high' => (int) ($row['open_high'] ?? 0),
                     'medium' => (int) ($row['open_medium'] ?? 0),
