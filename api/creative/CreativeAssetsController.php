@@ -897,16 +897,24 @@ class CreativeAssetsController extends BaseAPI
             return;
         }
 
-        $isOwnerDeletable = (string)$existing['creator_id'] === (string)$decoded->user_id
-            && in_array($existing['status'], ['Draft', 'In Review'], true)
+        // Creators own their work end to end, so they may remove it in any status;
+        // managers and admins may remove anyone's asset.
+        $isOwner = (string)$existing['creator_id'] === (string)$decoded->user_id
             && $this->can($decoded, 'CREATIVE_CREATE');
-        if (!$this->can($decoded, 'CREATIVE_MANAGE') && !$this->isAdmin($decoded) && !$isOwnerDeletable) {
-            $this->sendJsonResponse(403, 'Only Draft or In Review assets can be deleted by their owner');
+        if (!$this->can($decoded, 'CREATIVE_MANAGE') && !$this->isAdmin($decoded) && !$isOwner) {
+            $this->sendJsonResponse(403, 'Only the creator or a creative manager can delete this asset');
             return;
         }
 
         $stmt = $this->conn->prepare('DELETE FROM creative_assets WHERE id = ?');
         $stmt->execute([$id]);
+        error_log(json_encode([
+            'event' => 'creative.asset.deleted',
+            'asset_id' => $id,
+            'status' => $existing['status'] ?? null,
+            'user_id' => (string)$decoded->user_id,
+            'by_owner' => $isOwner,
+        ]));
         $this->sendJsonResponse(200, 'Asset deleted');
     }
 
