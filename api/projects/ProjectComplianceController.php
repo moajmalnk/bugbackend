@@ -797,6 +797,139 @@ class ProjectComplianceController extends BaseAPI
         }
     }
 
+    /**
+     * Why: Admins sign off Developer / Tester matrices on the team's behalf — one rule,
+     * a selection, or every rule — without loosening the role gates of toggleCheck()
+     * that developers and testers keep using. One UPDATE in a transaction, one activity
+     * entry, and no per-rule admin notifications (the actor is the admin).
+     */
+    public function adminSetChecks()
+    {
+        if ($_SERVER['REQUEST_METHOD'] !== 'PUT') {
+            $this->sendJsonResponse(405, 'Method not allowed');
+            return;
+        }
+
+        try {
+            $decoded = $this->validateToken();
+            if (!br_require_codo_standards_access($this, $this->conn, $decoded)) {
+                return;
+            }
+            if ($this->getEffectiveUserRole($decoded) !== 'admin') {
+                $this->sendJsonResponse(403, 'Only admins can bulk verify compliance rules');
+                return;
+            }
+
+            $data = $this->getRequestData();
+            $projectId = trim((string) ($data['project_id'] ?? ''));
+            $phase = (string) ($data['phase'] ?? '');
+            $verified = isset($data['verified']) ? (bool) $data['verified'] : true;
+            $all = !empty($data['all']);
+            $ruleKeys = [];
+            if (!$all) {
+                $raw = $data['rule_keys'] ?? [];
+                if (!is_array($raw)) {
+                    $this->sendJsonResponse(422, 'rule_keys must be an array');
+                    return;
+                }
+                foreach ($raw as $key) {
+                    $key = trim((string) $key);
+                    if ($key !== '' && strlen($key) <= 100) {
+                        $ruleKeys[$key] = true;
+                    }
+                }
+                $ruleKeys = array_keys($ruleKeys);
+                if (!$ruleKeys) {
+                    $this->sendJsonResponse(422, 'Select at least one rule');
+                    return;
+                }
+                if (count($ruleKeys) > 500) {
+                    $this->sendJsonResponse(422, 'Too many rules in one request');
+                    return;
+                }
+            }
+
+            if ($projectId === '' || !in_array($phase, ['developer', 'tester'], true)) {
+                $this->sendJsonResponse(422, 'project_id and phase (developer|tester) are required');
+                return;
+            }
+
+            $exists = $this->conn->prepare('SELECT id FROM projects WHERE id = ?');
+            $exists->execute([$projectId]);
+            if (!$exists->fetch()) {
+                $this->sendJsonResponse(404, 'Project not found');
+                return;
+            }
+
+            $this->ensureComplianceInitialized($projectId);
+
+            $verifiedVal = $verified ? 1 : 0;
+            $sql = "UPDATE project_compliance_checks
+                    SET verified = ?, verified_by = ?, verified_at = ?
+                    WHERE project_id = ? AND phase = ? AND verified <> ?";
+            $params = [
+                $verifiedVal,
+                $verified ? $decoded->user_id : null,
+                $verified ? date('Y-m-d H:i:s') : null,
+                $projectId,
+                $phase,
+                $verifiedVal,
+            ];
+            if (!$all) {
+                $sql .= ' AND rule_key IN (' . implode(',', array_fill(0, count($ruleKeys), '?')) . ')';
+                $params = array_merge($params, $ruleKeys);
+            }
+
+            $this->conn->beginTransaction();
+            try {
+                $stmt = $this->conn->prepare($sql);
+                $stmt->execute($params);
+                $changed = (int) $stmt->rowCount();
+                $stage = $this->recomputePipelineStage($projectId, $decoded->user_id);
+                $this->conn->commit();
+            } catch (Throwable $e) {
+                if ($this->conn->inTransaction()) {
+                    $this->conn->rollBack();
+                }
+                throw $e;
+            }
+
+            if ($changed > 0) {
+                try {
+                    ActivityLogger::getInstance()->logActivity(
+                        $decoded->user_id,
+                        $projectId,
+                        'compliance_admin_verify',
+                        sprintf(
+                            'Admin %s %d %s rule%s',
+                            $verified ? 'verified' : 'unverified',
+                            $changed,
+                            $this->formatPhaseLabel($phase),
+                            $changed === 1 ? '' : 's'
+                        ),
+                        $projectId,
+                        [
+                            'phase' => $phase,
+                            'verified' => $verified,
+                            'scope' => $all ? 'all' : 'selected',
+                            'count' => $changed,
+                        ]
+                    );
+                } catch (Throwable $e) {
+                    error_log('Compliance admin verify log failed: ' . $e->getMessage());
+                }
+            }
+
+            $payload = $this->buildCompliancePayload($projectId);
+            $payload['pipeline_stage'] = $stage;
+            $payload['changed'] = $changed;
+            $this->sendJsonResponse(200, 'Checks updated', $payload);
+        } catch (Throwable $e) {
+            error_log('Compliance adminSetChecks error: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Could not update compliance checks');
+        }
+    }
+
     public function emergencyBypass()
     {
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
