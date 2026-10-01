@@ -5,6 +5,35 @@ require_once __DIR__ . '/../../utils/work_submission_ot.php';
 require_once __DIR__ . '/../../utils/leave_attendance.php';
 
 class UserWorkStatsController extends BaseAPI {
+    private ?string $diagnosticActorId = null;
+
+    public function validateToken() {
+        $decoded = parent::validateToken();
+        if (is_object($decoded) && !empty($decoded->user_id)) {
+            $this->diagnosticActorId = (string)$decoded->user_id;
+        }
+        return $decoded;
+    }
+
+    /**
+     * Why: production error_log is not reachable from the admin UI; a SUPER_ADMIN
+     * gets the real failure in the 500 body so data-specific crashes can be
+     * diagnosed without server access. Everyone else gets the generic message.
+     */
+    private function failureDetail(Throwable $e): ?array {
+        if ($this->diagnosticActorId === null) {
+            return null;
+        }
+        try {
+            if (!PermissionManager::getInstance()->hasPermission($this->diagnosticActorId, 'SUPER_ADMIN')) {
+                return null;
+            }
+        } catch (Throwable $ignored) {
+            return null;
+        }
+        return ['error_detail' => $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine()];
+    }
+
     private function splitTaskLines($text) {
         $raw = explode("\n", (string)$text);
         $cleaned = [];
@@ -726,7 +755,7 @@ class UserWorkStatsController extends BaseAPI {
             
         } catch (Throwable $e) {
             error_log('UserWorkStatsController error: ' . $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine());
-            $this->sendJsonResponse(500, 'Failed to retrieve work statistics');
+            $this->sendJsonResponse(500, 'Failed to retrieve work statistics', $this->failureDetail($e));
         }
     }
 
@@ -952,7 +981,7 @@ class UserWorkStatsController extends BaseAPI {
             
         } catch (Throwable $e) {
             error_log('UserWorkStatsController::getPeriodDetails error: ' . $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine());
-            $this->sendJsonResponse(500, 'Failed to retrieve period details');
+            $this->sendJsonResponse(500, 'Failed to retrieve period details', $this->failureDetail($e));
         }
     }
 
@@ -1219,7 +1248,7 @@ class UserWorkStatsController extends BaseAPI {
             $this->sendJsonResponse(200, 'Team period details retrieved successfully', $details);
         } catch (Throwable $e) {
             error_log('UserWorkStatsController::getTeamPeriodDetails error: ' . $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine());
-            $this->sendJsonResponse(500, 'Failed to retrieve team period details');
+            $this->sendJsonResponse(500, 'Failed to retrieve team period details', $this->failureDetail($e));
         }
     }
 
@@ -1827,8 +1856,8 @@ class UserWorkStatsController extends BaseAPI {
 
             $this->sendJsonResponse(200, 'User analytics retrieved successfully', $payload);
         } catch (Throwable $e) {
-            error_log('UserWorkStatsController::getUsersAnalytics error: ' . $e->getMessage());
-            $this->sendJsonResponse(500, 'Failed to retrieve user analytics');
+            error_log('UserWorkStatsController::getUsersAnalytics error: ' . $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine());
+            $this->sendJsonResponse(500, 'Failed to retrieve user analytics', $this->failureDetail($e));
         }
     }
 }

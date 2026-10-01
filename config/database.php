@@ -21,25 +21,15 @@ class Database {
             $this->username = "root";
             $this->password = "";
         } else {
-            // Production database configuration - Common Hostinger patterns
-            
-            // Try the most common configuration first
-            $this->host = "localhost";
-            $this->db_name = "u524154866_bugfixer";
-            $this->username = "u524154866_bugfixer";
-            
-            // Common password alternatives for this hosting setup
-            $possiblePasswords = [
-                "CodoMail@8848",           // Original
-                "CodoMail@88",             // Shortened version
-                "codomail@8848",           // Lowercase
-                "CodoMail8848",            // Without @
-                "u262074081_bugfixer",     // Sometimes same as username
-            ];
-            
-            // Use the first password by default
-            $this->password = $possiblePasswords[0];
-            
+            // Why: credentials belong in backend/.env (gitignored). Legacy values below are
+            // a temporary fallback until DB_* keys are set on the server; remove them once
+            // the production .env has DB_PASS.
+            require_once __DIR__ . '/environment.php';
+            $this->host = Environment::get('DB_HOST', 'localhost');
+            $this->db_name = Environment::get('DB_NAME', 'u524154866_bugfixer');
+            $this->username = Environment::get('DB_USER', 'u524154866_bugfixer');
+            $this->password = (string) Environment::get('DB_PASS', '');
+
             error_log("Production environment detected");
             error_log("Database host: " . $this->host);
             error_log("Database name: " . $this->db_name);
@@ -216,13 +206,9 @@ class Database {
             }
         } else {
             // Production connection logic (multiple password attempts)
-            $passwordsToTry = [
-                "CodoMail@8848",
-                "CodoMail@88", 
-                "codomail@8848",
-                "CodoMail8848",
-                "u262074081_bugfixer"
-            ];
+            $passwordsToTry = $this->password !== ''
+                ? [$this->password]
+                : ["CodoMail@8848", "CodoMail@88", "codomail@8848", "CodoMail8848", "u262074081_bugfixer"];
 
             // Why: the hosting account caps concurrent MySQL links (~20). A dashboard load
             // fires more parallel requests than that; most finish in milliseconds, so a
