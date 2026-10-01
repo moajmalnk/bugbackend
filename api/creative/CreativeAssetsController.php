@@ -1133,6 +1133,110 @@ class CreativeAssetsController extends BaseAPI
     }
 
     /**
+     * Creator dashboard summary.
+     *
+     * Why: Pipeline cards (Draft / In Review / due / total) describe the current state of
+     * work and must not shrink when the period changes — an asset created in March that is
+     * still a Draft is still a Draft today. Only output metrics are period-bound:
+     * published (by published_date) and created (by created_at). Scope matches the
+     * BugCreative library via applyOwnerScope.
+     */
+    public function dashboardSummary(): void
+    {
+        $decoded = $this->requireAuth();
+        if (!$decoded || !$this->ensureReady()) {
+            return;
+        }
+        if (!$this->can($decoded, 'CREATIVE_VIEW')) {
+            $this->sendJsonResponse(403, 'Access denied');
+            return;
+        }
+
+        $from = $this->sanitizeDate($_GET['from'] ?? null);
+        $to = $this->sanitizeDate($_GET['to'] ?? null);
+        if ($from === null || $to === null || $from > $to) {
+            $this->sendJsonResponse(400, 'from and to (YYYY-MM-DD) are required');
+            return;
+        }
+
+        $where = ['1=1'];
+        $params = [];
+        $this->applyOwnerScope($decoded, $where, $params);
+        $scopeSql = implode(' AND ', $where);
+
+        try {
+            $byStatus = array_fill_keys(self::STATUSES, 0);
+            $stmt = $this->conn->prepare(
+                "SELECT a.status, COUNT(*) AS c FROM creative_assets a
+                 WHERE {$scopeSql} GROUP BY a.status"
+            );
+            $stmt->execute($params);
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+                if (array_key_exists($row['status'], $byStatus)) {
+                    $byStatus[$row['status']] = (int)$row['c'];
+                }
+            }
+
+            $stmt = $this->conn->prepare(
+                "SELECT
+                    SUM(CASE WHEN a.scheduled_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 6 DAY)
+                             AND a.status NOT IN ('Published','Rejected') THEN 1 ELSE 0 END) AS due_next_7_days,
+                    SUM(CASE WHEN a.scheduled_date < CURDATE()
+                             AND a.status NOT IN ('Published','Completed','Rejected') THEN 1 ELSE 0 END) AS overdue,
+                    SUM(CASE WHEN a.status = 'Published'
+                             AND COALESCE(a.published_date, DATE(a.updated_at)) BETWEEN ? AND ? THEN 1 ELSE 0 END) AS published_in_period,
+                    SUM(CASE WHEN DATE(a.created_at) BETWEEN ? AND ? THEN 1 ELSE 0 END) AS created_in_period
+                 FROM creative_assets a
+                 WHERE {$scopeSql}"
+            );
+            $stmt->execute(array_merge([$from, $to, $from, $to], $params));
+            $agg = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+            $stmt = $this->conn->prepare(
+                "SELECT a.id, a.title, a.status, a.material_type, a.platform,
+                        a.scheduled_date, a.published_date, a.updated_at
+                 FROM creative_assets a
+                 WHERE {$scopeSql}
+                 ORDER BY a.updated_at DESC, a.id DESC
+                 LIMIT 8"
+            );
+            $stmt->execute($params);
+            $recent = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        } catch (Throwable $e) {
+            error_log('CreativeAssetsController::dashboardSummary: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Failed to load creative summary');
+            return;
+        }
+
+        header('Cache-Control: private, no-cache');
+        $this->sendJsonResponse(200, 'OK', [
+            'from' => $from,
+            'to' => $to,
+            'by_status' => $byStatus,
+            'total' => array_sum($byStatus),
+            'drafts' => $byStatus['Draft'],
+            'in_review' => $byStatus['In Review'],
+            'rejected' => $byStatus['Rejected'],
+            'due_next_7_days' => (int)($agg['due_next_7_days'] ?? 0),
+            'overdue' => (int)($agg['overdue'] ?? 0),
+            'published_in_period' => (int)($agg['published_in_period'] ?? 0),
+            'created_in_period' => (int)($agg['created_in_period'] ?? 0),
+            'recent' => array_map(static function (array $r): array {
+                return [
+                    'id' => $r['id'],
+                    'title' => $r['title'],
+                    'status' => $r['status'],
+                    'material_type' => $r['material_type'],
+                    'platform' => $r['platform'],
+                    'scheduled_date' => $r['scheduled_date'],
+                    'published_date' => $r['published_date'],
+                    'updated_at' => $r['updated_at'],
+                ];
+            }, $recent),
+        ]);
+    }
+
+    /**
      * Why: All-or-nothing move keeps library organization consistent under ownership rules.
      */
     public function move()

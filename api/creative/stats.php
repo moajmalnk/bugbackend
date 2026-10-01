@@ -13,4 +13,8 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
 }
 
 $c = new CreativeAssetsController();
-$c->stats();
+if (($_GET['view'] ?? '') === 'dashboard') {
+    $c->dashboardSummary();
+} else {
+    $c->stats();
+}
