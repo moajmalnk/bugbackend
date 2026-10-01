@@ -2,6 +2,7 @@
 require_once __DIR__ . '/../../config/composer_autoload.php';
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../config/environment.php';
+require_once __DIR__ . '/google_scopes.php';
 
 class GoogleOAuthController extends BaseAPI {
     private $googleClient;
@@ -31,12 +32,7 @@ class GoogleOAuthController extends BaseAPI {
         $redirectUri = $this->getRedirectUri();
         $this->googleClient->setRedirectUri($redirectUri);
         
-        // Set required scopes for Google Docs, Sheets, Drive, and Calendar (for Meet)
-        $this->googleClient->addScope('https://www.googleapis.com/auth/documents');
-        $this->googleClient->addScope('https://www.googleapis.com/auth/spreadsheets');
-        $this->googleClient->addScope('https://www.googleapis.com/auth/drive.file');
-        $this->googleClient->addScope('https://www.googleapis.com/auth/userinfo.email');
-        $this->googleClient->addScope('https://www.googleapis.com/auth/calendar');
+        $this->googleClient->setScopes(BR_GOOGLE_OAUTH_SCOPES);
         
         // Critical: Get refresh token and force consent
         $this->googleClient->setAccessType('offline');

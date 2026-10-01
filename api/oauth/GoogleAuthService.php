@@ -8,6 +8,7 @@
 require_once __DIR__ . '/../../config/composer_autoload.php';
 require_once __DIR__ . '/../../config/database.php';
 require_once __DIR__ . '/../../config/environment.php';
+require_once __DIR__ . '/google_scopes.php';
 
 class GoogleAuthService {
     private $conn;
@@ -83,12 +84,7 @@ class GoogleAuthService {
             $client->setClientId($this->clientId);
             $client->setClientSecret($this->clientSecret);
             $client->setRedirectUri($this->redirectUri);
-            $client->setScopes([
-                Google\Service\Docs::DOCUMENTS,
-                Google\Service\Sheets::SPREADSHEETS,
-                Google\Service\Drive::DRIVE_FILE,
-                'https://www.googleapis.com/auth/calendar'
-            ]);
+            $client->setScopes(BR_GOOGLE_OAUTH_SCOPES);
             $client->setAccessType('offline');
             
             // Set refresh token
