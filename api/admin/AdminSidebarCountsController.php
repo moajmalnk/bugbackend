@@ -8,6 +8,8 @@
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../utils/docs_sheets_recycle.php';
 require_once __DIR__ . '/../../utils/workforce_access.php';
+require_once __DIR__ . '/../../utils/bug_dates_recurrence.php';
+require_once __DIR__ . '/../../utils/meet_nav_count.php';
 
 class AdminSidebarCountsController extends BaseAPI
 {
@@ -46,6 +48,9 @@ class AdminSidebarCountsController extends BaseAPI
             'sheets' => 0,
             'meetings' => 0,
             'tasks' => 0,
+            'tasksOverdue' => 0,
+            'bugdates' => 0,
+            'bugdatesPending' => 0,
             'bugupdate' => 0,
             'weeklyReport' => 0,
             'myleave' => 0,
@@ -228,41 +233,33 @@ class AdminSidebarCountsController extends BaseAPI
         }
 
         if (
-            ($can('MEETINGS_JOIN') || $can('MEETINGS_CREATE') || $can('MEETINGS_MANAGE') || $role === 'developer')
-            && $this->dbTableExists('meetings')
+            $role !== 'tester'
+            && ($can('MEETINGS_JOIN') || $can('MEETINGS_CREATE') || $can('MEETINGS_MANAGE') || $role === 'developer')
+            && $this->dbTableExists('google_tokens')
         ) {
-            if ($isAdmin) {
-                $counts['meetings'] = $this->countOrZero('SELECT COUNT(*) FROM meetings');
-            } else {
-                $counts['meetings'] = $this->countOrZero(
-                    'SELECT COUNT(*) FROM meetings WHERE created_by = ?',
-                    [$userId]
-                );
-            }
+            $counts['meetings'] = br_meet_nav_count($this->conn, $userId);
         }
 
         if (
             ($can('TASKS_VIEW_ALL') || $can('TASKS_VIEW_ASSIGNED') || $can('TASKS_CREATE'))
             && $this->dbTableExists('shared_tasks')
         ) {
-            $liveTasks = $this->taskRecycleBinExclude();
-            $liveTasksSt = $this->taskRecycleBinExclude('st');
-            if ($isAdmin) {
-                $counts['tasks'] = $this->countOrZero(
-                    "SELECT COUNT(*) FROM shared_tasks WHERE {$liveTasks}"
-                );
-            } else {
-                $assigneeJoin = $this->dbTableExists('shared_task_assignees')
-                    ? ' LEFT JOIN shared_task_assignees sta ON st.id = sta.shared_task_id'
-                    : '';
-                $assigneeWhere = $this->dbTableExists('shared_task_assignees')
-                    ? ' OR sta.assigned_to = ?'
-                    : '';
-                $params = $assigneeWhere !== '' ? [$userId, $userId, $userId] : [$userId, $userId];
-                $counts['tasks'] = $this->countOrZero(
-                    "SELECT COUNT(DISTINCT st.id) FROM shared_tasks st{$assigneeJoin}
-                     WHERE ({$liveTasksSt}) AND (st.assigned_to = ? OR st.created_by = ?{$assigneeWhere})",
-                    $params
+            [$counts['tasks'], $counts['tasksOverdue']] = $this->countOpenTasks($userId, $isAdmin);
+        }
+
+        if (
+            ($can('BUGDATES_VIEW') || $can('LEAVE_VIEW') || $isAdmin)
+            && br_bug_dates_tables_ready($this->conn)
+        ) {
+            $canManageDates = $isAdmin || $can('BUGDATES_MANAGE');
+            $counts['bugdates'] = $this->countUpcomingBugDates(
+                $isAdmin,
+                $canManageDates,
+                $can('LEAVE_MANAGE') || $can('ATTENDANCE_MANAGE')
+            );
+            if ($canManageDates) {
+                $counts['bugdatesPending'] = $this->countOrZero(
+                    "SELECT COUNT(*) FROM bug_dates_events WHERE status = 'pending_approval'"
                 );
             }
         }
@@ -308,16 +305,12 @@ class AdminSidebarCountsController extends BaseAPI
         }
 
         if (
-            ($role === 'admin' || $role === 'developer' || $can('MESSAGING_VIEW'))
+            (in_array($role, ['admin', 'developer', 'creator'], true) || $can('MESSAGING_VIEW'))
             && $this->dbTableExists('chat_groups')
             && $this->dbTableExists('chat_group_members')
+            && $this->dbTableExists('chat_messages')
         ) {
-            $counts['messages'] = $this->countOrZero(
-                "SELECT COUNT(*) FROM chat_groups cg
-                 INNER JOIN chat_group_members cgm ON cgm.group_id = cg.id
-                 WHERE cgm.user_id = ? AND COALESCE(cg.is_active, 1) = 1",
-                [$userId]
-            );
+            $counts['messages'] = $this->countUnreadMessages($userId);
         }
 
         if ($can('COMMON_BUGS_VIEW') && $this->dbTableExists('bugs')) {
@@ -490,6 +483,119 @@ class AdminSidebarCountsController extends BaseAPI
     /**
      * Why: Fallback compliance badge until the client recomputes pending rows from project payloads.
      */
+    /**
+     * Why: BugToDo badge shows work still to do (pending / in progress), not every
+     * task ever shared. Non-admins count only tasks assigned to them where their own
+     * part is unfinished; admins see the team's open queue. Overdue drives the alert tone.
+     *
+     * @return array{0:int,1:int} [open, overdue]
+     */
+    private function countOpenTasks(string $userId, bool $isAdmin): array
+    {
+        $live = $this->taskRecycleBinExclude('st');
+        $open = "st.status IN ('pending', 'in_progress')";
+        $select = "SELECT COUNT(DISTINCT st.id) AS open_count,
+                          COUNT(DISTINCT CASE WHEN st.due_date IS NOT NULL AND st.due_date < CURDATE()
+                                              THEN st.id END) AS overdue_count";
+
+        if ($isAdmin) {
+            $sql = "{$select} FROM shared_tasks st WHERE {$live} AND {$open}";
+            $params = [];
+        } elseif ($this->dbTableExists('shared_task_assignees')) {
+            $mineDone = $this->dbColumnExists('shared_task_assignees', 'completed_at')
+                ? ' AND sta.completed_at IS NULL'
+                : '';
+            $sql = "{$select} FROM shared_tasks st
+                    LEFT JOIN shared_task_assignees sta
+                      ON sta.shared_task_id = st.id AND sta.assigned_to = ?
+                    WHERE {$live} AND {$open}
+                      AND (st.assigned_to = ? OR (sta.id IS NOT NULL{$mineDone}))";
+            $params = [$userId, $userId];
+        } else {
+            $sql = "{$select} FROM shared_tasks st WHERE {$live} AND {$open} AND st.assigned_to = ?";
+            $params = [$userId];
+        }
+
+        try {
+            $stmt = $this->conn->prepare($sql);
+            $stmt->execute($params);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+            return [(int) ($row['open_count'] ?? 0), (int) ($row['overdue_count'] ?? 0)];
+        } catch (Throwable $e) {
+            error_log('AdminSidebarCountsController tasks: ' . $e->getMessage());
+            return [0, 0];
+        }
+    }
+
+    /**
+     * Why: BugDates badge = distinct approved calendar events the viewer may see that
+     * occur in the next 7 days (IST), so the nav hints "something is coming up".
+     * Visibility mirrors BugDatesController::canSeeVisibility.
+     */
+    private function countUpcomingBugDates(bool $isAdmin, bool $canManage, bool $isHr): int
+    {
+        $tz = new DateTimeZone('Asia/Kolkata');
+        $today = (new DateTimeImmutable('now', $tz))->format('Y-m-d');
+        $until = (new DateTimeImmutable('now', $tz))->modify('+6 days')->format('Y-m-d');
+
+        $visibility = ["'company'"];
+        if ($isHr || $canManage) {
+            $visibility[] = "'hr_only'";
+        }
+        if ($isAdmin || $canManage) {
+            $visibility[] = "'admins'";
+        }
+        $visibilityIn = implode(', ', $visibility);
+
+        try {
+            $stmt = $this->conn->prepare(
+                "SELECT id, recurrence_type, recurrence_days, start_date, end_date
+                 FROM bug_dates_events
+                 WHERE status = 'approved'
+                   AND COALESCE(visibility, 'company') IN ({$visibilityIn})
+                   AND start_date <= ?
+                   AND (recurrence_type <> 'none' OR COALESCE(end_date, start_date) >= ?)
+                 ORDER BY start_date ASC"
+            );
+            $stmt->execute([$until, $today]);
+            $count = 0;
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+                if (br_bug_dates_expand_occurrences($row, $today, $until) !== []) {
+                    $count++;
+                }
+            }
+            return $count;
+        } catch (Throwable $e) {
+            error_log('AdminSidebarCountsController bugdates: ' . $e->getMessage());
+            return 0;
+        }
+    }
+
+    /**
+     * Why: BugMessage badge = unread messages from others in active chats since the
+     * member last read (or joined). Muted chats are excluded so the badge stays meaningful.
+     */
+    private function countUnreadMessages(string $userId): int
+    {
+        $mutedExclude = $this->dbColumnExists('chat_group_members', 'is_muted')
+            ? ($this->dbColumnExists('chat_group_members', 'muted_until')
+                ? ' AND NOT (COALESCE(cgm.is_muted, 0) = 1 AND (cgm.muted_until IS NULL OR cgm.muted_until > NOW()))'
+                : ' AND COALESCE(cgm.is_muted, 0) = 0')
+            : '';
+
+        return $this->countOrZero(
+            "SELECT COUNT(*)
+             FROM chat_group_members cgm
+             INNER JOIN chat_groups cg ON cg.id = cgm.group_id AND COALESCE(cg.is_active, 1) = 1
+             INNER JOIN chat_messages cm ON cm.group_id = cgm.group_id
+             WHERE cgm.user_id = ?
+               AND cm.sender_id <> ?
+               AND cm.is_deleted = 0
+               AND cm.created_at > COALESCE(cgm.last_read_at, cgm.joined_at){$mutedExclude}",
+            [$userId, $userId]
+        );
+    }
+
     private function countIncompleteCompliance(
         string $userId,
         bool $isAdmin,

@@ -7,6 +7,7 @@
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../oauth/GoogleAuthService.php';
 require_once __DIR__ . '/../../config/environment.php';
+require_once __DIR__ . '/../../utils/meet_nav_count.php';
 
 // Enable CORS
 header('Access-Control-Allow-Origin: *');
@@ -259,6 +260,8 @@ try {
         }
     }
     
+    br_meet_nav_count_forget((string) $bugricerUserId);
+
     // Return success response
     echo json_encode([
         'success' => true,

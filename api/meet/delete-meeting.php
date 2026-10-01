@@ -7,6 +7,7 @@ error_log("DEBUG: delete-meeting.php endpoint hit.");
 
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../oauth/GoogleAuthService.php';
+require_once __DIR__ . '/../../utils/meet_nav_count.php';
 
 // Enable CORS
 header('Access-Control-Allow-Origin: *');
@@ -81,6 +82,7 @@ try {
     $calendarService->events->delete('primary', $meetingId);
     
     error_log("DEBUG: Meeting deleted successfully: " . $meetingId);
+    br_meet_nav_count_forget((string) $bugricerUserId);
     
     echo json_encode([
         'success' => true,
