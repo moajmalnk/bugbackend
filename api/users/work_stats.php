@@ -358,23 +358,7 @@ class UserWorkStatsController extends BaseAPI {
     }
 
     private function ensureWorkSubmissionOtApprovalColumns() {
-        $alters = [
-            ['extra_hours_approval_status', "ALTER TABLE work_submissions ADD COLUMN extra_hours_approval_status VARCHAR(24) NOT NULL DEFAULT 'none' AFTER approval_reason"],
-            ['extra_hours_approved_amount', 'ALTER TABLE work_submissions ADD COLUMN extra_hours_approved_amount DECIMAL(6,2) NULL DEFAULT NULL AFTER extra_hours_approval_status'],
-            ['extra_hours_reviewed_by', 'ALTER TABLE work_submissions ADD COLUMN extra_hours_reviewed_by INT UNSIGNED NULL DEFAULT NULL AFTER extra_hours_approved_amount'],
-            ['extra_hours_reviewed_at', 'ALTER TABLE work_submissions ADD COLUMN extra_hours_reviewed_at DATETIME NULL DEFAULT NULL AFTER extra_hours_reviewed_by'],
-            ['extra_hours_admin_note', 'ALTER TABLE work_submissions ADD COLUMN extra_hours_admin_note TEXT NULL DEFAULT NULL AFTER extra_hours_reviewed_at'],
-        ];
-        foreach ($alters as $pair) {
-            try {
-                $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE '" . $pair[0] . "'");
-                if ($check->rowCount() === 0) {
-                    $this->conn->exec($pair[1]);
-                }
-            } catch (Exception $e) {
-                // ignore
-            }
-        }
+        br_ensure_work_submission_ot_columns($this->conn);
     }
 
     private function wsLiveAnd(string $alias = ''): string
@@ -740,8 +724,8 @@ class UserWorkStatsController extends BaseAPI {
             
             $this->sendJsonResponse(200, 'Work statistics retrieved successfully', $stats);
             
-        } catch (Exception $e) {
-            error_log('UserWorkStatsController error: ' . $e->getMessage());
+        } catch (Throwable $e) {
+            error_log('UserWorkStatsController error: ' . $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine());
             $this->sendJsonResponse(500, 'Failed to retrieve work statistics');
         }
     }
@@ -966,8 +950,8 @@ class UserWorkStatsController extends BaseAPI {
 
             $this->sendJsonResponse(200, 'Period details retrieved successfully', $details);
             
-        } catch (Exception $e) {
-            error_log('UserWorkStatsController::getPeriodDetails error: ' . $e->getMessage());
+        } catch (Throwable $e) {
+            error_log('UserWorkStatsController::getPeriodDetails error: ' . $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine());
             $this->sendJsonResponse(500, 'Failed to retrieve period details');
         }
     }
@@ -1233,8 +1217,8 @@ class UserWorkStatsController extends BaseAPI {
             ];
 
             $this->sendJsonResponse(200, 'Team period details retrieved successfully', $details);
-        } catch (Exception $e) {
-            error_log('UserWorkStatsController::getTeamPeriodDetails error: ' . $e->getMessage());
+        } catch (Throwable $e) {
+            error_log('UserWorkStatsController::getTeamPeriodDetails error: ' . $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine());
             $this->sendJsonResponse(500, 'Failed to retrieve team period details');
         }
     }

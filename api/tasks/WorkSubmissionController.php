@@ -109,6 +109,8 @@ class WorkSubmissionController extends BaseAPI {
                 $cumulative = $monthTotals['hours'];
             }
 
+            br_ensure_work_submission_ot_columns($this->conn);
+
             // Auto-migrate: add ongoing_tasks column if missing
             try {
                 $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'ongoing_tasks'");
