@@ -519,8 +519,20 @@ class BugDatesController extends BaseAPI
             try {
                 $t = $this->conn->query("SHOW TABLES LIKE 'user_onboarding_details'");
                 if ($t && $t->fetch(PDO::FETCH_NUM)) {
+                    $userCols = [];
+                    $ucRes = $this->conn->query('SHOW COLUMNS FROM users');
+                    if ($ucRes) {
+                        while ($c = $ucRes->fetch(PDO::FETCH_ASSOC)) {
+                            $userCols[] = $c['Field'];
+                        }
+                    }
+                    $extra = in_array('job_title', $userCols, true) ? ['u.job_title'] : [];
+                    foreach (br_user_avatar_select_cols([], $userCols) as $col) {
+                        $extra[] = 'u.' . $col;
+                    }
+                    $extraSql = $extra ? ', ' . implode(', ', $extra) : '';
                     $stmt = $this->conn->query(
-                        "SELECT u.id, u.username, d.date_of_birth
+                        "SELECT u.id, u.username{$extraSql}, d.date_of_birth
                          FROM users u
                          INNER JOIN user_onboarding_details d
                            ON d.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
@@ -534,6 +546,8 @@ class BugDatesController extends BaseAPI
                             continue;
                         }
                         $md = substr($dob, 5);
+                        $row = br_user_with_resolved_avatar($row);
+                        $jobTitle = trim((string)($row['job_title'] ?? ''));
                         $cursor = $fromDt;
                         while ($cursor <= $toDt) {
                             if ($cursor->format('m-d') === $md) {
@@ -545,6 +559,8 @@ class BugDatesController extends BaseAPI
                                     'category' => 'milestone',
                                     'user_id' => $row['id'],
                                     'username' => $row['username'] ?? null,
+                                    'job_title' => $jobTitle !== '' ? $jobTitle : null,
+                                    'avatar' => $row['avatar'] ?? null,
                                 ];
                             }
                             $cursor = $cursor->modify('+1 day');
