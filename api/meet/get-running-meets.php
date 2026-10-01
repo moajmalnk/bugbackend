@@ -7,6 +7,7 @@ error_log("DEBUG: get-running-meets.php endpoint hit.");
 
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../oauth/GoogleAuthService.php';
+require_once __DIR__ . '/../../utils/meet_nav_count.php';
 
 // Enable CORS
 header('Access-Control-Allow-Origin: *');
@@ -149,6 +150,8 @@ try {
     
     error_log("DEBUG: Final running meetings count: " . count($runningMeets));
     error_log("DEBUG: Final completed meetings count: " . count($completedMeets));
+
+    br_meet_nav_count_store((string) $bugricerUserId, count($runningMeets));
     
     echo json_encode([
         'success' => true,
