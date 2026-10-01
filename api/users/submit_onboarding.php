@@ -130,6 +130,19 @@ class SubmitOnboardingAPI extends BaseAPI
                 }
             }
 
+            // Why: The account email was proven when the employee signed in through the
+            // welcome link sent to it, so reusing it as the contact email needs no OTP.
+            // Any other address still requires the email OTP flow.
+            if (trim((string) ($fields['contact_email_verified_at'] ?? '')) === ''
+                && $fields['contact_email'] !== '') {
+                $acctStmt = $this->conn->prepare('SELECT email FROM users WHERE id = ? LIMIT 1');
+                $acctStmt->execute([$userId]);
+                $accountEmail = strtolower(trim((string) ($acctStmt->fetchColumn() ?: '')));
+                if ($accountEmail !== '' && $accountEmail === $fields['contact_email']) {
+                    $fields['contact_email_verified_at'] = gmdate('c');
+                }
+            }
+
             $detailColsEarly = [];
             $colResEarly = $this->conn->query('SHOW COLUMNS FROM user_onboarding_details');
             if ($colResEarly) {

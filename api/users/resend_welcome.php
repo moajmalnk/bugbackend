@@ -1,6 +1,6 @@
 <?php
 /**
- * POST { user_id } — resend the welcome email (one-click sign-in link) to an existing user.
+ * POST { user_id, channels: ["email","whatsapp"] } — resend the welcome invite (one-click sign-in link).
  *
  * Why: When SMTP hiccups at creation time the employee is stranded with no way in.
  * This re-sends synchronously so the admin sees the real delivery result and SMTP
@@ -41,6 +41,17 @@ if ($userId === '' || strlen($userId) > 64) {
     ]);
 }
 
+$requested = $data['channels'] ?? ['email'];
+if (!is_array($requested)) {
+    $requested = [$requested];
+}
+$channels = array_values(array_intersect(['email', 'whatsapp'], array_map('strval', $requested)));
+if ($channels === []) {
+    $api->sendJsonResponse(422, 'Choose email, WhatsApp, or both.', [
+        'errors' => ['channels' => ['Pick at least one channel.']],
+    ]);
+}
+
 $conn = $api->getConnection();
 $hasTesterType = false;
 try {
@@ -51,7 +62,7 @@ try {
 }
 
 $stmt = $conn->prepare(
-    'SELECT id, username, email, role' . ($hasTesterType ? ', tester_type' : '') . ' FROM users WHERE id = ? LIMIT 1'
+    'SELECT id, username, email, phone, role' . ($hasTesterType ? ', tester_type' : '') . ' FROM users WHERE id = ? LIMIT 1'
 );
 $stmt->execute([$userId]);
 $user = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -60,58 +71,94 @@ if (!$user) {
 }
 
 $email = trim((string) ($user['email'] ?? ''));
-if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+$phone = trim((string) ($user['phone'] ?? ''));
+if (in_array('email', $channels, true) && ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL))) {
     $api->sendJsonResponse(422, 'This user has no valid email address. Edit the user and add one first.');
 }
+if (in_array('whatsapp', $channels, true) && $phone === '') {
+    $api->sendJsonResponse(422, 'This user has no phone number. Edit the user and add one first.');
+}
+
+/** Why: sendEmail/sendWhatsAppMessage return bool only; the reason lives in the delivery log. */
+$lastDeliveryError = static function (PDO $conn, string $channel, string $recipient): ?string {
+    try {
+        $q = $conn->prepare(
+            "SELECT error_message FROM notification_delivery_log
+             WHERE channel = ? AND status = 'failed' AND recipient = ?
+             ORDER BY created_at DESC, id DESC LIMIT 1"
+        );
+        $q->execute([$channel, $recipient]);
+        $msg = $q->fetchColumn();
+        return $msg ? (string) $msg : null;
+    } catch (Throwable $e) {
+        return null;
+    }
+};
 
 $startedAt = microtime(true);
-$sent = false;
-$errorMessage = null;
+$results = [];
+$loginLink = '';
 
 try {
     require_once __DIR__ . '/../../utils/welcome_invite.php';
-    require_once __DIR__ . '/../../utils/email.php';
     $loginLink = br_create_welcome_login_url((string) $user['id'], (string) $user['username'], (string) $user['role']);
-    $sent = (bool) sendWelcomeEmail(
-        $email,
-        (string) $user['username'],
-        null,
-        (string) $user['role'],
-        $loginLink,
-        $user['tester_type'] ?? null
-    );
 } catch (Throwable $e) {
-    $errorMessage = $e->getMessage();
+    $api->sendJsonResponse(500, 'Could not create the sign-in link: ' . $e->getMessage());
 }
 
-if (!$sent && $errorMessage === null) {
+if (in_array('email', $channels, true)) {
+    $sent = false;
+    $error = null;
     try {
-        $err = $conn->prepare(
-            "SELECT error_message FROM notification_delivery_log
-             WHERE channel = 'email' AND status = 'failed' AND recipient = ?
-             ORDER BY created_at DESC, id DESC LIMIT 1"
-        );
-        $err->execute([$email]);
-        $errorMessage = $err->fetchColumn() ?: null;
+        require_once __DIR__ . '/../../utils/email.php';
+        $sent = (bool) sendWelcomeEmail($email, (string) $user['username'], null, (string) $user['role'], $loginLink, $user['tester_type'] ?? null);
     } catch (Throwable $e) {
-        $errorMessage = null;
+        $error = $e->getMessage();
     }
+    if (!$sent && $error === null) {
+        $error = $lastDeliveryError($conn, 'email', $email) ?? 'Check SMTP settings in backend .env.';
+    }
+    $results['email'] = ['sent' => $sent, 'to' => $email, 'error' => $sent ? null : $error];
 }
+
+if (in_array('whatsapp', $channels, true)) {
+    $sent = false;
+    $error = null;
+    try {
+        require_once __DIR__ . '/../../utils/whatsapp.php';
+        $sent = (bool) sendWelcomeWhatsApp($phone, (string) $user['username'], $loginLink, $email ?: null, null, (string) $user['role'], $user['tester_type'] ?? null);
+    } catch (Throwable $e) {
+        $error = $e->getMessage();
+    }
+    if (!$sent && $error === null) {
+        $error = $lastDeliveryError($conn, 'whatsapp', $phone) ?? 'Check WhatsApp API settings in backend .env.';
+    }
+    $results['whatsapp'] = ['sent' => $sent, 'to' => $phone, 'error' => $sent ? null : $error];
+}
+
+$sentChannels = array_keys(array_filter($results, static fn ($r) => $r['sent']));
+$failedChannels = array_keys(array_filter($results, static fn ($r) => !$r['sent']));
 
 error_log(json_encode([
     'event' => 'user.welcome.resend',
     'user_id' => (string) $user['id'],
     'actor_id' => (string) ($actor->user_id ?? ''),
-    'email_sent' => $sent,
+    'channels' => $channels,
+    'sent' => $sentChannels,
+    'failed' => $failedChannels,
     'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
 ]));
 
-if ($sent) {
-    $api->sendJsonResponse(200, "Welcome email sent to {$email}.", ['email_sent' => true, 'email' => $email]);
+$labels = ['email' => 'email', 'whatsapp' => 'WhatsApp'];
+$parts = [];
+foreach ($results as $channel => $r) {
+    $parts[] = $r['sent']
+        ? "{$labels[$channel]} sent to {$r['to']}"
+        : "{$labels[$channel]} failed: {$r['error']}";
 }
+$message = ucfirst(implode('; ', $parts)) . '.';
 
-$api->sendJsonResponse(
-    502,
-    'Welcome email could not be sent' . ($errorMessage ? ': ' . $errorMessage : '. Check SMTP settings in backend .env.'),
-    ['email_sent' => false, 'email' => $email]
-);
+if ($sentChannels === []) {
+    $api->sendJsonResponse(502, $message, ['results' => $results], false);
+}
+$api->sendJsonResponse(200, $message, ['results' => $results, 'partial' => $failedChannels !== []]);
