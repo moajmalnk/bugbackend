@@ -105,6 +105,24 @@ class UserController extends BaseAPI {
 
             $users = array_map('br_user_row_with_standards', $stmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
 
+            // Optional ?date=YYYY-MM-DD lets the Users "Active" tab review any past day's
+            // office / WFH attendance; omitted keeps the original "today" behaviour.
+            $workDate = null;
+            $rawWorkDate = isset($_GET['date']) ? trim((string) $_GET['date']) : '';
+            if ($rawWorkDate !== '') {
+                $parsed = DateTime::createFromFormat('!Y-m-d', $rawWorkDate, new DateTimeZone('Asia/Kolkata'));
+                if (!$parsed || $parsed->format('Y-m-d') !== $rawWorkDate) {
+                    $this->sendJsonResponse(422, 'date must be YYYY-MM-DD');
+                    return;
+                }
+                $todayIst = (new DateTime('now', new DateTimeZone('Asia/Kolkata')))->format('Y-m-d');
+                if ($rawWorkDate > $todayIst) {
+                    $this->sendJsonResponse(422, 'date cannot be in the future');
+                    return;
+                }
+                $workDate = $rawWorkDate;
+            }
+
             $checkedInToday = [];
             try {
                 $wsCheck = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'check_in_time'");
@@ -140,12 +158,13 @@ class UserController extends BaseAPI {
                         $selectFields[] = 'is_late';
                     }
 
-                    $checkInStmt = $this->conn->query(
+                    $checkInStmt = $this->conn->prepare(
                         'SELECT ' . implode(', ', $selectFields) . '
                          FROM work_submissions
-                         WHERE submission_date = CURDATE() AND check_in_time IS NOT NULL'
+                         WHERE submission_date = ' . ($workDate !== null ? '?' : 'CURDATE()') . '
+                           AND check_in_time IS NOT NULL'
                     );
-                    if ($checkInStmt) {
+                    if ($checkInStmt && $checkInStmt->execute($workDate !== null ? [$workDate] : [])) {
                         while ($row = $checkInStmt->fetch(PDO::FETCH_ASSOC)) {
                             $hasWorkUpdate = ((float)($row['hours_today'] ?? 0)) > 0
                                 || ($hasTotalBreakMinutes && ((int)($row['total_break_minutes'] ?? 0)) > 0)
@@ -193,6 +212,7 @@ class UserController extends BaseAPI {
                 $user['checkout_time'] = $todayWork['checkout_time'] ?? null;
                 $user['work_mode'] = $todayWork['work_mode'] ?? null;
                 $user['is_late'] = !empty($todayWork['is_late']);
+                $user['work_date'] = $workDate;
             }
             unset($user);
 
