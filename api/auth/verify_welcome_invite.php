@@ -11,6 +11,7 @@ require_once __DIR__ . '/../../config/database.php';
 require_once __DIR__ . '/../../config/utils.php';
 require_once __DIR__ . '/../../config/fcm_config.php';
 require_once __DIR__ . '/../../utils/user_avatar.php';
+require_once __DIR__ . '/../../utils/workforce_access.php';
 
 try {
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -62,6 +63,8 @@ try {
             'onboarding_completed',
             'must_set_password',
             'onboarding_verification_status',
+            'terms_accepted_at',
+            'privacy_accepted_at',
             'joining_date',
             'created_at',
         ] as $optional
@@ -88,6 +91,9 @@ try {
     }
 
     unset($user['account_active']);
+    // Why: The client decides "open onboarding vs dashboard" from tester_type on
+    // the first render; without it CODO testers saw the dashboard flash first.
+    $user['tester_type'] = br_user_tester_type($db, (string) $user['id']);
     $user = br_user_with_resolved_avatar($user);
     $user = FcmConfig::appendEpochToPayload($user);
 
