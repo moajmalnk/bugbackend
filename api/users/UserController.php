@@ -713,9 +713,6 @@ class UserController extends BaseAPI {
                 $joiningDate = $joiningDateRaw;
             }
 
-            // Log the incoming data for debugging (remove in production if sensitive)
-            error_log("Creating user - Username: $username, Email: $email, Phone: " . ($phone ?? 'null'));
-
             // Validate required fields (password is set by the employee during onboarding)
             if (!$username || !$email) {
                 $this->sendJsonResponse(400, "Username and email are required.");
@@ -861,90 +858,14 @@ class UserController extends BaseAPI {
                 return;
             }
 
-            // Log user creation activity
+            $actorForLog = null;
             try {
                 $actorForLog = $this->validateTokenOptional();
-                $logger = ActivityLogger::getInstance();
-                $logger->logUserCreated(
-                    (string) ($actorForLog->user_id ?? $id),
-                    null, // No specific project for user creation
-                    $id, // The newly created user's ID
-                    $username,
-                    [
-                        'email' => $email,
-                        'role' => $role,
-                        'tester_type' => $testerType,
-                        'phone' => $phone
-                    ]
-                );
-            } catch (Exception $e) {
-                error_log("Failed to log user creation activity: " . $e->getMessage());
-            }
-
-            try {
-                require_once __DIR__ . '/../NotificationManager.php';
-                // Exclude the new user; all admins (including creator) receive the alert
-                NotificationManager::getInstance()->notifyUserRegistered($id, $username, $id);
             } catch (Throwable $e) {
-                error_log("Failed to send new user notification: " . $e->getMessage());
+                $actorForLog = null;
             }
-
-            // If user created successfully, send welcome email and WhatsApp to ALL users
-            $emailSent = false;
-
-            // One-click welcome link (auto-login → required onboarding popup when needed)
-            require_once __DIR__ . '/../../utils/welcome_invite.php';
-            $loginLink = br_create_welcome_login_url($id, $username, $role);
-
-            // Send onboarding welcome via .env SMTP (email.php) — not legacy hardcoded Gmail.
-            try {
-                require_once __DIR__ . '/../../utils/email.php';
-                error_log("📧 Sending welcome email notification to new user: $username ($email)");
-                $emailSent = (bool) sendWelcomeEmail($email, $username, $password, $role, $loginLink, $testerType);
-
-                if ($emailSent) {
-                    error_log("✅ Successfully sent welcome email to: $email");
-                } else {
-                    error_log("❌ Failed to send welcome email to: $email");
-                }
-            } catch (Throwable $e) {
-                error_log("⚠️ Failed to send welcome email notification: " . $e->getMessage());
-            }
-
-            // Send welcome WhatsApp notification if phone number is provided
-            if (!empty(trim((string) $phone))) {
-                try {
-                    error_log("📱 Sending welcome WhatsApp notification to new user: $username");
-
-                    $whatsappSent = sendWelcomeWhatsApp(
-                        $phone,
-                        $username,
-                        $loginLink,
-                        $email,
-                        $password, // Original password before hashing
-                        $role,
-                        $testerType
-                    );
-
-                    if ($whatsappSent) {
-                        error_log("✅ Successfully sent welcome WhatsApp notification to: $phone");
-                    } else {
-                        error_log("❌ Failed to send welcome WhatsApp notification to: $phone");
-                    }
-                } catch (Throwable $e) {
-                    // Don't fail user creation if WhatsApp fails
-                    error_log("⚠️ Failed to send welcome WhatsApp notification: " . $e->getMessage());
-                }
-            } else {
-                error_log("⚠️ No phone number provided for user $username, skipping WhatsApp notification");
-            }
-
-            $message = "User '{$username}' created successfully";
-            if ($emailSent) {
-                $message .= " and a welcome email has been sent.";
-            } else {
-                $message .= ", but the welcome email could not be sent.";
-            }
+            $actorId = (string) ($actorForLog->user_id ?? $id);
+            $hasPhone = $phone !== null && trim((string) $phone) !== '';
 
             $responsePayload = [
                 "id" => $id,
@@ -954,14 +875,90 @@ class UserController extends BaseAPI {
                 "role" => $role,
                 "role_id" => $roleId,
                 "tester_type" => $testerType,
-                "email_sent" => $emailSent,
+                "joining_date" => $joiningDate,
+                "email_status" => "queued",
+                "whatsapp_status" => $hasPhone ? "queued" : "skipped",
             ];
-            // Why: If SMTP fails, admin still needs the temp password to share manually.
-            if (!$emailSent) {
-                $responsePayload['temporary_password'] = $password;
-            }
+            $message = $hasPhone
+                ? "User '{$username}' created. Welcome email and WhatsApp are being sent."
+                : "User '{$username}' created. Welcome email is being sent.";
 
-            $this->sendJsonResponse(201, $message, $responsePayload);        } catch (Exception $e) {
+            $utilsDir = __DIR__ . '/../../utils';
+
+            /**
+             * Why: SMTP, WhatsApp and admin push each take seconds. The account row is
+             * already committed, so the admin gets an instant response and the welcome
+             * channels run after the response is flushed. Failures are logged; the admin
+             * can re-share access via "Generate dashboard link" on the user's page.
+             */
+            $this->sendJsonThen(function () use (
+                $utilsDir, $id, $username, $email, $phone, $password, $role, $testerType, $actorId, $hasPhone
+            ) {
+                $startedAt = microtime(true);
+
+                try {
+                    ActivityLogger::getInstance()->logUserCreated(
+                        $actorId,
+                        null,
+                        $id,
+                        $username,
+                        ['email' => $email, 'role' => $role, 'tester_type' => $testerType, 'phone' => $phone]
+                    );
+                } catch (Throwable $e) {
+                    error_log("Failed to log user creation activity: " . $e->getMessage());
+                }
+
+                try {
+                    require_once __DIR__ . '/../NotificationManager.php';
+                    NotificationManager::getInstance()->notifyUserRegistered($id, $username, $id);
+                } catch (Throwable $e) {
+                    error_log("Failed to send new user notification: " . $e->getMessage());
+                }
+
+                $loginLink = '';
+                try {
+                    require_once $utilsDir . '/welcome_invite.php';
+                    $loginLink = br_create_welcome_login_url($id, $username, $role);
+                } catch (Throwable $e) {
+                    error_log("Failed to create welcome login link: " . $e->getMessage());
+                }
+
+                $emailSent = false;
+                try {
+                    require_once $utilsDir . '/email.php';
+                    $emailSent = (bool) sendWelcomeEmail($email, $username, $password, $role, $loginLink, $testerType);
+                } catch (Throwable $e) {
+                    error_log("Failed to send welcome email: " . $e->getMessage());
+                }
+
+                $whatsappSent = null;
+                if ($hasPhone) {
+                    try {
+                        require_once $utilsDir . '/whatsapp.php';
+                        $whatsappSent = (bool) sendWelcomeWhatsApp(
+                            $phone,
+                            $username,
+                            $loginLink,
+                            $email,
+                            $password,
+                            $role,
+                            $testerType
+                        );
+                    } catch (Throwable $e) {
+                        $whatsappSent = false;
+                        error_log("Failed to send welcome WhatsApp: " . $e->getMessage());
+                    }
+                }
+
+                error_log(json_encode([
+                    'event' => 'user.create.welcome',
+                    'user_id' => $id,
+                    'actor_id' => $actorId,
+                    'email_sent' => $emailSent,
+                    'whatsapp_sent' => $whatsappSent,
+                    'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
+                ]));
+            }, 201, $message, $responsePayload);        } catch (Exception $e) {
             $this->sendJsonResponse(500, "Server error: " . $e->getMessage());
         }
     }
