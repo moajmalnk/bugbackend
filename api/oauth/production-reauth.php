@@ -1,124 +1,91 @@
 <?php
 /**
- * Production OAuth Re-authorization Endpoint
- * Forces re-authorization with updated scopes including calendar
+ * Google OAuth (re-)authorization entry point for Connect Google.
+ *
+ * Used by every frontend (local and production), because all of them talk to
+ * this backend. The caller's JWT (query ?token=) must be valid and belong to
+ * ?user_id; return_url must point at a known BugRicer frontend origin.
  */
 
 require_once __DIR__ . '/GoogleOAuthController.php';
+require_once __DIR__ . '/../../config/utils.php';
+require_once __DIR__ . '/../../config/database.php';
+
+header('Cache-Control: no-store');
+header('Referrer-Policy: no-referrer');
+
+/**
+ * Why: return_url ends up in the OAuth state and the callback redirects to it,
+ * so only known frontend origins are accepted (no open redirect).
+ */
+function br_reauth_is_allowed_return_url(string $url): bool {
+    $parts = parse_url($url);
+    if (!$parts || empty($parts['scheme']) || empty($parts['host'])) {
+        return false;
+    }
+    $host = strtolower($parts['host']);
+    if (in_array($host, ['localhost', '127.0.0.1'], true)) {
+        return in_array($parts['scheme'], ['http', 'https'], true);
+    }
+    $allowedHosts = ['bugs.bugricer.com', 'bugricer.com', 'www.bugricer.com', 'bugs.moajmalnk.in', 'bugracers.vercel.app'];
+    return $parts['scheme'] === 'https' && in_array($host, $allowedHosts, true);
+}
+
+function br_reauth_fail(int $status, string $message): void {
+    http_response_code($status);
+    header('Content-Type: text/plain; charset=utf-8');
+    echo $message;
+    exit;
+}
 
 try {
-    // Get user ID from query parameter or JWT token
-    $bugricerUserId = null;
-    
-    // Try to get from query parameter first
-    if (isset($_GET['user_id']) && !empty($_GET['user_id'])) {
-        $bugricerUserId = $_GET['user_id'];
-        error_log("DEBUG: Using user_id from query parameter: " . $bugricerUserId);
-    } else {
-        // Try to get from JWT token
-        require_once __DIR__ . '/../BaseAPI.php';
-        $api = new BaseAPI();
-        $userData = $api->validateToken();
-        if ($userData && isset($userData->user_id)) {
-            $bugricerUserId = $userData->user_id;
-            error_log("DEBUG: Using user_id from JWT token: " . $bugricerUserId);
-        }
+    $token = $_GET['token'] ?? '';
+    $decoded = is_string($token) && $token !== '' ? Utils::validateJWT($token) : false;
+    if (!is_object($decoded) || empty($decoded->user_id)) {
+        br_reauth_fail(401, 'Your session has expired. Please sign in to BugRicer again, then reconnect Google.');
     }
-    
-    if (!$bugricerUserId) {
-        throw new Exception('User ID required. Please provide user_id parameter or valid JWT token.');
+
+    $bugricerUserId = (string) $decoded->user_id;
+    $requestedUserId = $_GET['user_id'] ?? '';
+    if ($requestedUserId !== '' && $requestedUserId !== $bugricerUserId) {
+        br_reauth_fail(403, 'You can only connect Google for your own account.');
     }
-    
-    // Validate that the user exists in the database
-    require_once __DIR__ . '/../../config/database.php';
-    $db = Database::getInstance();
-    $pdo = $db->getConnection();
-    
-    $stmt = $pdo->prepare('SELECT id, username FROM users WHERE id = ?');
+
+    $pdo = Database::getInstance()->getConnection();
+    $stmt = $pdo->prepare('SELECT id, role FROM users WHERE id = ? LIMIT 1');
     $stmt->execute([$bugricerUserId]);
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
-    
     if (!$user) {
-        throw new Exception('Invalid user ID. User not found in database.');
+        br_reauth_fail(404, 'User not found.');
     }
-    
-    echo "Starting OAuth re-authorization for user: " . $user['username'] . " (ID: $bugricerUserId)\n\n";
-    
-    // Force production environment for OAuth
+
+    $returnUrl = $_GET['return_url'] ?? '';
+    if (!is_string($returnUrl) || !br_reauth_is_allowed_return_url($returnUrl)) {
+        $rolePath = in_array($user['role'], ['admin', 'developer', 'tester'], true) ? $user['role'] : 'admin';
+        $returnUrl = rtrim((string) Environment::get('APP_BASE_URL', 'https://bugs.bugricer.com'), '/') . "/{$rolePath}/meet";
+    }
+
+    // The OAuth callback is registered for this backend's host only.
     $_SERVER['HTTP_HOST'] = 'bugbackend.bugricer.com';
-    
-    // Clear existing tokens to force fresh OAuth
-    $stmt = $pdo->prepare('DELETE FROM google_tokens WHERE bugricer_user_id = ?');
-    $stmt->execute([$bugricerUserId]);
-    echo "✅ Cleared existing tokens to force fresh OAuth\n";
-    
-    // Initialize OAuth controller
+
+    // Clear existing tokens so Google issues a fresh refresh token with the current scopes.
+    $pdo->prepare('DELETE FROM google_tokens WHERE bugricer_user_id = ?')->execute([$bugricerUserId]);
+
+    $state = base64_encode(json_encode([
+        'jwt_token' => $token,
+        'user_id' => $bugricerUserId,
+        'return_url' => $returnUrl,
+    ]));
+
     $oauthController = new GoogleOAuthController();
-    
-    // Get return_url from query parameter, or construct based on user role
-    $returnUrl = $_GET['return_url'] ?? null;
-    if (!$returnUrl) {
-        // Determine user role to construct return_url
-        $userRole = 'admin'; // default
-        try {
-            $stmt = $pdo->prepare('SELECT role FROM users WHERE id = ? LIMIT 1');
-            $stmt->execute([$bugricerUserId]);
-            $userRow = $stmt->fetch(PDO::FETCH_ASSOC);
-            if ($userRow && isset($userRow['role'])) {
-                $userRole = $userRow['role'];
-            }
-        } catch (Exception $e) {
-            error_log("Failed to get user role: " . $e->getMessage());
-        }
-        
-        // Construct return_url based on role (production URL)
-        $rolePath = 'admin';
-        if ($userRole === 'admin') {
-            $rolePath = 'admin';
-        } elseif ($userRole === 'tester') {
-            $rolePath = 'tester';
-        } elseif ($userRole === 'developer') {
-            $rolePath = 'developer';
-        }
-        $returnUrl = "https://bugs.bugricer.com/{$rolePath}/meet";
-        error_log("Constructed return_url based on role ({$userRole}): " . $returnUrl);
-    }
-    
-    // Get JWT token if available
-    $token = $_GET['token'] ?? null;
-    
-    // Create state with user ID and return_url, include JWT token if available
-    if ($token) {
-        $state = base64_encode(json_encode([
-            'jwt_token' => $token,
-            'user_id' => $bugricerUserId,
-            'return_url' => $returnUrl
-        ]));
-        error_log("Using JWT token with return_url in state parameter: " . $returnUrl);
-    } else {
-        $state = base64_encode(json_encode(['user_id' => $bugricerUserId, 'return_url' => $returnUrl]));
-        error_log("Using user_id with return_url in state parameter: " . $returnUrl);
-    }
-    
-    // Get the authorization URL
     $authUrl = $oauthController->getAuthorizationUrl($state);
-    
-    // Debug: Extract redirect URI from the auth URL
-    $parsedUrl = parse_url($authUrl);
-    parse_str($parsedUrl['query'], $queryParams);
-    $redirectUri = $queryParams['redirect_uri'] ?? 'not found';
-    
-    echo "Redirecting to Google OAuth with updated scopes...\n";
-    echo "Generated redirect URI: " . $redirectUri . "\n";
-    echo "Full auth URL: " . $authUrl . "\n\n";
-    echo "After completing OAuth, your Google account will have the calendar scope for Meet integration.\n";
-    
-    // Redirect to Google's OAuth consent screen
-    header('Location: ' . $authUrl);
-    exit();
-    
-} catch (Exception $e) {
-    echo "Error: " . $e->getMessage() . "\n";
-    echo "Please ensure you're logged in and have a valid user ID.\n";
+
+    header('Location: ' . $authUrl, true, 302);
+    exit;
+} catch (Throwable $e) {
+    error_log(json_encode([
+        'event' => 'google_oauth.reauth.failed',
+        'error' => $e->getMessage(),
+    ]));
+    br_reauth_fail(500, 'Could not start Google connection. Please try again.');
 }
-?>
