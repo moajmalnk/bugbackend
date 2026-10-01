@@ -8,6 +8,7 @@ require_once __DIR__ . '/../../config/utils.php';
 require_once __DIR__ . '/../../utils/bug_dates_recurrence.php';
 require_once __DIR__ . '/../../utils/leave_attendance.php';
 require_once __DIR__ . '/../../utils/user_avatar.php';
+require_once __DIR__ . '/../../services/GeminiService.php';
 
 class BugDatesController extends BaseAPI
 {
@@ -17,6 +18,9 @@ class BugDatesController extends BaseAPI
     private const RECURRENCE = ['none', 'daily', 'weekly', 'monthly', 'yearly'];
     private const VISIBILITY = ['company', 'hr_only', 'admins'];
     private const STATUSES = ['approved', 'pending_approval', 'rejected'];
+    private const POSTER_TEMPLATES = [
+        'speaker_session', 'heritage_hero', 'product_hero', 'typographic_quote', 'regional_message',
+    ];
 
     private function requireAuth()
     {
@@ -1537,21 +1541,50 @@ class BugDatesController extends BaseAPI
             return;
         }
 
-        // Dedupe
-        $existing = $this->findHook($eventId, $occurrence, 'creative_card');
-        if ($existing) {
-            $this->sendJsonResponse(200, 'Creative card already exists', [
-                'hook' => $existing,
-                'asset_id' => $existing['target_id'] ?? null,
-                'already_exists' => true,
-            ]);
-            return;
+        $filePath = null;
+        if (!empty($data['uploaded_file_path'])) {
+            $filePath = $this->validatedCreativeUploadPath((string)$data['uploaded_file_path']);
+            if ($filePath === null) {
+                $this->sendJsonResponse(400, 'uploaded_file_path must be an image uploaded to BugCreative');
+                return;
+            }
+        }
+        $thumbPath = $filePath;
+        if (!empty($data['preview_thumbnail_url'])) {
+            $thumbPath = $this->validatedCreativeUploadPath((string)$data['preview_thumbnail_url']) ?? $filePath;
+        }
+        $templateKey = $this->sanitizeText($data['template_key'] ?? null, 40);
+        if ($templateKey !== null && !in_array($templateKey, self::POSTER_TEMPLATES, true)) {
+            $templateKey = null;
         }
 
         try {
             $this->conn->query('SELECT 1 FROM creative_assets LIMIT 1');
         } catch (Throwable $e) {
             $this->sendJsonResponse(503, 'BugCreative is not set up');
+            return;
+        }
+
+        // Dedupe: one creative card per event occurrence. A new poster export replaces the draft's image.
+        $existing = $this->findHook($eventId, $occurrence, 'creative_card');
+        $existingAsset = null;
+        if ($existing && !empty($existing['target_id'])) {
+            $find = $this->conn->prepare(
+                'SELECT id, creator_id, status, title FROM creative_assets WHERE id = ? LIMIT 1'
+            );
+            $find->execute([(string)$existing['target_id']]);
+            $existingAsset = $find->fetch(PDO::FETCH_ASSOC) ?: null;
+        }
+        if ($existingAsset && $filePath === null) {
+            $this->sendJsonResponse(200, 'Creative card already exists', [
+                'hook' => $existing,
+                'asset_id' => $existingAsset['id'],
+                'already_exists' => true,
+            ]);
+            return;
+        }
+        if ($existingAsset && $filePath !== null) {
+            $this->replaceCreativePoster($decoded, $existingAsset, $data, $filePath, $thumbPath, $templateKey, $event);
             return;
         }
 
@@ -1573,31 +1606,51 @@ class BugDatesController extends BaseAPI
         if (!in_array($material, $allowedMaterial, true)) {
             $material = 'Poster';
         }
+        if ($templateKey !== null) {
+            $hookContent = mb_substr($hookContent . "\n\nPoster template: " . $templateKey, 0, 5000);
+        }
 
-        $stmt = $this->conn->prepare(
-            "INSERT INTO creative_assets (
-                id, project_id, creator_id, title, material_type, platform,
-                hook_content, asset_source, drive_link, uploaded_file_path,
-                preview_thumbnail_url, status, scheduled_date, published_date
-             ) VALUES (?, NULL, ?, ?, ?, 'Insta', ?, 'link', NULL, NULL, NULL, 'Draft', ?, NULL)"
-        );
-        $stmt->execute([
-            $assetId,
-            (string)$decoded->user_id,
-            $title,
-            $material,
-            $hookContent,
-            $occurrence,
-        ]);
+        $this->conn->beginTransaction();
+        try {
+            $stmt = $this->conn->prepare(
+                "INSERT INTO creative_assets (
+                    id, project_id, creator_id, title, material_type, platform,
+                    hook_content, asset_source, drive_link, uploaded_file_path,
+                    preview_thumbnail_url, status, scheduled_date, published_date
+                 ) VALUES (?, NULL, ?, ?, ?, 'Insta', ?, ?, NULL, ?, ?, 'Draft', ?, NULL)"
+            );
+            $stmt->execute([
+                $assetId,
+                (string)$decoded->user_id,
+                $title,
+                $material,
+                $hookContent,
+                $filePath !== null ? 'upload' : 'link',
+                $filePath,
+                $thumbPath,
+                $occurrence,
+            ]);
 
-        $this->recordHook(
-            $eventId,
-            $occurrence,
-            'creative_card',
-            'creative_assets',
-            $assetId,
-            (string)$decoded->user_id
-        );
+            $this->recordHook(
+                $eventId,
+                $occurrence,
+                'creative_card',
+                'creative_assets',
+                $assetId,
+                (string)$decoded->user_id
+            );
+            $this->conn->commit();
+        } catch (Throwable $e) {
+            $this->conn->rollBack();
+            error_log(json_encode([
+                'event' => 'bugdates.creative.create.failed',
+                'event_id' => $eventId,
+                'user_id' => (string)$decoded->user_id,
+                'error' => $e->getMessage(),
+            ]));
+            $this->sendJsonResponse(500, 'Could not create creative card');
+            return;
+        }
 
         $this->sendJsonResponse(201, 'Creative card queued', [
             'asset_id' => $assetId,
@@ -1605,7 +1658,197 @@ class BugDatesController extends BaseAPI
             'scheduled_date' => $occurrence,
             'status' => 'Draft',
             'already_exists' => false,
+            'updated' => false,
         ]);
+    }
+
+    /**
+     * Only accept files that creative/upload.php produced, so a client cannot point an
+     * asset at arbitrary server paths.
+     */
+    private function validatedCreativeUploadPath(string $path): ?string
+    {
+        $path = trim($path);
+        if (!preg_match('#^uploads/creative/cre_[A-Za-z0-9._-]+\.(webp|png|jpe?g)$#i', $path)) {
+            return null;
+        }
+        if (strpos($path, '..') !== false) {
+            return null;
+        }
+        return is_file(__DIR__ . '/../../' . $path) ? $path : null;
+    }
+
+    /**
+     * Why: re-exporting a poster for the same event day should refresh the existing draft,
+     * not create a second BugCreative card. Published/completed work is never overwritten.
+     */
+    private function replaceCreativePoster(
+        object $decoded,
+        array $asset,
+        array $data,
+        string $filePath,
+        ?string $thumbPath,
+        ?string $templateKey,
+        array $event
+    ): void {
+        $userId = (string)$decoded->user_id;
+        $isOwner = (string)($asset['creator_id'] ?? '') === $userId;
+        if (!$isOwner && !$this->can($decoded, 'BUGDATES_MANAGE') && !$this->can($decoded, 'CREATIVE_MANAGE')) {
+            $this->sendJsonResponse(403, 'This creative card belongs to another creator');
+            return;
+        }
+        if (in_array($asset['status'] ?? '', ['Published', 'Completed'], true)) {
+            $this->sendJsonResponse(409, 'This creative card is already ' . strtolower((string)$asset['status']) . ' and cannot be replaced');
+            return;
+        }
+
+        $title = $this->sanitizeText($data['title'] ?? null, 255) ?: (string)$asset['title'];
+        $hookContent = $this->sanitizeText($data['hook_content'] ?? null, 5000);
+        if ($hookContent !== null && $templateKey !== null) {
+            $hookContent = mb_substr($hookContent . "\n\nPoster template: " . $templateKey, 0, 5000);
+        }
+
+        $this->conn->beginTransaction();
+        try {
+            $stmt = $this->conn->prepare(
+                "UPDATE creative_assets
+                 SET uploaded_file_path = ?, preview_thumbnail_url = ?, asset_source = 'upload',
+                     title = ?, hook_content = COALESCE(?, hook_content)
+                 WHERE id = ? AND status NOT IN ('Published', 'Completed')"
+            );
+            $stmt->execute([$filePath, $thumbPath ?? $filePath, $title, $hookContent, $asset['id']]);
+            if ($stmt->rowCount() === 0) {
+                $this->conn->rollBack();
+                $this->sendJsonResponse(409, 'Creative card changed while saving — reload and try again');
+                return;
+            }
+            $this->conn->commit();
+        } catch (Throwable $e) {
+            $this->conn->rollBack();
+            error_log(json_encode([
+                'event' => 'bugdates.creative.replace.failed',
+                'asset_id' => $asset['id'],
+                'event_title' => $event['title'] ?? null,
+                'user_id' => $userId,
+                'error' => $e->getMessage(),
+            ]));
+            $this->sendJsonResponse(500, 'Could not update creative card');
+            return;
+        }
+
+        $this->sendJsonResponse(200, 'Creative card updated with new poster', [
+            'asset_id' => $asset['id'],
+            'title' => $title,
+            'already_exists' => true,
+            'updated' => true,
+        ]);
+    }
+
+    /**
+     * Suggests poster copy for a BugDates event via Gemini.
+     * Why: the event is loaded server-side so the prompt can't be steered by client-sent text,
+     * and every field is clamped to the poster template limits before it reaches the UI.
+     */
+    public function posterCopy($data = null)
+    {
+        $decoded = $this->requireAuth();
+        if (!$decoded || !$this->ensureReady()) {
+            return;
+        }
+        if (!$this->can($decoded, 'CREATIVE_CREATE') && !$this->can($decoded, 'BUGDATES_MANAGE')) {
+            $this->sendJsonResponse(403, 'Access denied — need CREATIVE_CREATE or BUGDATES_MANAGE');
+            return;
+        }
+        if (!is_array($data)) {
+            $data = $this->getRequestData() ?: [];
+        }
+        $eventId = isset($data['event_id']) ? (int)$data['event_id'] : 0;
+        $occurrence = $this->sanitizeDate($data['occurrence_date'] ?? null);
+        if ($eventId <= 0 || !$occurrence) {
+            $this->sendJsonResponse(400, 'event_id and occurrence_date are required');
+            return;
+        }
+        $event = $this->fetchEvent($eventId);
+        if (!$event) {
+            $this->sendJsonResponse(404, 'Event not found');
+            return;
+        }
+        $templateKey = $this->sanitizeText($data['template_key'] ?? null, 40);
+        if ($templateKey !== null && !in_array($templateKey, self::POSTER_TEMPLATES, true)) {
+            $templateKey = null;
+        }
+        $agenda = $this->sanitizeText($data['agenda_topic'] ?? null, 255);
+
+        $gemini = new GeminiService();
+        if (!$gemini->isConfigured()) {
+            $this->sendJsonResponse(503, 'AI copy is not configured on this server (GEMINI_API_KEY missing)');
+            return;
+        }
+
+        $category = (string)($event['category'] ?? 'company_event');
+        $toneRule = in_array($category, ['holiday', 'observance'], true)
+            ? 'Tone: respectful and warm. Never promotional, no sales language, no offers.'
+            : 'Tone: professional, energetic, invites the team or audience to join.';
+
+        $prompt = implode("\n", [
+            'You write short social-media poster copy for CODO, an AI and software company in Kerala, India.',
+            $toneRule,
+            'Event title: ' . $event['title'],
+            'Event category: ' . $category,
+            'Event date: ' . $occurrence,
+            'Event notes: ' . mb_substr((string)($event['description'] ?? ''), 0, 800),
+            $agenda ? ('Session topic: ' . $agenda) : '',
+            $templateKey ? ('Poster layout: ' . $templateKey) : '',
+            'Return ONLY a JSON object with these string keys:',
+            'headline (max 3 words, display word for the poster),',
+            'subline (max 6 words),',
+            'quote (a real, well-known, accurately attributed quote relevant to the event, max 18 words; empty string if none fits),',
+            'quote_author (empty if quote is empty),',
+            'tagline_en (max 12 words),',
+            'tagline_ml (the same idea in natural Malayalam script, max 8 words),',
+            'hashtag (one hashtag starting with #, no spaces).',
+        ]);
+
+        try {
+            $raw = $gemini->generateFromTurns(
+                [['role' => 'user', 'text' => $prompt]],
+                ['responseMimeType' => 'application/json', 'temperature' => 0.7, 'maxOutputTokens' => 600]
+            );
+        } catch (Throwable $e) {
+            error_log(json_encode([
+                'event' => 'bugdates.poster_copy.failed',
+                'event_id' => $eventId,
+                'user_id' => (string)$decoded->user_id,
+                'error' => $e->getMessage(),
+            ]));
+            $this->sendJsonResponse(502, 'AI copy service is unavailable — try again');
+            return;
+        }
+
+        $json = json_decode(trim(preg_replace('/^```(?:json)?|```$/m', '', $raw)), true);
+        if (!is_array($json)) {
+            $this->sendJsonResponse(502, 'AI returned an unreadable response — try again');
+            return;
+        }
+
+        $limits = [
+            'headline' => 60,
+            'subline' => 60,
+            'quote' => 160,
+            'quote_author' => 40,
+            'tagline_en' => 120,
+            'tagline_ml' => 80,
+            'hashtag' => 40,
+        ];
+        $out = [];
+        foreach ($limits as $key => $max) {
+            $out[$key] = $this->sanitizeText(is_string($json[$key] ?? null) ? $json[$key] : null, $max) ?? '';
+        }
+        if ($out['hashtag'] !== '') {
+            $out['hashtag'] = '#' . ltrim(preg_replace('/\s+/u', '', $out['hashtag']), '#');
+        }
+
+        $this->sendJsonResponse(200, 'Poster copy suggested', $out);
     }
 
     public function generateTodo($data = null)
