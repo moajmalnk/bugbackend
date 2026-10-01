@@ -812,29 +812,73 @@ class BugDatesController extends BaseAPI
             $t = $this->conn->query("SHOW TABLES LIKE 'attendance_wfh_requests'");
             if ($t && $t->fetch(PDO::FETCH_NUM)) {
                 $stmt = $this->conn->prepare(
-                    "SELECT w.user_id, u.username{$avatarSelect}
+                    "SELECT w.user_id, w.status AS request_status, w.user_note, u.username{$avatarSelect}
                      FROM attendance_wfh_requests w
                      JOIN users u
                        ON w.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
-                     WHERE w.status = 'approved' AND w.request_date = ?{$activeWhere}
+                     WHERE w.status IN ('pending', 'approved') AND w.request_date = ?{$activeWhere}
                      ORDER BY u.username ASC"
                 );
                 $stmt->execute([$date]);
+                $requests = [];
                 foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
-                    $uid = (string)$row['user_id'];
+                    $requests[(string)$row['user_id']] = $row;
+                }
+                foreach ($people as $bucket => $rows) {
+                    foreach ($rows as $i => $person) {
+                        $req = $requests[$person['user_id']] ?? null;
+                        if (!$req) {
+                            continue;
+                        }
+                        $showNote = $canSeeTimes || $person['user_id'] === $viewerId;
+                        $people[$bucket][$i]['wfh_request_status'] = $req['request_status'];
+                        $people[$bucket][$i]['note'] = $showNote ? (trim((string)($req['user_note'] ?? '')) ?: null) : null;
+                    }
+                }
+                foreach ($requests as $uid => $row) {
                     if (isset($checkedIn[$uid])) {
                         continue;
                     }
+                    $showNote = $canSeeTimes || $uid === $viewerId;
                     $people['wfh'][] = [
                         'user_id' => $uid,
                         'username' => $row['username'] ?? 'Teammate',
                         'avatar' => br_user_resolve_avatar($row),
                         'status' => 'planned',
+                        'wfh_request_status' => $row['request_status'],
+                        'note' => $showNote ? (trim((string)($row['user_note'] ?? '')) ?: null) : null,
                         'check_in_time' => null,
                         'is_late' => null,
                     ];
                 }
             }
+
+            $canSeeLeaveDetails = $this->can($decoded, 'LEAVE_MANAGE')
+                || $this->can($decoded, 'ATTENDANCE_MANAGE');
+            $avatars = [];
+            foreach ($people as $rows) {
+                foreach ($rows as $person) {
+                    $avatars[$person['user_id']] = $person['avatar'];
+                }
+            }
+            $leave = [];
+            foreach ($this->leaveOverlayItems($date, $date, $viewerId, $canSeeLeaveDetails) as $item) {
+                $uid = (string)$item['user_id'];
+                $revealed = substr((string)$item['title'], -strlen('— Away')) !== '— Away';
+                $leave[] = [
+                    'user_id' => $uid,
+                    'username' => $item['username'],
+                    'avatar' => $avatars[$uid] ?? null,
+                    'leave_type_name' => $revealed ? $item['leave_type_name'] : 'Away',
+                    'status' => $item['status'],
+                    'is_half_day' => $item['is_half_day'],
+                    'half_day_type' => $item['half_day_type'],
+                    'credited_hours' => $item['credited_hours'],
+                    'is_official_leave' => $item['is_official_leave'],
+                    'reason' => $item['reason'] ?? null,
+                ];
+            }
+            $leave = $this->attachAvatars($leave, $avatarSelect);
 
             header('Cache-Control: private, no-cache');
             $this->sendJsonResponse(200, 'OK', [
@@ -842,11 +886,152 @@ class BugDatesController extends BaseAPI
                 'office' => $people['office'],
                 'wfh' => $people['wfh'],
                 'unset' => $people['unset'],
+                'leave' => $leave,
+                'weekly_report' => $this->dayWeeklyReportSummary($date, $viewerId, $canSeeTimes, $avatarSelect, $activeWhere),
                 'can_see_times' => $canSeeTimes,
             ]);
         } catch (Throwable $e) {
             error_log('BugDatesController::dayAttendance: ' . $e->getMessage());
             $this->sendJsonResponse(500, 'Failed to load attendance');
+        }
+    }
+
+    /**
+     * Why: Leave rows come from the overlay query (no avatar columns); fill avatars
+     * in one batched lookup instead of one query per person.
+     *
+     * @param list<array> $rows
+     * @return list<array>
+     */
+    private function attachAvatars(array $rows, string $avatarSelect): array
+    {
+        $missing = [];
+        foreach ($rows as $row) {
+            if (empty($row['avatar'])) {
+                $missing[(string)$row['user_id']] = true;
+            }
+        }
+        if (!$missing || $avatarSelect === '') {
+            return $rows;
+        }
+        $ids = array_keys($missing);
+        $stmt = $this->conn->prepare(
+            "SELECT u.id{$avatarSelect} FROM users u WHERE u.id IN ("
+            . implode(',', array_fill(0, count($ids), '?')) . ')'
+        );
+        $stmt->execute($ids);
+        $map = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $u) {
+            $map[(string)$u['id']] = br_user_resolve_avatar($u);
+        }
+        foreach ($rows as $i => $row) {
+            if (empty($row['avatar'])) {
+                $rows[$i]['avatar'] = $map[(string)$row['user_id']] ?? null;
+            }
+        }
+        return $rows;
+    }
+
+    /**
+     * Why: Weekly reports are due at Saturday checkout for the Mon–Sat week, so the
+     * day drawer shows the roll-up only on Saturdays. "Expected" means the person
+     * checked in at least once that week; managers see the team, everyone else
+     * sees only their own filing status.
+     *
+     * @return array<string,mixed>|null
+     */
+    private function dayWeeklyReportSummary(
+        string $date,
+        string $viewerId,
+        bool $canSeeTeam,
+        string $avatarSelect,
+        string $activeWhere
+    ): ?array {
+        require_once __DIR__ . '/../../utils/weekly_report.php';
+        if (!br_is_saturday_date($date)) {
+            return null;
+        }
+        $bounds = br_monday_saturday_week_bounds($date);
+        $today = (new DateTime('now', new DateTimeZone('Asia/Kolkata')))->format('Y-m-d');
+        $base = [
+            'week_start' => $bounds['week_start'],
+            'week_end' => $bounds['week_end'],
+            'week_label' => br_weekly_report_week_label($bounds['week_start'], $bounds['week_end']),
+            'scope' => $canSeeTeam ? 'team' : 'self',
+            'due_state' => $date > $today ? 'upcoming' : ($date === $today ? 'due_today' : 'past'),
+            'submitted' => [],
+            'pending' => [],
+        ];
+        if ($bounds['week_start'] > $today) {
+            return $base;
+        }
+        try {
+            $t = $this->conn->query("SHOW TABLES LIKE 'weekly_reports'");
+            if (!$t || !$t->fetch(PDO::FETCH_NUM)) {
+                return null;
+            }
+            $selfOnly = $canSeeTeam ? '' : ' AND ws.user_id = ?';
+            $params = [$bounds['week_start'], $bounds['week_end']];
+            if (!$canSeeTeam) {
+                $params[] = $viewerId;
+            }
+            $stmt = $this->conn->prepare(
+                "SELECT DISTINCT ws.user_id, u.username{$avatarSelect}
+                 FROM work_submissions ws
+                 JOIN users u
+                   ON ws.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
+                 WHERE ws.submission_date BETWEEN ? AND ?
+                   AND ws.check_in_time IS NOT NULL{$activeWhere}{$selfOnly}
+                 ORDER BY u.username ASC"
+            );
+            $stmt->execute($params);
+            $expected = [];
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+                $expected[(string)$row['user_id']] = [
+                    'user_id' => (string)$row['user_id'],
+                    'username' => $row['username'] ?? 'Teammate',
+                    'avatar' => br_user_resolve_avatar($row),
+                ];
+            }
+
+            $live = br_weekly_report_live_and($this->conn, 'wr');
+            $selfReport = $canSeeTeam ? '' : ' AND wr.user_id = ?';
+            $params = [$bounds['week_start']];
+            if (!$canSeeTeam) {
+                $params[] = $viewerId;
+            }
+            $stmt = $this->conn->prepare(
+                "SELECT wr.user_id, wr.created_at, wr.work_completed, wr.work_in_progress,
+                        wr.issues_blockers, wr.plan_next_week, u.username{$avatarSelect}
+                 FROM weekly_reports wr
+                 JOIN users u
+                   ON wr.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
+                 WHERE wr.week_start = ?{$live}{$activeWhere}{$selfReport}
+                 ORDER BY wr.created_at ASC"
+            );
+            $stmt->execute($params);
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+                $uid = (string)$row['user_id'];
+                unset($expected[$uid]);
+                $base['submitted'][] = [
+                    'user_id' => $uid,
+                    'username' => $row['username'] ?? 'Teammate',
+                    'avatar' => br_user_resolve_avatar($row),
+                    'filed_at' => $row['created_at'],
+                    'filed_late' => br_weekly_report_filed_late($row['created_at'] ?? null, $bounds['week_end']),
+                    'has_blockers' => trim((string)($row['issues_blockers'] ?? '')) !== '',
+                    'counts' => [
+                        'completed' => count(br_weekly_report_split_lines((string)($row['work_completed'] ?? ''))),
+                        'wip' => count(br_weekly_report_split_lines((string)($row['work_in_progress'] ?? ''))),
+                        'plan' => count(br_weekly_report_split_lines((string)($row['plan_next_week'] ?? ''))),
+                    ],
+                ];
+            }
+            $base['pending'] = array_values($expected);
+            return $base;
+        } catch (Throwable $e) {
+            error_log('BugDatesController::dayWeeklyReportSummary: ' . $e->getMessage());
+            return null;
         }
     }
 
