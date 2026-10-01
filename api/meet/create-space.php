@@ -126,7 +126,7 @@ try {
     // Add required scope for Calendar API
     // Note: Google Meet API service classes are not available in the PHP client library
     // We'll use Calendar API to create meetings with Google Meet links
-    $googleClient->addScope('https://www.googleapis.com/auth/calendar');
+    $googleClient->addScope('https://www.googleapis.com/auth/calendar.events');
     
     // Initialize variables
     $meetingUri = null;

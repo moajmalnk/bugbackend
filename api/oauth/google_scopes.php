@@ -11,5 +11,6 @@ const BR_GOOGLE_OAUTH_SCOPES = [
     'https://www.googleapis.com/auth/drive.file',
     'https://www.googleapis.com/auth/documents',
     'https://www.googleapis.com/auth/spreadsheets',
-    'https://www.googleapis.com/auth/calendar',
+    // BugMeet only inserts/reads/deletes events on the primary calendar.
+    'https://www.googleapis.com/auth/calendar.events',
 ];
