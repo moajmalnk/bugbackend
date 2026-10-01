@@ -220,13 +220,7 @@ class SubmitOnboardingAPI extends BaseAPI
                 $offerPath = $existingRow['offer_letter_path'];
             }
 
-            $detailCols = [];
-            $colRes = $this->conn->query('SHOW COLUMNS FROM user_onboarding_details');
-            if ($colRes) {
-                while ($c = $colRes->fetch(PDO::FETCH_ASSOC)) {
-                    $detailCols[] = $c['Field'];
-                }
-            }
+            $detailCols = $detailColsEarly;
             $hasContactEmail = in_array('contact_email', $detailCols, true);
 
             if ($existingId) {
@@ -441,8 +435,11 @@ class SubmitOnboardingAPI extends BaseAPI
                     if ($isAdminProxy) {
                         return;
                     }
+                    $started = microtime(true);
+                    require_once __DIR__ . '/../../utils/onboarding_notifications.php';
+                    // Employee receipt first — it's the message they're waiting for.
+                    br_notify_employee_onboarding_submitted($this->conn, $userId, $isUpdate);
                     try {
-                        require_once __DIR__ . '/../../utils/onboarding_notifications.php';
                         if ($isUpdate) {
                             br_notify_admins_onboarding_updated(
                                 $this->conn,
@@ -459,6 +456,12 @@ class SubmitOnboardingAPI extends BaseAPI
                     } catch (Throwable $e) {
                         error_log('submit_onboarding notify: ' . $e->getMessage());
                     }
+                    error_log(json_encode([
+                        'event' => 'onboarding.submit.notified',
+                        'user_id' => $userId,
+                        'updated' => $isUpdate,
+                        'duration_ms' => (int) round((microtime(true) - $started) * 1000),
+                    ]));
                 },
                 200,
                 $isUpdate ? 'Onboarding details updated successfully' : 'Onboarding completed successfully',

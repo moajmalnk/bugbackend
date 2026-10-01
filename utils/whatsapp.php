@@ -2391,6 +2391,29 @@ function sendOnboardingVerificationDecisionWhatsApp(
 }
 
 /**
+ * Why: WhatsApp receipt for the employee after onboarding submit (masked details).
+ *
+ * @param array<string, string> $summary Label => already-masked value
+ */
+function sendOnboardingSubmittedEmployeeWhatsApp($userPhone, $username, array $summary, $isUpdate = false)
+{
+    $headline = $isUpdate ? '📝 *Onboarding update received*' : '✅ *Onboarding submitted*';
+    $lines = [];
+    foreach ($summary as $label => $value) {
+        if ($value !== '') {
+            $lines[] = "• {$label}: {$value}";
+        }
+    }
+    $message = "{$headline}\n\nHi {$username},\n"
+        . ($isUpdate
+            ? 'Your updated details were sent to HR for verification.'
+            : 'Thanks! Your details were received and are pending HR verification.')
+        . "\n\n" . implode("\n", $lines)
+        . "\n\n_Sensitive numbers are masked._\nSomething wrong? Update it in BugRicer → Profile.\n\n🐞 _BugRicer_";
+    return sendWhatsAppMessage($userPhone, $message);
+}
+
+/**
  * Why: Alert admins / project members on WhatsApp when access is needed for bug conversion.
  */
 function sendProjectAccessRequestWhatsApp(

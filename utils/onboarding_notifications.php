@@ -173,3 +173,92 @@ function br_notify_employee_onboarding_decision(
         error_log('onboarding decision mail/wa: ' . $e->getMessage());
     }
 }
+
+/**
+ * Mask all but the last $keep characters (e.g. ••••1234).
+ */
+function br_onboarding_mask(string $value, int $keep = 4): string
+{
+    $value = trim($value);
+    if ($value === '') {
+        return '';
+    }
+    $len = function_exists('mb_strlen') ? mb_strlen($value) : strlen($value);
+    if ($len <= $keep) {
+        return str_repeat('•', $len);
+    }
+    return str_repeat('•', 4) . substr($value, -$keep);
+}
+
+/**
+ * Why: After submit the employee gets a receipt on push, email and WhatsApp.
+ * Runs after the HTTP response is flushed, so it never slows "Finish & enter".
+ * Aadhaar / PAN / account numbers are masked — messages leave our systems.
+ */
+function br_notify_employee_onboarding_submitted(PDO $conn, string $userId, bool $isUpdate = false): void
+{
+    try {
+        require_once __DIR__ . '/../api/NotificationManager.php';
+        NotificationManager::getInstance()->notifyOnboardingSubmittedToEmployee($userId, $isUpdate);
+    } catch (Throwable $e) {
+        error_log('onboarding employee push: ' . $e->getMessage());
+    }
+
+    try {
+        $stmt = $conn->prepare('SELECT * FROM users WHERE id = ? LIMIT 1');
+        $stmt->execute([$userId]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+        if (!$user) {
+            return;
+        }
+        $od = $conn->prepare('SELECT * FROM user_onboarding_details WHERE user_id = ? LIMIT 1');
+        $od->execute([$userId]);
+        $d = $od->fetch(PDO::FETCH_ASSOC) ?: [];
+
+        $username = trim((string) ($user['name'] ?? '')) ?: (trim((string) ($user['username'] ?? '')) ?: 'teammate');
+        $address = implode(', ', array_filter([
+            trim((string) ($d['city'] ?? '')),
+            trim((string) ($d['district'] ?? '')),
+            trim((string) ($d['state'] ?? '')),
+        ]));
+        $pin = trim((string) ($d['pin_code'] ?? ''));
+        if ($pin !== '') {
+            $address .= ($address !== '' ? ' – ' : '') . $pin;
+        }
+        $bank = trim((string) ($d['bank_name'] ?? ''));
+        $acct = br_onboarding_mask((string) ($d['account_number'] ?? ''));
+        if ($acct !== '') {
+            $bank = trim($bank . ' · A/c ' . $acct);
+        }
+
+        $summary = [
+            'Employee ID' => trim((string) ($user['employee_code'] ?? '')),
+            'Contact email' => trim((string) ($d['contact_email'] ?? '')),
+            'Emergency mobile' => br_onboarding_mask((string) ($d['emergency_contact'] ?? '')),
+            'Address' => $address,
+            'Bank' => $bank,
+            'IFSC' => trim((string) ($d['ifsc_code'] ?? '')),
+            'Aadhaar' => br_onboarding_mask((string) ($d['aadhaar_number'] ?? '')),
+            'PAN' => br_onboarding_mask((string) ($d['pan_number'] ?? '')),
+            'Submitted' => date('d M Y, h:i A'),
+        ];
+
+        $email = trim((string) ($d['contact_email'] ?? ''));
+        if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $email = trim((string) ($user['email'] ?? ''));
+        }
+        // The employee's own phone — the emergency contact belongs to someone else.
+        $phone = trim((string) ($user['phone'] ?? ''));
+
+        if ($email !== '') {
+            require_once __DIR__ . '/email.php';
+            sendOnboardingSubmittedEmployeeEmail($email, $username, $summary, $isUpdate);
+        }
+        if ($phone !== '') {
+            require_once __DIR__ . '/whatsapp.php';
+            sendOnboardingSubmittedEmployeeWhatsApp($phone, $username, $summary, $isUpdate);
+        }
+    } catch (Throwable $e) {
+        error_log('onboarding employee mail/wa: ' . $e->getMessage());
+    }
+}

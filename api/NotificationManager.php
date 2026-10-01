@@ -1387,6 +1387,31 @@ class NotificationManager extends BaseAPI {
     }
 
     /**
+     * Why: Confirm to the employee that their onboarding was received and is now
+     * waiting on HR, so they don't resubmit or chase admins.
+     */
+    public function notifyOnboardingSubmittedToEmployee($userId, $isUpdate = false)
+    {
+        $userId = (string) $userId;
+        $notificationType = $this->getValidNotificationType('onboarding_submitted', 'status_change');
+
+        return $this->createNotification(
+            $notificationType,
+            $isUpdate ? 'Onboarding update received' : 'Onboarding submitted',
+            $isUpdate
+                ? 'Your updated details were saved and sent to HR for verification.'
+                : 'Thanks! Your details were received and are pending HR verification.',
+            [$userId],
+            [
+                'entity_type' => 'onboarding',
+                'entity_id' => $userId,
+                'status' => 'pending',
+                'url' => '/profile',
+            ]
+        );
+    }
+
+    /**
      * Why: Tell the employee when HR verifies or rejects their documents.
      *
      * @param string $status verified|rejected
