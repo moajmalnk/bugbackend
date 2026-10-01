@@ -495,6 +495,15 @@ function br_weekly_report_attach_attendance(PDO $conn, array $report): array
  * @param array<string,mixed> $row
  * @return array<string,mixed>
  */
+/** Why: A report is late when it was first filed after the week's Saturday. */
+function br_weekly_report_filed_late($createdAt, string $weekEnd): bool
+{
+    if (empty($createdAt) || $weekEnd === '') {
+        return false;
+    }
+    return substr((string)$createdAt, 0, 10) > $weekEnd;
+}
+
 function br_present_weekly_report_row(array $row, ?PDO $conn = null): array
 {
     $weekStart = (string)($row['week_start'] ?? '');
@@ -524,6 +533,10 @@ function br_present_weekly_report_row(array $row, ?PDO $conn = null): array
         'notified_at' => $row['notified_at'] ?? null,
         'created_at' => $row['created_at'] ?? null,
         'updated_at' => $row['updated_at'] ?? null,
+        'filed_late' => br_weekly_report_filed_late($row['created_at'] ?? null, $weekEnd),
+        'filed_on_label' => !empty($row['created_at'])
+            ? br_weekly_report_date_label(substr((string)$row['created_at'], 0, 10))
+            : null,
         'counts' => [
             'completed' => count(br_weekly_report_split_lines($completed)),
             'wip' => count(br_weekly_report_split_lines($wip)),
@@ -763,13 +776,68 @@ function br_display_user_name(PDO $conn, string $userId, string $fallback = 'Use
 /**
  * @return array<string,mixed>
  */
+/** How many past weeks a missed report can still be filed for (matches the week picker). */
+const BR_WEEKLY_REPORT_LATE_WINDOW_WEEKS = 16;
+
+/**
+ * Why: Missed Saturday reports can be filed later so the weekly record stays complete,
+ * but only for weeks that have ended, inside the picker window, and never twice.
+ *
+ * @return array{week_start:string,week_end:string}
+ * @throws InvalidArgumentException when the week cannot take a late report
+ */
+function br_assert_weekly_report_late_filing_allowed(PDO $conn, string $userId, string $weekStart): array
+{
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $weekStart)) {
+        throw new InvalidArgumentException('Invalid week.');
+    }
+    $bounds = br_monday_saturday_week_bounds($weekStart);
+    if (br_weekly_report_late_status($bounds['week_end']) !== 'open') {
+        throw new InvalidArgumentException(
+            br_weekly_report_late_status($bounds['week_end']) === 'not_ended'
+                ? 'This week has not ended yet. File it at Saturday checkout.'
+                : 'Late reports can only be filed for the last ' . BR_WEEKLY_REPORT_LATE_WINDOW_WEEKS . ' weeks.'
+        );
+    }
+    if (br_get_weekly_report($conn, $userId, $bounds['week_start'])) {
+        throw new InvalidArgumentException('A weekly report is already filed for this week.');
+    }
+    return $bounds;
+}
+
+/**
+ * Why: One rule decides whether a past week can still take a late report, shared by
+ * GET (to offer the button) and POST (to enforce it).
+ *
+ * @return string 'open' | 'not_ended' | 'expired'
+ */
+function br_weekly_report_late_status(string $weekEnd): string
+{
+    $today = br_server_today();
+    if ($weekEnd >= $today) {
+        return 'not_ended';
+    }
+    $current = br_monday_saturday_week_bounds($today);
+    $oldest = date('Y-m-d', strtotime($current['week_start'] . ' -' . (BR_WEEKLY_REPORT_LATE_WINDOW_WEEKS - 1) . ' weeks'));
+    return $weekEnd >= $oldest ? 'open' : 'expired';
+}
+
 function br_save_weekly_report(PDO $conn, string $userId, array $payload): array
 {
     br_ensure_weekly_reports_schema($conn);
 
+    $lateWeekStart = substr(trim((string)($payload['week_start'] ?? '')), 0, 10);
+    if ($lateWeekStart !== '') {
+        $lateBounds = br_assert_weekly_report_late_filing_allowed($conn, $userId, $lateWeekStart);
+        $payload['report_date'] = $lateBounds['week_end'];
+    }
+
     $reportDate = substr(trim((string)($payload['report_date'] ?? br_server_today())), 0, 10);
     if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $reportDate)) {
         throw new InvalidArgumentException('Invalid report date.');
+    }
+    if ($reportDate > br_server_today()) {
+        throw new InvalidArgumentException('Weekly reports cannot be filed for a future week.');
     }
     if (!br_is_saturday_date($reportDate) && !br_is_saturday_date(br_server_today())) {
         throw new InvalidArgumentException('Weekly reports can only be submitted on Saturday.');
@@ -864,17 +932,24 @@ function br_save_weekly_report(PDO $conn, string $userId, array $payload): array
              work_completed, work_in_progress, issues_blockers, plan_next_week)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
-    $stmt->execute([
-        $id,
-        $userId,
-        $bounds['week_start'],
-        $bounds['week_end'],
-        $reportDate,
-        $workCompleted,
-        $workInProgress,
-        $issues !== '' ? $issues : null,
-        $planNext,
-    ]);
+    try {
+        $stmt->execute([
+            $id,
+            $userId,
+            $bounds['week_start'],
+            $bounds['week_end'],
+            $reportDate,
+            $workCompleted,
+            $workInProgress,
+            $issues !== '' ? $issues : null,
+            $planNext,
+        ]);
+    } catch (PDOException $e) {
+        if ((string)$e->getCode() === '23000') {
+            throw new InvalidArgumentException('A weekly report is already filed for this week.');
+        }
+        throw $e;
+    }
 
     $saved = br_get_weekly_report($conn, $userId, $bounds['week_start']);
     if (!$saved) {
@@ -1026,6 +1101,8 @@ function br_send_weekly_report_with_checkout(
             ? (string)$report['issues_blockers']
             : 'No major blockers.',
         'plan_next_week' => (string)$report['plan_next_week'],
+        'filed_late' => br_weekly_report_filed_late($report['created_at'] ?? null, (string)$report['week_end']),
+        'filed_on_label' => br_weekly_report_date_label(br_server_today()),
     ];
     $payload = br_weekly_report_attach_attendance($conn, $payload);
 

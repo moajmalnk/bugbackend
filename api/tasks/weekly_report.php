@@ -2,7 +2,8 @@
 /**
  * Why: Collect a short Saturday weekly report before checkout.
  * GET returns the current week report + daily-task suggestions.
- * POST upserts the report (Saturday only). Notifications fire later with checkout.
+ * POST upserts the report on Saturday (notified with checkout), or files a missed
+ * past week via `week_start` (notified immediately and marked as filed late).
  */
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../utils/weekly_report.php';
@@ -65,8 +66,12 @@ class WeeklyReportController extends BaseAPI
             $bounds['week_end']
         );
 
+        $lateStatus = br_weekly_report_late_status($bounds['week_end']);
+
         $this->sendJsonResponse(200, 'OK', [
             'required' => $isSaturday && !$report,
+            'is_past_week' => $lateStatus !== 'not_ended',
+            'can_file_late' => !$report && $lateStatus === 'open',
             'is_saturday' => $isSaturday,
             'week_start' => $bounds['week_start'],
             'week_end' => $bounds['week_end'],
@@ -97,7 +102,12 @@ class WeeklyReportController extends BaseAPI
             return;
         }
 
-        $this->sendJsonResponse(200, 'Weekly report saved', [
+        $filedLate = br_weekly_report_filed_late($saved['created_at'] ?? null, (string)$saved['week_end']);
+        if ($filedLate && empty($saved['notified_at'])) {
+            $this->notifyLateReport($userId, $decoded, (string)$saved['week_end']);
+        }
+
+        $this->sendJsonResponse(200, $filedLate ? 'Late weekly report filed' : 'Weekly report saved', [
             'required' => false,
             'is_saturday' => true,
             'week_start' => $saved['week_start'],
@@ -107,7 +117,30 @@ class WeeklyReportController extends BaseAPI
             'date_label' => br_weekly_report_date_label((string)$saved['report_date']),
             'user_name' => br_display_user_name($this->conn, $userId, (string)($decoded->username ?? 'User')),
             'report' => $saved,
+            'filed_late' => $filedLate,
         ]);
+    }
+
+    /**
+     * Why: Saturday reports reach admins with checkout; a late report has no checkout,
+     * so it is sent as soon as it is filed. Failure never blocks the save.
+     */
+    private function notifyLateReport(string $userId, $decoded, string $weekEnd): void
+    {
+        try {
+            $stmt = $this->conn->prepare('SELECT email FROM users WHERE id = ? LIMIT 1');
+            $stmt->execute([$userId]);
+            $email = (string)($stmt->fetchColumn() ?: '');
+            br_send_weekly_report_with_checkout(
+                $this->conn,
+                $userId,
+                $weekEnd,
+                br_display_user_name($this->conn, $userId, (string)($decoded->username ?? 'User')),
+                $email
+            );
+        } catch (Throwable $e) {
+            error_log('WeeklyReportController::notifyLateReport: ' . $e->getMessage());
+        }
     }
 }
 

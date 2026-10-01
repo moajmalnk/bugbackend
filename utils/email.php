@@ -800,7 +800,13 @@ function sendWeeklyReportEmailToAdmins(array $adminEmails, array $report): array
             . '</pre>'
         : '';
 
-    $subject = 'Weekly Report · ' . ($report['user_name'] ?? 'User');
+    $filedLate = !empty($report['filed_late']);
+    $filedOnLabel = htmlspecialchars((string)($report['filed_on_label'] ?? ''), ENT_QUOTES, 'UTF-8');
+    $lateHtml = $filedLate
+        ? "<p style=\"margin: 0 0 20px 0; padding: 10px 12px; font-size: 13px; color: #9a3412; background-color: #fff7ed; border-radius: 8px;\"><strong>Filed late</strong> on {$filedOnLabel}</p>"
+        : '';
+
+    $subject = 'Weekly Report · ' . ($report['user_name'] ?? 'User') . ($filedLate ? ' (filed late)' : '');
 
     $html_body = "
     <div style=\"font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;\">
@@ -813,6 +819,7 @@ function sendWeeklyReportEmailToAdmins(array $adminEmails, array $report): array
           <p style=\"margin: 0 0 4px 0; font-size: 14px; color: #334155;\"><strong>Name:</strong> {$userName}</p>
           <p style=\"margin: 0 0 4px 0; font-size: 14px; color: #334155;\"><strong>Date:</strong> {$dateLabel}</p>
           <p style=\"margin: 0 0 20px 0; font-size: 14px; color: #334155;\"><strong>Week:</strong> {$weekLabel}</p>
+          {$lateHtml}
 
           <h3 style=\"margin: 0 0 8px 0; font-size: 16px; color: #1e293b;\">Work Completed This Week</h3>
           <ul style=\"margin: 0 0 18px 0; padding-left: 20px;\">{$completedHtml}</ul>

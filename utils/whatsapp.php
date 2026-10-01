@@ -2451,8 +2451,11 @@ function formatWeeklyReportForWhatsApp(array $report): string
     $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
     $message .= "*Name:* {$name}\n";
     $message .= "*Date:* {$dateLabel}\n";
-    $message .= "*Week:* {$weekLabel}\n\n";
-    $message .= "*Work Completed This Week*\n{$completed}\n\n";
+    $message .= "*Week:* {$weekLabel}\n";
+    if (!empty($report['filed_late'])) {
+        $message .= "⏰ *Filed late* on " . trim((string)($report['filed_on_label'] ?? '')) . "\n";
+    }
+    $message .= "\n*Work Completed This Week*\n{$completed}\n\n";
     $message .= "*Work in Progress*\n{$wip}\n\n";
     $message .= "*Issues / Blockers*\n{$blockers}\n\n";
     $message .= "*Plan for Next Week*\n{$plan}";
