@@ -50,7 +50,12 @@ function br_google_verify_id_token(string $idToken): array {
     $googleClient->setClientId($clientId);
     $googleClient->setClientSecret($clientSecret);
 
-    $payload = $googleClient->verifyIdToken($idToken);
+    try {
+        $payload = $googleClient->verifyIdToken($idToken);
+    } catch (Throwable $e) {
+        // Malformed or expired JWTs throw instead of returning false.
+        throw new GoogleLoginException('invalid_token', 'Invalid ID token', 401);
+    }
     if (!$payload) {
         throw new GoogleLoginException('invalid_token', 'Invalid ID token', 401);
     }
