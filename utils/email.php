@@ -273,9 +273,13 @@ function sendWelcomeEmail(
         $introHtml = '<p>Welcome to the team! Your BugRicer account is ready. Click the button below to sign in instantly — no password typing needed.</p>
           <p>You can change your password anytime from Profile → Reset password.</p>';
         $ctaLabel = 'Open BugRicer (one-click sign-in)';
-        $noteHtml = '<strong>Note:</strong> This secure link signs you in automatically. Keep the password below as a backup.';
+        $noteHtml = $safePass !== null
+            ? '<strong>Note:</strong> This secure link signs you in automatically. Keep the password below as a backup.'
+            : '<strong>Note:</strong> This secure link signs you in automatically.';
         $introText = "Your BugRicer account is ready. Open the one-click login link to sign in automatically.";
     }
+
+    $loginDetailsIntro = $credentialsBlock !== '' ? '<p>Here are your login details:</p>' : '';
 
     $html_body = "
     <div style=\"font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f7f6; padding: 20px;\">
@@ -287,7 +291,7 @@ function sendWelcomeEmail(
         <div style=\"padding: 20px; border-bottom: 1px solid #e2e8f0;\">
           <h3 style=\"margin-top: 0; color: #1e293b; font-size: 18px;\">Hello {$safeUser},</h3>
           {$introHtml}
-          <p>Here are your login details:</p>
+          {$loginDetailsIntro}
           {$credentialsBlock}
           <p style=\"text-align: center;\">
             <a href=\"{$safeLink}\" style=\"background-color: #2563eb; color: #ffffff; padding: 12px 25px; text-decoration: none; border-radius: 5px; display: inline-block;\">{$ctaLabel}</a>
