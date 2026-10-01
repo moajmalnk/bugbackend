@@ -320,15 +320,18 @@ class Database {
     }
     
     /**
-     * Why: MySQL 1040/1203 mean the server or account is saturated, not that the
-     * credentials are wrong — retrying other passwords/hosts only adds load.
+     * Why: only bad credentials (1045), denied/unknown database (1044/1049) are permanent.
+     * Everything else seen on shared hosting during a dashboard burst — 1040/1203
+     * saturation, 1226 per-account resource caps, 2002/2006/2013 refused or dropped
+     * links — clears within seconds, so it must be retried and reported as 503
+     * (which the client retries) instead of a hard 500.
      */
     private function isConnectionLimitError(PDOException $e): bool {
         $msg = $e->getMessage();
-        return stripos($msg, 'max_user_connections') !== false
-            || stripos($msg, 'Too many connections') !== false
-            || strpos($msg, '[1040]') !== false
-            || strpos($msg, '[1203]') !== false;
+        if (preg_match('/\[(1044|1045|1049)\]/', $msg)) {
+            return false;
+        }
+        return true;
     }
 
     private function testConnection($conn) {
