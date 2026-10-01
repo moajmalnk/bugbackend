@@ -1,4 +1,18 @@
 <?php
+
+/**
+ * Why: return_url often already has a query (e.g. ?onboarding=permissions).
+ * Blindly appending "?google_connected=…" corrupted that param and dropped the flag,
+ * so onboarding fell back to step 1 after Google connect.
+ */
+function br_oauth_append_query(string $url, string $query): string
+{
+    $hashPos = strpos($url, '#');
+    $hash = $hashPos === false ? '' : substr($url, $hashPos);
+    $base = $hashPos === false ? $url : substr($url, 0, $hashPos);
+    $sep = strpos($base, '?') === false ? '?' : (preg_match('/[?&]$/', $base) ? '' : '&');
+    return $base . $sep . $query . $hash;
+}
 /**
  * Google OAuth Callback Endpoint
  * This endpoint handles the OAuth callback from Google and stores the tokens
@@ -179,13 +193,13 @@ try {
                     if ($redirectUrl) {
                         // Double-check: if return_url contains localhost, FORCE local redirect
                         if (strpos($redirectUrl, 'localhost') !== false || strpos($redirectUrl, '127.0.0.1') !== false) {
-                            $frontendUrl = $redirectUrl . '?google_connected=true&email=' . urlencode($email);
+                            $frontendUrl = br_oauth_append_query($redirectUrl, 'google_connected=true&email=' . urlencode($email));
                             error_log("✓✓✓ FORCING LOCAL redirect using return_url from state: " . $frontendUrl);
                             header('Location: ' . $frontendUrl);
                             exit();
                         }
                         // If return_url is production, use it
-                        $frontendUrl = $redirectUrl . '?google_connected=true&email=' . urlencode($email);
+                        $frontendUrl = br_oauth_append_query($redirectUrl, 'google_connected=true&email=' . urlencode($email));
                         error_log("✓ Using return_url from state: " . $frontendUrl);
                         header('Location: ' . $frontendUrl);
                         exit();
@@ -232,7 +246,7 @@ try {
                 // JWT validation failed - but check if we have return_url to redirect anyway
                 if ($savedReturnUrl) {
                     error_log("⚠ JWT validation failed but redirecting to return_url: " . $savedReturnUrl);
-                    $frontendUrl = $savedReturnUrl . '?google_connected=false&error=' . urlencode('Authentication failed');
+                    $frontendUrl = br_oauth_append_query($savedReturnUrl, 'google_connected=false&error=' . urlencode('Authentication failed'));
                     header('Location: ' . $frontendUrl);
                     exit();
                 }
@@ -263,12 +277,12 @@ try {
                         if ($returnUrlFromState) {
                             // Double-check: if return_url contains localhost, FORCE local redirect
                             if (strpos($returnUrlFromState, 'localhost') !== false || strpos($returnUrlFromState, '127.0.0.1') !== false) {
-                                $frontendUrl = $returnUrlFromState . '?google_connected=true&email=' . urlencode($email);
+                                $frontendUrl = br_oauth_append_query($returnUrlFromState, 'google_connected=true&email=' . urlencode($email));
                                 error_log("✓✓✓ FORCING LOCAL redirect using return_url from stateData: " . $frontendUrl);
                                 header('Location: ' . $frontendUrl);
                                 exit();
                             }
-                            $frontendUrl = $returnUrlFromState . '?google_connected=true&email=' . urlencode($email);
+                            $frontendUrl = br_oauth_append_query($returnUrlFromState, 'google_connected=true&email=' . urlencode($email));
                             error_log("✓ Using return_url from stateData: " . $frontendUrl);
                             header('Location: ' . $frontendUrl);
                             exit();
@@ -357,12 +371,12 @@ try {
     if ($returnUrlFromQuery) {
         // Double-check: if return_url contains localhost, FORCE local redirect
         if (strpos($returnUrlFromQuery, 'localhost') !== false || strpos($returnUrlFromQuery, '127.0.0.1') !== false) {
-            $frontendUrl = $returnUrlFromQuery . '?google_connected=true';
+            $frontendUrl = br_oauth_append_query($returnUrlFromQuery, 'google_connected=true');
             error_log("✓✓✓ FORCING LOCAL redirect using return_url from query: " . $frontendUrl);
             header('Location: ' . $frontendUrl);
             exit();
         }
-        $frontendUrl = $returnUrlFromQuery . '?google_connected=true';
+        $frontendUrl = br_oauth_append_query($returnUrlFromQuery, 'google_connected=true');
         error_log("Using return_url from query parameter: " . $frontendUrl);
         header('Location: ' . $frontendUrl);
         exit();
@@ -386,12 +400,12 @@ try {
     if ($returnUrlFromState) {
         // Double-check: if return_url contains localhost, FORCE local redirect
         if (strpos($returnUrlFromState, 'localhost') !== false || strpos($returnUrlFromState, '127.0.0.1') !== false) {
-            $frontendUrl = $returnUrlFromState . '?google_connected=true';
+            $frontendUrl = br_oauth_append_query($returnUrlFromState, 'google_connected=true');
             error_log("✓✓✓ FORCING LOCAL redirect using return_url from state (final fallback): " . $frontendUrl);
             header('Location: ' . $frontendUrl);
             exit();
         }
-        $frontendUrl = $returnUrlFromState . '?google_connected=true';
+        $frontendUrl = br_oauth_append_query($returnUrlFromState, 'google_connected=true');
         error_log("Using return_url from state (fallback): " . $frontendUrl);
         header('Location: ' . $frontendUrl);
         exit();

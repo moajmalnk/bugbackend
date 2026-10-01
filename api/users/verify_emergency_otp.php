@@ -56,7 +56,21 @@ class VerifyEmergencyOtpAPI extends BaseAPI
             $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if (!$row) {
-                $this->sendJsonResponse(401, 'Invalid or expired OTP');
+                // Why: 401 reads as "signed out"; tell the UI whether to retype or resend.
+                $latest = $this->conn->prepare(
+                    'SELECT TIMESTAMPDIFF(SECOND, NOW(), expires_at) AS seconds_left
+                     FROM user_otps WHERE email = ? AND phone = ?
+                     ORDER BY id DESC LIMIT 1'
+                );
+                $latest->execute([$purposeEmail, $phone]);
+                $secondsLeft = $latest->fetchColumn();
+                if ($secondsLeft === false || (int) $secondsLeft <= 0) {
+                    $this->sendJsonResponse(410, 'This code has expired. Request a new OTP.', null, false, 'OTP_EXPIRED');
+                    return;
+                }
+                $this->sendJsonResponse(422, 'Incorrect code. Check WhatsApp and try again.', [
+                    'expires_in' => (int) $secondsLeft,
+                ], false, 'OTP_INVALID');
                 return;
             }
 
