@@ -1,9 +1,0 @@
-# Avatars are public images; the onboarding "Resize" action re-crops them in a
-# canvas on the frontend origin, which requires CORS. Scoped to this folder only
-# so statutory / document uploads stay same-origin.
-<IfModule mod_headers.c>
-    <FilesMatch "\.(jpe?g|png|webp|gif)$">
-        Header set Access-Control-Allow-Origin "*"
-        Header append Vary "Origin"
-    </FilesMatch>
-</IfModule>
