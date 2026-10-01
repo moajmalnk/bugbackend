@@ -747,6 +747,13 @@ class BugDatesController extends BaseAPI
             }
             $hasMode = in_array('work_mode', $wsCols, true);
             $hasLate = in_array('is_late', $wsCols, true);
+            $hasBreak = in_array('total_break_minutes', $wsCols, true);
+            $optional = [];
+            foreach (['updated_at', 'completed_tasks', 'pending_tasks', 'ongoing_tasks', 'notes'] as $c) {
+                if (in_array($c, $wsCols, true)) {
+                    $optional[] = "ws.`{$c}`";
+                }
+            }
 
             $people = ['office' => [], 'wfh' => [], 'unset' => []];
             $checkedIn = [];
@@ -756,6 +763,8 @@ class BugDatesController extends BaseAPI
                     'SELECT ws.user_id, ws.check_in_time, ws.hours_today'
                     . ($hasMode ? ', ws.work_mode' : '')
                     . ($hasLate ? ', ws.is_late' : '')
+                    . ($hasBreak ? ', ws.total_break_minutes' : '')
+                    . ($optional ? ', ' . implode(', ', $optional) : '')
                     . ", u.username{$avatarSelect}
                      FROM work_submissions ws
                      JOIN users u
@@ -770,12 +779,31 @@ class BugDatesController extends BaseAPI
                     $mode = $hasMode ? strtolower((string)($row['work_mode'] ?? '')) : '';
                     $bucket = in_array($mode, ['office', 'wfh'], true) ? $mode : 'unset';
                     $showTime = $canSeeTimes || $uid === $viewerId;
+                    $breakMinutes = $hasBreak ? (int)($row['total_break_minutes'] ?? 0) : 0;
+                    // Same checkout rule as the Users list: a saved work update after check-in.
+                    $hasWorkUpdate = ((float)($row['hours_today'] ?? 0)) > 0
+                        || $breakMinutes > 0
+                        || trim((string)($row['completed_tasks'] ?? '')) !== ''
+                        || trim((string)($row['pending_tasks'] ?? '')) !== ''
+                        || trim((string)($row['ongoing_tasks'] ?? '')) !== ''
+                        || trim((string)($row['notes'] ?? '')) !== '';
+                    $checkoutTime = null;
+                    if ($hasWorkUpdate && !empty($row['updated_at'])) {
+                        $updatedAt = strtotime((string)$row['updated_at']);
+                        $checkInAt = strtotime((string)$row['check_in_time']);
+                        if ($updatedAt && (!$checkInAt || $updatedAt > $checkInAt + 60)) {
+                            $checkoutTime = $row['updated_at'];
+                        }
+                    }
                     $people[$bucket][] = [
                         'user_id' => $uid,
                         'username' => $row['username'] ?? 'Teammate',
                         'avatar' => br_user_resolve_avatar($row),
                         'status' => 'checked_in',
                         'check_in_time' => $showTime ? $row['check_in_time'] : null,
+                        'checkout_time' => $showTime ? $checkoutTime : null,
+                        'break_minutes' => $showTime ? $breakMinutes : null,
+                        'hours_worked' => $showTime ? round((float)($row['hours_today'] ?? 0), 2) : null,
                         'is_late' => $showTime && $hasLate ? (int)($row['is_late'] ?? 0) === 1 : null,
                     ];
                 }
