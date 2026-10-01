@@ -79,64 +79,25 @@ class OwnWorkSubmissionController extends WorkSubmissionController {
         
         br_ensure_work_submission_ot_columns($this->conn);
 
-        // Auto-migrate: add ongoing_tasks column if missing
-        try {
-            $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'ongoing_tasks'");
-            if ($check->rowCount() === 0) {
-                $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN ongoing_tasks MEDIUMTEXT AFTER pending_tasks");
+        $columns = $this->conn->query("SHOW COLUMNS FROM work_submissions")->fetchAll(PDO::FETCH_COLUMN);
+        $autoMigrations = [
+            'overtime_hours' => "ALTER TABLE work_submissions ADD COLUMN overtime_hours DECIMAL(6,2) DEFAULT 0 AFTER hours_today",
+            'ongoing_tasks' => "ALTER TABLE work_submissions ADD COLUMN ongoing_tasks MEDIUMTEXT AFTER pending_tasks",
+            'requested_extra_hours' => "ALTER TABLE work_submissions ADD COLUMN requested_extra_hours DECIMAL(6,2) DEFAULT 0 AFTER overtime_hours",
+            'approval_reason' => "ALTER TABLE work_submissions ADD COLUMN approval_reason TEXT NULL AFTER requested_extra_hours",
+            'break_entries' => "ALTER TABLE work_submissions ADD COLUMN break_entries JSON NULL DEFAULT NULL AFTER approval_reason",
+            'total_break_minutes' => "ALTER TABLE work_submissions ADD COLUMN total_break_minutes INT DEFAULT 0 AFTER break_entries",
+        ];
+        foreach ($autoMigrations as $col => $ddl) {
+            if (in_array($col, $columns, true)) {
+                continue;
             }
-        } catch (Exception $e) {
-            // ignore; migration may fail if no permissions
-        }
-
-        // Auto-migrate: add break_entries column if missing
-        try {
-            $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'break_entries'");
-            if ($check->rowCount() === 0) {
-                $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN break_entries JSON NULL DEFAULT NULL AFTER approval_reason");
+            try {
+                $this->conn->exec($ddl);
+                $columns[] = $col;
+            } catch (Exception $e) {
+                // ignore; migration may fail if no permissions
             }
-        } catch (Exception $e) {
-            // ignore; migration may fail if no permissions
-        }
-
-        // Auto-migrate: add total_break_minutes column if missing
-        try {
-            $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'total_break_minutes'");
-            if ($check->rowCount() === 0) {
-                $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN total_break_minutes INT DEFAULT 0 AFTER break_entries");
-            }
-        } catch (Exception $e) {
-            // ignore; migration may fail if no permissions
-        }
-
-        // Auto-migrate: add requested_extra_hours column if missing
-        try {
-            $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'requested_extra_hours'");
-            if ($check->rowCount() === 0) {
-                $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN requested_extra_hours DECIMAL(6,2) DEFAULT 0 AFTER overtime_hours");
-            }
-        } catch (Exception $e) {
-            // ignore; migration may fail if no permissions
-        }
-
-        // Auto-migrate: add approval_reason column if missing
-        try {
-            $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'approval_reason'");
-            if ($check->rowCount() === 0) {
-                $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN approval_reason TEXT NULL AFTER requested_extra_hours");
-            }
-        } catch (Exception $e) {
-            // ignore; migration may fail if no permissions
-        }
-
-        // Auto-migrate: add overtime_hours column if missing
-        try {
-            $check = $this->conn->query("SHOW COLUMNS FROM work_submissions LIKE 'overtime_hours'");
-            if ($check->rowCount() === 0) {
-                $this->conn->exec("ALTER TABLE work_submissions ADD COLUMN overtime_hours DECIMAL(6,2) DEFAULT 0 AFTER hours_today");
-            }
-        } catch (Exception $e) {
-            // ignore; migration may fail if no permissions
         }
         
         // Keep overtime aligned with explicit extra-hours requests.
@@ -165,8 +126,6 @@ class OwnWorkSubmissionController extends WorkSubmissionController {
         $stmt->execute([$userId, $date, $start, $hours, $overtime, $days, $cumulative, $completed, $pending, $ongoing, $notes]);
 
         // Persist OT request fields if these columns exist.
-        $columnsCheck = $this->conn->query("SHOW COLUMNS FROM work_submissions");
-        $columns = $columnsCheck->fetchAll(PDO::FETCH_COLUMN);
         $hasRequestedExtraHours = in_array('requested_extra_hours', $columns);
         $hasApprovalReason = in_array('approval_reason', $columns);
         $hasBreakEntries = in_array('break_entries', $columns);
@@ -205,103 +164,110 @@ class OwnWorkSubmissionController extends WorkSubmissionController {
         
         error_log("🔍 OwnWorkSubmissionController::submitOwnWork - Saved submission for user: " . $userId . " on date: " . $date . $impersonationInfo);
         
-        // Prepare notification data (shared for email and WhatsApp)
-        $userStmt = $this->conn->prepare("SELECT username, email FROM users WHERE id = ? LIMIT 1");
-        $userStmt->execute([$userId]);
-        $user = $userStmt->fetch(PDO::FETCH_ASSOC);
-        $userName = $user['username'] ?? 'User';
-        $userEmail = $user['email'] ?? '';
-        
-        $submissionData = [
-            'submission_date' => $date,
-            'start_time' => $start,
-            'hours_today' => $hours,
-            'overtime_hours' => $overtime,
-            'requested_extra_hours' => $requestedExtraHours,
-            'approval_reason' => $approvalReason,
-            'break_entries' => $breakEntries,
-            'total_break_minutes' => $totalBreakMinutes,
-            'completed_tasks' => $completed,
-            'pending_tasks' => $pending,
-            'ongoing_tasks' => $ongoing,
-            'notes' => $notes,
-            'is_update' => $isUpdate
-        ];
+        $conn = $this->conn;
+        $checkInTime = isset($payload['check_in_time']) && trim((string)$payload['check_in_time']) !== ''
+            ? (string)$payload['check_in_time']
+            : null;
+        $projectUpdates = $payload['project_updates'] ?? null;
+        $startedAt = microtime(true);
 
-        // Send notifications BEFORE the HTTP response — sendJsonResponse() calls exit()
-        // and would skip all code below it (push, email, WhatsApp never ran).
-        $updateStatus = $isUpdate ? 'UPDATE' : 'NEW SUBMISSION';
-        error_log("📢 NOTIFICATION: Sending admin notifications for work $updateStatus by $userName ($userEmail)");
+        // Push, SMTP and WhatsApp take seconds — reply first so "Check out" is instant.
+        $this->sendJsonThen(
+            static function () use (
+                $conn, $userId, $date, $start, $hours, $overtime, $days, $cumulative, $requestedExtraHours,
+                $approvalReason, $breakEntries, $totalBreakMinutes, $completed, $pending, $ongoing, $notes,
+                $isUpdate, $checkInTime, $projectUpdates, $startedAt
+            ) {
+                $userStmt = $conn->prepare("SELECT username, email FROM users WHERE id = ? LIMIT 1");
+                $userStmt->execute([$userId]);
+                $user = $userStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+                $userName = $user['username'] ?? 'User';
+                $userEmail = $user['email'] ?? '';
 
-        try {
-            require_once __DIR__ . '/../NotificationManager.php';
-            $nm = NotificationManager::getInstance();
-            $submissionKey = $userId . ':' . $date;
-            $nm->notifyWorkCheckOut($submissionKey, $userId, $userName, $date, $hours, $isUpdate);
-            if ($requestedExtraHours > 0) {
-                $nm->notifyOvertimeRequested($submissionKey, $userId, $requestedExtraHours);
-            }
-        } catch (Throwable $e) {
-            error_log("⚠️ Failed in-app/push work update notification: " . $e->getMessage());
-        }
-
-        error_log("EMAIL_NOTIFICATION: Starting email notification process");
-        try {
-            $emailPath = __DIR__ . '/../../utils/email.php';
-            require_once $emailPath;
-
-            error_log("📧 Starting daily work $updateStatus email notification process...");
-            error_log("📧 User info - Name: $userName, Email: " . ($userEmail ?: 'EMPTY'));
-
-            $adminStmt = $this->conn->prepare(
-                "SELECT email FROM users WHERE account_active = 1 AND (role = 'admin' OR role_id = 1)"
-            );
-            $adminStmt->execute();
-            $adminRows = $adminStmt->fetchAll(PDO::FETCH_ASSOC);
-            $adminEmails = array_column($adminRows, 'email');
-
-            error_log("📧 Found " . count($adminEmails) . " admin emails: " . json_encode($adminEmails));
-
-            if (empty($adminEmails)) {
-                error_log("⚠️ No admin emails found - skipping email notification");
-            } elseif (empty($userEmail)) {
-                error_log("⚠️ User email is empty - skipping email notification");
-            } else {
-                $emailResults = sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $submissionData);
-                error_log("📧 Daily work $updateStatus emails sent to admins. Results: " . json_encode($emailResults));
-            }
-        } catch (Exception $e) {
-            error_log("⚠️ Failed to send daily work $updateStatus email notification: " . $e->getMessage());
-            error_log("⚠️ Exception trace: " . $e->getTraceAsString());
-        }
-
-        error_log("📱 Starting daily work $updateStatus WhatsApp notification process...");
-        try {
-            $whatsappPath = __DIR__ . '/../../utils/whatsapp.php';
-            require_once $whatsappPath;
-
-            if (empty($userEmail)) {
-                error_log("⚠️ User email is empty - skipping WhatsApp notification");
-            } else {
-                $whatsappResult = sendDailyWorkUpdateWhatsAppToAdmins($userName, $userEmail, $submissionData);
-                if ($whatsappResult) {
-                    error_log("✅ Daily work $updateStatus WhatsApp sent to admins successfully");
-                } else {
-                    error_log("❌ Failed to send daily work $updateStatus WhatsApp to admins");
+                try {
+                    require_once __DIR__ . '/../../utils/work_update_notifications.php';
+                    br_notify_employee_work_checkout($conn, (string)$userId, (string)$date, [
+                        'check_in_time' => $checkInTime,
+                        'hours_today' => $hours,
+                        'total_break_minutes' => $totalBreakMinutes,
+                        'requested_extra_hours' => $requestedExtraHours,
+                        'project_updates' => is_array($projectUpdates) ? $projectUpdates : null,
+                        'total_working_days' => $days,
+                        'total_hours_cumulative' => $cumulative,
+                    ], $isUpdate);
+                } catch (Throwable $e) {
+                    error_log('⚠️ Failed employee checkout receipt: ' . $e->getMessage());
                 }
-            }
-        } catch (Exception $e) {
-            error_log("⚠️ Failed to send daily work $updateStatus WhatsApp notification: " . $e->getMessage());
-            error_log("⚠️ Exception trace: " . $e->getTraceAsString());
-        }
 
-        try {
-            br_send_weekly_report_with_checkout($this->conn, (string)$userId, (string)$date, $userName, $userEmail);
-        } catch (Throwable $e) {
-            error_log('⚠️ Failed weekly report checkout notify: ' . $e->getMessage());
-        }
+                try {
+                    require_once __DIR__ . '/../NotificationManager.php';
+                    $nm = NotificationManager::getInstance();
+                    $submissionKey = $userId . ':' . $date;
+                    $nm->notifyWorkCheckOut($submissionKey, $userId, $userName, $date, $hours, $isUpdate);
+                    if ($requestedExtraHours > 0) {
+                        $nm->notifyOvertimeRequested($submissionKey, $userId, $requestedExtraHours);
+                    }
+                } catch (Throwable $e) {
+                    error_log('⚠️ Failed in-app/push work update notification: ' . $e->getMessage());
+                }
 
-        $this->sendJsonResponse(200, 'Submission saved');
+                $submissionData = [
+                    'submission_date' => $date,
+                    'start_time' => $start,
+                    'check_in_time' => $checkInTime,
+                    'hours_today' => $hours,
+                    'overtime_hours' => $overtime,
+                    'requested_extra_hours' => $requestedExtraHours,
+                    'approval_reason' => $approvalReason,
+                    'break_entries' => $breakEntries,
+                    'total_break_minutes' => $totalBreakMinutes,
+                    'completed_tasks' => $completed,
+                    'pending_tasks' => $pending,
+                    'ongoing_tasks' => $ongoing,
+                    'notes' => $notes,
+                    'is_update' => $isUpdate,
+                ];
+
+                if (!empty($userEmail)) {
+                    try {
+                        require_once __DIR__ . '/../../utils/email.php';
+                        $adminStmt = $conn->prepare(
+                            "SELECT email FROM users WHERE account_active = 1 AND (role = 'admin' OR role_id = 1)"
+                        );
+                        $adminStmt->execute();
+                        $adminEmails = array_column($adminStmt->fetchAll(PDO::FETCH_ASSOC), 'email');
+                        if (!empty($adminEmails)) {
+                            sendDailyWorkUpdateEmailToAdmins($adminEmails, $userName, $userEmail, $submissionData);
+                        }
+                    } catch (Throwable $e) {
+                        error_log('⚠️ Failed daily work admin email: ' . $e->getMessage());
+                    }
+
+                    try {
+                        require_once __DIR__ . '/../../utils/whatsapp.php';
+                        sendDailyWorkUpdateWhatsAppToAdmins($userName, $userEmail, $submissionData);
+                    } catch (Throwable $e) {
+                        error_log('⚠️ Failed daily work admin WhatsApp: ' . $e->getMessage());
+                    }
+                }
+
+                try {
+                    br_send_weekly_report_with_checkout($conn, (string)$userId, (string)$date, $userName, $userEmail);
+                } catch (Throwable $e) {
+                    error_log('⚠️ Failed weekly report checkout notify: ' . $e->getMessage());
+                }
+
+                error_log(json_encode([
+                    'event' => 'work.checkout.notified',
+                    'user_id' => (string)$userId,
+                    'date' => (string)$date,
+                    'is_update' => (bool)$isUpdate,
+                    'duration_ms' => (int)round((microtime(true) - $startedAt) * 1000),
+                ]));
+            },
+            200,
+            'Submission saved'
+        );
     }
 }
 

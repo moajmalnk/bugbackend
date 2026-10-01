@@ -32,6 +32,26 @@ class SubmitOnboardingAPI extends BaseAPI
             return;
         }
 
+        // PHP silently drops $_POST and $_FILES when the body exceeds post_max_size,
+        // which otherwise surfaces as a misleading "Terms must be accepted" 400.
+        $contentLength = (int) ($_SERVER['CONTENT_LENGTH'] ?? 0);
+        if ($contentLength > 0 && empty($_POST) && empty($_FILES)) {
+            error_log(json_encode([
+                'event' => 'onboarding.submit.body_too_large',
+                'content_length' => $contentLength,
+                'post_max_size' => ini_get('post_max_size'),
+            ]));
+            $this->sendJsonResponse(
+                413,
+                'Your documents are too large to upload together (server limit '
+                    . ini_get('post_max_size') . '). Upload smaller scans or photos and try again.',
+                null,
+                false,
+                'UPLOAD_TOO_LARGE'
+            );
+            return;
+        }
+
         try {
             $decoded = $this->validateToken();
             $requesterId = (string) ($decoded->user_id ?? '');
@@ -835,7 +855,7 @@ class SubmitOnboardingAPI extends BaseAPI
         }
 
         if (($file['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) {
-            $this->sendJsonResponse(400, "Upload failed for {$field}");
+            $this->rejectUploadError($field, (int) $file['error']);
             return false;
         }
 
@@ -850,7 +870,7 @@ class SubmitOnboardingAPI extends BaseAPI
             return false;
         }
 
-        $mime = (string) ($file['type'] ?? '');
+        $mime = $this->effectiveMime($file, self::ALLOWED_MIME);
         if ($mime !== '' && !in_array($mime, self::ALLOWED_MIME, true)) {
             // Some browsers omit HEIC MIME; extension check already passed.
             if (!in_array(strtolower(pathinfo($original, PATHINFO_EXTENSION)), ['heic', 'heif'], true)) {
@@ -870,6 +890,64 @@ class SubmitOnboardingAPI extends BaseAPI
         }
 
         return 'uploads/statutory/' . $filename;
+    }
+
+    /**
+     * Why: PHP upload errors (size limits, partial uploads) used to surface as a
+     * bare "Upload failed", leaving the employee no way to fix it.
+     */
+    private function rejectUploadError(string $field, int $code): void
+    {
+        $label = $field === 'profile_photo' ? 'Profile photo' : ($field === 'pan_file' ? 'PAN' : 'Aadhaar');
+        error_log(json_encode([
+            'event' => 'onboarding.submit.upload_error',
+            'field' => $field,
+            'code' => $code,
+            'upload_max_filesize' => ini_get('upload_max_filesize'),
+        ]));
+        if ($code === UPLOAD_ERR_INI_SIZE || $code === UPLOAD_ERR_FORM_SIZE) {
+            $this->sendJsonResponse(
+                413,
+                "{$label} file is larger than the server allows (" . ini_get('upload_max_filesize') . '). Upload a smaller scan.',
+                null,
+                false,
+                'UPLOAD_TOO_LARGE'
+            );
+            return;
+        }
+        if ($code === UPLOAD_ERR_PARTIAL) {
+            $this->sendJsonResponse(400, "{$label} upload was interrupted. Check your connection and try again.");
+            return;
+        }
+        $this->sendJsonResponse(500, "{$label} could not be uploaded right now. Please try again.");
+    }
+
+    /**
+     * Why: Browsers send "application/octet-stream" (or nothing) for some files,
+     * e.g. ones restored from the draft after the Google redirect. Trust the file
+     * contents over the client-sent type when the client type is not allowed.
+     *
+     * @param array<string, mixed> $file
+     * @param list<string> $allowed
+     */
+    private function effectiveMime(array $file, array $allowed): string
+    {
+        $clientMime = strtolower((string) ($file['type'] ?? ''));
+        if ($clientMime === '' || in_array($clientMime, $allowed, true)) {
+            return $clientMime;
+        }
+        $tmp = (string) ($file['tmp_name'] ?? '');
+        if ($tmp !== '' && function_exists('finfo_open')) {
+            $finfo = finfo_open(FILEINFO_MIME_TYPE);
+            if ($finfo) {
+                $sniffed = strtolower((string) finfo_file($finfo, $tmp));
+                finfo_close($finfo);
+                if ($sniffed !== '') {
+                    return $sniffed;
+                }
+            }
+        }
+        return $clientMime;
     }
 
     /**
@@ -898,7 +976,7 @@ class SubmitOnboardingAPI extends BaseAPI
             return null;
         }
         if (($file['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) {
-            $this->sendJsonResponse(400, 'Upload failed for profile_photo');
+            $this->rejectUploadError($field, (int) $file['error']);
             return false;
         }
 
@@ -915,8 +993,8 @@ class SubmitOnboardingAPI extends BaseAPI
             return false;
         }
 
-        $mime = (string) ($file['type'] ?? '');
         $allowedMime = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+        $mime = $this->effectiveMime($file, $allowedMime);
         if ($mime !== '' && !in_array($mime, $allowedMime, true)) {
             $this->sendJsonResponse(400, 'profile_photo: unsupported MIME type');
             return false;

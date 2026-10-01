@@ -35,13 +35,62 @@ function br_calendar_month_range_label(string $date): string
  *
  * @return array{days:int,hours:float,month_start:string,period_label:string,period_range:string}
  */
+/**
+ * Why: Approved / changed overtime lives in extra_hours_approved_amount, not in
+ * hours_today, so totals must add it. Legacy rows may already include OT in
+ * hours_today (e.g. 10h) — GREATEST(worked, LEAST(worked, 8) + approved) avoids
+ * double counting. Mirrors creditedHours() in frontend/src/lib/workPeriodUtils.ts.
+ */
+function br_credited_hours_sql(PDO $conn, string $alias = ''): string
+{
+    static $hasColumns = null;
+    $p = $alias !== '' ? $alias . '.' : '';
+    if ($hasColumns === null) {
+        try {
+            $cols = $conn->query("SHOW COLUMNS FROM work_submissions")->fetchAll(PDO::FETCH_COLUMN);
+            $hasColumns = in_array('extra_hours_approval_status', $cols, true)
+                && in_array('extra_hours_approved_amount', $cols, true);
+        } catch (Throwable $e) {
+            $hasColumns = false;
+        }
+    }
+    if (!$hasColumns) {
+        return "COALESCE({$p}hours_today, 0)";
+    }
+    return "CASE WHEN {$p}extra_hours_approval_status IN ('approved', 'changed')"
+        . " AND COALESCE({$p}extra_hours_approved_amount, {$p}overtime_hours, 0) > 0"
+        . " THEN GREATEST(COALESCE({$p}hours_today, 0), LEAST(COALESCE({$p}hours_today, 0), 8)"
+        . " + COALESCE({$p}extra_hours_approved_amount, {$p}overtime_hours, 0))"
+        . " ELSE COALESCE({$p}hours_today, 0) END";
+}
+
+/**
+ * Row-level twin of br_credited_hours_sql() for data already in memory.
+ *
+ * @param array<string, mixed> $row
+ */
+function br_credited_hours_row(array $row): float
+{
+    $worked = (float)($row['hours_today'] ?? 0);
+    $status = strtolower(trim((string)($row['extra_hours_approval_status'] ?? '')));
+    if ($status !== 'approved' && $status !== 'changed') {
+        return $worked;
+    }
+    $approved = (float)($row['extra_hours_approved_amount'] ?? $row['overtime_hours'] ?? 0);
+    if ($approved <= 0) {
+        return $worked;
+    }
+    return round(max($worked, min($worked, 8) + $approved), 2);
+}
+
 function br_compute_calendar_month_totals(PDO $conn, $userId, string $submissionDate): array
 {
     $monthStart = br_calendar_month_start($submissionDate);
+    $credited = br_credited_hours_sql($conn);
     $stmt = $conn->prepare(
-        'SELECT COUNT(*) AS days, COALESCE(SUM(hours_today), 0) AS hours
+        "SELECT COUNT(*) AS days, COALESCE(SUM($credited), 0) AS hours
          FROM work_submissions
-         WHERE user_id = ? AND submission_date >= ? AND submission_date <= ?'
+         WHERE user_id = ? AND submission_date >= ? AND submission_date <= ?"
     );
     $stmt->execute([$userId, $monthStart, $submissionDate]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: ['days' => 0, 'hours' => 0];

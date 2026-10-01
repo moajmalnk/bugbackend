@@ -2414,6 +2414,30 @@ function sendOnboardingSubmittedEmployeeWhatsApp($userPhone, $username, array $s
 }
 
 /**
+ * Why: WhatsApp checkout receipt so the employee has a record on their phone.
+ *
+ * @param array<string, string> $summary Label => display value
+ */
+function sendWorkCheckoutEmployeeWhatsApp($userPhone, $username, array $summary, $isUpdate = false)
+{
+    $headline = $isUpdate ? '📝 *Work update revised*' : '✅ *Checked out successfully*';
+    $lines = [];
+    foreach ($summary as $label => $value) {
+        if ($value === '') {
+            continue;
+        }
+        $lines[] = strpos($value, "\n") !== false
+            ? "• {$label}:\n{$value}"
+            : "• {$label}: {$value}";
+    }
+    $message = "{$headline}\n\nHi {$username},\n"
+        . ($isUpdate ? 'Your revised daily work update was saved.' : 'Your daily work update was saved.')
+        . "\n\n" . implode("\n", $lines)
+        . "\n\nSomething wrong? Edit it in BugRicer → Daily Update.\n\n🐞 _BugRicer_";
+    return sendWhatsAppMessage($userPhone, $message);
+}
+
+/**
  * Why: Alert admins / project members on WhatsApp when access is needed for bug conversion.
  */
 function sendProjectAccessRequestWhatsApp(

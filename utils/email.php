@@ -1655,6 +1655,53 @@ function sendOnboardingSubmittedEmployeeEmail($userEmail, $username, array $summ
 }
 
 /**
+ * Why: Checkout receipt for the employee — a personal record of what was
+ * logged so mistakes are caught the same day, not at month-end payroll.
+ *
+ * @param array<string, string> $summary Label => display value
+ */
+function sendWorkCheckoutEmployeeEmail($userEmail, $username, array $summary, $isUpdate = false)
+{
+    $safeName = htmlspecialchars((string) $username, ENT_QUOTES, 'UTF-8');
+    $headline = $isUpdate ? 'Work update revised' : 'Checked out successfully';
+    $subject = $headline . ' · ' . ($summary['Date'] ?? date('d M Y')) . ' · BugRicer';
+    $intro = $isUpdate
+        ? 'Your revised daily work update was saved. Here is what is now on record:'
+        : 'Your daily work update was saved. Here is what was recorded today:';
+
+    $rowsHtml = '';
+    $rowsText = '';
+    foreach ($summary as $label => $value) {
+        if ($value === '') {
+            continue;
+        }
+        $rowsHtml .= '<tr><td style="padding:8px 12px;color:#64748b;font-size:13px;border-bottom:1px solid #f1f5f9;white-space:nowrap;vertical-align:top;">'
+            . htmlspecialchars($label, ENT_QUOTES, 'UTF-8')
+            . '</td><td style="padding:8px 12px;color:#0f172a;font-size:13px;border-bottom:1px solid #f1f5f9;">'
+            . nl2br(htmlspecialchars($value, ENT_QUOTES, 'UTF-8')) . '</td></tr>';
+        $rowsText .= "{$label}: {$value}\n";
+    }
+
+    $html_body = "
+    <div style=\"font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto;\">
+      <div style=\"background:linear-gradient(135deg,#f59e0b,#ea580c);padding:20px;border-radius:12px 12px 0 0;\">
+        <h2 style=\"margin:0;color:#fff;\">{$headline}</h2>
+        <p style=\"margin:6px 0 0;color:#ffedd5;font-size:13px;\">Daily work update receipt</p>
+      </div>
+      <div style=\"border:1px solid #e5e7eb;border-top:0;padding:20px;border-radius:0 0 12px 12px;\">
+        <p>Hi {$safeName},</p>
+        <p>{$intro}</p>
+        <table style=\"width:100%;border-collapse:collapse;margin:16px 0;border:1px solid #f1f5f9;border-radius:12px;\">{$rowsHtml}</table>
+        <p style=\"color:#64748b;font-size:13px;\">Something wrong? You can edit today's update from BugRicer → Daily Update.</p>
+      </div>
+    </div>";
+
+    $text_body = "{$headline} — BugRicer\n\nHi {$username},\n{$intro}\n\n{$rowsText}\nSomething wrong? Edit it from BugRicer → Daily Update.\n";
+
+    return sendEmail($userEmail, $subject, $html_body, $text_body);
+}
+
+/**
  * Why: Alert admins / project members when a developer requests access to move or convert a bug.
  */
 function sendProjectAccessRequestEmail(

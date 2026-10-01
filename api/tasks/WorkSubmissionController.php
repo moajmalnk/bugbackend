@@ -584,6 +584,21 @@ class WorkSubmissionController extends BaseAPI {
                     } catch (Throwable $e) {
                         error_log('⚠️ Failed weekly report checkout notify: ' . $e->getMessage());
                     }
+
+                    try {
+                        require_once __DIR__ . '/../../utils/work_update_notifications.php';
+                        br_notify_employee_work_checkout($conn, (string)$userId, (string)$date, [
+                            'check_in_time' => $resolvedCheckIn,
+                            'hours_today' => $hoursFlag,
+                            'total_break_minutes' => $totalBreakMinutesFlag,
+                            'requested_extra_hours' => $requestedExtraHoursFlag,
+                            'project_updates' => $projectUpdatesPayload,
+                            'total_working_days' => $totalWorkingDays,
+                            'total_hours_cumulative' => $totalHoursCumulative,
+                        ], (bool)$isUpdateFlag);
+                    } catch (Throwable $e) {
+                        error_log('⚠️ Failed employee checkout receipt: ' . $e->getMessage());
+                    }
                 },
                 200,
                 'Submission saved'
@@ -899,11 +914,13 @@ class WorkSubmissionController extends BaseAPI {
             $upcoming = trim((string)($sub['notes'] ?? ''));
             $ongoing = trim((string)($sub['ongoing_tasks'] ?? ''));
 
+            require_once __DIR__ . '/../../utils/work_period.php';
+            $creditedSql = br_credited_hours_sql($this->conn);
             if ($since) {
-                $stmt = $this->conn->prepare("SELECT COUNT(*) days, COALESCE(SUM(hours_today),0) hours FROM work_submissions WHERE user_id = ? AND submission_date >= ?");
+                $stmt = $this->conn->prepare("SELECT COUNT(*) days, COALESCE(SUM($creditedSql),0) hours FROM work_submissions WHERE user_id = ? AND submission_date >= ?");
                 $stmt->execute([$userId, $since]);
             } else {
-                $stmt = $this->conn->prepare("SELECT COUNT(*) days, COALESCE(SUM(hours_today),0) hours FROM work_submissions WHERE user_id = ?");
+                $stmt = $this->conn->prepare("SELECT COUNT(*) days, COALESCE(SUM($creditedSql),0) hours FROM work_submissions WHERE user_id = ?");
                 $stmt->execute([$userId]);
             }
             $agg = $stmt->fetch(PDO::FETCH_ASSOC) ?: ['days' => 0, 'hours' => 0];

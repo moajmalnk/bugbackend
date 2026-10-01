@@ -1547,6 +1547,29 @@ class NotificationManager extends BaseAPI {
         );
     }
 
+    /**
+     * Why: The employee gets a push receipt that their checkout was recorded,
+     * so they don't re-submit or wonder whether the save went through.
+     */
+    public function notifyWorkCheckOutToEmployee($submissionId, $userId, $date = null, $hoursToday = null, $isUpdate = false) {
+        $userId = (string) $userId;
+        $notificationType = $this->getValidNotificationType('work_update', 'new_update');
+        $dateLabel = $date ? ' for ' . date('d M Y', strtotime((string) $date)) : '';
+        $hoursLabel = $hoursToday !== null && $hoursToday !== '' ? " · {$hoursToday}h logged" : '';
+
+        return $this->createNotification(
+            $notificationType,
+            $isUpdate ? 'Work update revised' : 'Checked out successfully',
+            ($isUpdate ? 'Your revised work update' : 'Your daily work update') . "{$dateLabel} was saved{$hoursLabel}.",
+            [$userId],
+            [
+                'entity_type' => 'work_update',
+                'entity_id' => (string) $submissionId,
+                'url' => '/daily-update',
+            ]
+        );
+    }
+
     public function notifyFeedbackSubmitted($feedbackId, $userId, $summary = null) {
         $feedbackId = (string) $feedbackId;
         $userId = (string) $userId;

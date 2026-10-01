@@ -3,6 +3,7 @@ require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../PermissionManager.php';
 require_once __DIR__ . '/../../utils/work_submission_ot.php';
 require_once __DIR__ . '/../../utils/leave_attendance.php';
+require_once __DIR__ . '/../../utils/work_period.php';
 
 class UserWorkStatsController extends BaseAPI {
     private ?string $diagnosticActorId = null;
@@ -458,10 +459,11 @@ class UserWorkStatsController extends BaseAPI {
             
             // Get work submissions for the current custom period
             $wsLive = $this->wsLiveAnd();
+            $creditedSql = br_credited_hours_sql($this->conn);
             $stmt = $this->conn->prepare("
                 SELECT 
                     submission_date,
-                    hours_today,
+                    {$creditedSql} AS hours_today,
                     start_time
                 FROM work_submissions 
                 WHERE user_id = ? 
@@ -586,7 +588,7 @@ class UserWorkStatsController extends BaseAPI {
                 $stmt = $this->conn->prepare("
                     SELECT 
                         COUNT(*) as days,
-                        SUM(hours_today) as hours
+                        SUM({$creditedSql}) as hours
                     FROM work_submissions 
                     WHERE user_id = ? 
                     AND submission_date >= ?
@@ -598,7 +600,7 @@ class UserWorkStatsController extends BaseAPI {
 
                 // Pull per-day hours so paid leave can be credited into trend totals
                 $hoursStmt = $this->conn->prepare("
-                    SELECT submission_date, hours_today
+                    SELECT submission_date, {$creditedSql} AS hours_today
                     FROM work_submissions
                     WHERE user_id = ?
                     AND submission_date >= ?
@@ -939,7 +941,7 @@ class UserWorkStatsController extends BaseAPI {
                 if ($d === '') {
                     continue;
                 }
-                $hoursByDate[$d] = (float)($submission['hours_today'] ?? 0);
+                $hoursByDate[$d] = br_credited_hours_row($submission);
             }
             $leaveBreakdown = br_leave_credit_breakdown($hoursByDate, $leaveMap);
 
