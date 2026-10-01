@@ -2414,6 +2414,25 @@ function sendOnboardingSubmittedEmployeeWhatsApp($userPhone, $username, array $s
 }
 
 /**
+ * Why: WhatsApp nudge when HR asks an employee to complete or resubmit onboarding.
+ *
+ * @param string $mode complete|update
+ */
+function sendOnboardingRequestWhatsApp($userPhone, $username, $mode, $link, $note = null)
+{
+    $isUpdate = $mode === 'update';
+    $headline = $isUpdate ? '📝 *Please update your employee profile*' : '🪪 *Complete your onboarding profile*';
+    $body = $isUpdate
+        ? 'HR asked you to review your employee profile and resubmit it with any corrections. Your saved details are already filled in.'
+        : 'HR asked you to complete your employee onboarding profile (about 5 minutes).';
+    $note = trim((string) $note);
+    $message = "{$headline}\n\nHi {$username},\n{$body}"
+        . ($note !== '' ? "\n\n*Note from HR:* {$note}" : '')
+        . "\n\n👉 {$link}\n\n_Secure sign-in link · expires in 7 days._\n\n🐞 _BugRicer_";
+    return sendWhatsAppMessage($userPhone, $message);
+}
+
+/**
  * Why: WhatsApp checkout receipt so the employee has a record on their phone.
  *
  * @param array<string, string> $summary Label => display value

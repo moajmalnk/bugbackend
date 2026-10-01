@@ -173,11 +173,19 @@ class OwnWorkSubmissionController extends WorkSubmissionController {
 
         // Push, SMTP and WhatsApp take seconds — reply first so "Check out" is instant.
         $this->sendJsonThen(
-            static function () use (
+            function () use (
                 $conn, $userId, $date, $start, $hours, $overtime, $days, $cumulative, $requestedExtraHours,
                 $approvalReason, $breakEntries, $totalBreakMinutes, $completed, $pending, $ongoing, $notes,
                 $isUpdate, $checkInTime, $projectUpdates, $startedAt
             ) {
+                if (is_array($projectUpdates) && !empty($projectUpdates)) {
+                    try {
+                        $this->recomputeDeveloperHoursTakenFromProjectUpdates($projectUpdates);
+                    } catch (Throwable $e) {
+                        error_log('⚠️ Deferred project hours recompute: ' . $e->getMessage());
+                    }
+                }
+
                 $userStmt = $conn->prepare("SELECT username, email FROM users WHERE id = ? LIMIT 1");
                 $userStmt->execute([$userId]);
                 $user = $userStmt->fetch(PDO::FETCH_ASSOC) ?: [];

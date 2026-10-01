@@ -1037,7 +1037,7 @@ class WorkSubmissionController extends BaseAPI {
     }
 
     /**
-     * Why: Developer Hours Taken on each project is the sum of checkout-allocated hours.
+     * Why: Project developer / tester hours are the sum of checkout-allocated hours, split by role.
      */
     protected function recomputeDeveloperHoursTakenFromProjectUpdates(array $projectUpdates): void {
         $projectIds = [];
@@ -1059,44 +1059,8 @@ class WorkSubmissionController extends BaseAPI {
     }
 
     protected function recomputeDeveloperHoursTakenForProject(string $projectId): void {
-        if ($projectId === '') {
-            return;
-        }
-        try {
-            $colCheck = $this->conn->query("SHOW COLUMNS FROM projects LIKE 'developer_hours_taken'");
-            if (!$colCheck || $colCheck->rowCount() === 0) {
-                return;
-            }
-            $this->ensureProjectUpdatesColumn();
-            $stmt = $this->conn->query(
-                "SELECT project_updates FROM work_submissions
-                 WHERE project_updates IS NOT NULL AND JSON_LENGTH(project_updates) > 0"
-            );
-            if (!$stmt) {
-                return;
-            }
-            $total = 0.0;
-            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-                $updates = json_decode($row['project_updates'] ?? '[]', true);
-                if (!is_array($updates)) {
-                    continue;
-                }
-                foreach ($updates as $update) {
-                    if (!is_array($update)) {
-                        continue;
-                    }
-                    if ((string)($update['project_id'] ?? '') !== $projectId) {
-                        continue;
-                    }
-                    $total += br_clamp_hours($update['hours'] ?? 0);
-                }
-            }
-            $total = round($total, 1);
-            $upd = $this->conn->prepare('UPDATE projects SET developer_hours_taken = ? WHERE id = ?');
-            $upd->execute([$total, $projectId]);
-        } catch (Exception $e) {
-            error_log('⚠️ Failed recompute developer_hours_taken: ' . $e->getMessage());
-        }
+        require_once __DIR__ . '/../../utils/project_hours.php';
+        br_recompute_project_role_hours($this->conn, $projectId);
     }
 
     /**

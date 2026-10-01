@@ -1412,6 +1412,39 @@ class NotificationManager extends BaseAPI {
     }
 
     /**
+     * Why: HR asks an employee to complete or refresh their onboarding profile;
+     * the push opens the wizard directly from the notification.
+     *
+     * @param string $mode complete|update
+     */
+    public function notifyOnboardingRequested($userId, $mode = 'complete', $note = null)
+    {
+        $userId = (string) $userId;
+        $isUpdate = $mode === 'update';
+        $notificationType = $this->getValidNotificationType('onboarding_requested', 'status_change');
+        $body = $isUpdate
+            ? 'HR asked you to review and resubmit your employee profile.'
+            : 'HR asked you to complete your employee onboarding profile.';
+        $note = trim((string) $note);
+        if ($note !== '') {
+            $body .= ' Note: ' . (function_exists('mb_substr') ? mb_substr($note, 0, 160) : substr($note, 0, 160));
+        }
+
+        return $this->createNotification(
+            $notificationType,
+            $isUpdate ? 'Please update your employee profile' : 'Complete your onboarding',
+            $body,
+            [$userId],
+            [
+                'entity_type' => 'onboarding',
+                'entity_id' => $userId,
+                'status' => 'requested',
+                'url' => '/profile?onboarding=address',
+            ]
+        );
+    }
+
+    /**
      * Why: Tell the employee when HR verifies or rejects their documents.
      *
      * @param string $status verified|rejected

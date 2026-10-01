@@ -1655,6 +1655,56 @@ function sendOnboardingSubmittedEmployeeEmail($userEmail, $username, array $summ
 }
 
 /**
+ * Why: HR asks an employee to complete (or review and resubmit) their onboarding
+ * profile. The button signs them in and opens the wizard with saved details.
+ *
+ * @param string $mode complete|update
+ */
+function sendOnboardingRequestEmail($userEmail, $username, $mode, $link, $note = null, $requestedBy = null)
+{
+    $isUpdate = $mode === 'update';
+    $safeName = htmlspecialchars((string) $username, ENT_QUOTES, 'UTF-8');
+    $safeLink = htmlspecialchars((string) $link, ENT_QUOTES, 'UTF-8');
+    $headline = $isUpdate ? 'Please update your employee profile' : 'Complete your onboarding profile';
+    $subject = $headline . ' · BugRicer';
+    $intro = $isUpdate
+        ? 'HR has asked you to review your employee profile and resubmit it with any corrections. Your saved details are already filled in — just check, fix and submit.'
+        : 'HR has asked you to complete your employee onboarding profile. It takes about 5 minutes: contact and address, Aadhaar/PAN, bank details and a profile photo.';
+    $note = trim((string) $note);
+    $noteHtml = $note !== ''
+        ? '<div style="margin:16px 0;padding:12px 14px;border-radius:12px;background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;font-size:13px;"><strong>Note from HR:</strong> '
+            . nl2br(htmlspecialchars($note, ENT_QUOTES, 'UTF-8')) . '</div>'
+        : '';
+    $byText = $requestedBy ? ' Requested by ' . htmlspecialchars((string) $requestedBy, ENT_QUOTES, 'UTF-8') . '.' : '';
+
+    $html_body = "
+    <div style=\"font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto;\">
+      <div style=\"background:linear-gradient(135deg,#2563eb,#7c3aed);padding:20px;border-radius:12px 12px 0 0;\">
+        <h2 style=\"margin:0;color:#fff;\">{$headline}</h2>
+        <p style=\"margin:6px 0 0;color:#e0e7ff;font-size:13px;\">Employee onboarding · BugRicer</p>
+      </div>
+      <div style=\"border:1px solid #e5e7eb;border-top:0;padding:20px;border-radius:0 0 12px 12px;\">
+        <p>Hi {$safeName},</p>
+        <p>{$intro}</p>
+        {$noteHtml}
+        <p style=\"margin:20px 0;\">
+          <a href=\"{$safeLink}\" style=\"display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:12px 18px;border-radius:12px;font-weight:600;\">
+            " . ($isUpdate ? 'Review &amp; resubmit' : 'Complete onboarding') . "
+          </a>
+        </p>
+        <p style=\"color:#64748b;font-size:12px;\">This secure link signs you in automatically and expires in 7 days.{$byText}</p>
+        <p style=\"color:#64748b;font-size:12px;word-break:break-all;\">{$safeLink}</p>
+      </div>
+    </div>";
+
+    $text_body = "{$headline} — BugRicer\n\nHi {$username},\n{$intro}\n"
+        . ($note !== '' ? "\nNote from HR: {$note}\n" : '')
+        . "\nOpen: {$link}\n\nThis secure link signs you in automatically and expires in 7 days.\n";
+
+    return sendEmail($userEmail, $subject, $html_body, $text_body);
+}
+
+/**
  * Why: Checkout receipt for the employee — a personal record of what was
  * logged so mistakes are caught the same day, not at month-end payroll.
  *

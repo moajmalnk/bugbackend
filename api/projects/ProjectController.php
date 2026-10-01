@@ -49,6 +49,8 @@ class ProjectController extends BaseAPI
         $this->ensureProjectMembersMultiRole();
         $this->ensureProjectEffortHoursColumns();
         $this->ensureComplianceRequiredColumn();
+        require_once __DIR__ . '/../../utils/project_hours.php';
+        br_ensure_project_role_hours_columns($this->conn);
     }
 
     private function ensureProjectCategoryColumns(): void
