@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../utils/workforce_access.php';
+require_once __DIR__ . '/../../utils/standards_access.php';
 
 /**
  * Why: Cursor Tips is a Common-CODO sibling catalog for Cursor operating craft.
@@ -33,7 +34,7 @@ class CursorTipsController extends BaseAPI
             $this->sendJsonResponse(403, 'Access denied. Cursor Tips is available to admin, developer, tester, and creator.');
             return null;
         }
-        if (!br_require_codo_standards_access($this, $this->conn, $decoded)) {
+        if (!br_require_codo_standards_access($this, $this->conn, $decoded, 'cursor_tips')) {
             return null;
         }
         return $decoded;
@@ -117,6 +118,120 @@ class CursorTipsController extends BaseAPI
             }
             $n++;
             $candidate = substr($base, 0, 46) . '_' . $n;
+        }
+    }
+
+    private const ACK_STATUSES = ['acknowledged', 'doubt', 'not_required'];
+
+    /**
+     * Active tips the caller has not answered yet.
+     *
+     * Why: only users an admin marked "Cursor Tips: required" are gated; for
+     * everyone else this answers "nothing required" so the client never blocks.
+     */
+    public function pendingAcknowledgements()
+    {
+        $decoded = $this->requireTeamAuth();
+        if (!$decoded) {
+            return;
+        }
+
+        header('Cache-Control: private, no-store');
+        header('Vary: Authorization');
+
+        $userId = (string) $decoded->user_id;
+        $required = br_standards_mode($this->conn, $userId, 'cursor_tips') === BR_STANDARDS_REQUIRED;
+        if (!$required || !$this->tablesReady() || !br_ensure_standards_schema($this->conn)) {
+            $this->sendJsonResponse(200, 'No acknowledgements required', [
+                'required' => false,
+                'total_pending' => 0,
+                'tips' => [],
+            ]);
+            return;
+        }
+
+        try {
+            $stmt = $this->conn->prepare(
+                "SELECT t.* FROM cursor_tips t
+                 WHERE t.is_active = 1 AND t.deleted_at IS NULL
+                   AND NOT EXISTS (
+                     SELECT 1 FROM cursor_tip_acknowledgements a
+                     WHERE a.tip_id = t.id AND a.user_id = ?
+                   )
+                 ORDER BY FIELD(t.phase, 'modes', 'commands', 'skills', 'workflow', 'review'), t.sort_order ASC, t.id ASC"
+            );
+            $stmt->execute([$userId]);
+            $items = array_map([$this, 'formatRow'], $stmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
+            $this->sendJsonResponse(200, 'Pending acknowledgements', [
+                'required' => true,
+                'total_pending' => count($items),
+                'tips' => $items,
+            ]);
+        } catch (Throwable $e) {
+            error_log('CursorTipsController::pendingAcknowledgements: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Failed to load pending tips');
+        }
+    }
+
+    /**
+     * Records the caller's response to one tip. Idempotent: a replay updates
+     * the same (tip_id, user_id) row instead of inserting a duplicate.
+     */
+    public function acknowledge($payload)
+    {
+        $decoded = $this->requireTeamAuth();
+        if (!$decoded) {
+            return;
+        }
+        if (!$this->tablesReady() || !br_ensure_standards_schema($this->conn)) {
+            $this->sendJsonResponse(503, 'Cursor Tips acknowledgements are not set up. Run migration 119_user_standards_modes.sql.');
+            return;
+        }
+
+        $tipId = isset($payload['tip_id']) ? (int) $payload['tip_id'] : 0;
+        if ($tipId <= 0) {
+            $this->sendJsonResponse(400, 'tip_id is required');
+            return;
+        }
+        $status = strtolower(trim((string) ($payload['status'] ?? 'acknowledged')));
+        if (!in_array($status, self::ACK_STATUSES, true)) {
+            $this->sendJsonResponse(400, 'status must be acknowledged, doubt, or not_required');
+            return;
+        }
+
+        $fetch = $this->conn->prepare(
+            'SELECT id FROM cursor_tips WHERE id = ? AND is_active = 1 AND deleted_at IS NULL LIMIT 1'
+        );
+        $fetch->execute([$tipId]);
+        if (!$fetch->fetch(PDO::FETCH_ASSOC)) {
+            $this->sendJsonResponse(404, 'Tip not found');
+            return;
+        }
+
+        $userId = (string) $decoded->user_id;
+        $started = microtime(true);
+        try {
+            $stmt = $this->conn->prepare(
+                "INSERT INTO cursor_tip_acknowledgements (tip_id, user_id, status, acknowledged_at)
+                 VALUES (?, ?, ?, NOW())
+                 ON DUPLICATE KEY UPDATE status = VALUES(status), acknowledged_at = NOW()"
+            );
+            $stmt->execute([$tipId, $userId, $status]);
+            error_log(json_encode([
+                'event' => 'cursor_tip.acknowledge',
+                'user_id' => $userId,
+                'tip_id' => $tipId,
+                'status' => $status,
+                'duration_ms' => (int) round((microtime(true) - $started) * 1000),
+            ]));
+            $this->sendJsonResponse(200, 'Response recorded', [
+                'tip_id' => $tipId,
+                'status' => $status,
+                'acknowledged_at' => date('Y-m-d H:i:s'),
+            ]);
+        } catch (Throwable $e) {
+            error_log('CursorTipsController::acknowledge: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Failed to save your response');
         }
     }
 

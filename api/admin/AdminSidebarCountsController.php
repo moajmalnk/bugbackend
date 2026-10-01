@@ -8,6 +8,7 @@
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../utils/docs_sheets_recycle.php';
 require_once __DIR__ . '/../../utils/workforce_access.php';
+require_once __DIR__ . '/../../utils/standards_access.php';
 require_once __DIR__ . '/../../utils/bug_dates_recurrence.php';
 require_once __DIR__ . '/../../utils/meet_nav_count.php';
 
@@ -334,13 +335,17 @@ class AdminSidebarCountsController extends BaseAPI
             );
         }
 
-        if ($hasCodoStandards && $can('CODO_VIEW') && $this->dbTableExists('codo_common_rules')) {
+        $standardsModes = $hasCodoStandards
+            ? br_user_standards_modes($this->conn, $userId)
+            : ['codo' => BR_STANDARDS_HIDDEN, 'cursor_tips' => BR_STANDARDS_HIDDEN];
+
+        if ($standardsModes['codo'] !== BR_STANDARDS_HIDDEN && $can('CODO_VIEW') && $this->dbTableExists('codo_common_rules')) {
             $counts['codo'] = $this->countOrZero(
                 'SELECT COUNT(*) FROM codo_common_rules WHERE COALESCE(is_active, 1) = 1'
             );
         }
 
-        if ($hasCodoStandards && $can('CURSOR_TIPS_VIEW') && $this->dbTableExists('cursor_tips')) {
+        if ($standardsModes['cursor_tips'] !== BR_STANDARDS_HIDDEN && $can('CURSOR_TIPS_VIEW') && $this->dbTableExists('cursor_tips')) {
             $counts['cursorTips'] = $this->countOrZero(
                 'SELECT COUNT(*) FROM cursor_tips WHERE COALESCE(is_active, 1) = 1 AND deleted_at IS NULL'
             );

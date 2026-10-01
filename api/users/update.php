@@ -28,12 +28,14 @@ try {
         throw new Exception('Invalid request data', 400);
     }
 
-    // Why: Editing another account or changing any role / tester type must be an
+    // Why: Editing another account or changing any role / tester type / CODO standards access must be an
     // admin action; otherwise any login could escalate its own privileges.
     $isAdmin = strtolower((string) ($actor->role ?? '')) === 'admin';
     $touchesPrivileges = array_key_exists('role', $data)
         || array_key_exists('role_id', $data)
-        || array_key_exists('tester_type', $data);
+        || array_key_exists('tester_type', $data)
+        || array_key_exists('codo_rules_mode', $data)
+        || array_key_exists('cursor_tips_mode', $data);
     $isOtherUser = (string) $data['id'] !== (string) $actor->user_id;
     if (
         !$isAdmin

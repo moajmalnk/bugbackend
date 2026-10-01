@@ -6,6 +6,7 @@ require_once __DIR__ . '/../../utils/active_hours.php';
 require_once __DIR__ . '/../../utils/user_avatar.php';
 require_once __DIR__ . '/../../utils/employee_id.php';
 require_once __DIR__ . '/../../utils/workforce_access.php';
+require_once __DIR__ . '/../../utils/standards_access.php';
 
 class UserController extends BaseAPI {
     public function getUsers() {
@@ -26,6 +27,7 @@ class UserController extends BaseAPI {
             }
 
             br_ensure_tester_type_schema($this->conn);
+            br_ensure_standards_schema($this->conn);
 
             // Check which columns exist (phone, last_active_at)
             $cols = [];
@@ -50,6 +52,8 @@ class UserController extends BaseAPI {
 
             $select = ['id', 'username', 'email', 'role', 'role_id', 'created_at', 'updated_at'];
             if (in_array('tester_type', $cols, true)) $select[] = 'tester_type';
+            if (in_array('codo_rules_mode', $cols, true)) $select[] = 'codo_rules_mode';
+            if (in_array('cursor_tips_mode', $cols, true)) $select[] = 'cursor_tips_mode';
             if ($hasPhone) $select[] = 'phone';
             if ($hasAccountActive) $select[] = 'account_active';
             if ($hasJoiningDate) $select[] = 'joining_date';
@@ -99,7 +103,7 @@ class UserController extends BaseAPI {
                 return;
             }
 
-            $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $users = array_map('br_user_row_with_standards', $stmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
 
             $checkedInToday = [];
             try {
@@ -226,6 +230,7 @@ class UserController extends BaseAPI {
             }
 
             br_ensure_tester_type_schema($this->conn);
+            br_ensure_standards_schema($this->conn);
             $cols = [];
             $res = $this->conn->query("SHOW COLUMNS FROM users");
             if ($res) {
@@ -236,6 +241,11 @@ class UserController extends BaseAPI {
             $select = ['id', 'username', 'email', 'phone', 'role', 'role_id', 'created_at', 'updated_at'];
             if (in_array('tester_type', $cols, true)) {
                 $select[] = 'tester_type';
+            }
+            foreach (['codo_rules_mode', 'cursor_tips_mode'] as $modeCol) {
+                if (in_array($modeCol, $cols, true)) {
+                    $select[] = $modeCol;
+                }
             }
             if (in_array('account_active', $cols, true)) {
                 $select[] = 'account_active';
@@ -309,6 +319,7 @@ class UserController extends BaseAPI {
                 }
             }
 
+            $user = br_user_row_with_standards($user);
             $user = br_user_with_resolved_avatar($user);
             $user = br_user_with_reports_to_name($this->conn, $user);
             $this->sendJsonResponse(200, "User retrieved successfully", $user);
@@ -452,6 +463,7 @@ class UserController extends BaseAPI {
             'DELETE FROM user_fcm_tokens WHERE user_id = ?',
             'DELETE FROM user_notifications WHERE user_id = ?',
             'DELETE FROM codo_rule_acknowledgements WHERE user_id = ?',
+            'DELETE FROM cursor_tip_acknowledgements WHERE user_id = ?',
             'DELETE FROM password_resets WHERE user_id = ?',
             'DELETE FROM leave_requests WHERE user_id = ?',
             'DELETE FROM work_sessions WHERE user_id = ?',
@@ -802,6 +814,25 @@ class UserController extends BaseAPI {
                 }
             }
 
+            // Why: CODO Rules / Cursor Tips modes only apply to configurable roles; NULL keeps the role default.
+            // create.php already requires USERS_CREATE, which covers choosing the initial access.
+            $standardsModes = ['codo_rules_mode' => null, 'cursor_tips_mode' => null];
+            if (br_standards_configurable($role, $testerType)) {
+                foreach (array_keys($standardsModes) as $modeKey) {
+                    if (!array_key_exists($modeKey, $data) || $data[$modeKey] === null || $data[$modeKey] === '') {
+                        continue;
+                    }
+                    $mode = br_normalize_standards_mode($data[$modeKey]);
+                    if ($mode === null) {
+                        $this->sendJsonResponse(422, 'Choose Required, Optional or Hidden.', [
+                            'errors' => [$modeKey => ['Invalid mode.']],
+                        ]);
+                        return;
+                    }
+                    $standardsModes[$modeKey] = $mode;
+                }
+            }
+
             /**
              * Why: Employees (developers + CODO testers) must complete statutory onboarding
              * and choose a password. Client testers/admins/creators get emailed credentials.
@@ -812,6 +843,7 @@ class UserController extends BaseAPI {
 
             // Insert user
             br_ensure_tester_type_schema($this->conn);
+            br_ensure_standards_schema($this->conn);
             $userCols = [];
             $ucRes = $this->conn->query("SHOW COLUMNS FROM users");
             if ($ucRes) {
@@ -832,6 +864,12 @@ class UserController extends BaseAPI {
             if ($hasJoiningDateCol) {
                 $insertCols[] = 'joining_date';
                 $insertVals[] = $joiningDate;
+            }
+            foreach ($standardsModes as $modeKey => $modeValue) {
+                if ($modeValue !== null && in_array($modeKey, $userCols, true)) {
+                    $insertCols[] = $modeKey;
+                    $insertVals[] = $modeValue;
+                }
             }
             if ($hasMustSetPasswordCol) {
                 $insertCols[] = 'must_set_password';
@@ -875,6 +913,8 @@ class UserController extends BaseAPI {
                 "role" => $role,
                 "role_id" => $roleId,
                 "tester_type" => $testerType,
+                "codo_rules_mode" => br_standards_resolve($role, $testerType, $standardsModes['codo_rules_mode'], 'codo'),
+                "cursor_tips_mode" => br_standards_resolve($role, $testerType, $standardsModes['cursor_tips_mode'], 'cursor_tips'),
                 "joining_date" => $joiningDate,
                 "email_status" => "queued",
                 "whatsapp_status" => $hasPhone ? "queued" : "skipped",
@@ -902,7 +942,14 @@ class UserController extends BaseAPI {
                         null,
                         $id,
                         $username,
-                        ['email' => $email, 'role' => $role, 'tester_type' => $testerType, 'phone' => $phone]
+                        [
+                            'email' => $email,
+                            'role' => $role,
+                            'tester_type' => $testerType,
+                            'phone' => $phone,
+                            'codo_rules_mode' => $standardsModes['codo_rules_mode'],
+                            'cursor_tips_mode' => $standardsModes['cursor_tips_mode'],
+                        ]
                     );
                 } catch (Throwable $e) {
                     error_log("Failed to log user creation activity: " . $e->getMessage());
@@ -1060,6 +1107,63 @@ class UserController extends BaseAPI {
         return !br_user_requires_onboarding($current) && br_user_requires_onboarding($after);
     }
 
+    /**
+     * Why: CODO Rules / Cursor Tips modes follow the role. They are kept only
+     * for configurable roles (developer, creator, CODO tester) and cleared to
+     * NULL (role default) when a user moves to any other role, so a stale
+     * override never resurfaces after a later role change.
+     *
+     * @param string|null $newRole Normalised role from this request, or null if unchanged.
+     * @param string|null|false $newTesterType New tester type, or false if unchanged.
+     * @return array<string, ?string>|false Column => value updates, false when a response was sent.
+     */
+    private function resolveStandardsModesUpdate(PDO $conn, string $userId, ?string $newRole, $newTesterType, array $data)
+    {
+        if (!br_ensure_standards_schema($conn)) {
+            return [];
+        }
+        $stmt = $conn->prepare('SELECT role, tester_type, codo_rules_mode, cursor_tips_mode FROM users WHERE id = ? LIMIT 1');
+        $stmt->execute([$userId]);
+        $current = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$current) {
+            return [];
+        }
+        $finalRole = strtolower($newRole ?? (string) $current['role']);
+        $finalType = $newTesterType !== false
+            ? $newTesterType
+            : br_normalize_tester_type($current['tester_type'] ?? null);
+        if ($finalRole !== 'tester') {
+            $finalType = null;
+        }
+
+        $updates = [];
+        if (!br_standards_configurable($finalRole, $finalType)) {
+            foreach (['codo_rules_mode', 'cursor_tips_mode'] as $col) {
+                if (($current[$col] ?? null) !== null) {
+                    $updates[$col] = null;
+                }
+            }
+            return $updates;
+        }
+
+        foreach (['codo_rules_mode', 'cursor_tips_mode'] as $col) {
+            if (!array_key_exists($col, $data)) {
+                continue;
+            }
+            $mode = br_normalize_standards_mode($data[$col]);
+            if ($mode === null) {
+                $this->sendJsonResponse(422, 'Choose Required, Optional or Hidden.', [
+                    'errors' => [$col => ['Invalid mode.']],
+                ]);
+                return false;
+            }
+            if ($mode !== ($current[$col] ?? null)) {
+                $updates[$col] = $mode;
+            }
+        }
+        return $updates;
+    }
+
     public function updateUser($id, $data) {
         try {
             $conn = $this->getConnection();
@@ -1152,6 +1256,21 @@ class UserController extends BaseAPI {
                     $params[] = $testerTypeResult['value'];
                     $testerTypeChanged = true;
                 }
+            }
+
+            $standardsUpdates = $this->resolveStandardsModesUpdate(
+                $conn,
+                (string) $id,
+                isset($data['role']) ? (string) $role : null,
+                $testerTypeChanged ? $testerTypeResult['value'] : false,
+                $data
+            );
+            if ($standardsUpdates === false) {
+                return;
+            }
+            foreach ($standardsUpdates as $modeCol => $modeValue) {
+                $fields[] = "{$modeCol} = ?";
+                $params[] = $modeValue;
             }
 
             if (
@@ -1481,6 +1600,9 @@ class UserController extends BaseAPI {
                     if ($testerTypeChanged) {
                         $logDetails['tester_type'] = $testerTypeResult['value'];
                     }
+                    foreach ($standardsUpdates as $modeCol => $modeValue) {
+                        $logDetails[$modeCol] = $modeValue ?? 'role_default';
+                    }
                     $logger = ActivityLogger::getInstance();
                     $logger->logUserUpdated(
                         (string) ($actorForLog->user_id ?? $id),
@@ -1514,6 +1636,10 @@ class UserController extends BaseAPI {
                 if (in_array('tester_type', $userCols, true)) {
                     $selectParts[] = 'tester_type';
                 }
+                if (br_ensure_standards_schema($conn)) {
+                    $selectParts[] = 'codo_rules_mode';
+                    $selectParts[] = 'cursor_tips_mode';
+                }
                 $selectParts = br_user_avatar_select_cols($selectParts, $userCols);
                 $selectParts = br_user_hr_select_cols($selectParts, $userCols);
                 $selectSql = implode(",\n                        ", $selectParts) . ",
@@ -1531,6 +1657,7 @@ class UserController extends BaseAPI {
                 $updatedUser = $fetchStmt->fetch(PDO::FETCH_ASSOC);
                 
                 if ($updatedUser) {
+                    $updatedUser = br_user_row_with_standards($updatedUser);
                     $updatedUser = br_user_with_resolved_avatar($updatedUser);
                     $updatedUser = br_user_with_reports_to_name($conn, $updatedUser);
                     $this->sendJsonResponse(

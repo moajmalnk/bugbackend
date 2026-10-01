@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../utils/workforce_access.php';
+require_once __DIR__ . '/../../utils/standards_access.php';
 
 class CodoRulesController extends BaseAPI
 {
@@ -33,7 +34,7 @@ class CodoRulesController extends BaseAPI
             $this->sendJsonResponse(403, 'Access denied. Common CODO is available to admin, developer, tester, and creator.');
             return null;
         }
-        if ($codoTeamOnly && !br_require_codo_standards_access($this, $this->conn, $decoded)) {
+        if ($codoTeamOnly && !br_require_codo_standards_access($this, $this->conn, $decoded, 'codo')) {
             return null;
         }
         return $decoded;
@@ -96,8 +97,8 @@ class CodoRulesController extends BaseAPI
         if ($phase === 'tester') {
             return ['tester'];
         }
-        // project rules: both developers and testers
-        return ['developer', 'tester'];
+        // project rules: developers and testers; creators only when an admin marks CODO required
+        return ['developer', 'tester', 'creator'];
     }
 
     /**
@@ -112,7 +113,8 @@ class CodoRulesController extends BaseAPI
         }
         $placeholders = implode(',', array_fill(0, count($roles), '?'));
         $sql = "SELECT id, username, role FROM users WHERE role IN ($placeholders)"
-            . ' AND ' . br_workforce_tester_sql('', $this->conn);
+            . ' AND ' . br_workforce_tester_sql('', $this->conn)
+            . ' AND ' . br_standards_required_sql('', 'codo', $this->conn);
         $params = $roles;
         if ($this->usersHasAccountActive()) {
             $sql .= ' AND account_active = 1';
@@ -708,6 +710,9 @@ class CodoRulesController extends BaseAPI
         if ($role === 'tester') {
             return ['tester', 'project'];
         }
+        if ($role === 'creator') {
+            return ['project'];
+        }
         return [];
     }
 
@@ -783,7 +788,9 @@ class CodoRulesController extends BaseAPI
         header('Vary: Authorization');
 
         $role = strtolower(trim((string)($decoded->role ?? '')));
-        $phases = br_user_is_workforce($this->conn, (string) $decoded->user_id)
+        $userId = (string) $decoded->user_id;
+        $phases = br_user_is_workforce($this->conn, $userId)
+            && br_standards_mode($this->conn, $userId, 'codo') === BR_STANDARDS_REQUIRED
             ? $this->acknowledgementPhasesForRole($role)
             : [];
         if ($phases !== [] && $this->tablesReady()) {
