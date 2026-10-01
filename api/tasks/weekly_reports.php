@@ -10,6 +10,9 @@ require_once __DIR__ . '/../../utils/workforce_access.php';
 
 class WeeklyReportsListController extends BaseAPI
 {
+    /** Matches the 16 recent weeks the frontend week picker renders. */
+    private const WEEK_COUNT_WINDOW = 16;
+
     public function handle(): void
     {
         $decoded = $this->validateToken();
@@ -55,16 +58,22 @@ class WeeklyReportsListController extends BaseAPI
             $opts['user_id'] = $userId;
         }
 
+        $today = br_server_today();
+        $current = br_monday_saturday_week_bounds($today);
+        $countsFrom = date('Y-m-d', strtotime($current['week_start'] . ' -' . (self::WEEK_COUNT_WINDOW - 1) . ' weeks'));
+
         try {
             $result = br_list_weekly_reports($this->conn, $opts);
+            $weekCounts = br_weekly_report_week_counts(
+                $this->conn,
+                $scope === 'mine' ? $userId : null,
+                $countsFrom
+            );
         } catch (Throwable $e) {
             error_log('WeeklyReportsListController: ' . $e->getMessage());
             $this->sendJsonResponse(500, 'Failed to load weekly reports.');
             return;
         }
-
-        $today = br_server_today();
-        $current = br_monday_saturday_week_bounds($today);
 
         $this->sendJsonResponse(200, 'OK', [
             'scope' => $scope,
@@ -79,6 +88,7 @@ class WeeklyReportsListController extends BaseAPI
             'week_start' => $result['week_start'],
             'week_end' => $result['week_end'],
             'week_label' => $result['week_label'],
+            'week_counts' => (object)$weekCounts,
         ]);
     }
 

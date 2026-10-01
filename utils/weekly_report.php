@@ -625,6 +625,41 @@ function br_list_weekly_reports(PDO $conn, array $opts): array
 }
 
 /**
+ * Why: The week picker shows how many reports each recent week holds, so users can
+ * jump straight to weeks with data instead of opening empty weeks one by one.
+ *
+ * @return array<string,int> week_start (Y-m-d) => report count, newest first
+ */
+function br_weekly_report_week_counts(PDO $conn, ?string $userId, string $fromWeekStart): array
+{
+    $where = ['wr.week_start >= ?'];
+    $params = [$fromWeekStart];
+    if (br_weekly_report_deleted_at_supported($conn)) {
+        $where[] = 'wr.deleted_at IS NULL';
+    }
+    if ($userId !== null && $userId !== '') {
+        $where[] = 'wr.user_id = ?';
+        $params[] = $userId;
+    }
+    $whereSql = implode(' AND ', $where);
+
+    $stmt = $conn->prepare(
+        "SELECT wr.week_start, COUNT(*) AS total
+         FROM weekly_reports wr
+         INNER JOIN users u ON u.id = wr.user_id
+         WHERE {$whereSql}
+         GROUP BY wr.week_start
+         ORDER BY wr.week_start DESC"
+    );
+    $stmt->execute($params);
+    $counts = [];
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $counts[(string)$row['week_start']] = (int)$row['total'];
+    }
+    return $counts;
+}
+
+/**
  * Why: Prefill from this week's daily checkout notes so Saturday is edit-not-rewrite.
  *
  * @return array{work_completed:string,work_in_progress:string,plan_next_week:string}
