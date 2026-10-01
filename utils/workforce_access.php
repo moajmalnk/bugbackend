@@ -17,6 +17,7 @@
 const BR_TESTER_TYPE_CODO = 'codo';
 const BR_TESTER_TYPE_CLIENT = 'client';
 const BR_WORKFORCE_FORBIDDEN_MESSAGE = 'Work updates are available to CODO team members only.';
+const BR_CODO_STANDARDS_FORBIDDEN_MESSAGE = 'CODO Rules, Compliance and Cursor Tips are available to the CODO team only.';
 const BR_WORKFORCE_FORBIDDEN_REASON = 'client_tester';
 
 /**
@@ -147,6 +148,26 @@ function br_require_workforce($api, PDO $conn, $decoded): bool
         return true;
     }
     $api->sendJsonResponse(403, BR_WORKFORCE_FORBIDDEN_MESSAGE, ['reason' => BR_WORKFORCE_FORBIDDEN_REASON]);
+    return false;
+}
+
+/**
+ * Sends 403 and returns false when the caller may not use CODO standards
+ * (CODO Rules, project Compliance, Cursor Tips).
+ *
+ * Why: these are internal engineering standards for the CODO team. External
+ * client testers only report and verify bugs, so they are excluded exactly
+ * like the workforce features — same fail-closed tester_type check.
+ *
+ * @param BaseAPI $api Endpoint instance used to emit the JSON response.
+ */
+function br_require_codo_standards_access($api, PDO $conn, $decoded): bool
+{
+    $userId = (string) ($decoded->user_id ?? '');
+    if (br_user_is_workforce($conn, $userId)) {
+        return true;
+    }
+    $api->sendJsonResponse(403, BR_CODO_STANDARDS_FORBIDDEN_MESSAGE, ['reason' => BR_WORKFORCE_FORBIDDEN_REASON]);
     return false;
 }
 

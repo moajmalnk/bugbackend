@@ -3,6 +3,7 @@ require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../ActivityLogger.php';
 require_once __DIR__ . '/../NotificationManager.php';
 require_once __DIR__ . '/../../utils/email.php';
+require_once __DIR__ . '/../../utils/workforce_access.php';
 
 class ProjectComplianceController extends BaseAPI
 {
@@ -652,6 +653,9 @@ class ProjectComplianceController extends BaseAPI
 
         try {
             $decoded = $this->validateToken();
+            if (!br_require_codo_standards_access($this, $this->conn, $decoded)) {
+                return;
+            }
             $projectId = $_GET['project_id'] ?? null;
             if (!$projectId) {
                 $this->sendJsonResponse(400, 'project_id is required');
@@ -687,6 +691,9 @@ class ProjectComplianceController extends BaseAPI
 
         try {
             $decoded = $this->validateToken();
+            if (!br_require_codo_standards_access($this, $this->conn, $decoded)) {
+                return;
+            }
             $data = $this->getRequestData();
             $projectId = $data['project_id'] ?? null;
             $phase = $data['phase'] ?? null;
@@ -1056,6 +1063,9 @@ class ProjectComplianceController extends BaseAPI
 
         try {
             $decoded = $this->validateToken();
+            if (!br_require_codo_standards_access($this, $this->conn, $decoded)) {
+                return;
+            }
             $data = $this->getRequestData();
             $projectId = $data['project_id'] ?? null;
             $phase = $data['phase'] ?? null;

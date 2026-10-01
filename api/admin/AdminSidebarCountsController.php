@@ -96,6 +96,7 @@ class AdminSidebarCountsController extends BaseAPI
         };
 
         $counts = $this->emptyCounts();
+        $hasCodoStandards = br_user_is_workforce($this->conn, $userId);
         $projectScopeSql = "IN (
             SELECT DISTINCT project_id FROM project_members WHERE user_id = ?
             UNION
@@ -168,6 +169,7 @@ class AdminSidebarCountsController extends BaseAPI
 
             if (
                 ($isAdmin || $role === 'developer' || $role === 'tester')
+                && $hasCodoStandards
                 && $this->dbTableExists('project_compliance')
             ) {
                 $counts['compliance'] = $this->countIncompleteCompliance(
@@ -339,13 +341,13 @@ class AdminSidebarCountsController extends BaseAPI
             );
         }
 
-        if ($can('CODO_VIEW') && $this->dbTableExists('codo_common_rules')) {
+        if ($hasCodoStandards && $can('CODO_VIEW') && $this->dbTableExists('codo_common_rules')) {
             $counts['codo'] = $this->countOrZero(
                 'SELECT COUNT(*) FROM codo_common_rules WHERE COALESCE(is_active, 1) = 1'
             );
         }
 
-        if ($can('CURSOR_TIPS_VIEW') && $this->dbTableExists('cursor_tips')) {
+        if ($hasCodoStandards && $can('CURSOR_TIPS_VIEW') && $this->dbTableExists('cursor_tips')) {
             $counts['cursorTips'] = $this->countOrZero(
                 'SELECT COUNT(*) FROM cursor_tips WHERE COALESCE(is_active, 1) = 1 AND deleted_at IS NULL'
             );

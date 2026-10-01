@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../../utils/workforce_access.php';
 
 /**
  * Why: Cursor Tips is a Common-CODO sibling catalog for Cursor operating craft.
@@ -30,6 +31,9 @@ class CursorTipsController extends BaseAPI
         $role = strtolower(trim((string)($decoded->role ?? '')));
         if (!in_array($role, self::TEAM_ROLES, true)) {
             $this->sendJsonResponse(403, 'Access denied. Cursor Tips is available to admin, developer, tester, and creator.');
+            return null;
+        }
+        if (!br_require_codo_standards_access($this, $this->conn, $decoded)) {
             return null;
         }
         return $decoded;
