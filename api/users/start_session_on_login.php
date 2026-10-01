@@ -39,27 +39,7 @@ try {
     // Check if user already has an active session (best-effort; schema differences should not 500)
     try {
         ActivitySessionsSchema::ensureSchema($conn);
-        $activePredicate = ActivitySessionsSchema::activeSessionPredicate($conn);
-
-        $checkStmt = $conn->prepare("
-            SELECT id FROM user_activity_sessions 
-            WHERE user_id = ? AND {$activePredicate}
-            ORDER BY session_start DESC 
-            LIMIT 1
-        ");
-        $checkStmt->execute([$userId]);
-        $existingSession = $checkStmt->fetch(PDO::FETCH_ASSOC);
-
-        if ($existingSession) {
-            $setClause = ActivitySessionsSchema::closeSessionSetClause($conn);
-            $closeStmt = $conn->prepare("
-                UPDATE user_activity_sessions 
-                SET {$setClause}
-                WHERE id = ?
-            ");
-            $now = date('Y-m-d H:i:s');
-            $closeStmt->execute([$now, 0, $existingSession['id']]);
-        }
+        ActivitySessionsSchema::closeOpenSessions($conn, $userId);
     } catch (PDOException $e) {
         error_log("start_session_on_login existing session cleanup: " . $e->getMessage());
     }

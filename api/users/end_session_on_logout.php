@@ -109,33 +109,7 @@ try {
     $tableExists = $conn->query("SHOW TABLES LIKE 'user_activity_sessions'")->rowCount() > 0;
     if ($tableExists) {
         ActivitySessionsSchema::ensureSchema($conn);
-        $activePredicate = ActivitySessionsSchema::activeSessionPredicate($conn);
-
-        $checkStmt = $conn->prepare("
-            SELECT id, session_start 
-            FROM user_activity_sessions 
-            WHERE user_id = ? AND {$activePredicate}
-        ");
-        $checkStmt->execute([$userId]);
-        $activeSessions = $checkStmt->fetchAll(PDO::FETCH_ASSOC);
-
-        $now = date('Y-m-d H:i:s');
-        $istTimezone = new DateTimeZone('Asia/Kolkata');
-        $setClause = ActivitySessionsSchema::closeSessionSetClause($conn);
-
-        foreach ($activeSessions as $session) {
-            $sessionStart = new DateTime($session['session_start'], $istTimezone);
-            $sessionEnd = new DateTime($now, $istTimezone);
-            $durationMinutes = (int) (($sessionEnd->getTimestamp() - $sessionStart->getTimestamp()) / 60);
-
-            $closeStmt = $conn->prepare("
-                UPDATE user_activity_sessions 
-                SET {$setClause}
-                WHERE id = ?
-            ");
-            $closeStmt->execute([$now, $durationMinutes, $session['id']]);
-            $sessionsClosed++;
-        }
+        $sessionsClosed = ActivitySessionsSchema::closeOpenSessions($conn, $userId);
     }
 
     echo json_encode([

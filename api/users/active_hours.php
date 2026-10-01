@@ -1,5 +1,6 @@
 <?php
 header('Content-Type: application/json');
+ini_set('serialize_precision', '-1');
 require_once 'UserController.php';
 
 try {
@@ -37,13 +38,17 @@ try {
         throw new Exception('User ID is required', 400);
     }
 
-    // Validate period
-    $validPeriods = ['daily', 'weekly', 'monthly', 'yearly'];
-    if (!in_array($period, $validPeriods)) {
+    $validPeriods = ActiveHoursCalculator::PERIODS;
+    if (!in_array($period, $validPeriods, true)) {
         throw new Exception('Invalid period. Must be one of: ' . implode(', ', $validPeriods), 400);
     }
 
-    $controller->getActiveHours($userId, $period);
+    $date = isset($_GET['date']) && $_GET['date'] !== '' ? (string) $_GET['date'] : null;
+    if ($date !== null && !ActiveHoursCalculator::isValidDate($date)) {
+        throw new Exception('Invalid date. Use YYYY-MM-DD and not a future date', 400);
+    }
+
+    $controller->getActiveHours($userId, $period, $date);
 } catch (Exception $e) {
     error_log("Error in active_hours.php: " . $e->getMessage());
     http_response_code($e->getCode() ?: 500);

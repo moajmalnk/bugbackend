@@ -2,6 +2,7 @@
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../ActivityLogger.php';
 require_once __DIR__ . '/../../utils/activity_sessions_schema.php';
+require_once __DIR__ . '/../../utils/active_hours.php';
 require_once __DIR__ . '/../../utils/user_avatar.php';
 require_once __DIR__ . '/../../utils/employee_id.php';
 require_once __DIR__ . '/../../utils/workforce_access.php';
@@ -1549,133 +1550,23 @@ class UserController extends BaseAPI {
         }
     }
 
-    public function getActiveHours($userId, $period = 'daily') {
+    public function getActiveHours($userId, $period = 'daily', $date = null) {
         try {
-            // Validate user ID
             if (!$userId || !$this->utils->isValidUUID($userId)) {
                 $this->sendJsonResponse(400, "Invalid user ID format");
                 return;
             }
 
             ActivitySessionsSchema::ensureSchema($this->conn);
+            $data = ActiveHoursCalculator::compute($this->conn, $userId, $period, $date);
 
-            // Check if user_activity_sessions table exists
-            if (!ActivitySessionsSchema::tableExists($this->conn)) {
-                // Return empty data if table doesn't exist
-                $response = [
-                    'period' => $period,
-                    'date_range' => $this->getDateRange($period),
-                    'summary' => [
-                        'total_hours' => 0,
-                    'total_minutes' => 0,
-                    'total_sessions' => 0,
-                    'active_days' => 0,
-                    'average_hours_per_day' => 0
-                ],
-                'daily_breakdown' => []
-            ];
-                $this->sendJsonResponse(200, "Active hours retrieved successfully (no activity data available)", $response);
-                return;
-            }
-
-            // Determine date range based on period
-            $dateRange = $this->getDateRange($period);
-            $startDate = $dateRange['start'];
-            $endDate = $dateRange['end'];
-
-            $minutesExpr = ActivitySessionsSchema::minutesCaseExpression($this->conn);
-
-            // Calculate active hours for the period
-            $query = "
-                SELECT 
-                    DATE(session_start) as date,
-                    SUM({$minutesExpr}) as total_minutes,
-                    COUNT(*) as session_count
-                FROM user_activity_sessions 
-                WHERE user_id = ? 
-                AND session_start >= ? 
-                AND session_start <= ?
-                GROUP BY DATE(session_start)
-                ORDER BY date DESC
-            ";
-
-            $stmt = $this->conn->prepare($query);
-            $stmt->execute([$userId, $startDate, $endDate]);
-            $dailyData = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-            // Calculate summary statistics
-            $totalMinutes = 0;
-            $totalSessions = 0;
-            $activeDays = count($dailyData);
-
-            foreach ($dailyData as $day) {
-                $totalMinutes += (int)$day['total_minutes'];
-                $totalSessions += (int)$day['session_count'];
-            }
-
-            $totalHours = round($totalMinutes / 60, 2);
-            $averageHoursPerDay = $activeDays > 0 ? round($totalHours / $activeDays, 2) : 0;
-
-            $response = [
-                'period' => $period,
-                'date_range' => [
-                    'start' => $startDate,
-                    'end' => $endDate
-                ],
-                'summary' => [
-                    'total_hours' => $totalHours,
-                    'total_minutes' => $totalMinutes,
-                    'total_sessions' => $totalSessions,
-                    'active_days' => $activeDays,
-                    'average_hours_per_day' => $averageHoursPerDay
-                ],
-                'daily_breakdown' => $dailyData
-            ];
-
-            $this->sendJsonResponse(200, "Active hours retrieved successfully", $response);
-
+            header('Cache-Control: private, no-cache');
+            header('Vary: Authorization');
+            $this->sendJsonResponse(200, "Active hours retrieved successfully", $data);
         } catch (Exception $e) {
             error_log("Error in getActiveHours: " . $e->getMessage());
             $this->sendJsonResponse(500, "An unexpected error occurred");
         }
-    }
-
-    private function getDateRange($period) {
-        $istTimezone = new DateTimeZone('Asia/Kolkata');
-        $now = new DateTime('now', $istTimezone);
-        $start = new DateTime('now', $istTimezone);
-
-        switch ($period) {
-            case 'daily':
-                $start->modify('today');
-                $end = clone $start;
-                $end->modify('+1 day');
-                break;
-            case 'weekly':
-                $start->modify('monday this week');
-                $end = clone $start;
-                $end->modify('+7 days');
-                break;
-            case 'monthly':
-                $start->modify('first day of this month');
-                $end = clone $start;
-                $end->modify('+1 month');
-                break;
-            case 'yearly':
-                $start->modify('first day of January this year');
-                $end = clone $start;
-                $end->modify('+1 year');
-                break;
-            default:
-                $start->modify('today');
-                $end = clone $start;
-                $end->modify('+1 day');
-        }
-
-        return [
-            'start' => $start->format('Y-m-d H:i:s'),
-            'end' => $end->format('Y-m-d H:i:s')
-        ];
     }
 
     /**

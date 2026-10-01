@@ -6,6 +6,10 @@
  */
 class ActivitySessionsSchema
 {
+    /** Matches the 5-minute idle split in user/heartbeat.php. */
+    public const IDLE_TIMEOUT_SECONDS = 300;
+    public const MAX_SESSION_SECONDS = 12 * 3600;
+
     private static $columns = null;
 
     public static function resetCache(): void
@@ -106,19 +110,49 @@ class ActivitySessionsSchema
         return 'session_end IS NOT NULL AND TIMESTAMPDIFF(MINUTE, updated_at, NOW()) < 5';
     }
 
-    /** SQL CASE expression for minutes in a session row. */
-    public static function minutesCaseExpression(PDO $conn): string
+    /**
+     * Close every open session for a user (login / logout).
+     *
+     * Why: heartbeats keep session_end at the last moment the user was seen. If that is
+     * older than the idle timeout the user had already left, so the session must end
+     * there — ending it at "now" would credit days of idle time (e.g. 56h in one day).
+     */
+    public static function closeOpenSessions(PDO $conn, string $userId): int
     {
-        $durationCol = self::durationColumn($conn);
-        $parts = [];
-
-        if ($durationCol) {
-            $parts[] = "WHEN {$durationCol} IS NOT NULL AND {$durationCol} > 0 THEN {$durationCol}";
+        $activePredicate = self::activeSessionPredicate($conn);
+        $stmt = $conn->prepare("
+            SELECT id, session_start, session_end
+            FROM user_activity_sessions
+            WHERE user_id = ? AND {$activePredicate}
+        ");
+        $stmt->execute([$userId]);
+        $sessions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        if (!$sessions) {
+            return 0;
         }
-        $parts[] = 'WHEN session_end IS NOT NULL THEN TIMESTAMPDIFF(MINUTE, session_start, session_end)';
-        $parts[] = 'ELSE TIMESTAMPDIFF(MINUTE, session_start, NOW())';
 
-        return 'CASE ' . implode(' ', $parts) . ' END';
+        $tz = new DateTimeZone('Asia/Kolkata');
+        $nowTs = time();
+        $close = $conn->prepare(
+            'UPDATE user_activity_sessions SET ' . self::closeSessionSetClause($conn) . ' WHERE id = ?'
+        );
+
+        foreach ($sessions as $session) {
+            $startTs = (new DateTime($session['session_start'], $tz))->getTimestamp();
+            $lastSeenTs = $session['session_end']
+                ? (new DateTime($session['session_end'], $tz))->getTimestamp()
+                : $startTs;
+            $endTs = $nowTs - $lastSeenTs >= self::IDLE_TIMEOUT_SECONDS ? $lastSeenTs : $nowTs;
+            $endTs = min(max($endTs, $startTs), $startTs + self::MAX_SESSION_SECONDS);
+
+            $close->execute([
+                (new DateTime('@' . $endTs))->setTimezone($tz)->format('Y-m-d H:i:s'),
+                intdiv($endTs - $startTs, 60),
+                $session['id'],
+            ]);
+        }
+
+        return count($sessions);
     }
 
     public static function closeSessionSetClause(PDO $conn): string
