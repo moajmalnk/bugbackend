@@ -25,9 +25,11 @@
 --   3. Set @dry_run = 0 and run again.
 -- =============================================================================
 
-SET @from_user_id := '0fafc182-237a-4414-932a-175ed9c24db8';  -- rumana_np (Client tester) — source
-SET @to_user_id   := 'f78c67de-30dc-4829-9334-d9be76511828';  -- rumana (CODO tester)      — keeps everything
-SET @dry_run      := 1;                                        -- 1 = report only, 0 = apply
+-- FROM = rumana_np (Client tester, source). TO = rumana (CODO tester, keeps everything).
+-- dry_run: 1 = report only (nothing changes), 0 = APPLY.
+SET @from_user_id := '0fafc182-237a-4414-932a-175ed9c24db8';
+SET @to_user_id := 'f78c67de-30dc-4829-9334-d9be76511828';
+SET @dry_run := 1;
 
 DROP PROCEDURE IF EXISTS br_merge_user_accounts;
 
