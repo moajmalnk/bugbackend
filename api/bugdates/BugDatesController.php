@@ -7,6 +7,7 @@ require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../config/utils.php';
 require_once __DIR__ . '/../../utils/bug_dates_recurrence.php';
 require_once __DIR__ . '/../../utils/leave_attendance.php';
+require_once __DIR__ . '/../../utils/user_avatar.php';
 
 class BugDatesController extends BaseAPI
 {
@@ -694,6 +695,131 @@ class BugDatesController extends BaseAPI
             }
         }
         return $items;
+    }
+
+    /**
+     * Why: The day drawer answers "who is in the office / at home today" — actual
+     * check-ins come from work_submissions.work_mode, and approved WFH requests
+     * without a check-in yet (or on future days) are listed as planned.
+     * Names are company-visible like the WFH overlay; check-in times are limited to
+     * attendance/leave managers and the person themself.
+     */
+    public function dayAttendance()
+    {
+        $decoded = $this->requireAuth();
+        if (!$decoded) {
+            return;
+        }
+        $canView = $this->can($decoded, 'BUGDATES_VIEW')
+            || $this->can($decoded, 'LEAVE_VIEW')
+            || $this->isAdmin($decoded);
+        if (!$canView) {
+            $this->sendJsonResponse(403, 'Access denied');
+            return;
+        }
+        $date = $this->sanitizeDate($_GET['date'] ?? null);
+        if (!$date) {
+            $this->sendJsonResponse(422, 'date (YYYY-MM-DD) is required');
+            return;
+        }
+
+        $viewerId = (string)$decoded->user_id;
+        $canSeeTimes = $this->can($decoded, 'LEAVE_MANAGE')
+            || $this->can($decoded, 'ATTENDANCE_MANAGE')
+            || $this->isAdmin($decoded);
+
+        try {
+            $userCols = [];
+            $res = $this->conn->query('SHOW COLUMNS FROM users');
+            while ($res && ($row = $res->fetch(PDO::FETCH_ASSOC))) {
+                $userCols[] = $row['Field'];
+            }
+            $avatarCols = br_user_avatar_select_cols([], $userCols);
+            $avatarSelect = $avatarCols
+                ? ', ' . implode(', ', array_map(static fn ($c) => "u.`{$c}`", $avatarCols))
+                : '';
+            $activeWhere = in_array('deleted_at', $userCols, true) ? ' AND u.deleted_at IS NULL' : '';
+
+            $wsCols = [];
+            $res = $this->conn->query('SHOW COLUMNS FROM work_submissions');
+            while ($res && ($row = $res->fetch(PDO::FETCH_ASSOC))) {
+                $wsCols[] = $row['Field'];
+            }
+            $hasMode = in_array('work_mode', $wsCols, true);
+            $hasLate = in_array('is_late', $wsCols, true);
+
+            $people = ['office' => [], 'wfh' => [], 'unset' => []];
+            $checkedIn = [];
+
+            if (in_array('check_in_time', $wsCols, true)) {
+                $stmt = $this->conn->prepare(
+                    'SELECT ws.user_id, ws.check_in_time, ws.hours_today'
+                    . ($hasMode ? ', ws.work_mode' : '')
+                    . ($hasLate ? ', ws.is_late' : '')
+                    . ", u.username{$avatarSelect}
+                     FROM work_submissions ws
+                     JOIN users u
+                       ON ws.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
+                     WHERE ws.submission_date = ? AND ws.check_in_time IS NOT NULL{$activeWhere}
+                     ORDER BY ws.check_in_time ASC"
+                );
+                $stmt->execute([$date]);
+                foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+                    $uid = (string)$row['user_id'];
+                    $checkedIn[$uid] = true;
+                    $mode = $hasMode ? strtolower((string)($row['work_mode'] ?? '')) : '';
+                    $bucket = in_array($mode, ['office', 'wfh'], true) ? $mode : 'unset';
+                    $showTime = $canSeeTimes || $uid === $viewerId;
+                    $people[$bucket][] = [
+                        'user_id' => $uid,
+                        'username' => $row['username'] ?? 'Teammate',
+                        'avatar' => br_user_resolve_avatar($row),
+                        'status' => 'checked_in',
+                        'check_in_time' => $showTime ? $row['check_in_time'] : null,
+                        'is_late' => $showTime && $hasLate ? (int)($row['is_late'] ?? 0) === 1 : null,
+                    ];
+                }
+            }
+
+            $t = $this->conn->query("SHOW TABLES LIKE 'attendance_wfh_requests'");
+            if ($t && $t->fetch(PDO::FETCH_NUM)) {
+                $stmt = $this->conn->prepare(
+                    "SELECT w.user_id, u.username{$avatarSelect}
+                     FROM attendance_wfh_requests w
+                     JOIN users u
+                       ON w.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
+                     WHERE w.status = 'approved' AND w.request_date = ?{$activeWhere}
+                     ORDER BY u.username ASC"
+                );
+                $stmt->execute([$date]);
+                foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+                    $uid = (string)$row['user_id'];
+                    if (isset($checkedIn[$uid])) {
+                        continue;
+                    }
+                    $people['wfh'][] = [
+                        'user_id' => $uid,
+                        'username' => $row['username'] ?? 'Teammate',
+                        'avatar' => br_user_resolve_avatar($row),
+                        'status' => 'planned',
+                        'check_in_time' => null,
+                        'is_late' => null,
+                    ];
+                }
+            }
+
+            header('Cache-Control: private, no-cache');
+            $this->sendJsonResponse(200, 'OK', [
+                'date' => $date,
+                'office' => $people['office'],
+                'wfh' => $people['wfh'],
+                'unset' => $people['unset'],
+                'can_see_times' => $canSeeTimes,
+            ]);
+        } catch (Throwable $e) {
+            error_log('BugDatesController::dayAttendance: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Failed to load attendance');
+        }
     }
 
     public function listEvents()
