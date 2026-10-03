@@ -223,7 +223,20 @@ class SubmitOnboardingAPI extends BaseAPI
             // Offer letter is no longer collected in onboarding; keep null / existing.
             $offerPath = null;
 
-            $avatarPath = $this->storeProfilePhoto($userId, !$isUpdate);
+            // Why: Google login already stores profile_picture_url; admin fill must not
+            // force a re-upload. Self onboarding/edit only requires a photo when none exists.
+            $avatarCols = br_user_avatar_select_cols([], $cols);
+            $hasExistingAvatar = false;
+            if ($avatarCols !== []) {
+                $avatarRowStmt = $this->conn->prepare(
+                    'SELECT ' . implode(', ', $avatarCols) . ' FROM users WHERE id = ? LIMIT 1'
+                );
+                $avatarRowStmt->execute([$userId]);
+                $avatarRow = $avatarRowStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+                $hasExistingAvatar = br_user_resolve_avatar($avatarRow) !== null;
+            }
+            $photoRequired = !$isAdminProxy && !$hasExistingAvatar;
+            $avatarPath = $this->storeProfilePhoto($userId, $photoRequired);
             if ($avatarPath === false) {
                 return;
             }
@@ -951,8 +964,9 @@ class SubmitOnboardingAPI extends BaseAPI
     }
 
     /**
-     * Why: Profile photo is required for first-time onboarding and is dual-written
-     * to users.avatar + users.profile_picture when present. On edit it is optional.
+     * Why: Dual-writes to users.avatar + users.profile_picture when present.
+     * Required only when the caller has no photo yet (Google URL or prior upload);
+     * admin proxy never requires a new file.
      *
      * @return string|null|false Relative web path on success, null if optional missing, false on error
      */
