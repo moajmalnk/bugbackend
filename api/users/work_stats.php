@@ -457,13 +457,14 @@ class UserWorkStatsController extends BaseAPI {
                 $trendMonthCount = 6;
             }
             
-            // Get work submissions for the current custom period
+            // Get work submissions for the current custom period.
+            // Why: Use raw hours_today (not br_credited_hours_sql) so approved OT stays
+            // separate — same contract as Team Analytics (credited ≠ net = credited + OT).
             $wsLive = $this->wsLiveAnd();
-            $creditedSql = br_credited_hours_sql($this->conn);
             $stmt = $this->conn->prepare("
                 SELECT 
                     submission_date,
-                    {$creditedSql} AS hours_today,
+                    COALESCE(hours_today, 0) AS hours_today,
                     start_time
                 FROM work_submissions 
                 WHERE user_id = ? 
@@ -584,11 +585,11 @@ class UserWorkStatsController extends BaseAPI {
                     continue;
                 }
                 
-                // Get work submission data for this period
+                // Get work submission data for this period (raw hours; OT summed separately)
                 $stmt = $this->conn->prepare("
                     SELECT 
                         COUNT(*) as days,
-                        SUM({$creditedSql}) as hours
+                        COALESCE(SUM(hours_today), 0) as hours
                     FROM work_submissions 
                     WHERE user_id = ? 
                     AND submission_date >= ?
@@ -600,7 +601,7 @@ class UserWorkStatsController extends BaseAPI {
 
                 // Pull per-day hours so paid leave can be credited into trend totals
                 $hoursStmt = $this->conn->prepare("
-                    SELECT submission_date, {$creditedSql} AS hours_today
+                    SELECT submission_date, COALESCE(hours_today, 0) AS hours_today
                     FROM work_submissions
                     WHERE user_id = ?
                     AND submission_date >= ?
@@ -935,13 +936,15 @@ class UserWorkStatsController extends BaseAPI {
                 return strcmp((string)($b['date'] ?? ''), (string)($a['date'] ?? ''));
             });
 
+            // Why: Summary hours must stay raw work + leave; OT is already in overtime_hours
+            // and net_hours. Folding OT via br_credited_hours_row double-counted vs Analytics.
             $hoursByDate = [];
             foreach ($submissions as $submission) {
                 $d = (string)($submission['submission_date'] ?? '');
                 if ($d === '') {
                     continue;
                 }
-                $hoursByDate[$d] = br_credited_hours_row($submission);
+                $hoursByDate[$d] = (float)($submission['hours_today'] ?? 0);
             }
             $leaveBreakdown = br_leave_credit_breakdown($hoursByDate, $leaveMap);
 

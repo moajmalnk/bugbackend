@@ -36,8 +36,10 @@ function br_calendar_month_range_label(string $date): string
  * @return array{days:int,hours:float,month_start:string,period_label:string,period_range:string}
  */
 /**
- * Why: Approved / changed overtime lives in extra_hours_approved_amount, not in
- * hours_today, so totals must add it. Legacy rows may already include OT in
+ * Why: Single combined figure (work + approved OT) for submit/month-to-date UIs that
+ * do NOT also display overtime_hours separately. Do NOT use in Team Analytics or
+ * individual Work Stats / period details — those keep raw hours_today and add OT
+ * once for Net (credited + approved OT). Legacy rows may already include OT in
  * hours_today (e.g. 10h) — GREATEST(worked, LEAST(worked, 8) + approved) avoids
  * double counting. Mirrors creditedHours() in frontend/src/lib/workPeriodUtils.ts.
  */
