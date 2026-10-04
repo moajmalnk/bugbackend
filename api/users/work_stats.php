@@ -1320,6 +1320,8 @@ class UserWorkStatsController extends BaseAPI {
                 'avg_check_in_label' => null,
                 'bugs_reported' => 0,
                 'bugs_fixed' => 0,
+                'retests' => 0,
+                'updates' => 0,
                 'projects' => [],
                 'net_hours' => 0.0,
             ],
@@ -1740,31 +1742,105 @@ class UserWorkStatsController extends BaseAPI {
 
             $bugsReported = [];
             $bugsFixed = [];
+            $retestsDone = [];
+            $updatesCreated = [];
             try {
+                $bugCols = [];
+                try {
+                    $bugCols = $this->conn->query("SHOW COLUMNS FROM bugs")->fetchAll(PDO::FETCH_COLUMN) ?: [];
+                } catch (Throwable $ignored) {
+                    $bugCols = [];
+                }
+                $bugLive = in_array('deleted_at', $bugCols, true) ? ' AND deleted_at IS NULL' : '';
+                $hasFixedBy = in_array('fixed_by', $bugCols, true);
+                $hasRetest = in_array('tester_retested', $bugCols, true);
+                $hasVerifiedAt = in_array('tester_verified_at', $bugCols, true);
+                $hasVerifiedBy = in_array('tester_verified_by', $bugCols, true);
+
                 $bugStmt = $this->conn->prepare("
                     SELECT reported_by AS user_id, COUNT(*) AS total
                     FROM bugs
                     WHERE DATE(created_at) >= ? AND DATE(created_at) <= ?
+                    {$bugLive}
                     GROUP BY reported_by
                 ");
                 $bugStmt->execute([$periodStart, $periodEnd]);
                 foreach ($bugStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-                    $bugsReported[(string)$row['user_id']] = (int)$row['total'];
+                    $uid = (string)($row['user_id'] ?? '');
+                    if ($uid !== '') {
+                        $bugsReported[$uid] = (int)$row['total'];
+                    }
                 }
 
+                // Why: Fixes must credit fixed_by (developer), not whoever last updated the row.
+                $fixerExpr = $hasFixedBy
+                    ? "COALESCE(NULLIF(TRIM(fixed_by), ''), updated_by)"
+                    : "updated_by";
                 $fixStmt = $this->conn->prepare("
-                    SELECT updated_by AS user_id, COUNT(*) AS total
+                    SELECT {$fixerExpr} AS user_id, COUNT(*) AS total
                     FROM bugs
                     WHERE status = 'fixed'
                     AND DATE(updated_at) >= ? AND DATE(updated_at) <= ?
-                    GROUP BY updated_by
+                    {$bugLive}
+                    GROUP BY {$fixerExpr}
                 ");
                 $fixStmt->execute([$periodStart, $periodEnd]);
                 foreach ($fixStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-                    $bugsFixed[(string)$row['user_id']] = (int)$row['total'];
+                    $uid = (string)($row['user_id'] ?? '');
+                    if ($uid !== '') {
+                        $bugsFixed[$uid] = (int)$row['total'];
+                    }
+                }
+
+                if ($hasRetest) {
+                    $retestDateExpr = $hasVerifiedAt
+                        ? "DATE(COALESCE(tester_verified_at, updated_at))"
+                        : "DATE(updated_at)";
+                    $retestActorExpr = $hasVerifiedBy
+                        ? "COALESCE(NULLIF(TRIM(tester_verified_by), ''), updated_by)"
+                        : "updated_by";
+                    $retestStmt = $this->conn->prepare("
+                        SELECT {$retestActorExpr} AS user_id, COUNT(*) AS total
+                        FROM bugs
+                        WHERE tester_retested IS NOT NULL
+                        AND {$retestDateExpr} >= ? AND {$retestDateExpr} <= ?
+                        {$bugLive}
+                        GROUP BY {$retestActorExpr}
+                    ");
+                    $retestStmt->execute([$periodStart, $periodEnd]);
+                    foreach ($retestStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                        $uid = (string)($row['user_id'] ?? '');
+                        if ($uid !== '') {
+                            $retestsDone[$uid] = (int)$row['total'];
+                        }
+                    }
+                }
+
+                $updateLive = '';
+                try {
+                    $updateCols = $this->conn->query("SHOW COLUMNS FROM updates")->fetchAll(PDO::FETCH_COLUMN) ?: [];
+                    if (in_array('deleted_at', $updateCols, true)) {
+                        $updateLive = ' AND deleted_at IS NULL';
+                    }
+                } catch (Throwable $ignored) {
+                    $updateLive = '';
+                }
+                $updateStmt = $this->conn->prepare("
+                    SELECT created_by AS user_id, COUNT(*) AS total
+                    FROM updates
+                    WHERE DATE(created_at) >= ? AND DATE(created_at) <= ?
+                    {$updateLive}
+                    GROUP BY created_by
+                ");
+                $updateStmt->execute([$periodStart, $periodEnd]);
+                foreach ($updateStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                    $uid = (string)($row['user_id'] ?? '');
+                    if ($uid !== '') {
+                        $updatesCreated[$uid] = (int)$row['total'];
+                    }
                 }
             } catch (Exception $e) {
-                error_log('UserWorkStatsController::getUsersAnalytics bug counts error: ' . $e->getMessage());
+                error_log('UserWorkStatsController::getUsersAnalytics bug/update counts error: ' . $e->getMessage());
             }
 
             $roleGroups = [
@@ -1805,6 +1881,8 @@ class UserWorkStatsController extends BaseAPI {
                     'avg_check_in_label' => $current['avg_check_in_label'],
                     'bugs_reported' => (int)($bugsReported[$uid] ?? 0),
                     'bugs_fixed' => (int)($bugsFixed[$uid] ?? 0),
+                    'retests' => (int)($retestsDone[$uid] ?? 0),
+                    'updates' => (int)($updatesCreated[$uid] ?? 0),
                     'projects' => $current['projects'] ?? [],
                     'net_hours' => round((float)$current['hours'] + (float)$current['overtime_hours'], 2),
                 ];
