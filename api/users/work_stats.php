@@ -1299,6 +1299,7 @@ class UserWorkStatsController extends BaseAPI {
             'username' => (string)($user['username'] ?? ''),
             'name' => (string)($user['name'] ?? $user['username'] ?? ''),
             'role' => (string)($user['role'] ?? ''),
+            'tester_type' => isset($user['tester_type']) ? (string)$user['tester_type'] : null,
             'account_active' => isset($user['account_active']) ? (int)$user['account_active'] : 1,
             'current_period' => [
                 'days' => 0,
@@ -1615,15 +1616,19 @@ class UserWorkStatsController extends BaseAPI {
             }
             $hasNameCol = isset($userCols['name']);
             $hasAccountActiveCol = isset($userCols['account_active']);
+            $hasTesterTypeCol = isset($userCols['tester_type']);
             $nameExpr = $hasNameCol
                 ? "COALESCE(NULLIF(name, ''), username) AS name"
                 : "username AS name";
             $accountActiveExpr = $hasAccountActiveCol
                 ? "COALESCE(account_active, 1) AS account_active"
                 : "1 AS account_active";
+            $testerTypeExpr = $hasTesterTypeCol
+                ? "tester_type"
+                : "NULL AS tester_type";
 
             $usersStmt = $this->conn->query("
-                SELECT id, username, {$nameExpr}, role, {$accountActiveExpr}
+                SELECT id, username, {$nameExpr}, role, {$testerTypeExpr}, {$accountActiveExpr}
                 FROM users
                 ORDER BY username ASC
             ");
