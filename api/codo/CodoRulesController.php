@@ -723,10 +723,11 @@ class CodoRulesController extends BaseAPI
     private const ON_DEMAND_RULE_MIGRATIONS = [
         'dev_rule_44' => '110_codo_cross_browser_api_rules.sql',
         'dev_rule_51' => '114_codo_production_engineering_rules.sql',
+        'dev_rule_68' => '122_codo_webview_payment_rules.sql',
     ];
 
     /**
-     * Why: Rules 44–50 and 51–67 (plus QA Stress 14–34) were added in SQL files
+     * Why: Rules 44–50, 51–67, and 68 (plus QA Stress 14–35) were added in SQL files
      * that are not auto-applied. The acknowledgement gate must see them on the
      * next check, including an already-open developer session. Each file is
      * idempotent (INSERT IGNORE + guarded UPDATEs), so a partial earlier run is safe.
