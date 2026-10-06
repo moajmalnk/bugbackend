@@ -2192,5 +2192,343 @@ class NotificationManager extends BaseAPI {
             return false;
         }
     }
+
+    /**
+     * Why: Admins need a push when an employee verifies or flags a pay week.
+     */
+    public function notifyPayVerifyWeekToAdmins(
+        $userId,
+        $userName,
+        $weekStart,
+        $status,
+        $note = null
+    ) {
+        $userId = (string)$userId;
+        $needsFix = (string)$status === 'correction_needed';
+        $weekLabel = date('d M', strtotime((string)$weekStart)) . ' week';
+        $title = $needsFix ? 'Pay Verify · week correction' : 'Pay Verify · week verified';
+        $message = $needsFix
+            ? "{$userName} flagged {$weekLabel} for correction."
+            : "{$userName} verified {$weekLabel}.";
+        if ($note) {
+            $snippet = mb_substr(trim((string)$note), 0, 120);
+            if ($snippet !== '') {
+                $message .= " — {$snippet}";
+            }
+        }
+        $type = $this->getValidNotificationType('status_change', 'new_update');
+        $recipients = $this->resolveAdminRecipients($userId);
+        return $this->createNotification(
+            $type,
+            $title,
+            $message,
+            $recipients,
+            [
+                'entity_type' => 'pay_verify_week',
+                'entity_id' => $userId . ':' . $weekStart,
+                'user_id' => $userId,
+                'week_start' => (string)$weekStart,
+                'status' => (string)$status,
+                'url' => '/pay-verify',
+            ]
+        );
+    }
+
+    /**
+     * Why: Employee gets push when their week is approved / needs fix / admin-verified.
+     */
+    public function notifyPayVerifyWeekEmployee(
+        $userId,
+        $weekStart,
+        $status,
+        $note = null,
+        $onBehalf = false
+    ) {
+        $userId = (string)$userId;
+        $weekLabel = date('d M', strtotime((string)$weekStart)) . ' week';
+        $status = (string)$status;
+        if ($status === 'approved') {
+            $title = 'Week approved';
+            $message = "Your {$weekLabel} was approved for payroll.";
+        } elseif ($status === 'correction_requested' || $status === 'correction_needed') {
+            $title = 'Week needs correction';
+            $message = $onBehalf
+                ? "An admin flagged your {$weekLabel} for correction."
+                : "Please correct hours for your {$weekLabel}.";
+        } else {
+            $title = $onBehalf ? 'Week verified by admin' : 'Week verified';
+            $message = $onBehalf
+                ? "An admin verified your {$weekLabel}."
+                : "Your {$weekLabel} is marked verified.";
+        }
+        if ($note) {
+            $snippet = mb_substr(trim((string)$note), 0, 120);
+            if ($snippet !== '') {
+                $message .= " — {$snippet}";
+            }
+        }
+        $type = $this->getValidNotificationType('status_change', 'new_update');
+        return $this->createNotification(
+            $type,
+            $title,
+            $message,
+            [$userId],
+            [
+                'entity_type' => 'pay_verify_week',
+                'entity_id' => $userId . ':' . $weekStart,
+                'week_start' => (string)$weekStart,
+                'status' => $status,
+                'url' => '/pay-verify',
+            ]
+        );
+    }
+
+    public function notifyPayVerifyMonthToAdmins(
+        $userId,
+        $userName,
+        $yearMonth,
+        $status,
+        $note = null
+    ) {
+        $userId = (string)$userId;
+        $needsFix = (string)$status === 'correction_needed';
+        $monthLabel = $yearMonth;
+        try {
+            $dt = DateTimeImmutable::createFromFormat('!Y-m', (string)$yearMonth, new DateTimeZone('Asia/Kolkata'));
+            if ($dt) {
+                $monthLabel = $dt->format('F Y');
+            }
+        } catch (Throwable $e) {
+            // keep raw
+        }
+        $title = $needsFix ? 'Pay Verify · month correction' : 'Pay Verify · month ready';
+        $message = $needsFix
+            ? "{$userName} flagged {$monthLabel} for correction."
+            : "{$userName} verified {$monthLabel} — ready to mark paid.";
+        if ($note) {
+            $snippet = mb_substr(trim((string)$note), 0, 120);
+            if ($snippet !== '') {
+                $message .= " — {$snippet}";
+            }
+        }
+        $type = $this->getValidNotificationType('status_change', 'new_update');
+        return $this->createNotification(
+            $type,
+            $title,
+            $message,
+            $this->resolveAdminRecipients($userId),
+            [
+                'entity_type' => 'pay_verify_month',
+                'entity_id' => $userId . ':' . $yearMonth,
+                'user_id' => $userId,
+                'month' => (string)$yearMonth,
+                'status' => (string)$status,
+                'url' => '/pay-verify?month=' . rawurlencode((string)$yearMonth),
+            ]
+        );
+    }
+
+    public function notifyPayVerifyMonthEmployee(
+        $userId,
+        $yearMonth,
+        $status,
+        $note = null,
+        $onBehalf = false
+    ) {
+        $userId = (string)$userId;
+        $monthLabel = (string)$yearMonth;
+        try {
+            $dt = DateTimeImmutable::createFromFormat('!Y-m', (string)$yearMonth, new DateTimeZone('Asia/Kolkata'));
+            if ($dt) {
+                $monthLabel = $dt->format('F Y');
+            }
+        } catch (Throwable $e) {
+            // keep
+        }
+        $needsFix = (string)$status === 'correction_needed';
+        $title = $needsFix ? 'Month needs correction' : ($onBehalf ? 'Month verified by admin' : 'Month verified');
+        $message = $needsFix
+            ? ($onBehalf
+                ? "An admin flagged {$monthLabel} for correction."
+                : "Please correct {$monthLabel} before payment.")
+            : ($onBehalf
+                ? "An admin verified your hours for {$monthLabel}."
+                : "Your {$monthLabel} hours are verified.");
+        if ($note) {
+            $snippet = mb_substr(trim((string)$note), 0, 120);
+            if ($snippet !== '') {
+                $message .= " — {$snippet}";
+            }
+        }
+        $type = $this->getValidNotificationType('status_change', 'new_update');
+        return $this->createNotification(
+            $type,
+            $title,
+            $message,
+            [$userId],
+            [
+                'entity_type' => 'pay_verify_month',
+                'entity_id' => $userId . ':' . $yearMonth,
+                'month' => (string)$yearMonth,
+                'status' => (string)$status,
+                'url' => '/pay-verify?month=' . rawurlencode((string)$yearMonth),
+            ]
+        );
+    }
+
+    public function notifyPayVerifyMonthAdminAction(
+        $userId,
+        $yearMonth,
+        $action,
+        $note = null
+    ) {
+        $userId = (string)$userId;
+        $monthLabel = (string)$yearMonth;
+        try {
+            $dt = DateTimeImmutable::createFromFormat('!Y-m', (string)$yearMonth, new DateTimeZone('Asia/Kolkata'));
+            if ($dt) {
+                $monthLabel = $dt->format('F Y');
+            }
+        } catch (Throwable $e) {
+            // keep
+        }
+        $action = (string)$action;
+        if ($action === 'lock') {
+            $title = 'Salary marked paid';
+            $message = "Your salary for {$monthLabel} has been marked as paid.";
+        } elseif ($action === 'unlock') {
+            $title = 'Salary unmarked';
+            $message = "Your {$monthLabel} payment was unmarked.";
+        } else {
+            $title = 'Month needs correction';
+            $message = "Please review and re-verify {$monthLabel}.";
+        }
+        if ($note) {
+            $snippet = mb_substr(trim((string)$note), 0, 120);
+            if ($snippet !== '') {
+                $message .= " — {$snippet}";
+            }
+        }
+        $type = $this->getValidNotificationType('status_change', 'new_update');
+        return $this->createNotification(
+            $type,
+            $title,
+            $message,
+            [$userId],
+            [
+                'entity_type' => 'pay_verify_month',
+                'entity_id' => $userId . ':' . $yearMonth . ':' . $action,
+                'month' => (string)$yearMonth,
+                'action' => $action,
+                'url' => '/pay-verify?month=' . rawurlencode((string)$yearMonth),
+            ]
+        );
+    }
+
+    public function notifyPayVerifySalaryHike(
+        $userId,
+        $newRate,
+        $effectiveFrom,
+        $previousRate = null,
+        $hikePct = null,
+        $note = null
+    ) {
+        $userId = (string)$userId;
+        $rateLabel = '₹' . number_format((float)$newRate, 2) . '/h';
+        $fromLabel = date('d M Y', strtotime((string)$effectiveFrom));
+        $title = 'Salary rate updated';
+        $message = "Your hourly rate is now {$rateLabel}, effective {$fromLabel}.";
+        if ($hikePct !== null) {
+            $pct = (float)$hikePct;
+            $message .= ' (' . ($pct > 0 ? '+' : '') . $pct . '%).';
+        }
+        if ($note) {
+            $snippet = mb_substr(trim((string)$note), 0, 120);
+            if ($snippet !== '') {
+                $message .= " — {$snippet}";
+            }
+        }
+        $type = $this->getValidNotificationType('status_change', 'new_update');
+        return $this->createNotification(
+            $type,
+            $title,
+            $message,
+            [$userId],
+            [
+                'entity_type' => 'pay_verify_rate',
+                'entity_id' => $userId . ':' . $effectiveFrom,
+                'hourly_rate' => (float)$newRate,
+                'effective_from' => (string)$effectiveFrom,
+                'previous_rate' => $previousRate !== null ? (float)$previousRate : null,
+                'url' => '/pay-verify',
+            ]
+        );
+    }
+
+    public function notifyPayVerifySalaryHikeRemoved($userId, $removedRate, $effectiveFrom)
+    {
+        $userId = (string)$userId;
+        $fromLabel = date('d M Y', strtotime((string)$effectiveFrom));
+        $rateLabel = '₹' . number_format((float)$removedRate, 2) . '/h';
+        $type = $this->getValidNotificationType('status_change', 'new_update');
+        return $this->createNotification(
+            $type,
+            'Scheduled hike removed',
+            "Scheduled rate {$rateLabel} from {$fromLabel} was removed.",
+            [$userId],
+            [
+                'entity_type' => 'pay_verify_rate',
+                'entity_id' => $userId . ':removed:' . $effectiveFrom,
+                'effective_from' => (string)$effectiveFrom,
+                'url' => '/pay-verify',
+            ]
+        );
+    }
+
+    public function notifyPayVerifyAdjustment(
+        $userId,
+        $yearMonth,
+        $type,
+        $amount,
+        $reason,
+        $removed = false
+    ) {
+        $userId = (string)$userId;
+        $monthLabel = (string)$yearMonth;
+        try {
+            $dt = DateTimeImmutable::createFromFormat('!Y-m', (string)$yearMonth, new DateTimeZone('Asia/Kolkata'));
+            if ($dt) {
+                $monthLabel = $dt->format('F Y');
+            }
+        } catch (Throwable $e) {
+            // keep
+        }
+        $amt = number_format(abs((float)$amount), 2);
+        $sign = ((float)$amount) < 0 ? '-' : '';
+        $typeLabel = ucfirst((string)$type);
+        $title = $removed ? 'Adjustment removed' : 'Pay adjustment added';
+        $message = $removed
+            ? "{$typeLabel} ₹{$amt} removed from {$monthLabel}."
+            : "{$typeLabel} {$sign}₹{$amt} added to {$monthLabel}.";
+        if ($reason) {
+            $snippet = mb_substr(trim((string)$reason), 0, 100);
+            if ($snippet !== '') {
+                $message .= " — {$snippet}";
+            }
+        }
+        $notifType = $this->getValidNotificationType('status_change', 'new_update');
+        return $this->createNotification(
+            $notifType,
+            $title,
+            $message,
+            [$userId],
+            [
+                'entity_type' => 'pay_verify_adjustment',
+                'entity_id' => $userId . ':' . $yearMonth . ':' . $type,
+                'month' => (string)$yearMonth,
+                'url' => '/pay-verify?month=' . rawurlencode((string)$yearMonth),
+            ]
+        );
+    }
 }
 

@@ -5,6 +5,7 @@
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../utils/pay_verify.php';
 require_once __DIR__ . '/../../utils/workforce_access.php';
+require_once __DIR__ . '/../../utils/pay_verify_notifications.php';
 
 class PayVerifyController extends BaseAPI
 {
@@ -16,6 +17,14 @@ class PayVerifyController extends BaseAPI
             return null;
         }
         return $decoded;
+    }
+
+    /**
+     * Why: Flush JSON first — email/WhatsApp/FCM must not block Pay Verify actions.
+     */
+    private function respondThen(callable $afterResponse, int $statusCode, string $message, $data = null): void
+    {
+        $this->sendJsonThen($afterResponse, $statusCode, $message, $data);
     }
 
     private function isAdmin($decoded): bool
@@ -439,9 +448,23 @@ class PayVerifyController extends BaseAPI
         ]);
 
         $stmt->execute([$userId, $weekStart]);
-        $this->sendJsonResponse(200, 'Week verification saved', [
-            'week' => $stmt->fetch(PDO::FETCH_ASSOC),
-        ]);
+        $weekRow = $stmt->fetch(PDO::FETCH_ASSOC);
+        $actorId = (string)$decoded->user_id;
+        $this->respondThen(
+            function () use ($userId, $actorId, $weekStart, $status, $note) {
+                br_notify_pay_verify_employee_week(
+                    $this->conn,
+                    $userId,
+                    $actorId,
+                    $weekStart,
+                    $status,
+                    $note !== '' ? $note : null
+                );
+            },
+            200,
+            'Week verification saved',
+            ['week' => $weekRow]
+        );
     }
 
     public function adminVerifyWeek(): void
@@ -506,9 +529,21 @@ class PayVerifyController extends BaseAPI
         ]);
 
         $stmt->execute([$userId, $weekStart]);
-        $this->sendJsonResponse(200, 'Admin week verification saved', [
-            'week' => $stmt->fetch(PDO::FETCH_ASSOC),
-        ]);
+        $weekRow = $stmt->fetch(PDO::FETCH_ASSOC);
+        $this->respondThen(
+            function () use ($userId, $weekStart, $status, $note) {
+                br_notify_pay_verify_admin_week(
+                    $this->conn,
+                    $userId,
+                    $weekStart,
+                    $status,
+                    $note !== '' ? $note : null
+                );
+            },
+            200,
+            'Admin week verification saved',
+            ['week' => $weekRow]
+        );
     }
 
     public function employeeVerifyMonth(): void
@@ -622,7 +657,24 @@ class PayVerifyController extends BaseAPI
             $bounds['start'],
             $bounds['end']
         );
-        $this->sendJsonResponse(200, 'Month verification saved', ['month' => $fresh]);
+        $actorId = (string)$decoded->user_id;
+        $net = $fresh['net_estimate'] ?? null;
+        $this->respondThen(
+            function () use ($userId, $actorId, $yearMonth, $status, $note, $net) {
+                br_notify_pay_verify_employee_month(
+                    $this->conn,
+                    $userId,
+                    $actorId,
+                    $yearMonth,
+                    $status,
+                    $note !== '' ? $note : null,
+                    $net
+                );
+            },
+            200,
+            'Month verification saved',
+            ['month' => $fresh]
+        );
     }
 
     public function adminLockMonth(): void
@@ -675,7 +727,22 @@ class PayVerifyController extends BaseAPI
                 $bounds['start'],
                 $bounds['end']
             );
-            $this->sendJsonResponse(200, 'Month unlocked', ['month' => $fresh]);
+            $unlockNote = $note !== '' ? $note : 'Unlocked by admin';
+            $this->respondThen(
+                function () use ($userId, $yearMonth, $unlockNote, $fresh) {
+                    br_notify_pay_verify_admin_month(
+                        $this->conn,
+                        $userId,
+                        $yearMonth,
+                        'unlock',
+                        $unlockNote,
+                        $fresh['net_estimate'] ?? null
+                    );
+                },
+                200,
+                'Month unlocked',
+                ['month' => $fresh]
+            );
             return;
         }
 
@@ -707,7 +774,21 @@ class PayVerifyController extends BaseAPI
                 $bounds['start'],
                 $bounds['end']
             );
-            $this->sendJsonResponse(200, 'Correction requested', ['month' => $fresh]);
+            $this->respondThen(
+                function () use ($userId, $yearMonth, $note, $fresh) {
+                    br_notify_pay_verify_admin_month(
+                        $this->conn,
+                        $userId,
+                        $yearMonth,
+                        'correction_requested',
+                        $note,
+                        $fresh['net_estimate'] ?? null
+                    );
+                },
+                200,
+                'Correction requested',
+                ['month' => $fresh]
+            );
             return;
         }
 
@@ -773,7 +854,21 @@ class PayVerifyController extends BaseAPI
             $bounds['start'],
             $bounds['end']
         );
-        $this->sendJsonResponse(200, 'Month salary locked', ['month' => $fresh]);
+        $this->respondThen(
+            function () use ($userId, $yearMonth, $note, $fresh) {
+                br_notify_pay_verify_admin_month(
+                    $this->conn,
+                    $userId,
+                    $yearMonth,
+                    'lock',
+                    $note !== '' ? $note : null,
+                    $fresh['net_estimate'] ?? null
+                );
+            },
+            200,
+            'Month salary locked',
+            ['month' => $fresh]
+        );
     }
 
     public function setRate(): void
@@ -849,18 +944,33 @@ class PayVerifyController extends BaseAPI
             ? round(($hikeAmount / $previousRate) * 100, 1)
             : null;
 
-        $this->sendJsonResponse(200, 'Salary hike saved', [
-            'id' => $id,
-            'user_id' => $userId,
-            'hourly_rate' => round($rate, 2),
-            'effective_from' => $effectiveFrom,
-            'note' => $note !== '' ? $note : null,
-            'previous_rate' => $previousRate,
-            'hike_amount' => $hikeAmount,
-            'hike_pct' => $hikePct,
-            'rate_info' => br_pay_verify_rate_snapshot($this->conn, $userId, $effectiveFrom),
-            'history' => br_pay_verify_rate_history($this->conn, $userId),
-        ]);
+        $this->respondThen(
+            function () use ($userId, $rate, $effectiveFrom, $previousRate, $hikePct, $note) {
+                br_notify_pay_verify_salary_hike(
+                    $this->conn,
+                    $userId,
+                    round($rate, 2),
+                    $effectiveFrom,
+                    $previousRate !== null ? (float)$previousRate : null,
+                    $hikePct !== null ? (float)$hikePct : null,
+                    $note !== '' ? $note : null
+                );
+            },
+            200,
+            'Salary hike saved',
+            [
+                'id' => $id,
+                'user_id' => $userId,
+                'hourly_rate' => round($rate, 2),
+                'effective_from' => $effectiveFrom,
+                'note' => $note !== '' ? $note : null,
+                'previous_rate' => $previousRate,
+                'hike_amount' => $hikeAmount,
+                'hike_pct' => $hikePct,
+                'rate_info' => br_pay_verify_rate_snapshot($this->conn, $userId, $effectiveFrom),
+                'history' => br_pay_verify_rate_history($this->conn, $userId),
+            ]
+        );
     }
 
     public function rateHistory(): void
@@ -901,7 +1011,7 @@ class PayVerifyController extends BaseAPI
         }
         br_pay_verify_ensure_schema($this->conn);
         $stmt = $this->conn->prepare(
-            'SELECT id, user_id, effective_from FROM user_hourly_rates WHERE id = ? LIMIT 1'
+            'SELECT id, user_id, effective_from, hourly_rate FROM user_hourly_rates WHERE id = ? LIMIT 1'
         );
         $stmt->execute([$id]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -929,12 +1039,26 @@ class PayVerifyController extends BaseAPI
 
         $this->conn->prepare('DELETE FROM user_hourly_rates WHERE id = ?')->execute([$id]);
         $userId = (string)$row['user_id'];
-        $this->sendJsonResponse(200, 'Rate entry removed', [
-            'id' => $id,
-            'user_id' => $userId,
-            'rate_info' => br_pay_verify_rate_snapshot($this->conn, $userId, $today),
-            'history' => br_pay_verify_rate_history($this->conn, $userId),
-        ]);
+        $removedRate = (float)$row['hourly_rate'];
+        $effectiveFrom = (string)$row['effective_from'];
+        $this->respondThen(
+            function () use ($userId, $removedRate, $effectiveFrom) {
+                br_notify_pay_verify_salary_hike_removed(
+                    $this->conn,
+                    $userId,
+                    $removedRate,
+                    $effectiveFrom
+                );
+            },
+            200,
+            'Rate entry removed',
+            [
+                'id' => $id,
+                'user_id' => $userId,
+                'rate_info' => br_pay_verify_rate_snapshot($this->conn, $userId, $today),
+                'history' => br_pay_verify_rate_history($this->conn, $userId),
+            ]
+        );
     }
 
     public function listRates(): void
@@ -1034,7 +1158,24 @@ class PayVerifyController extends BaseAPI
             $bounds['start'],
             $bounds['end']
         );
-        $this->sendJsonResponse(200, 'Adjustment added', ['month' => $fresh]);
+        $adjAmount = round($amount, 2);
+        $adjReason = mb_substr($reason, 0, 500);
+        $this->respondThen(
+            function () use ($userId, $yearMonth, $type, $adjAmount, $adjReason) {
+                br_notify_pay_verify_adjustment(
+                    $this->conn,
+                    $userId,
+                    $yearMonth,
+                    $type,
+                    $adjAmount,
+                    $adjReason,
+                    false
+                );
+            },
+            200,
+            'Adjustment added',
+            ['month' => $fresh]
+        );
     }
 
     public function deleteAdjustment(): void
@@ -1074,7 +1215,22 @@ class PayVerifyController extends BaseAPI
             (string)$row['period_start'],
             (string)$row['period_end']
         );
-        $this->sendJsonResponse(200, 'Adjustment deleted', ['month' => $fresh]);
+        $this->respondThen(
+            function () use ($row) {
+                br_notify_pay_verify_adjustment(
+                    $this->conn,
+                    (string)$row['user_id'],
+                    (string)$row['year_month'],
+                    (string)$row['type'],
+                    (float)$row['amount'],
+                    (string)($row['reason'] ?? ''),
+                    true
+                );
+            },
+            200,
+            'Adjustment deleted',
+            ['month' => $fresh]
+        );
     }
 
     public function seedRates(): void
