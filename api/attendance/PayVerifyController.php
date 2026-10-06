@@ -67,10 +67,12 @@ class PayVerifyController extends BaseAPI
             (string)$decoded->user_id,
             $this->isAdmin($decoded)
         );
+        $isAdmin = $this->isAdmin($decoded);
+        // Why: Admins manage Pay Verify but are not required to verify hours — no nag totals.
         $this->sendJsonResponse(200, 'OK', [
-            'mine' => $counts['mine'],
-            'admin' => $counts['admin'],
-            'total' => $counts['mine'] + ($this->isAdmin($decoded) ? $counts['admin'] : 0),
+            'mine' => $isAdmin ? 0 : (int)$counts['mine'],
+            'admin' => 0,
+            'total' => $isAdmin ? 0 : (int)$counts['mine'],
         ]);
     }
 

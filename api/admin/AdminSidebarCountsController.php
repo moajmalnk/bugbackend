@@ -483,11 +483,12 @@ class AdminSidebarCountsController extends BaseAPI
 
         header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
         header('Pragma: no-cache');
-        // Pay Verify pending (self + admin queue)
+        // Pay Verify pending — workforce self-verify only.
+        // Why: Admins manage rates/paid lock on Pay Verify but are not required to verify hours.
         try {
             require_once __DIR__ . '/../../utils/pay_verify.php';
             $pv = br_pay_verify_pending_counts($this->conn, $userId, $isAdmin);
-            $counts['payVerify'] = (int)$pv['mine'] + ($isAdmin ? (int)$pv['admin'] : 0);
+            $counts['payVerify'] = $isAdmin ? 0 : (int)$pv['mine'];
         } catch (Throwable $e) {
             error_log('AdminSidebarCountsController payVerify: ' . $e->getMessage());
             $counts['payVerify'] = 0;
