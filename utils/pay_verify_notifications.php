@@ -586,7 +586,10 @@ function br_notify_pay_verify_adjustment(
 ): void {
     $monthLabel = br_pay_verify_month_label($yearMonth);
     $amt = br_pay_verify_format_inr($amount);
-    $typeLabel = ucfirst($type);
+    $typeLabel = match ($type) {
+        'project_incentive' => 'Project incentive',
+        default => ucfirst(str_replace('_', ' ', $type)),
+    };
     $copy = [
         'headline' => $removed ? 'Adjustment removed' : 'Pay adjustment added',
         'subject' => ($removed ? 'Adjustment removed' : 'Adjustment') . " · {$typeLabel} · {$monthLabel}",

@@ -132,14 +132,16 @@ function br_pay_verify_ensure_schema(PDO $conn): void
         "CREATE TABLE IF NOT EXISTS `attendance_month_adjustments` (
           `id` VARCHAR(36) NOT NULL,
           `month_verification_id` VARCHAR(36) NOT NULL,
-          `type` ENUM('advance','deduction','credit','other') NOT NULL DEFAULT 'deduction',
+          `type` ENUM('advance','deduction','credit','other','project_incentive') NOT NULL DEFAULT 'deduction',
           `amount` DECIMAL(14,2) NOT NULL,
           `reason` VARCHAR(500) NOT NULL DEFAULT '',
+          `project_id` VARCHAR(36) NULL DEFAULT NULL,
           `created_by` VARCHAR(36) NULL DEFAULT NULL,
           `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
           `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
           PRIMARY KEY (`id`),
           KEY `idx_att_adj_month` (`month_verification_id`),
+          KEY `idx_att_adj_project` (`project_id`),
           KEY `idx_att_adj_created` (`created_at`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
     ];
@@ -163,6 +165,35 @@ function br_pay_verify_ensure_schema(PDO $conn): void
         }
     } catch (Throwable $e) {
         error_log('br_pay_verify_ensure_schema note col: ' . $e->getMessage());
+    }
+
+    // Why: Project incentives need a durable project link + enum value on existing installs.
+    try {
+        $typeCol = $conn->query("SHOW COLUMNS FROM attendance_month_adjustments LIKE 'type'");
+        $typeMeta = $typeCol ? $typeCol->fetch(PDO::FETCH_ASSOC) : null;
+        $typeDef = (string)($typeMeta['Type'] ?? '');
+        if ($typeDef !== '' && stripos($typeDef, 'project_incentive') === false) {
+            $conn->exec(
+                "ALTER TABLE `attendance_month_adjustments`
+                 MODIFY COLUMN `type` ENUM(
+                   'advance','deduction','credit','other','project_incentive'
+                 ) NOT NULL DEFAULT 'deduction'"
+            );
+        }
+    } catch (Throwable $e) {
+        error_log('br_pay_verify_ensure_schema adj type enum: ' . $e->getMessage());
+    }
+    try {
+        $projCol = $conn->query("SHOW COLUMNS FROM attendance_month_adjustments LIKE 'project_id'");
+        if ($projCol && !$projCol->fetch(PDO::FETCH_ASSOC)) {
+            $conn->exec(
+                'ALTER TABLE `attendance_month_adjustments`
+                 ADD COLUMN `project_id` VARCHAR(36) NULL DEFAULT NULL AFTER `reason`,
+                 ADD KEY `idx_att_adj_project` (`project_id`)'
+            );
+        }
+    } catch (Throwable $e) {
+        error_log('br_pay_verify_ensure_schema adj project_id: ' . $e->getMessage());
     }
 
     // Fallback: also try migration file if present
@@ -790,13 +821,72 @@ function br_pay_verify_ensure_week(
  */
 function br_pay_verify_month_adjustments(PDO $conn, string $monthVerificationId): array
 {
+    // Why: Surface project name for project_incentive rows without N+1 from the client.
     $stmt = $conn->prepare(
-        'SELECT * FROM attendance_month_adjustments
-         WHERE month_verification_id = ?
-         ORDER BY created_at ASC'
+        'SELECT a.*, p.name AS project_name, p.status AS project_status
+         FROM attendance_month_adjustments a
+         LEFT JOIN projects p ON p.id = a.project_id
+         WHERE a.month_verification_id = ?
+         ORDER BY a.created_at ASC'
     );
     $stmt->execute([$monthVerificationId]);
     return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+}
+
+/**
+ * Why: Incentive picker must only offer projects this employee is actually assigned to.
+ *
+ * @return list<array{id:string,name:string,status:?string,member_role:?string}>
+ */
+function br_pay_verify_user_projects(PDO $conn, string $userId): array
+{
+    $stmt = $conn->prepare(
+        'SELECT p.id, p.name, p.status, pm.role AS member_role
+         FROM project_members pm
+         INNER JOIN projects p ON p.id = pm.project_id
+         WHERE pm.user_id = ?
+         ORDER BY
+           CASE WHEN LOWER(COALESCE(p.status, \'\')) IN (\'active\', \'in_progress\', \'ongoing\') THEN 0 ELSE 1 END,
+           p.name ASC'
+    );
+    $stmt->execute([$userId]);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    $out = [];
+    foreach ($rows as $row) {
+        $out[] = [
+            'id' => (string)($row['id'] ?? ''),
+            'name' => (string)($row['name'] ?? ''),
+            'status' => isset($row['status']) ? (string)$row['status'] : null,
+            'member_role' => isset($row['member_role']) ? (string)$row['member_role'] : null,
+        ];
+    }
+    return $out;
+}
+
+/**
+ * @return array{id:string,name:string}|null
+ */
+function br_pay_verify_assert_user_project(PDO $conn, string $userId, string $projectId): ?array
+{
+    if ($userId === '' || $projectId === '') {
+        return null;
+    }
+    $stmt = $conn->prepare(
+        'SELECT p.id, p.name
+         FROM project_members pm
+         INNER JOIN projects p ON p.id = pm.project_id
+         WHERE pm.user_id = ? AND p.id = ?
+         LIMIT 1'
+    );
+    $stmt->execute([$userId, $projectId]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$row) {
+        return null;
+    }
+    return [
+        'id' => (string)$row['id'],
+        'name' => (string)($row['name'] ?? ''),
+    ];
 }
 
 function br_pay_verify_adjustments_signed_total(array $adjustments): float

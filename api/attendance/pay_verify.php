@@ -2,7 +2,7 @@
 /**
  * Pay Verify router.
  *
- * GET  ?action=month|user-month|rates|rate-history|pending
+ * GET  ?action=month|user-month|rates|rate-history|pending|user-projects
  * POST ?action=employee-week|admin-week|employee-month|admin-month|rate|delete-rate|adjustment|delete-adjustment|seed-rates|seed-sept-adjustments
  */
 require_once __DIR__ . '/PayVerifyController.php';
@@ -36,6 +36,10 @@ try {
         }
         if ($action === 'pending') {
             $c->pendingCounts();
+            exit();
+        }
+        if ($action === 'user-projects') {
+            $c->userProjects();
             exit();
         }
     }

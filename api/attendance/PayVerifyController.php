@@ -1114,6 +1114,25 @@ class PayVerifyController extends BaseAPI
         $this->sendJsonResponse(200, 'OK', ['as_of' => $asOf, 'rates' => $rates]);
     }
 
+    public function userProjects(): void
+    {
+        $decoded = $this->auth();
+        if (!$decoded || !$this->requireAdmin($decoded)) {
+            return;
+        }
+        $userId = trim((string)($_GET['user_id'] ?? ''));
+        if ($userId === '') {
+            $this->sendJsonResponse(422, 'user_id required');
+            return;
+        }
+        br_pay_verify_ensure_schema($this->conn);
+        $projects = br_pay_verify_user_projects($this->conn, $userId);
+        $this->sendJsonResponse(200, 'OK', [
+            'user_id' => $userId,
+            'projects' => $projects,
+        ]);
+    }
+
     public function addAdjustment(): void
     {
         $decoded = $this->auth();
@@ -1126,24 +1145,57 @@ class PayVerifyController extends BaseAPI
         $type = strtolower(trim((string)($input['type'] ?? 'deduction')));
         $amount = isset($input['amount']) ? (float)$input['amount'] : 0;
         $reason = trim((string)($input['reason'] ?? ''));
+        $projectId = trim((string)($input['project_id'] ?? ''));
         $bounds = br_pay_verify_month_bounds($yearMonth);
         if ($userId === '' || !$bounds) {
             $this->sendJsonResponse(422, 'user_id and month required');
             return;
         }
-        if (!in_array($type, ['advance', 'deduction', 'credit', 'other'], true)) {
+        $allowedTypes = ['advance', 'deduction', 'credit', 'other', 'project_incentive'];
+        if (!in_array($type, $allowedTypes, true)) {
             $this->sendJsonResponse(422, 'Invalid adjustment type');
             return;
         }
-        if ($reason === '') {
+
+        $project = null;
+        if ($type === 'project_incentive') {
+            if ($projectId === '') {
+                $this->sendJsonResponse(422, 'Select a project for this incentive');
+                return;
+            }
+            $project = br_pay_verify_assert_user_project($this->conn, $userId, $projectId);
+            if (!$project) {
+                $this->sendJsonResponse(
+                    422,
+                    'That project is not assigned to this employee'
+                );
+                return;
+            }
+            // Why: Keep audit trail clear — always name the project; optional note appends.
+            $projectLabel = trim($project['name']) !== '' ? $project['name'] : 'Project';
+            if ($reason === '') {
+                $reason = 'Project incentive · ' . $projectLabel;
+            } elseif (stripos($reason, $projectLabel) === false) {
+                $reason = 'Project incentive · ' . $projectLabel . ' — ' . $reason;
+            }
+        } elseif ($reason === '') {
             $this->sendJsonResponse(422, 'Reason required');
             return;
         }
-        // Normalize sign: deductions/advances reduce net (negative); credits positive
+
+        if (!is_finite($amount) || abs($amount) < 0.01) {
+            $this->sendJsonResponse(422, 'Amount required');
+            return;
+        }
+
+        // Normalize sign: deductions/advances reduce net (negative); credits & incentives positive
         if (in_array($type, ['advance', 'deduction'], true) && $amount > 0) {
             $amount = -abs($amount);
         }
-        if ($type === 'credit' && $amount < 0) {
+        if (in_array($type, ['credit', 'project_incentive'], true) && $amount < 0) {
+            $amount = abs($amount);
+        }
+        if ($type === 'project_incentive') {
             $amount = abs($amount);
         }
 
@@ -1163,14 +1215,15 @@ class PayVerifyController extends BaseAPI
         $id = br_pay_verify_uuid();
         $this->conn->prepare(
             'INSERT INTO attendance_month_adjustments
-             (id, month_verification_id, type, amount, reason, created_by)
-             VALUES (?,?,?,?,?,?)'
+             (id, month_verification_id, type, amount, reason, project_id, created_by)
+             VALUES (?,?,?,?,?,?,?)'
         )->execute([
             $id,
             $monthRow['id'],
             $type,
             round($amount, 2),
             mb_substr($reason, 0, 500),
+            $type === 'project_incentive' ? $projectId : null,
             (string)$decoded->user_id,
         ]);
 
