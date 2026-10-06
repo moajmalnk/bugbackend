@@ -428,6 +428,14 @@ class PayVerifyController extends BaseAPI
             $this->sendJsonResponse(409, 'Week already admin-approved');
             return;
         }
+        $weekEnd = (string)($row['week_end'] ?? '');
+        if (!br_pay_verify_period_is_complete($weekEnd)) {
+            $this->sendJsonResponse(
+                422,
+                'This week is still open. Verify only after the week ends (no future days).'
+            );
+            return;
+        }
 
         $adminStatusSql = $status === 'correction_needed'
             ? "admin_status = 'pending',"
@@ -503,6 +511,14 @@ class PayVerifyController extends BaseAPI
         }
         if ($status === 'approved' && ($row['employee_status'] ?? '') !== 'verified') {
             $this->sendJsonResponse(422, 'Employee must verify the week before admin approval');
+            return;
+        }
+        $weekEnd = (string)($row['week_end'] ?? '');
+        if (!br_pay_verify_period_is_complete($weekEnd)) {
+            $this->sendJsonResponse(
+                422,
+                'This week is still open. Approve only after the week ends (no future days).'
+            );
             return;
         }
 
@@ -585,6 +601,13 @@ class PayVerifyController extends BaseAPI
         );
         if (($monthRow['admin_status'] ?? '') === 'approved') {
             $this->sendJsonResponse(409, 'Month is locked by admin');
+            return;
+        }
+        if (!br_pay_verify_period_is_complete((string)$bounds['end'])) {
+            $this->sendJsonResponse(
+                422,
+                'This month is still open. Verify only after the month ends (no future days).'
+            );
             return;
         }
 

@@ -462,6 +462,24 @@ function br_pay_verify_today_ym(): string
     return (new DateTimeImmutable('now', new DateTimeZone('Asia/Kolkata')))->format('Y-m');
 }
 
+/** @return string YYYY-MM-DD (Asia/Kolkata) */
+function br_pay_verify_today_ymd(): string
+{
+    return (new DateTimeImmutable('now', new DateTimeZone('Asia/Kolkata')))->format('Y-m-d');
+}
+
+/**
+ * Why: Verification is only allowed once the period has fully ended (no open / future days).
+ */
+function br_pay_verify_period_is_complete(string $periodEnd): bool
+{
+    $periodEnd = trim($periodEnd);
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $periodEnd)) {
+        return false;
+    }
+    return $periodEnd < br_pay_verify_today_ymd();
+}
+
 /** @return string|null YYYY-MM */
 function br_pay_verify_ym_from_date(?string $date): ?string
 {
