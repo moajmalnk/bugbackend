@@ -38,17 +38,8 @@ function br_pay_verify_ensure_schema(PDO $conn): void
         }
     };
 
-    $missing = false;
-    foreach ($needed as $table) {
-        if (!$tableExists($conn, $table)) {
-            $missing = true;
-            break;
-        }
-    }
-    if (!$missing) {
-        $ready = true;
-        return;
-    }
+    // Why: Always run CREATE IF NOT EXISTS + additive ALTERs. An early return when
+    // tables already exist skipped project_id / enum upgrades and broke month list (500).
 
     $ddl = [
         "CREATE TABLE IF NOT EXISTS `user_hourly_rates` (
@@ -188,12 +179,26 @@ function br_pay_verify_ensure_schema(PDO $conn): void
         if ($projCol && !$projCol->fetch(PDO::FETCH_ASSOC)) {
             $conn->exec(
                 'ALTER TABLE `attendance_month_adjustments`
-                 ADD COLUMN `project_id` VARCHAR(36) NULL DEFAULT NULL AFTER `reason`,
-                 ADD KEY `idx_att_adj_project` (`project_id`)'
+                 ADD COLUMN `project_id` VARCHAR(36) NULL DEFAULT NULL AFTER `reason`'
             );
         }
     } catch (Throwable $e) {
         error_log('br_pay_verify_ensure_schema adj project_id: ' . $e->getMessage());
+    }
+
+    try {
+        $idx = $conn->query("SHOW INDEX FROM attendance_month_adjustments WHERE Key_name = 'idx_att_adj_project'");
+        if ($idx && !$idx->fetch(PDO::FETCH_ASSOC)) {
+            $hasProjectCol = $conn->query("SHOW COLUMNS FROM attendance_month_adjustments LIKE 'project_id'");
+            if ($hasProjectCol && $hasProjectCol->fetch(PDO::FETCH_ASSOC)) {
+                $conn->exec(
+                    'ALTER TABLE `attendance_month_adjustments`
+                     ADD KEY `idx_att_adj_project` (`project_id`)'
+                );
+            }
+        }
+    } catch (Throwable $e) {
+        error_log('br_pay_verify_ensure_schema adj project idx: ' . $e->getMessage());
     }
 
     // Fallback: also try migration file if present
@@ -821,16 +826,32 @@ function br_pay_verify_ensure_week(
  */
 function br_pay_verify_month_adjustments(PDO $conn, string $monthVerificationId): array
 {
-    // Why: Surface project name for project_incentive rows without N+1 from the client.
-    $stmt = $conn->prepare(
-        'SELECT a.*, p.name AS project_name, p.status AS project_status
-         FROM attendance_month_adjustments a
-         LEFT JOIN projects p ON p.id = a.project_id
-         WHERE a.month_verification_id = ?
-         ORDER BY a.created_at ASC'
-    );
-    $stmt->execute([$monthVerificationId]);
-    return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    // Why: Join project name when project_id exists; fall back if column not migrated yet.
+    try {
+        $stmt = $conn->prepare(
+            'SELECT a.*, p.name AS project_name, p.status AS project_status
+             FROM attendance_month_adjustments a
+             LEFT JOIN projects p ON p.id = a.project_id
+             WHERE a.month_verification_id = ?
+             ORDER BY a.created_at ASC'
+        );
+        $stmt->execute([$monthVerificationId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    } catch (Throwable $e) {
+        error_log('br_pay_verify_month_adjustments join: ' . $e->getMessage());
+        try {
+            $stmt = $conn->prepare(
+                'SELECT * FROM attendance_month_adjustments
+                 WHERE month_verification_id = ?
+                 ORDER BY created_at ASC'
+            );
+            $stmt->execute([$monthVerificationId]);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        } catch (Throwable $e2) {
+            error_log('br_pay_verify_month_adjustments fallback: ' . $e2->getMessage());
+            return [];
+        }
+    }
 }
 
 /**
