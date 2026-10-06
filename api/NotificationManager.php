@@ -2434,14 +2434,10 @@ class NotificationManager extends BaseAPI {
         $note = null
     ) {
         $userId = (string)$userId;
-        $rateLabel = '₹' . number_format((float)$newRate, 2) . '/h';
         $fromLabel = date('d M Y', strtotime((string)$effectiveFrom));
         $title = 'Salary rate updated';
-        $message = "Your hourly rate is now {$rateLabel}, effective {$fromLabel}.";
-        if ($hikePct !== null) {
-            $pct = (float)$hikePct;
-            $message .= ' (' . ($pct > 0 ? '+' : '') . $pct . '%).';
-        }
+        // Why: Never put ₹ / rate figures in push — amounts live on Pay Verify only.
+        $message = "Your hourly rate was updated, effective {$fromLabel}. Open Pay Verify to view details.";
         if ($note) {
             $snippet = mb_substr(trim((string)$note), 0, 120);
             if ($snippet !== '') {
@@ -2457,9 +2453,7 @@ class NotificationManager extends BaseAPI {
             [
                 'entity_type' => 'pay_verify_rate',
                 'entity_id' => $userId . ':' . $effectiveFrom,
-                'hourly_rate' => (float)$newRate,
                 'effective_from' => (string)$effectiveFrom,
-                'previous_rate' => $previousRate !== null ? (float)$previousRate : null,
                 'url' => '/pay-verify',
             ]
         );
@@ -2469,12 +2463,11 @@ class NotificationManager extends BaseAPI {
     {
         $userId = (string)$userId;
         $fromLabel = date('d M Y', strtotime((string)$effectiveFrom));
-        $rateLabel = '₹' . number_format((float)$removedRate, 2) . '/h';
         $type = $this->getValidNotificationType('status_change', 'new_update');
         return $this->createNotification(
             $type,
             'Scheduled hike removed',
-            "Scheduled rate {$rateLabel} from {$fromLabel} was removed.",
+            "A scheduled salary hike from {$fromLabel} was removed. Open Pay Verify to review.",
             [$userId],
             [
                 'entity_type' => 'pay_verify_rate',
@@ -2503,13 +2496,15 @@ class NotificationManager extends BaseAPI {
         } catch (Throwable $e) {
             // keep
         }
-        $amt = number_format(abs((float)$amount), 2);
-        $sign = ((float)$amount) < 0 ? '-' : '';
-        $typeLabel = ucfirst((string)$type);
+        $typeKey = (string)$type;
+        $typeLabel = $typeKey === 'project_incentive'
+            ? 'Project incentive'
+            : ucfirst(str_replace('_', ' ', $typeKey));
         $title = $removed ? 'Adjustment removed' : 'Pay adjustment added';
+        // Why: Never put ₹ amounts in push — open Pay Verify for the figure.
         $message = $removed
-            ? "{$typeLabel} ₹{$amt} removed from {$monthLabel}."
-            : "{$typeLabel} {$sign}₹{$amt} added to {$monthLabel}.";
+            ? "{$typeLabel} removed from {$monthLabel}."
+            : "{$typeLabel} added to {$monthLabel}.";
         if ($reason) {
             $snippet = mb_substr(trim((string)$reason), 0, 100);
             if ($snippet !== '') {

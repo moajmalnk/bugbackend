@@ -369,9 +369,8 @@ function br_notify_pay_verify_employee_month(
     $monthLabel = br_pay_verify_month_label($yearMonth);
     $needsFix = $status === 'correction_needed';
     $onBehalf = $actorUserId !== $subjectUserId;
-    $netLine = $netEstimate !== null
-        ? 'Net estimate: ' . br_pay_verify_format_inr($netEstimate)
-        : null;
+    // Why: Net / salary figures stay on the Pay Verify screen — never in mail / WA / push.
+    unset($netEstimate);
 
     if ($onBehalf) {
         $copy = [
@@ -380,7 +379,7 @@ function br_notify_pay_verify_employee_month(
             'summary' => $needsFix
                 ? "An admin flagged {$monthLabel} for correction before payment."
                 : "An admin verified your hours for {$monthLabel}. Payment can proceed once marked paid.",
-            'detail' => $netLine,
+            'detail' => 'Open Pay Verify to review.',
             'note' => $note,
             'color' => $needsFix ? '#f59e0b' : '#059669',
         ];
@@ -409,7 +408,7 @@ function br_notify_pay_verify_employee_month(
         'summary' => $needsFix
             ? "{$contact['name']} flagged {$monthLabel} for correction."
             : "{$contact['name']} verified {$monthLabel} — ready to mark as paid.",
-        'detail' => $netLine,
+        'detail' => 'Open Pay Verify to review.',
         'note' => $note,
         'color' => $needsFix ? '#f59e0b' : '#0ea5e9',
     ];
@@ -440,16 +439,15 @@ function br_notify_pay_verify_admin_month(
     $netEstimate = null
 ): void {
     $monthLabel = br_pay_verify_month_label($yearMonth);
-    $netLine = $netEstimate !== null
-        ? 'Net: ' . br_pay_verify_format_inr($netEstimate)
-        : null;
+    // Why: Amounts stay on-platform; external channels only describe the action.
+    unset($netEstimate);
 
     if ($action === 'lock') {
         $copy = [
             'headline' => 'Salary marked paid',
             'subject' => "Paid · {$monthLabel}",
             'summary' => "Your salary for {$monthLabel} has been marked as paid.",
-            'detail' => $netLine,
+            'detail' => 'Open Pay Verify to view the full breakdown.',
             'note' => $note,
             'color' => '#059669',
         ];
@@ -458,7 +456,7 @@ function br_notify_pay_verify_admin_month(
             'headline' => 'Salary unmarked',
             'subject' => "Unpaid · {$monthLabel}",
             'summary' => "Your {$monthLabel} payment was unmarked. You can update hours if needed.",
-            'detail' => $netLine,
+            'detail' => 'Open Pay Verify to continue.',
             'note' => $note,
             'color' => '#64748b',
         ];
@@ -467,7 +465,7 @@ function br_notify_pay_verify_admin_month(
             'headline' => 'Month needs correction',
             'subject' => "Correction · {$monthLabel}",
             'summary' => "Please review and re-verify your hours for {$monthLabel}.",
-            'detail' => $netLine,
+            'detail' => 'Open Pay Verify to continue.',
             'note' => $note,
             'color' => '#f59e0b',
         ];
@@ -506,18 +504,15 @@ function br_notify_pay_verify_salary_hike(
     } catch (Throwable $e) {
         $fromLabel = $effectiveFrom;
     }
-    $pct = $hikePct !== null ? (($hikePct > 0 ? '+' : '') . $hikePct . '%') : null;
-    $prev = $previousRate !== null ? '₹' . number_format($previousRate, 2) . '/h → ' : '';
     $copy = [
         'headline' => 'Salary rate updated',
-        'subject' => 'Salary hike · ₹' . number_format($newRate, 2) . '/h from ' . $fromLabel,
-        'summary' => "Your hourly rate is now {$prev}₹" . number_format($newRate, 2) . "/h"
-            . ($pct ? " ({$pct})" : '')
-            . ", effective {$fromLabel}.",
-        'detail' => 'Future Pay Verify estimates use this rate from the effective date.',
+        'subject' => 'Salary hike · effective ' . $fromLabel,
+        'summary' => "Your hourly rate was updated, effective {$fromLabel}.",
+        'detail' => 'Open Pay Verify to see the new rate and timeline.',
         'note' => $note,
         'color' => '#059669',
     ];
+    // Why: Keep rate numbers off mail / WhatsApp; platform shows the full hike.
     br_pay_verify_notify_employee(
         $conn,
         $userId,
@@ -553,12 +548,13 @@ function br_notify_pay_verify_salary_hike_removed(
     $copy = [
         'headline' => 'Scheduled hike removed',
         'subject' => 'Salary hike removed · ' . $fromLabel,
-        'summary' => 'A scheduled rate of ₹' . number_format($removedRate, 2)
-            . "/h effective {$fromLabel} was removed.",
-        'detail' => 'Your active rate is unchanged unless that date was already in effect.',
+        'summary' => "A scheduled salary hike effective {$fromLabel} was removed.",
+        'detail' => 'Open Pay Verify to review your active rate.',
         'note' => null,
         'color' => '#64748b',
     ];
+    // Why: Do not include ₹ amounts in external channels.
+    unset($removedRate);
     br_pay_verify_notify_employee(
         $conn,
         $userId,
@@ -585,18 +581,19 @@ function br_notify_pay_verify_adjustment(
     bool $removed = false
 ): void {
     $monthLabel = br_pay_verify_month_label($yearMonth);
-    $amt = br_pay_verify_format_inr($amount);
     $typeLabel = match ($type) {
         'project_incentive' => 'Project incentive',
         default => ucfirst(str_replace('_', ' ', $type)),
     };
+    // Why: Amounts stay on Pay Verify UI — mail / WA / push only describe the adjustment.
+    unset($amount);
     $copy = [
         'headline' => $removed ? 'Adjustment removed' : 'Pay adjustment added',
         'subject' => ($removed ? 'Adjustment removed' : 'Adjustment') . " · {$typeLabel} · {$monthLabel}",
         'summary' => $removed
-            ? "A {$typeLabel} adjustment ({$amt}) was removed from {$monthLabel}."
-            : "A {$typeLabel} of {$amt} was added to {$monthLabel}.",
-        'detail' => $reason !== '' ? "Reason: {$reason}" : null,
+            ? "A {$typeLabel} adjustment was removed from {$monthLabel}."
+            : "A {$typeLabel} was added to {$monthLabel}.",
+        'detail' => $reason !== '' ? "Reason: {$reason}" : 'Open Pay Verify to see the amount.',
         'note' => null,
         'color' => $removed ? '#64748b' : '#f59e0b',
     ];
