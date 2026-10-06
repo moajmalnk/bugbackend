@@ -1,0 +1,999 @@
+<?php
+/**
+ * Pay Verify API — weekly + monthly attendance hour verification with salary estimates.
+ */
+require_once __DIR__ . '/../BaseAPI.php';
+require_once __DIR__ . '/../../utils/pay_verify.php';
+require_once __DIR__ . '/../../utils/workforce_access.php';
+
+class PayVerifyController extends BaseAPI
+{
+    private function auth()
+    {
+        $decoded = $this->validateToken();
+        if (!$decoded || !isset($decoded->user_id)) {
+            $this->sendJsonResponse(401, 'Unauthorized');
+            return null;
+        }
+        return $decoded;
+    }
+
+    private function isAdmin($decoded): bool
+    {
+        return strtolower(trim((string)($decoded->role ?? ''))) === 'admin';
+    }
+
+    private function requireAdmin($decoded)
+    {
+        if (!$this->isAdmin($decoded)) {
+            $pm = PermissionManager::getInstance();
+            if (!$pm->hasPermissionOrAdmin(
+                $decoded->user_id,
+                'USERS_VIEW',
+                $decoded->role ?? null
+            )) {
+                $this->sendJsonResponse(403, 'Admin access required');
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private function canAccessUser($decoded, string $targetUserId): bool
+    {
+        if ((string)$decoded->user_id === $targetUserId) {
+            return true;
+        }
+        return $this->isAdmin($decoded)
+            || PermissionManager::getInstance()->hasPermissionOrAdmin(
+                $decoded->user_id,
+                'USERS_VIEW',
+                $decoded->role ?? null
+            );
+    }
+
+    public function pendingCounts(): void
+    {
+        $decoded = $this->auth();
+        if (!$decoded) {
+            return;
+        }
+        if (!$this->isAdmin($decoded) && !br_require_workforce($this, $this->conn, $decoded)) {
+            return;
+        }
+        br_pay_verify_ensure_schema($this->conn);
+        $counts = br_pay_verify_pending_counts(
+            $this->conn,
+            (string)$decoded->user_id,
+            $this->isAdmin($decoded)
+        );
+        $this->sendJsonResponse(200, 'OK', [
+            'mine' => $counts['mine'],
+            'admin' => $counts['admin'],
+            'total' => $counts['mine'] + ($this->isAdmin($decoded) ? $counts['admin'] : 0),
+        ]);
+    }
+
+    public function listMonth(): void
+    {
+        $decoded = $this->auth();
+        if (!$decoded) {
+            return;
+        }
+        $isAdmin = $this->isAdmin($decoded);
+        if (!$isAdmin && !br_require_workforce($this, $this->conn, $decoded)) {
+            return;
+        }
+
+        $yearMonth = trim((string)($_GET['month'] ?? ''));
+        if ($yearMonth === '') {
+            $tz = new DateTimeZone('Asia/Kolkata');
+            $yearMonth = (new DateTimeImmutable('now', $tz))->format('Y-m');
+        }
+        $bounds = br_pay_verify_month_bounds($yearMonth);
+        if (!$bounds) {
+            $this->sendJsonResponse(422, 'Invalid month (use YYYY-MM)');
+            return;
+        }
+
+        $role = strtolower(trim((string)($_GET['role'] ?? 'all')));
+        if (!in_array($role, ['all', 'developer', 'creator', 'codo_tester', 'mine'], true)) {
+            $role = 'all';
+        }
+
+        $scopeMine = $role === 'mine' || (!$isAdmin && $role === 'all');
+        $roleFilter = $scopeMine ? 'all' : $role;
+
+        br_pay_verify_ensure_schema($this->conn);
+        $weeksMeta = br_pay_verify_weeks_overlapping_month($bounds['start'], $bounds['end']);
+
+        if ($scopeMine) {
+            $users = array_values(array_filter(
+                br_pay_verify_roster_users($this->conn, 'all'),
+                static function ($u) use ($decoded) {
+                    return (string)($u['id'] ?? '') === (string)$decoded->user_id;
+                }
+            ));
+            if ($users === []) {
+                // Still allow self if workforce but not in roster filter edge case
+                $users = [[
+                    'id' => (string)$decoded->user_id,
+                    'username' => '',
+                    'name' => '',
+                    'role' => (string)($decoded->role ?? ''),
+                    'role_bucket' => 'developer',
+                ]];
+                try {
+                    $st = $this->conn->prepare(
+                        "SELECT id, username, COALESCE(NULLIF(name, ''), username) AS name, role, tester_type
+                         FROM users WHERE id = ? LIMIT 1"
+                    );
+                    $st->execute([(string)$decoded->user_id]);
+                    $row = $st->fetch(PDO::FETCH_ASSOC);
+                    if ($row) {
+                        $users[0] = $row;
+                        $r = strtolower((string)($row['role'] ?? ''));
+                        $tt = strtolower((string)($row['tester_type'] ?? ''));
+                        $users[0]['role_bucket'] = $r === 'creator'
+                            ? 'creator'
+                            : ($r === 'tester' && $tt === 'codo' ? 'codo_tester' : 'developer');
+                    }
+                } catch (Throwable $e) {
+                    // ignore
+                }
+            }
+        } else {
+            if (!$this->requireAdmin($decoded)) {
+                return;
+            }
+            $users = br_pay_verify_roster_users($this->conn, $roleFilter);
+        }
+
+        $roster = [];
+        $totals = [
+            'hours' => 0.0,
+            'gross' => 0.0,
+            'net' => 0.0,
+            'adjustments' => 0.0,
+            'verified_weeks' => 0,
+            'pending_weeks' => 0,
+            'locked_months' => 0,
+        ];
+
+        foreach ($users as $user) {
+            $uid = (string)$user['id'];
+            $weeks = [];
+            foreach ($weeksMeta as $w) {
+                $weekRow = br_pay_verify_ensure_week(
+                    $this->conn,
+                    $uid,
+                    $w,
+                    $yearMonth,
+                    $bounds['start'],
+                    $bounds['end']
+                );
+                unset($weekRow['attendance_days']);
+                $weeks[] = $weekRow;
+                $emp = (string)($weekRow['employee_status'] ?? 'pending');
+                if ($emp === 'verified') {
+                    $totals['verified_weeks']++;
+                } else {
+                    $totals['pending_weeks']++;
+                }
+            }
+
+            $monthRow = br_pay_verify_ensure_month(
+                $this->conn,
+                $uid,
+                $yearMonth,
+                $bounds['start'],
+                $bounds['end']
+            );
+            unset($monthRow['attendance_days']);
+
+            $totals['hours'] += (float)($monthRow['total_hours'] ?? 0);
+            $totals['gross'] += (float)($monthRow['gross_estimate'] ?? 0);
+            $totals['net'] += (float)($monthRow['net_estimate'] ?? 0);
+            $totals['adjustments'] += (float)($monthRow['adjustments_total'] ?? 0);
+            if (($monthRow['admin_status'] ?? '') === 'approved') {
+                $totals['locked_months']++;
+            }
+
+            $roster[] = [
+                'user' => [
+                    'id' => $uid,
+                    'username' => (string)($user['username'] ?? ''),
+                    'name' => (string)($user['name'] ?? $user['username'] ?? ''),
+                    'role' => (string)($user['role'] ?? ''),
+                    'role_bucket' => (string)($user['role_bucket'] ?? 'developer'),
+                    'tester_type' => $user['tester_type'] ?? null,
+                ],
+                'weeks' => $weeks,
+                'month' => $monthRow,
+            ];
+        }
+
+        $totals['hours'] = round($totals['hours'], 2);
+        $totals['gross'] = round($totals['gross'], 2);
+        $totals['net'] = round($totals['net'], 2);
+        $totals['adjustments'] = round($totals['adjustments'], 2);
+
+        $this->sendJsonResponse(200, 'OK', [
+            'month' => $yearMonth,
+            'period_start' => $bounds['start'],
+            'period_end' => $bounds['end'],
+            'period_label' => $this->formatPeriodLabel($bounds['start'], $bounds['end']),
+            'role' => $scopeMine ? 'mine' : $roleFilter,
+            'weeks_meta' => $weeksMeta,
+            'roster' => $roster,
+            'totals' => $totals,
+            'is_admin' => $isAdmin,
+        ]);
+    }
+
+    public function getUserMonth(): void
+    {
+        $decoded = $this->auth();
+        if (!$decoded) {
+            return;
+        }
+
+        $userId = trim((string)($_GET['user_id'] ?? ''));
+        if ($userId === '') {
+            $userId = (string)$decoded->user_id;
+        }
+        if (!$this->canAccessUser($decoded, $userId)) {
+            $this->sendJsonResponse(403, 'Forbidden');
+            return;
+        }
+        if ((string)$decoded->user_id === $userId) {
+            if (!br_require_workforce($this, $this->conn, $decoded) && !$this->isAdmin($decoded)) {
+                return;
+            }
+        }
+
+        $yearMonth = trim((string)($_GET['month'] ?? ''));
+        if ($yearMonth === '') {
+            $tz = new DateTimeZone('Asia/Kolkata');
+            $yearMonth = (new DateTimeImmutable('now', $tz))->format('Y-m');
+        }
+        $bounds = br_pay_verify_month_bounds($yearMonth);
+        if (!$bounds) {
+            $this->sendJsonResponse(422, 'Invalid month (use YYYY-MM)');
+            return;
+        }
+
+        br_pay_verify_ensure_schema($this->conn);
+        $weeksMeta = br_pay_verify_weeks_overlapping_month($bounds['start'], $bounds['end']);
+        $weeks = [];
+        foreach ($weeksMeta as $w) {
+            $weeks[] = br_pay_verify_ensure_week(
+                $this->conn,
+                $userId,
+                $w,
+                $yearMonth,
+                $bounds['start'],
+                $bounds['end']
+            );
+        }
+        $monthRow = br_pay_verify_ensure_month(
+            $this->conn,
+            $userId,
+            $yearMonth,
+            $bounds['start'],
+            $bounds['end']
+        );
+
+        $user = null;
+        try {
+            $st = $this->conn->prepare(
+                "SELECT id, username, COALESCE(NULLIF(name, ''), username) AS name, role, tester_type
+                 FROM users WHERE id = ? LIMIT 1"
+            );
+            $st->execute([$userId]);
+            $user = $st->fetch(PDO::FETCH_ASSOC) ?: null;
+        } catch (Throwable $e) {
+            $st = $this->conn->prepare('SELECT id, username, role FROM users WHERE id = ? LIMIT 1');
+            $st->execute([$userId]);
+            $user = $st->fetch(PDO::FETCH_ASSOC) ?: null;
+        }
+
+        $this->sendJsonResponse(200, 'OK', [
+            'month' => $yearMonth,
+            'period_start' => $bounds['start'],
+            'period_end' => $bounds['end'],
+            'period_label' => $this->formatPeriodLabel($bounds['start'], $bounds['end']),
+            'user' => $user,
+            'weeks' => $weeks,
+            'month_verification' => $monthRow,
+            'is_admin' => $this->isAdmin($decoded),
+            'is_self' => (string)$decoded->user_id === $userId,
+        ]);
+    }
+
+    public function employeeVerifyWeek(): void
+    {
+        $decoded = $this->auth();
+        if (!$decoded || !br_require_workforce($this, $this->conn, $decoded)) {
+            return;
+        }
+        $input = $this->getJsonInput();
+        $userId = trim((string)($input['user_id'] ?? $decoded->user_id));
+        if ($userId !== (string)$decoded->user_id && !$this->isAdmin($decoded)) {
+            $this->sendJsonResponse(403, 'You can only verify your own weeks');
+            return;
+        }
+        $weekStart = trim((string)($input['week_start'] ?? ''));
+        $status = strtolower(trim((string)($input['status'] ?? '')));
+        $note = trim((string)($input['note'] ?? ''));
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $weekStart)) {
+            $this->sendJsonResponse(422, 'week_start required (YYYY-MM-DD Monday)');
+            return;
+        }
+        if (!in_array($status, ['verified', 'correction_needed'], true)) {
+            $this->sendJsonResponse(422, 'status must be verified or correction_needed');
+            return;
+        }
+        if ($status === 'correction_needed' && $note === '') {
+            $this->sendJsonResponse(422, 'Note is required when marking correction needed');
+            return;
+        }
+
+        br_pay_verify_ensure_schema($this->conn);
+        $monthLocked = $this->isMonthLockedForWeek($userId, $weekStart);
+        if ($monthLocked) {
+            $this->sendJsonResponse(409, 'Month is locked. Ask an admin to unlock before changing verification.');
+            return;
+        }
+
+        $stmt = $this->conn->prepare(
+            'SELECT * FROM attendance_week_verifications WHERE user_id = ? AND week_start = ? LIMIT 1'
+        );
+        $stmt->execute([$userId, $weekStart]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            $this->sendJsonResponse(404, 'Week verification not found. Open the month view first.');
+            return;
+        }
+        if (($row['admin_status'] ?? '') === 'approved') {
+            $this->sendJsonResponse(409, 'Week already admin-approved');
+            return;
+        }
+
+        $upd = $this->conn->prepare(
+            'UPDATE attendance_week_verifications SET
+                employee_status = ?,
+                employee_note = ?,
+                employee_verified_at = NOW(),
+                admin_status = CASE WHEN ? = \'correction_needed\' THEN \'pending\' ELSE admin_status END,
+                updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?'
+        );
+        $upd->execute([
+            $status,
+            $note !== '' ? mb_substr($note, 0, 2000) : null,
+            $status,
+            $row['id'],
+        ]);
+
+        $stmt->execute([$userId, $weekStart]);
+        $this->sendJsonResponse(200, 'Week verification saved', [
+            'week' => $stmt->fetch(PDO::FETCH_ASSOC),
+        ]);
+    }
+
+    public function adminVerifyWeek(): void
+    {
+        $decoded = $this->auth();
+        if (!$decoded || !$this->requireAdmin($decoded)) {
+            return;
+        }
+        $input = $this->getJsonInput();
+        $userId = trim((string)($input['user_id'] ?? ''));
+        $weekStart = trim((string)($input['week_start'] ?? ''));
+        $status = strtolower(trim((string)($input['status'] ?? '')));
+        $note = trim((string)($input['note'] ?? ''));
+        if ($userId === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $weekStart)) {
+            $this->sendJsonResponse(422, 'user_id and week_start required');
+            return;
+        }
+        if (!in_array($status, ['approved', 'correction_requested'], true)) {
+            $this->sendJsonResponse(422, 'status must be approved or correction_requested');
+            return;
+        }
+        if ($status === 'correction_requested' && $note === '') {
+            $this->sendJsonResponse(422, 'Note is required when requesting correction');
+            return;
+        }
+
+        br_pay_verify_ensure_schema($this->conn);
+        $stmt = $this->conn->prepare(
+            'SELECT * FROM attendance_week_verifications WHERE user_id = ? AND week_start = ? LIMIT 1'
+        );
+        $stmt->execute([$userId, $weekStart]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            $this->sendJsonResponse(404, 'Week verification not found');
+            return;
+        }
+        if ($status === 'approved' && ($row['employee_status'] ?? '') !== 'verified') {
+            $this->sendJsonResponse(422, 'Employee must verify the week before admin approval');
+            return;
+        }
+
+        $empStatus = $status === 'correction_requested' ? 'correction_needed' : ($row['employee_status'] ?? 'verified');
+        $locked = $status === 'approved' ? 1 : 0;
+        $upd = $this->conn->prepare(
+            'UPDATE attendance_week_verifications SET
+                admin_status = ?,
+                admin_note = ?,
+                admin_verified_at = NOW(),
+                admin_id = ?,
+                employee_status = ?,
+                snapshot_locked = ?,
+                updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?'
+        );
+        $upd->execute([
+            $status,
+            $note !== '' ? mb_substr($note, 0, 2000) : null,
+            (string)$decoded->user_id,
+            $empStatus,
+            $locked,
+            $row['id'],
+        ]);
+
+        $stmt->execute([$userId, $weekStart]);
+        $this->sendJsonResponse(200, 'Admin week verification saved', [
+            'week' => $stmt->fetch(PDO::FETCH_ASSOC),
+        ]);
+    }
+
+    public function employeeVerifyMonth(): void
+    {
+        $decoded = $this->auth();
+        if (!$decoded || !br_require_workforce($this, $this->conn, $decoded)) {
+            return;
+        }
+        $input = $this->getJsonInput();
+        $userId = trim((string)($input['user_id'] ?? $decoded->user_id));
+        if ($userId !== (string)$decoded->user_id && !$this->isAdmin($decoded)) {
+            $this->sendJsonResponse(403, 'You can only verify your own month');
+            return;
+        }
+        $yearMonth = trim((string)($input['month'] ?? ''));
+        $status = strtolower(trim((string)($input['status'] ?? '')));
+        $note = trim((string)($input['note'] ?? ''));
+        $bounds = br_pay_verify_month_bounds($yearMonth);
+        if (!$bounds) {
+            $this->sendJsonResponse(422, 'Invalid month');
+            return;
+        }
+        if (!in_array($status, ['verified', 'correction_needed'], true)) {
+            $this->sendJsonResponse(422, 'status must be verified or correction_needed');
+            return;
+        }
+        if ($status === 'correction_needed' && $note === '') {
+            $this->sendJsonResponse(422, 'Note is required when marking correction needed');
+            return;
+        }
+
+        br_pay_verify_ensure_schema($this->conn);
+        $monthRow = br_pay_verify_ensure_month(
+            $this->conn,
+            $userId,
+            $yearMonth,
+            $bounds['start'],
+            $bounds['end']
+        );
+        if (($monthRow['admin_status'] ?? '') === 'approved') {
+            $this->sendJsonResponse(409, 'Month is locked by admin');
+            return;
+        }
+
+        if ($status === 'verified') {
+            $weeksMeta = br_pay_verify_weeks_overlapping_month($bounds['start'], $bounds['end']);
+            foreach ($weeksMeta as $w) {
+                $week = br_pay_verify_ensure_week(
+                    $this->conn,
+                    $userId,
+                    $w,
+                    $yearMonth,
+                    $bounds['start'],
+                    $bounds['end']
+                );
+                if (($week['employee_status'] ?? '') !== 'verified'
+                    && ($week['admin_status'] ?? '') !== 'approved') {
+                    $this->sendJsonResponse(
+                        422,
+                        'All overlapping weeks must be employee-verified before month verify'
+                    );
+                    return;
+                }
+            }
+        }
+
+        $upd = $this->conn->prepare(
+            'UPDATE attendance_month_verifications SET
+                employee_status = ?,
+                employee_note = ?,
+                employee_verified_at = NOW(),
+                admin_status = CASE WHEN ? = \'correction_needed\' THEN \'pending\' ELSE admin_status END,
+                updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?'
+        );
+        $upd->execute([
+            $status,
+            $note !== '' ? mb_substr($note, 0, 2000) : null,
+            $status,
+            $monthRow['id'],
+        ]);
+
+        $fresh = br_pay_verify_ensure_month(
+            $this->conn,
+            $userId,
+            $yearMonth,
+            $bounds['start'],
+            $bounds['end']
+        );
+        $this->sendJsonResponse(200, 'Month verification saved', ['month' => $fresh]);
+    }
+
+    public function adminLockMonth(): void
+    {
+        $decoded = $this->auth();
+        if (!$decoded || !$this->requireAdmin($decoded)) {
+            return;
+        }
+        $input = $this->getJsonInput();
+        $userId = trim((string)($input['user_id'] ?? ''));
+        $yearMonth = trim((string)($input['month'] ?? ''));
+        $action = strtolower(trim((string)($input['action'] ?? 'lock')));
+        $note = trim((string)($input['note'] ?? ''));
+        $includeOt = !empty($input['include_ot']);
+        $bounds = br_pay_verify_month_bounds($yearMonth);
+        if ($userId === '' || !$bounds) {
+            $this->sendJsonResponse(422, 'user_id and month required');
+            return;
+        }
+
+        br_pay_verify_ensure_schema($this->conn);
+
+        if ($action === 'unlock') {
+            $upd = $this->conn->prepare(
+                "UPDATE attendance_month_verifications SET
+                    admin_status = 'pending',
+                    admin_note = ?,
+                    admin_verified_at = NULL,
+                    admin_id = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                 WHERE user_id = ? AND year_month = ?"
+            );
+            $upd->execute([
+                $note !== '' ? mb_substr($note, 0, 2000) : 'Unlocked by admin',
+                $userId,
+                $yearMonth,
+            ]);
+            // Unlock weeks for the month
+            $this->conn->prepare(
+                "UPDATE attendance_week_verifications SET
+                    snapshot_locked = 0,
+                    admin_status = CASE WHEN admin_status = 'approved' THEN 'pending' ELSE admin_status END
+                 WHERE user_id = ? AND year_month = ?"
+            )->execute([$userId, $yearMonth]);
+
+            $fresh = br_pay_verify_ensure_month(
+                $this->conn,
+                $userId,
+                $yearMonth,
+                $bounds['start'],
+                $bounds['end']
+            );
+            $this->sendJsonResponse(200, 'Month unlocked', ['month' => $fresh]);
+            return;
+        }
+
+        if ($action === 'correction_requested') {
+            if ($note === '') {
+                $this->sendJsonResponse(422, 'Note required');
+                return;
+            }
+            $upd = $this->conn->prepare(
+                "UPDATE attendance_month_verifications SET
+                    admin_status = 'correction_requested',
+                    employee_status = 'correction_needed',
+                    admin_note = ?,
+                    admin_verified_at = NOW(),
+                    admin_id = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                 WHERE user_id = ? AND year_month = ?"
+            );
+            $upd->execute([
+                mb_substr($note, 0, 2000),
+                (string)$decoded->user_id,
+                $userId,
+                $yearMonth,
+            ]);
+            $fresh = br_pay_verify_ensure_month(
+                $this->conn,
+                $userId,
+                $yearMonth,
+                $bounds['start'],
+                $bounds['end']
+            );
+            $this->sendJsonResponse(200, 'Correction requested', ['month' => $fresh]);
+            return;
+        }
+
+        // lock / approve
+        $monthRow = br_pay_verify_ensure_month(
+            $this->conn,
+            $userId,
+            $yearMonth,
+            $bounds['start'],
+            $bounds['end'],
+            $includeOt
+        );
+        if (($monthRow['employee_status'] ?? '') !== 'verified') {
+            $this->sendJsonResponse(422, 'Employee must verify the month before salary lock');
+            return;
+        }
+
+        // Refresh with include_ot if toggled
+        if ($includeOt !== ((int)($monthRow['include_ot'] ?? 0) === 1)) {
+            $this->conn->prepare(
+                'UPDATE attendance_month_verifications SET include_ot = ? WHERE id = ?'
+            )->execute([$includeOt ? 1 : 0, $monthRow['id']]);
+            // Force recalculation by temporarily clearing admin approved (not yet)
+            $monthRow = br_pay_verify_ensure_month(
+                $this->conn,
+                $userId,
+                $yearMonth,
+                $bounds['start'],
+                $bounds['end'],
+                $includeOt
+            );
+        }
+
+        $upd = $this->conn->prepare(
+            "UPDATE attendance_month_verifications SET
+                admin_status = 'approved',
+                admin_note = ?,
+                admin_verified_at = NOW(),
+                admin_id = ?,
+                updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?"
+        );
+        $upd->execute([
+            $note !== '' ? mb_substr($note, 0, 2000) : null,
+            (string)$decoded->user_id,
+            $monthRow['id'],
+        ]);
+
+        // Lock all weeks in month
+        $this->conn->prepare(
+            "UPDATE attendance_week_verifications SET
+                snapshot_locked = 1,
+                admin_status = 'approved',
+                admin_id = COALESCE(admin_id, ?),
+                admin_verified_at = COALESCE(admin_verified_at, NOW())
+             WHERE user_id = ? AND year_month = ?"
+        )->execute([(string)$decoded->user_id, $userId, $yearMonth]);
+
+        $fresh = br_pay_verify_ensure_month(
+            $this->conn,
+            $userId,
+            $yearMonth,
+            $bounds['start'],
+            $bounds['end']
+        );
+        $this->sendJsonResponse(200, 'Month salary locked', ['month' => $fresh]);
+    }
+
+    public function setRate(): void
+    {
+        $decoded = $this->auth();
+        if (!$decoded || !$this->requireAdmin($decoded)) {
+            return;
+        }
+        $input = $this->getJsonInput();
+        $userId = trim((string)($input['user_id'] ?? ''));
+        $rate = isset($input['hourly_rate']) ? (float)$input['hourly_rate'] : -1;
+        $effectiveFrom = trim((string)($input['effective_from'] ?? ''));
+        if ($userId === '' || $rate < 0) {
+            $this->sendJsonResponse(422, 'user_id and hourly_rate required');
+            return;
+        }
+        if ($effectiveFrom === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $effectiveFrom)) {
+            $effectiveFrom = (new DateTimeImmutable('now', new DateTimeZone('Asia/Kolkata')))->format('Y-m-01');
+        }
+
+        br_pay_verify_ensure_schema($this->conn);
+        $existing = $this->conn->prepare(
+            'SELECT id FROM user_hourly_rates WHERE user_id = ? AND effective_from = ? LIMIT 1'
+        );
+        $existing->execute([$userId, $effectiveFrom]);
+        $row = $existing->fetch(PDO::FETCH_ASSOC);
+        if ($row) {
+            $this->conn->prepare(
+                'UPDATE user_hourly_rates SET hourly_rate = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+            )->execute([round($rate, 2), (string)$decoded->user_id, $row['id']]);
+            $id = $row['id'];
+        } else {
+            $id = br_pay_verify_uuid();
+            $this->conn->prepare(
+                'INSERT INTO user_hourly_rates (id, user_id, hourly_rate, effective_from, updated_by)
+                 VALUES (?,?,?,?,?)'
+            )->execute([$id, $userId, round($rate, 2), $effectiveFrom, (string)$decoded->user_id]);
+        }
+
+        $this->sendJsonResponse(200, 'Hourly rate saved', [
+            'id' => $id,
+            'user_id' => $userId,
+            'hourly_rate' => round($rate, 2),
+            'effective_from' => $effectiveFrom,
+        ]);
+    }
+
+    public function listRates(): void
+    {
+        $decoded = $this->auth();
+        if (!$decoded || !$this->requireAdmin($decoded)) {
+            return;
+        }
+        br_pay_verify_ensure_schema($this->conn);
+        $users = br_pay_verify_roster_users($this->conn, 'all');
+        $asOf = trim((string)($_GET['as_of'] ?? ''));
+        if ($asOf === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $asOf)) {
+            $asOf = (new DateTimeImmutable('now', new DateTimeZone('Asia/Kolkata')))->format('Y-m-d');
+        }
+        $rates = [];
+        foreach ($users as $u) {
+            $uid = (string)$u['id'];
+            $rates[] = [
+                'user_id' => $uid,
+                'username' => $u['username'] ?? '',
+                'name' => $u['name'] ?? '',
+                'role_bucket' => $u['role_bucket'] ?? '',
+                'hourly_rate' => br_pay_verify_rate_for_user($this->conn, $uid, $asOf),
+            ];
+        }
+        $this->sendJsonResponse(200, 'OK', ['as_of' => $asOf, 'rates' => $rates]);
+    }
+
+    public function addAdjustment(): void
+    {
+        $decoded = $this->auth();
+        if (!$decoded || !$this->requireAdmin($decoded)) {
+            return;
+        }
+        $input = $this->getJsonInput();
+        $userId = trim((string)($input['user_id'] ?? ''));
+        $yearMonth = trim((string)($input['month'] ?? ''));
+        $type = strtolower(trim((string)($input['type'] ?? 'deduction')));
+        $amount = isset($input['amount']) ? (float)$input['amount'] : 0;
+        $reason = trim((string)($input['reason'] ?? ''));
+        $bounds = br_pay_verify_month_bounds($yearMonth);
+        if ($userId === '' || !$bounds) {
+            $this->sendJsonResponse(422, 'user_id and month required');
+            return;
+        }
+        if (!in_array($type, ['advance', 'deduction', 'credit', 'other'], true)) {
+            $this->sendJsonResponse(422, 'Invalid adjustment type');
+            return;
+        }
+        if ($reason === '') {
+            $this->sendJsonResponse(422, 'Reason required');
+            return;
+        }
+        // Normalize sign: deductions/advances reduce net (negative); credits positive
+        if (in_array($type, ['advance', 'deduction'], true) && $amount > 0) {
+            $amount = -abs($amount);
+        }
+        if ($type === 'credit' && $amount < 0) {
+            $amount = abs($amount);
+        }
+
+        br_pay_verify_ensure_schema($this->conn);
+        $monthRow = br_pay_verify_ensure_month(
+            $this->conn,
+            $userId,
+            $yearMonth,
+            $bounds['start'],
+            $bounds['end']
+        );
+        if (($monthRow['admin_status'] ?? '') === 'approved') {
+            $this->sendJsonResponse(409, 'Unlock the month before editing adjustments');
+            return;
+        }
+
+        $id = br_pay_verify_uuid();
+        $this->conn->prepare(
+            'INSERT INTO attendance_month_adjustments
+             (id, month_verification_id, type, amount, reason, created_by)
+             VALUES (?,?,?,?,?,?)'
+        )->execute([
+            $id,
+            $monthRow['id'],
+            $type,
+            round($amount, 2),
+            mb_substr($reason, 0, 500),
+            (string)$decoded->user_id,
+        ]);
+
+        $fresh = br_pay_verify_ensure_month(
+            $this->conn,
+            $userId,
+            $yearMonth,
+            $bounds['start'],
+            $bounds['end']
+        );
+        $this->sendJsonResponse(200, 'Adjustment added', ['month' => $fresh]);
+    }
+
+    public function deleteAdjustment(): void
+    {
+        $decoded = $this->auth();
+        if (!$decoded || !$this->requireAdmin($decoded)) {
+            return;
+        }
+        $input = $this->getJsonInput();
+        $adjId = trim((string)($input['id'] ?? $_GET['id'] ?? ''));
+        if ($adjId === '') {
+            $this->sendJsonResponse(422, 'Adjustment id required');
+            return;
+        }
+        br_pay_verify_ensure_schema($this->conn);
+        $stmt = $this->conn->prepare(
+            'SELECT a.*, m.user_id, m.year_month, m.admin_status, m.period_start, m.period_end
+             FROM attendance_month_adjustments a
+             INNER JOIN attendance_month_verifications m ON m.id = a.month_verification_id
+             WHERE a.id = ? LIMIT 1'
+        );
+        $stmt->execute([$adjId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            $this->sendJsonResponse(404, 'Adjustment not found');
+            return;
+        }
+        if (($row['admin_status'] ?? '') === 'approved') {
+            $this->sendJsonResponse(409, 'Unlock the month before editing adjustments');
+            return;
+        }
+        $this->conn->prepare('DELETE FROM attendance_month_adjustments WHERE id = ?')->execute([$adjId]);
+        $fresh = br_pay_verify_ensure_month(
+            $this->conn,
+            (string)$row['user_id'],
+            (string)$row['year_month'],
+            (string)$row['period_start'],
+            (string)$row['period_end']
+        );
+        $this->sendJsonResponse(200, 'Adjustment deleted', ['month' => $fresh]);
+    }
+
+    public function seedRates(): void
+    {
+        $decoded = $this->auth();
+        if (!$decoded || !$this->requireAdmin($decoded)) {
+            return;
+        }
+        $input = $this->getJsonInput();
+        $custom = is_array($input['rates'] ?? null) ? $input['rates'] : null;
+        $map = $custom ?: br_pay_verify_default_rate_seed_map();
+        $normalized = [];
+        foreach ($map as $k => $v) {
+            $normalized[(string)$k] = (float)$v;
+        }
+        $count = br_pay_verify_seed_rates(
+            $this->conn,
+            $normalized,
+            (string)$decoded->user_id,
+            trim((string)($input['effective_from'] ?? '2026-01-01')) ?: '2026-01-01'
+        );
+        $this->sendJsonResponse(200, 'Rates seeded', ['inserted' => $count]);
+    }
+
+    public function seedSeptemberAdjustments(): void
+    {
+        $decoded = $this->auth();
+        if (!$decoded || !$this->requireAdmin($decoded)) {
+            return;
+        }
+        // Marva −5200, Jubairiya −3060 for 2026-09
+        $specs = [
+            ['username' => 'Fathima_marva', 'amount' => -5200, 'reason' => 'September advance / adjustment'],
+            ['username' => 'Jubairiya', 'amount' => -3060, 'reason' => 'September advance / adjustment'],
+        ];
+        $yearMonth = '2026-09';
+        $bounds = br_pay_verify_month_bounds($yearMonth);
+        $added = 0;
+        foreach ($specs as $spec) {
+            $st = $this->conn->prepare('SELECT id FROM users WHERE LOWER(username) = LOWER(?) LIMIT 1');
+            $st->execute([$spec['username']]);
+            $user = $st->fetch(PDO::FETCH_ASSOC);
+            if (!$user || !$bounds) {
+                continue;
+            }
+            $monthRow = br_pay_verify_ensure_month(
+                $this->conn,
+                (string)$user['id'],
+                $yearMonth,
+                $bounds['start'],
+                $bounds['end']
+            );
+            if (($monthRow['admin_status'] ?? '') === 'approved') {
+                continue;
+            }
+            // Skip if same reason already exists
+            $dup = false;
+            foreach ($monthRow['adjustments'] ?? [] as $a) {
+                if ((float)($a['amount'] ?? 0) === (float)$spec['amount']) {
+                    $dup = true;
+                    break;
+                }
+            }
+            if ($dup) {
+                continue;
+            }
+            $this->conn->prepare(
+                'INSERT INTO attendance_month_adjustments
+                 (id, month_verification_id, type, amount, reason, created_by)
+                 VALUES (?,?,?,?,?,?)'
+            )->execute([
+                br_pay_verify_uuid(),
+                $monthRow['id'],
+                'advance',
+                $spec['amount'],
+                $spec['reason'],
+                (string)$decoded->user_id,
+            ]);
+            br_pay_verify_ensure_month(
+                $this->conn,
+                (string)$user['id'],
+                $yearMonth,
+                $bounds['start'],
+                $bounds['end']
+            );
+            $added++;
+        }
+        $this->sendJsonResponse(200, 'September adjustments seeded', ['added' => $added]);
+    }
+
+    private function formatPeriodLabel(string $start, string $end): string
+    {
+        $s = DateTimeImmutable::createFromFormat('Y-m-d', $start);
+        $e = DateTimeImmutable::createFromFormat('Y-m-d', $end);
+        if (!$s || !$e) {
+            return $start . ' – ' . $end;
+        }
+        return $s->format('F d') . ' – ' . $e->format('F d, Y');
+    }
+
+    private function isMonthLockedForWeek(string $userId, string $weekStart): bool
+    {
+        $stmt = $this->conn->prepare(
+            'SELECT year_month FROM attendance_week_verifications WHERE user_id = ? AND week_start = ? LIMIT 1'
+        );
+        $stmt->execute([$userId, $weekStart]);
+        $ym = $stmt->fetchColumn();
+        if (!$ym) {
+            return false;
+        }
+        $m = $this->conn->prepare(
+            "SELECT admin_status FROM attendance_month_verifications WHERE user_id = ? AND year_month = ? LIMIT 1"
+        );
+        $m->execute([$userId, $ym]);
+        return ($m->fetchColumn() ?: '') === 'approved';
+    }
+
+    /** @return array<string,mixed> */
+    private function getJsonInput(): array
+    {
+        $raw = file_get_contents('php://input');
+        if (!is_string($raw) || trim($raw) === '') {
+            return $_POST ?: [];
+        }
+        $decoded = json_decode($raw, true);
+        return is_array($decoded) ? $decoded : [];
+    }
+}

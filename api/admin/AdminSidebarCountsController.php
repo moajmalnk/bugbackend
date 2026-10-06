@@ -75,6 +75,7 @@ class AdminSidebarCountsController extends BaseAPI
             'recycleBin' => 0,
             'creative' => 0,
             'assets' => 0,
+            'payVerify' => 0,
         ];
     }
 
@@ -482,7 +483,17 @@ class AdminSidebarCountsController extends BaseAPI
 
         header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
         header('Pragma: no-cache');
-        $this->sendJsonResponse(200, 'OK', $counts);
+        // Pay Verify pending (self + admin queue)
+        try {
+            require_once __DIR__ . '/../../utils/pay_verify.php';
+            $pv = br_pay_verify_pending_counts($this->conn, $userId, $isAdmin);
+            $counts['payVerify'] = (int)$pv['mine'] + ($isAdmin ? (int)$pv['admin'] : 0);
+        } catch (Throwable $e) {
+            error_log('AdminSidebarCountsController payVerify: ' . $e->getMessage());
+            $counts['payVerify'] = 0;
+        }
+
+$this->sendJsonResponse(200, 'OK', $counts);
     }
 
     /**
