@@ -413,13 +413,13 @@ function br_pay_verify_rate_history(PDO $conn, string $userId): array
                     r.updated_by, r.created_at, r.updated_at,
                     u.username AS updated_by_username
              FROM user_hourly_rates r
-             LEFT JOIN users u ON u.id = r.updated_by
+             LEFT JOIN users u ON CONVERT(u.id USING utf8mb4) COLLATE utf8mb4_unicode_ci
+               = CONVERT(r.updated_by USING utf8mb4) COLLATE utf8mb4_unicode_ci
              WHERE r.user_id = ?
              ORDER BY r.effective_from DESC, r.created_at DESC'
         );
         $stmt->execute([$userId]);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
-        $out = [];
         $prevRate = null;
         // Build hike % from older → newer by reversing once
         $asc = array_reverse($rows);
@@ -454,6 +454,148 @@ function br_pay_verify_rate_history(PDO $conn, string $userId): array
         error_log('br_pay_verify_rate_history: ' . $e->getMessage());
         return [];
     }
+}
+
+/** @return string YYYY-MM (Asia/Kolkata) */
+function br_pay_verify_today_ym(): string
+{
+    return (new DateTimeImmutable('now', new DateTimeZone('Asia/Kolkata')))->format('Y-m');
+}
+
+/** @return string|null YYYY-MM */
+function br_pay_verify_ym_from_date(?string $date): ?string
+{
+    $date = trim((string)$date);
+    if ($date === '') {
+        return null;
+    }
+    if (preg_match('/^(\d{4}-\d{2})/', $date, $m)) {
+        return $m[1];
+    }
+    return null;
+}
+
+/**
+ * Why: Period picker must stay between joining (or earliest roster join) and the current month.
+ *
+ * @param list<array<string,mixed>> $rosterUsers
+ * @return array{min:string,max:string,joining_date:?string,source:string}
+ */
+function br_pay_verify_month_nav_bounds(
+    PDO $conn,
+    string $focusUserId,
+    array $rosterUsers,
+    bool $scopeMine
+): array {
+    $max = br_pay_verify_today_ym();
+    $focusJoin = br_user_joining_date($conn, $focusUserId);
+    $focusYm = br_pay_verify_ym_from_date($focusJoin);
+
+    if ($scopeMine) {
+        $min = $focusYm ?? $max;
+        if ($min > $max) {
+            $min = $max;
+        }
+        return [
+            'min' => $min,
+            'max' => $max,
+            'joining_date' => $focusJoin,
+            'source' => 'joining_date',
+        ];
+    }
+
+    $earliest = $focusYm;
+    // Why: one query for team earliest join — avoids N+1 when admin browses full roster.
+    if (!$scopeMine && br_users_has_joining_date($conn)) {
+        try {
+            $ids = [];
+            foreach ($rosterUsers as $u) {
+                $uid = trim((string)($u['id'] ?? ''));
+                if ($uid !== '') {
+                    $ids[] = $uid;
+                }
+            }
+            if ($ids !== []) {
+                $placeholders = implode(',', array_fill(0, count($ids), '?'));
+                $stmt = $conn->prepare(
+                    "SELECT MIN(
+                        CASE
+                          WHEN joining_date IS NOT NULL AND joining_date <> ''
+                          THEN DATE_FORMAT(joining_date, '%Y-%m')
+                          ELSE DATE_FORMAT(created_at, '%Y-%m')
+                        END
+                     ) AS min_ym
+                     FROM users
+                     WHERE id IN ({$placeholders})"
+                );
+                $stmt->execute($ids);
+                $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                $batchMin = br_pay_verify_ym_from_date($row['min_ym'] ?? null);
+                if ($batchMin !== null) {
+                    $earliest = $batchMin;
+                }
+            }
+        } catch (Throwable $e) {
+            error_log('br_pay_verify_month_nav_bounds batch: ' . $e->getMessage());
+            foreach ($rosterUsers as $u) {
+                $uid = trim((string)($u['id'] ?? ''));
+                if ($uid === '') {
+                    continue;
+                }
+                $jd = br_user_joining_date($conn, $uid);
+                $ym = br_pay_verify_ym_from_date($jd);
+                if ($ym === null) {
+                    continue;
+                }
+                if ($earliest === null || $ym < $earliest) {
+                    $earliest = $ym;
+                }
+            }
+        }
+    } else {
+        foreach ($rosterUsers as $u) {
+            $uid = trim((string)($u['id'] ?? ''));
+            if ($uid === '') {
+                continue;
+            }
+            $jd = br_user_joining_date($conn, $uid);
+            $ym = br_pay_verify_ym_from_date($jd);
+            if ($ym === null) {
+                continue;
+            }
+            if ($earliest === null || $ym < $earliest) {
+                $earliest = $ym;
+            }
+        }
+    }
+
+    $min = $earliest ?? $max;
+    if ($min > $max) {
+        $min = $max;
+    }
+
+    return [
+        'min' => $min,
+        'max' => $max,
+        'joining_date' => $focusJoin,
+        'source' => $earliest !== null ? 'roster_earliest_join' : 'today',
+    ];
+}
+
+/**
+ * @param array{min:string,max:string} $bounds
+ */
+function br_pay_verify_clamp_ym(string $yearMonth, array $bounds): string
+{
+    $min = (string)($bounds['min'] ?? '');
+    $max = (string)($bounds['max'] ?? '');
+    if ($min !== '' && $yearMonth < $min) {
+        return $min;
+    }
+    if ($max !== '' && $yearMonth > $max) {
+        return $max;
+    }
+    return $yearMonth;
 }
 
 /**

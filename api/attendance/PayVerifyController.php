@@ -96,14 +96,8 @@ class PayVerifyController extends BaseAPI
         }
 
         $yearMonth = trim((string)($_GET['month'] ?? ''));
-        if ($yearMonth === '') {
-            $tz = new DateTimeZone('Asia/Kolkata');
-            $yearMonth = (new DateTimeImmutable('now', $tz))->format('Y-m');
-        }
-        $bounds = br_pay_verify_month_bounds($yearMonth);
-        if (!$bounds) {
-            $this->sendJsonResponse(422, 'Invalid month (use YYYY-MM)');
-            return;
+        if ($yearMonth === '' || !preg_match('/^\d{4}-\d{2}$/', $yearMonth)) {
+            $yearMonth = br_pay_verify_today_ym();
         }
 
         $role = strtolower(trim((string)($_GET['role'] ?? 'all')));
@@ -115,7 +109,6 @@ class PayVerifyController extends BaseAPI
         $roleFilter = $scopeMine ? 'all' : $role;
 
         br_pay_verify_ensure_schema($this->conn);
-        $weeksMeta = br_pay_verify_weeks_overlapping_month($bounds['start'], $bounds['end']);
 
         if ($scopeMine) {
             $users = array_values(array_filter(
@@ -158,6 +151,22 @@ class PayVerifyController extends BaseAPI
             }
             $users = br_pay_verify_roster_users($this->conn, $roleFilter);
         }
+
+        $monthNav = br_pay_verify_month_nav_bounds(
+            $this->conn,
+            (string)$decoded->user_id,
+            $users,
+            $scopeMine
+        );
+        $requestedMonth = $yearMonth;
+        $yearMonth = br_pay_verify_clamp_ym($yearMonth, $monthNav);
+        $bounds = br_pay_verify_month_bounds($yearMonth);
+        if (!$bounds) {
+            $this->sendJsonResponse(422, 'Invalid month (use YYYY-MM)');
+            return;
+        }
+
+        $weeksMeta = br_pay_verify_weeks_overlapping_month($bounds['start'], $bounds['end']);
 
         $roster = [];
         $totals = [
@@ -239,6 +248,13 @@ class PayVerifyController extends BaseAPI
             'roster' => $roster,
             'totals' => $totals,
             'is_admin' => $isAdmin,
+            'month_bounds' => [
+                'min' => $monthNav['min'],
+                'max' => $monthNav['max'],
+                'joining_date' => $monthNav['joining_date'],
+                'clamped' => $requestedMonth !== $yearMonth,
+                'requested' => $requestedMonth,
+            ],
         ]);
     }
 
@@ -265,10 +281,18 @@ class PayVerifyController extends BaseAPI
             }
 
             $yearMonth = trim((string)($_GET['month'] ?? ''));
-            if ($yearMonth === '') {
-                $tz = new DateTimeZone('Asia/Kolkata');
-                $yearMonth = (new DateTimeImmutable('now', $tz))->format('Y-m');
+            if ($yearMonth === '' || !preg_match('/^\d{4}-\d{2}$/', $yearMonth)) {
+                $yearMonth = br_pay_verify_today_ym();
             }
+
+            $monthNav = br_pay_verify_month_nav_bounds(
+                $this->conn,
+                $userId,
+                [['id' => $userId]],
+                true
+            );
+            $requestedMonth = $yearMonth;
+            $yearMonth = br_pay_verify_clamp_ym($yearMonth, $monthNav);
             $bounds = br_pay_verify_month_bounds($yearMonth);
             if (!$bounds) {
                 $this->sendJsonResponse(422, 'Invalid month (use YYYY-MM)');
@@ -331,6 +355,13 @@ class PayVerifyController extends BaseAPI
                     : [],
                 'is_admin' => $this->isAdmin($decoded),
                 'is_self' => (string)$decoded->user_id === $userId,
+                'month_bounds' => [
+                    'min' => $monthNav['min'],
+                    'max' => $monthNav['max'],
+                    'joining_date' => $monthNav['joining_date'],
+                    'clamped' => $requestedMonth !== $yearMonth,
+                    'requested' => $requestedMonth,
+                ],
             ]);
         } catch (Throwable $e) {
             error_log('PayVerifyController::getUserMonth: ' . $e->getMessage());
