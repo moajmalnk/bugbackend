@@ -466,7 +466,7 @@ function br_pay_verify_ensure_week(
     if ($existing) {
         $upd = $conn->prepare(
             'UPDATE attendance_week_verifications SET
-                year_month = ?, week_end = ?,
+                `year_month` = ?, week_end = ?,
                 worked_hours = ?, leave_hours = ?, ot_hours = ?,
                 check_in_days = ?, leave_days = ?, office_days = ?, wfh_days = ?,
                 late_days = ?, days_worked = ?, updated_at = CURRENT_TIMESTAMP
@@ -489,7 +489,7 @@ function br_pay_verify_ensure_week(
     } else {
         $ins = $conn->prepare(
             'INSERT INTO attendance_week_verifications
-             (id, user_id, week_start, week_end, year_month,
+             (id, user_id, week_start, week_end, `year_month`,
               worked_hours, leave_hours, ot_hours, check_in_days, leave_days,
               office_days, wfh_days, late_days, days_worked)
              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)'
@@ -557,7 +557,7 @@ function br_pay_verify_ensure_month(
     br_pay_verify_ensure_schema($conn);
 
     $stmt = $conn->prepare(
-        'SELECT * FROM attendance_month_verifications WHERE user_id = ? AND year_month = ? LIMIT 1'
+        'SELECT * FROM attendance_month_verifications WHERE user_id = ? AND `year_month` = ? LIMIT 1'
     );
     $stmt->execute([$userId, $yearMonth]);
     $existing = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
@@ -626,7 +626,7 @@ function br_pay_verify_ensure_month(
     } else {
         $ins = $conn->prepare(
             'INSERT INTO attendance_month_verifications
-             (id, user_id, year_month, period_start, period_end,
+             (id, user_id, `year_month`, period_start, period_end,
               total_hours, worked_days, leave_days, leave_hours, ot_hours, check_in_days,
               hourly_rate_used, gross_estimate, adjustments_total, net_estimate, include_ot)
              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'

@@ -589,7 +589,7 @@ class PayVerifyController extends BaseAPI
                     admin_verified_at = NULL,
                     admin_id = NULL,
                     updated_at = CURRENT_TIMESTAMP
-                 WHERE user_id = ? AND year_month = ?"
+                 WHERE user_id = ? AND `year_month` = ?"
             );
             $upd->execute([
                 $note !== '' ? mb_substr($note, 0, 2000) : 'Unlocked by admin',
@@ -601,7 +601,7 @@ class PayVerifyController extends BaseAPI
                 "UPDATE attendance_week_verifications SET
                     snapshot_locked = 0,
                     admin_status = CASE WHEN admin_status = 'approved' THEN 'pending' ELSE admin_status END
-                 WHERE user_id = ? AND year_month = ?"
+                 WHERE user_id = ? AND `year_month` = ?"
             )->execute([$userId, $yearMonth]);
 
             $fresh = br_pay_verify_ensure_month(
@@ -628,7 +628,7 @@ class PayVerifyController extends BaseAPI
                     admin_verified_at = NOW(),
                     admin_id = ?,
                     updated_at = CURRENT_TIMESTAMP
-                 WHERE user_id = ? AND year_month = ?"
+                 WHERE user_id = ? AND `year_month` = ?"
             );
             $upd->execute([
                 mb_substr($note, 0, 2000),
@@ -699,7 +699,7 @@ class PayVerifyController extends BaseAPI
                 admin_status = 'approved',
                 admin_id = COALESCE(admin_id, ?),
                 admin_verified_at = COALESCE(admin_verified_at, NOW())
-             WHERE user_id = ? AND year_month = ?"
+             WHERE user_id = ? AND `year_month` = ?"
         )->execute([(string)$decoded->user_id, $userId, $yearMonth]);
 
         $fresh = br_pay_verify_ensure_month(
@@ -867,7 +867,7 @@ class PayVerifyController extends BaseAPI
         }
         br_pay_verify_ensure_schema($this->conn);
         $stmt = $this->conn->prepare(
-            'SELECT a.*, m.user_id, m.year_month, m.admin_status, m.period_start, m.period_end
+            'SELECT a.*, m.user_id, m.`year_month`, m.admin_status, m.period_start, m.period_end
              FROM attendance_month_adjustments a
              INNER JOIN attendance_month_verifications m ON m.id = a.month_verification_id
              WHERE a.id = ? LIMIT 1'
@@ -994,7 +994,7 @@ class PayVerifyController extends BaseAPI
     private function isMonthLockedForWeek(string $userId, string $weekStart): bool
     {
         $stmt = $this->conn->prepare(
-            'SELECT year_month FROM attendance_week_verifications WHERE user_id = ? AND week_start = ? LIMIT 1'
+            'SELECT `year_month` FROM attendance_week_verifications WHERE user_id = ? AND week_start = ? LIMIT 1'
         );
         $stmt->execute([$userId, $weekStart]);
         $ym = $stmt->fetchColumn();
@@ -1002,7 +1002,7 @@ class PayVerifyController extends BaseAPI
             return false;
         }
         $m = $this->conn->prepare(
-            "SELECT admin_status FROM attendance_month_verifications WHERE user_id = ? AND year_month = ? LIMIT 1"
+            "SELECT admin_status FROM attendance_month_verifications WHERE user_id = ? AND `year_month` = ? LIMIT 1"
         );
         $m->execute([$userId, $ym]);
         return ($m->fetchColumn() ?: '') === 'approved';
