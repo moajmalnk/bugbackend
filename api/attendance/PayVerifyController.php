@@ -570,19 +570,21 @@ class PayVerifyController extends BaseAPI
                 }
                 // Why: Admins verifying on behalf of staff should not be blocked by
                 // unfinished week checkboxes — auto-complete those weeks in the same action.
+                // Avoid COALESCE(column, ?) — MariaDB #1267 when note collations differ.
                 if ($isAdminCaller) {
+                    $existingNote = trim((string)($week['employee_note'] ?? ''));
+                    $weekNote = $existingNote !== ''
+                        ? $existingNote
+                        : 'Verified by admin with month verify';
                     $autoWeek = $this->conn->prepare(
                         "UPDATE attendance_week_verifications SET
                             employee_status = 'verified',
-                            employee_note = COALESCE(employee_note, ?),
-                            employee_verified_at = COALESCE(employee_verified_at, NOW()),
+                            employee_note = ?,
+                            employee_verified_at = IFNULL(employee_verified_at, NOW()),
                             updated_at = CURRENT_TIMESTAMP
                          WHERE id = ?"
                     );
-                    $autoWeek->execute([
-                        'Verified by admin with month verify',
-                        $week['id'],
-                    ]);
+                    $autoWeek->execute([$weekNote, $week['id']]);
                     continue;
                 }
                 $this->sendJsonResponse(
@@ -593,19 +595,21 @@ class PayVerifyController extends BaseAPI
             }
         }
 
+        $adminStatusSql = $status === 'correction_needed'
+            ? "admin_status = 'pending',"
+            : '';
         $upd = $this->conn->prepare(
-            'UPDATE attendance_month_verifications SET
+            "UPDATE attendance_month_verifications SET
                 employee_status = ?,
                 employee_note = ?,
                 employee_verified_at = NOW(),
-                admin_status = CASE WHEN ? = \'correction_needed\' THEN \'pending\' ELSE admin_status END,
+                {$adminStatusSql}
                 updated_at = CURRENT_TIMESTAMP
-             WHERE id = ?'
+             WHERE id = ?"
         );
         $upd->execute([
             $status,
             $note !== '' ? mb_substr($note, 0, 2000) : null,
-            $status,
             $monthRow['id'],
         ]);
 
