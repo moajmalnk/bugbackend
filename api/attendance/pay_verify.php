@@ -12,68 +12,80 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit();
 }
 
-$c = new PayVerifyController();
-$action = strtolower(trim((string)($_GET['action'] ?? $_POST['action'] ?? '')));
-$method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+try {
+    $c = new PayVerifyController();
+    $action = strtolower(trim((string)($_GET['action'] ?? $_POST['action'] ?? '')));
+    $method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
 
-if ($method === 'GET') {
-    if ($action === '' || $action === 'month') {
-        $c->listMonth();
-        exit();
+    if ($method === 'GET') {
+        if ($action === '' || $action === 'month') {
+            $c->listMonth();
+            exit();
+        }
+        if ($action === 'user-month' || $action === 'user') {
+            $c->getUserMonth();
+            exit();
+        }
+        if ($action === 'rates') {
+            $c->listRates();
+            exit();
+        }
+        if ($action === 'pending') {
+            $c->pendingCounts();
+            exit();
+        }
     }
-    if ($action === 'user-month' || $action === 'user') {
-        $c->getUserMonth();
-        exit();
+
+    if ($method === 'POST') {
+        if ($action === 'employee-week') {
+            $c->employeeVerifyWeek();
+            exit();
+        }
+        if ($action === 'admin-week') {
+            $c->adminVerifyWeek();
+            exit();
+        }
+        if ($action === 'employee-month') {
+            $c->employeeVerifyMonth();
+            exit();
+        }
+        if ($action === 'admin-month') {
+            $c->adminLockMonth();
+            exit();
+        }
+        if ($action === 'rate') {
+            $c->setRate();
+            exit();
+        }
+        if ($action === 'adjustment') {
+            $c->addAdjustment();
+            exit();
+        }
+        if ($action === 'delete-adjustment') {
+            $c->deleteAdjustment();
+            exit();
+        }
+        if ($action === 'seed-rates') {
+            $c->seedRates();
+            exit();
+        }
+        if ($action === 'seed-sept-adjustments') {
+            $c->seedSeptemberAdjustments();
+            exit();
+        }
     }
-    if ($action === 'rates') {
-        $c->listRates();
-        exit();
+
+    http_response_code(405);
+    header('Content-Type: application/json');
+    echo json_encode(['success' => false, 'message' => 'Method or action not allowed']);
+} catch (Throwable $e) {
+    error_log('pay_verify.php: ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine());
+    if (!headers_sent()) {
+        http_response_code(500);
+        header('Content-Type: application/json');
     }
-    if ($action === 'pending') {
-        $c->pendingCounts();
-        exit();
-    }
+    echo json_encode([
+        'success' => false,
+        'message' => 'Pay Verify failed: ' . $e->getMessage(),
+    ]);
 }
-
-if ($method === 'POST') {
-    if ($action === 'employee-week') {
-        $c->employeeVerifyWeek();
-        exit();
-    }
-    if ($action === 'admin-week') {
-        $c->adminVerifyWeek();
-        exit();
-    }
-    if ($action === 'employee-month') {
-        $c->employeeVerifyMonth();
-        exit();
-    }
-    if ($action === 'admin-month') {
-        $c->adminLockMonth();
-        exit();
-    }
-    if ($action === 'rate') {
-        $c->setRate();
-        exit();
-    }
-    if ($action === 'adjustment') {
-        $c->addAdjustment();
-        exit();
-    }
-    if ($action === 'delete-adjustment') {
-        $c->deleteAdjustment();
-        exit();
-    }
-    if ($action === 'seed-rates') {
-        $c->seedRates();
-        exit();
-    }
-    if ($action === 'seed-sept-adjustments') {
-        $c->seedSeptemberAdjustments();
-        exit();
-    }
-}
-
-http_response_code(405);
-header('Content-Type: application/json');
-echo json_encode(['success' => false, 'message' => 'Method or action not allowed']);

@@ -76,6 +76,16 @@ class PayVerifyController extends BaseAPI
 
     public function listMonth(): void
     {
+        try {
+            $this->listMonthInner();
+        } catch (Throwable $e) {
+            error_log('PayVerifyController::listMonth: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Pay Verify failed: ' . $e->getMessage());
+        }
+    }
+
+    private function listMonthInner(): void
+    {
         $decoded = $this->auth();
         if (!$decoded) {
             return;
@@ -233,82 +243,94 @@ class PayVerifyController extends BaseAPI
 
     public function getUserMonth(): void
     {
-        $decoded = $this->auth();
-        if (!$decoded) {
-            return;
-        }
-
-        $userId = trim((string)($_GET['user_id'] ?? ''));
-        if ($userId === '') {
-            $userId = (string)$decoded->user_id;
-        }
-        if (!$this->canAccessUser($decoded, $userId)) {
-            $this->sendJsonResponse(403, 'Forbidden');
-            return;
-        }
-        if ((string)$decoded->user_id === $userId) {
-            if (!br_require_workforce($this, $this->conn, $decoded) && !$this->isAdmin($decoded)) {
+        try {
+            $decoded = $this->auth();
+            if (!$decoded) {
                 return;
             }
-        }
 
-        $yearMonth = trim((string)($_GET['month'] ?? ''));
-        if ($yearMonth === '') {
-            $tz = new DateTimeZone('Asia/Kolkata');
-            $yearMonth = (new DateTimeImmutable('now', $tz))->format('Y-m');
-        }
-        $bounds = br_pay_verify_month_bounds($yearMonth);
-        if (!$bounds) {
-            $this->sendJsonResponse(422, 'Invalid month (use YYYY-MM)');
-            return;
-        }
+            $userId = trim((string)($_GET['user_id'] ?? ''));
+            if ($userId === '') {
+                $userId = (string)$decoded->user_id;
+            }
+            if (!$this->canAccessUser($decoded, $userId)) {
+                $this->sendJsonResponse(403, 'Forbidden');
+                return;
+            }
+            if ((string)$decoded->user_id === $userId
+                && !$this->isAdmin($decoded)
+                && !br_require_workforce($this, $this->conn, $decoded)) {
+                return;
+            }
 
-        br_pay_verify_ensure_schema($this->conn);
-        $weeksMeta = br_pay_verify_weeks_overlapping_month($bounds['start'], $bounds['end']);
-        $weeks = [];
-        foreach ($weeksMeta as $w) {
-            $weeks[] = br_pay_verify_ensure_week(
+            $yearMonth = trim((string)($_GET['month'] ?? ''));
+            if ($yearMonth === '') {
+                $tz = new DateTimeZone('Asia/Kolkata');
+                $yearMonth = (new DateTimeImmutable('now', $tz))->format('Y-m');
+            }
+            $bounds = br_pay_verify_month_bounds($yearMonth);
+            if (!$bounds) {
+                $this->sendJsonResponse(422, 'Invalid month (use YYYY-MM)');
+                return;
+            }
+
+            br_pay_verify_ensure_schema($this->conn);
+            $weeksMeta = br_pay_verify_weeks_overlapping_month($bounds['start'], $bounds['end']);
+            $weeks = [];
+            foreach ($weeksMeta as $w) {
+                $weekRow = br_pay_verify_ensure_week(
+                    $this->conn,
+                    $userId,
+                    $w,
+                    $yearMonth,
+                    $bounds['start'],
+                    $bounds['end']
+                );
+                $weeks[] = $weekRow;
+            }
+            $monthRow = br_pay_verify_ensure_month(
                 $this->conn,
                 $userId,
-                $w,
                 $yearMonth,
                 $bounds['start'],
                 $bounds['end']
             );
-        }
-        $monthRow = br_pay_verify_ensure_month(
-            $this->conn,
-            $userId,
-            $yearMonth,
-            $bounds['start'],
-            $bounds['end']
-        );
 
-        $user = null;
-        try {
-            $st = $this->conn->prepare(
-                "SELECT id, username, COALESCE(NULLIF(name, ''), username) AS name, role, tester_type
-                 FROM users WHERE id = ? LIMIT 1"
-            );
-            $st->execute([$userId]);
-            $user = $st->fetch(PDO::FETCH_ASSOC) ?: null;
+            $user = null;
+            try {
+                $st = $this->conn->prepare(
+                    "SELECT id, username, COALESCE(NULLIF(name, ''), username) AS name, role, tester_type
+                     FROM users WHERE id = ? LIMIT 1"
+                );
+                $st->execute([$userId]);
+                $user = $st->fetch(PDO::FETCH_ASSOC) ?: null;
+            } catch (Throwable $e) {
+                try {
+                    $st = $this->conn->prepare(
+                        'SELECT id, username, role FROM users WHERE id = ? LIMIT 1'
+                    );
+                    $st->execute([$userId]);
+                    $user = $st->fetch(PDO::FETCH_ASSOC) ?: null;
+                } catch (Throwable $e2) {
+                    $user = ['id' => $userId, 'username' => '', 'role' => ''];
+                }
+            }
+
+            $this->sendJsonResponse(200, 'OK', [
+                'month' => $yearMonth,
+                'period_start' => $bounds['start'],
+                'period_end' => $bounds['end'],
+                'period_label' => $this->formatPeriodLabel($bounds['start'], $bounds['end']),
+                'user' => $user,
+                'weeks' => $weeks,
+                'month_verification' => $monthRow,
+                'is_admin' => $this->isAdmin($decoded),
+                'is_self' => (string)$decoded->user_id === $userId,
+            ]);
         } catch (Throwable $e) {
-            $st = $this->conn->prepare('SELECT id, username, role FROM users WHERE id = ? LIMIT 1');
-            $st->execute([$userId]);
-            $user = $st->fetch(PDO::FETCH_ASSOC) ?: null;
+            error_log('PayVerifyController::getUserMonth: ' . $e->getMessage());
+            $this->sendJsonResponse(500, 'Pay Verify failed: ' . $e->getMessage());
         }
-
-        $this->sendJsonResponse(200, 'OK', [
-            'month' => $yearMonth,
-            'period_start' => $bounds['start'],
-            'period_end' => $bounds['end'],
-            'period_label' => $this->formatPeriodLabel($bounds['start'], $bounds['end']),
-            'user' => $user,
-            'weeks' => $weeks,
-            'month_verification' => $monthRow,
-            'is_admin' => $this->isAdmin($decoded),
-            'is_self' => (string)$decoded->user_id === $userId,
-        ]);
     }
 
     public function employeeVerifyWeek(): void

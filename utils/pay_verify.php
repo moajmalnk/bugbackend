@@ -12,7 +12,8 @@ require_once __DIR__ . '/attendance_roles.php';
 require_once __DIR__ . '/workforce_access.php';
 
 /**
- * Ensure pay-verify tables exist (migration 123 or runtime).
+ * Ensure pay-verify tables exist (migration 123 or inline DDL).
+ * Why: Production must create tables even when migrations/ is not synced to the host.
  */
 function br_pay_verify_ensure_schema(PDO $conn): void
 {
@@ -27,15 +28,19 @@ function br_pay_verify_ensure_schema(PDO $conn): void
         'attendance_month_verifications',
         'attendance_month_adjustments',
     ];
+
+    $tableExists = static function (PDO $conn, string $table): bool {
+        try {
+            $check = $conn->query('SHOW TABLES LIKE ' . $conn->quote($table));
+            return (bool)($check && $check->fetch(PDO::FETCH_NUM));
+        } catch (Throwable $e) {
+            return false;
+        }
+    };
+
     $missing = false;
     foreach ($needed as $table) {
-        try {
-            $check = $conn->query("SHOW TABLES LIKE " . $conn->quote($table));
-            if (!$check || !$check->fetch(PDO::FETCH_NUM)) {
-                $missing = true;
-                break;
-            }
-        } catch (Throwable $e) {
+        if (!$tableExists($conn, $table)) {
             $missing = true;
             break;
         }
@@ -45,19 +50,128 @@ function br_pay_verify_ensure_schema(PDO $conn): void
         return;
     }
 
+    $ddl = [
+        "CREATE TABLE IF NOT EXISTS `user_hourly_rates` (
+          `id` VARCHAR(36) NOT NULL,
+          `user_id` VARCHAR(36) NOT NULL,
+          `hourly_rate` DECIMAL(12,2) NOT NULL,
+          `effective_from` DATE NOT NULL,
+          `updated_by` VARCHAR(36) NULL DEFAULT NULL,
+          `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (`id`),
+          UNIQUE KEY `uniq_user_hourly_rates_user_from` (`user_id`, `effective_from`),
+          KEY `idx_user_hourly_rates_user_from` (`user_id`, `effective_from`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        "CREATE TABLE IF NOT EXISTS `attendance_week_verifications` (
+          `id` VARCHAR(36) NOT NULL,
+          `user_id` VARCHAR(36) NOT NULL,
+          `week_start` DATE NOT NULL,
+          `week_end` DATE NOT NULL,
+          `year_month` CHAR(7) NOT NULL,
+          `worked_hours` DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+          `leave_hours` DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+          `ot_hours` DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+          `check_in_days` INT NOT NULL DEFAULT 0,
+          `leave_days` DECIMAL(6,2) NOT NULL DEFAULT 0.00,
+          `office_days` INT NOT NULL DEFAULT 0,
+          `wfh_days` INT NOT NULL DEFAULT 0,
+          `late_days` INT NOT NULL DEFAULT 0,
+          `days_worked` INT NOT NULL DEFAULT 0,
+          `employee_status` ENUM('pending','verified','correction_needed') NOT NULL DEFAULT 'pending',
+          `employee_note` TEXT NULL DEFAULT NULL,
+          `employee_verified_at` DATETIME NULL DEFAULT NULL,
+          `admin_status` ENUM('pending','approved','correction_requested') NOT NULL DEFAULT 'pending',
+          `admin_note` TEXT NULL DEFAULT NULL,
+          `admin_verified_at` DATETIME NULL DEFAULT NULL,
+          `admin_id` VARCHAR(36) NULL DEFAULT NULL,
+          `snapshot_locked` TINYINT(1) NOT NULL DEFAULT 0,
+          `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (`id`),
+          UNIQUE KEY `uniq_att_week_user_week` (`user_id`, `week_start`),
+          KEY `idx_att_week_year_month` (`year_month`),
+          KEY `idx_att_week_employee_status` (`employee_status`),
+          KEY `idx_att_week_admin_status` (`admin_status`),
+          KEY `idx_att_week_user_month` (`user_id`, `year_month`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        "CREATE TABLE IF NOT EXISTS `attendance_month_verifications` (
+          `id` VARCHAR(36) NOT NULL,
+          `user_id` VARCHAR(36) NOT NULL,
+          `year_month` CHAR(7) NOT NULL,
+          `period_start` DATE NOT NULL,
+          `period_end` DATE NOT NULL,
+          `total_hours` DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+          `worked_days` INT NOT NULL DEFAULT 0,
+          `leave_days` DECIMAL(6,2) NOT NULL DEFAULT 0.00,
+          `leave_hours` DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+          `ot_hours` DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+          `check_in_days` INT NOT NULL DEFAULT 0,
+          `tasks_completed` INT NOT NULL DEFAULT 0,
+          `hourly_rate_used` DECIMAL(12,2) NULL DEFAULT NULL,
+          `gross_estimate` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+          `adjustments_total` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+          `net_estimate` DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+          `include_ot` TINYINT(1) NOT NULL DEFAULT 0,
+          `employee_status` ENUM('pending','verified','correction_needed') NOT NULL DEFAULT 'pending',
+          `employee_note` TEXT NULL DEFAULT NULL,
+          `employee_verified_at` DATETIME NULL DEFAULT NULL,
+          `admin_status` ENUM('pending','approved','correction_requested') NOT NULL DEFAULT 'pending',
+          `admin_note` TEXT NULL DEFAULT NULL,
+          `admin_verified_at` DATETIME NULL DEFAULT NULL,
+          `admin_id` VARCHAR(36) NULL DEFAULT NULL,
+          `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (`id`),
+          UNIQUE KEY `uniq_att_month_user_ym` (`user_id`, `year_month`),
+          KEY `idx_att_month_ym` (`year_month`),
+          KEY `idx_att_month_employee_status` (`employee_status`),
+          KEY `idx_att_month_admin_status` (`admin_status`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        "CREATE TABLE IF NOT EXISTS `attendance_month_adjustments` (
+          `id` VARCHAR(36) NOT NULL,
+          `month_verification_id` VARCHAR(36) NOT NULL,
+          `type` ENUM('advance','deduction','credit','other') NOT NULL DEFAULT 'deduction',
+          `amount` DECIMAL(14,2) NOT NULL,
+          `reason` VARCHAR(500) NOT NULL DEFAULT '',
+          `created_by` VARCHAR(36) NULL DEFAULT NULL,
+          `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (`id`),
+          KEY `idx_att_adj_month` (`month_verification_id`),
+          KEY `idx_att_adj_created` (`created_at`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+    ];
+
+    foreach ($ddl as $stmt) {
+        try {
+            $conn->exec($stmt);
+        } catch (Throwable $e) {
+            error_log('br_pay_verify_ensure_schema ddl: ' . $e->getMessage());
+        }
+    }
+
+    // Fallback: also try migration file if present
     $migration = __DIR__ . '/../migrations/123_attendance_salary_verification.sql';
     if (is_readable($migration)) {
         $sql = file_get_contents($migration);
-        if (is_string($sql) && $sql !== '') {
-            if (preg_match_all('/CREATE TABLE IF NOT EXISTS[^;]+;/is', $sql, $m)) {
-                foreach ($m[0] as $stmt) {
-                    try {
-                        $conn->exec($stmt);
-                    } catch (Throwable $e) {
-                        error_log('br_pay_verify_ensure_schema: ' . $e->getMessage());
-                    }
+        if (is_string($sql) && $sql !== '' && preg_match_all('/CREATE TABLE IF NOT EXISTS[^;]+;/is', $sql, $m)) {
+            foreach ($m[0] as $stmt) {
+                try {
+                    $conn->exec($stmt);
+                } catch (Throwable $e) {
+                    error_log('br_pay_verify_ensure_schema migration: ' . $e->getMessage());
                 }
             }
+        }
+    }
+
+    foreach ($needed as $table) {
+        if (!$tableExists($conn, $table)) {
+            $ready = false;
+            throw new RuntimeException(
+                'Pay Verify schema is missing table `' . $table . '`. Ask an admin to run migration 123.'
+            );
         }
     }
     $ready = true;
