@@ -552,6 +552,7 @@ class PayVerifyController extends BaseAPI
         }
 
         if ($status === 'verified') {
+            $isAdminCaller = $this->isAdmin($decoded);
             $weeksMeta = br_pay_verify_weeks_overlapping_month($bounds['start'], $bounds['end']);
             foreach ($weeksMeta as $w) {
                 $week = br_pay_verify_ensure_week(
@@ -562,14 +563,33 @@ class PayVerifyController extends BaseAPI
                     $bounds['start'],
                     $bounds['end']
                 );
-                if (($week['employee_status'] ?? '') !== 'verified'
-                    && ($week['admin_status'] ?? '') !== 'approved') {
-                    $this->sendJsonResponse(
-                        422,
-                        'All overlapping weeks must be employee-verified before month verify'
-                    );
-                    return;
+                $weekEmp = (string)($week['employee_status'] ?? '');
+                $weekAdmin = (string)($week['admin_status'] ?? '');
+                if ($weekEmp === 'verified' || $weekAdmin === 'approved') {
+                    continue;
                 }
+                // Why: Admins verifying on behalf of staff should not be blocked by
+                // unfinished week checkboxes — auto-complete those weeks in the same action.
+                if ($isAdminCaller) {
+                    $autoWeek = $this->conn->prepare(
+                        "UPDATE attendance_week_verifications SET
+                            employee_status = 'verified',
+                            employee_note = COALESCE(employee_note, ?),
+                            employee_verified_at = COALESCE(employee_verified_at, NOW()),
+                            updated_at = CURRENT_TIMESTAMP
+                         WHERE id = ?"
+                    );
+                    $autoWeek->execute([
+                        'Verified by admin with month verify',
+                        $week['id'],
+                    ]);
+                    continue;
+                }
+                $this->sendJsonResponse(
+                    422,
+                    'All overlapping weeks must be employee-verified before month verify'
+                );
+                return;
             }
         }
 
