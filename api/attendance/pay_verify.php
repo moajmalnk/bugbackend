@@ -2,8 +2,8 @@
 /**
  * Pay Verify router.
  *
- * GET  ?action=month|user-month|rates|pending
- * POST ?action=employee-week|admin-week|employee-month|admin-month|rate|adjustment|delete-adjustment|seed-rates|seed-sept-adjustments
+ * GET  ?action=month|user-month|rates|rate-history|pending
+ * POST ?action=employee-week|admin-week|employee-month|admin-month|rate|delete-rate|adjustment|delete-adjustment|seed-rates|seed-sept-adjustments
  */
 require_once __DIR__ . '/PayVerifyController.php';
 
@@ -28,6 +28,10 @@ try {
         }
         if ($action === 'rates') {
             $c->listRates();
+            exit();
+        }
+        if ($action === 'rate-history') {
+            $c->rateHistory();
             exit();
         }
         if ($action === 'pending') {
@@ -55,6 +59,10 @@ try {
         }
         if ($action === 'rate') {
             $c->setRate();
+            exit();
+        }
+        if ($action === 'delete-rate') {
+            $c->deleteRate();
             exit();
         }
         if ($action === 'adjustment') {

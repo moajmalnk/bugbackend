@@ -56,6 +56,7 @@ function br_pay_verify_ensure_schema(PDO $conn): void
           `user_id` VARCHAR(36) NOT NULL,
           `hourly_rate` DECIMAL(12,2) NOT NULL,
           `effective_from` DATE NOT NULL,
+          `note` VARCHAR(500) NULL DEFAULT NULL,
           `updated_by` VARCHAR(36) NULL DEFAULT NULL,
           `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
           `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -149,6 +150,19 @@ function br_pay_verify_ensure_schema(PDO $conn): void
         } catch (Throwable $e) {
             error_log('br_pay_verify_ensure_schema ddl: ' . $e->getMessage());
         }
+    }
+
+    // Why: salary hike notes added after initial create — additive ALTER is safe to re-run.
+    try {
+        $cols = $conn->query('SHOW COLUMNS FROM user_hourly_rates LIKE \'note\'');
+        if ($cols && !$cols->fetch(PDO::FETCH_ASSOC)) {
+            $conn->exec(
+                'ALTER TABLE `user_hourly_rates`
+                 ADD COLUMN `note` VARCHAR(500) NULL DEFAULT NULL AFTER `effective_from`'
+            );
+        }
+    } catch (Throwable $e) {
+        error_log('br_pay_verify_ensure_schema note col: ' . $e->getMessage());
     }
 
     // Fallback: also try migration file if present
@@ -314,20 +328,56 @@ function br_pay_verify_range_attendance(
 
 function br_pay_verify_rate_for_user(PDO $conn, string $userId, string $asOfDate): ?float
 {
+    $snap = br_pay_verify_rate_snapshot($conn, $userId, $asOfDate);
+    return $snap['current_rate'];
+}
+
+/**
+ * Why: salary hike UI needs current + previous rate and effective dates, not only a float.
+ *
+ * @return array{
+ *   current_rate:?float,
+ *   effective_from:?string,
+ *   previous_rate:?float,
+ *   previous_from:?string,
+ *   note:?string,
+ *   rate_id:?string
+ * }
+ */
+function br_pay_verify_rate_snapshot(PDO $conn, string $userId, string $asOfDate): array
+{
     br_pay_verify_ensure_schema($conn);
+    $empty = [
+        'current_rate' => null,
+        'effective_from' => null,
+        'previous_rate' => null,
+        'previous_from' => null,
+        'note' => null,
+        'rate_id' => null,
+    ];
+
     try {
         $stmt = $conn->prepare(
-            'SELECT hourly_rate FROM user_hourly_rates
+            'SELECT id, hourly_rate, effective_from, note FROM user_hourly_rates
              WHERE user_id = ? AND effective_from <= ?
-             ORDER BY effective_from DESC LIMIT 1'
+             ORDER BY effective_from DESC LIMIT 2'
         );
         $stmt->execute([$userId, $asOfDate]);
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        if ($row) {
-            return round((float)$row['hourly_rate'], 2);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        if ($rows !== []) {
+            $cur = $rows[0];
+            $prev = $rows[1] ?? null;
+            return [
+                'current_rate' => round((float)$cur['hourly_rate'], 2),
+                'effective_from' => (string)$cur['effective_from'],
+                'previous_rate' => $prev !== null ? round((float)$prev['hourly_rate'], 2) : null,
+                'previous_from' => $prev !== null ? (string)$prev['effective_from'] : null,
+                'note' => isset($cur['note']) && $cur['note'] !== '' ? (string)$cur['note'] : null,
+                'rate_id' => (string)$cur['id'],
+            ];
         }
     } catch (Throwable $e) {
-        error_log('br_pay_verify_rate_for_user: ' . $e->getMessage());
+        error_log('br_pay_verify_rate_snapshot: ' . $e->getMessage());
     }
 
     try {
@@ -341,14 +391,69 @@ function br_pay_verify_rate_for_user(PDO $conn, string $userId, string $asOfDate
             $stmt->execute([$userId]);
             $row = $stmt->fetch(PDO::FETCH_ASSOC);
             if ($row) {
-                return round((float)$row['hourly_rate'], 2);
+                $empty['current_rate'] = round((float)$row['hourly_rate'], 2);
             }
         }
     } catch (Throwable $e) {
         error_log('br_pay_verify_rate_finbro: ' . $e->getMessage());
     }
 
-    return null;
+    return $empty;
+}
+
+/**
+ * @return list<array<string,mixed>>
+ */
+function br_pay_verify_rate_history(PDO $conn, string $userId): array
+{
+    br_pay_verify_ensure_schema($conn);
+    try {
+        $stmt = $conn->prepare(
+            'SELECT r.id, r.user_id, r.hourly_rate, r.effective_from, r.note,
+                    r.updated_by, r.created_at, r.updated_at,
+                    u.username AS updated_by_username
+             FROM user_hourly_rates r
+             LEFT JOIN users u ON u.id = r.updated_by
+             WHERE r.user_id = ?
+             ORDER BY r.effective_from DESC, r.created_at DESC'
+        );
+        $stmt->execute([$userId]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        $out = [];
+        $prevRate = null;
+        // Build hike % from older → newer by reversing once
+        $asc = array_reverse($rows);
+        $withDelta = [];
+        foreach ($asc as $row) {
+            $rate = round((float)$row['hourly_rate'], 2);
+            $delta = null;
+            $pct = null;
+            if ($prevRate !== null && $prevRate > 0) {
+                $delta = round($rate - $prevRate, 2);
+                $pct = round(($delta / $prevRate) * 100, 1);
+            }
+            $withDelta[] = [
+                'id' => (string)$row['id'],
+                'user_id' => (string)$row['user_id'],
+                'hourly_rate' => $rate,
+                'effective_from' => (string)$row['effective_from'],
+                'note' => isset($row['note']) && $row['note'] !== null && $row['note'] !== ''
+                    ? (string)$row['note']
+                    : null,
+                'updated_by' => $row['updated_by'] ?? null,
+                'updated_by_username' => $row['updated_by_username'] ?? null,
+                'created_at' => $row['created_at'] ?? null,
+                'updated_at' => $row['updated_at'] ?? null,
+                'hike_amount' => $delta,
+                'hike_pct' => $pct,
+            ];
+            $prevRate = $rate;
+        }
+        return array_reverse($withDelta);
+    } catch (Throwable $e) {
+        error_log('br_pay_verify_rate_history: ' . $e->getMessage());
+        return [];
+    }
 }
 
 /**

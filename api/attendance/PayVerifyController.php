@@ -220,6 +220,7 @@ class PayVerifyController extends BaseAPI
                 ],
                 'weeks' => $weeks,
                 'month' => $monthRow,
+                'rate_info' => br_pay_verify_rate_snapshot($this->conn, $uid, $bounds['end']),
             ];
         }
 
@@ -324,6 +325,10 @@ class PayVerifyController extends BaseAPI
                 'user' => $user,
                 'weeks' => $weeks,
                 'month_verification' => $monthRow,
+                'rate_info' => br_pay_verify_rate_snapshot($this->conn, $userId, $bounds['end']),
+                'rate_history' => $this->isAdmin($decoded)
+                    ? br_pay_verify_rate_history($this->conn, $userId)
+                    : [],
                 'is_admin' => $this->isAdmin($decoded),
                 'is_self' => (string)$decoded->user_id === $userId,
             ]);
@@ -722,15 +727,32 @@ class PayVerifyController extends BaseAPI
         $userId = trim((string)($input['user_id'] ?? ''));
         $rate = isset($input['hourly_rate']) ? (float)$input['hourly_rate'] : -1;
         $effectiveFrom = trim((string)($input['effective_from'] ?? ''));
+        $note = trim((string)($input['note'] ?? ''));
         if ($userId === '' || $rate < 0) {
             $this->sendJsonResponse(422, 'user_id and hourly_rate required');
+            return;
+        }
+        if ($rate > 99999) {
+            $this->sendJsonResponse(422, 'hourly_rate too large');
             return;
         }
         if ($effectiveFrom === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $effectiveFrom)) {
             $effectiveFrom = (new DateTimeImmutable('now', new DateTimeZone('Asia/Kolkata')))->format('Y-m-01');
         }
+        if (strlen($note) > 500) {
+            $note = substr($note, 0, 500);
+        }
 
         br_pay_verify_ensure_schema($this->conn);
+        $before = br_pay_verify_rate_snapshot(
+            $this->conn,
+            $userId,
+            (new DateTimeImmutable($effectiveFrom, new DateTimeZone('Asia/Kolkata')))
+                ->modify('-1 day')
+                ->format('Y-m-d')
+        );
+        $previousRate = $before['current_rate'];
+
         $existing = $this->conn->prepare(
             'SELECT id FROM user_hourly_rates WHERE user_id = ? AND effective_from = ? LIMIT 1'
         );
@@ -738,22 +760,121 @@ class PayVerifyController extends BaseAPI
         $row = $existing->fetch(PDO::FETCH_ASSOC);
         if ($row) {
             $this->conn->prepare(
-                'UPDATE user_hourly_rates SET hourly_rate = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
-            )->execute([round($rate, 2), (string)$decoded->user_id, $row['id']]);
+                'UPDATE user_hourly_rates
+                 SET hourly_rate = ?, note = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP
+                 WHERE id = ?'
+            )->execute([
+                round($rate, 2),
+                $note !== '' ? $note : null,
+                (string)$decoded->user_id,
+                $row['id'],
+            ]);
             $id = $row['id'];
         } else {
             $id = br_pay_verify_uuid();
             $this->conn->prepare(
-                'INSERT INTO user_hourly_rates (id, user_id, hourly_rate, effective_from, updated_by)
-                 VALUES (?,?,?,?,?)'
-            )->execute([$id, $userId, round($rate, 2), $effectiveFrom, (string)$decoded->user_id]);
+                'INSERT INTO user_hourly_rates (id, user_id, hourly_rate, effective_from, note, updated_by)
+                 VALUES (?,?,?,?,?,?)'
+            )->execute([
+                $id,
+                $userId,
+                round($rate, 2),
+                $effectiveFrom,
+                $note !== '' ? $note : null,
+                (string)$decoded->user_id,
+            ]);
         }
 
-        $this->sendJsonResponse(200, 'Hourly rate saved', [
+        $hikeAmount = $previousRate !== null ? round($rate - $previousRate, 2) : null;
+        $hikePct = ($previousRate !== null && $previousRate > 0)
+            ? round(($hikeAmount / $previousRate) * 100, 1)
+            : null;
+
+        $this->sendJsonResponse(200, 'Salary hike saved', [
             'id' => $id,
             'user_id' => $userId,
             'hourly_rate' => round($rate, 2),
             'effective_from' => $effectiveFrom,
+            'note' => $note !== '' ? $note : null,
+            'previous_rate' => $previousRate,
+            'hike_amount' => $hikeAmount,
+            'hike_pct' => $hikePct,
+            'rate_info' => br_pay_verify_rate_snapshot($this->conn, $userId, $effectiveFrom),
+            'history' => br_pay_verify_rate_history($this->conn, $userId),
+        ]);
+    }
+
+    public function rateHistory(): void
+    {
+        $decoded = $this->auth();
+        if (!$decoded || !$this->requireAdmin($decoded)) {
+            return;
+        }
+        $userId = trim((string)($_GET['user_id'] ?? ''));
+        if ($userId === '') {
+            $this->sendJsonResponse(422, 'user_id required');
+            return;
+        }
+        $asOf = trim((string)($_GET['as_of'] ?? ''));
+        if ($asOf === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $asOf)) {
+            $asOf = (new DateTimeImmutable('now', new DateTimeZone('Asia/Kolkata')))->format('Y-m-d');
+        }
+        br_pay_verify_ensure_schema($this->conn);
+        $this->sendJsonResponse(200, 'OK', [
+            'user_id' => $userId,
+            'as_of' => $asOf,
+            'rate_info' => br_pay_verify_rate_snapshot($this->conn, $userId, $asOf),
+            'history' => br_pay_verify_rate_history($this->conn, $userId),
+        ]);
+    }
+
+    public function deleteRate(): void
+    {
+        $decoded = $this->auth();
+        if (!$decoded || !$this->requireAdmin($decoded)) {
+            return;
+        }
+        $input = $this->getJsonInput();
+        $id = trim((string)($input['id'] ?? ''));
+        if ($id === '') {
+            $this->sendJsonResponse(422, 'id required');
+            return;
+        }
+        br_pay_verify_ensure_schema($this->conn);
+        $stmt = $this->conn->prepare(
+            'SELECT id, user_id, effective_from FROM user_hourly_rates WHERE id = ? LIMIT 1'
+        );
+        $stmt->execute([$id]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            $this->sendJsonResponse(404, 'Rate entry not found');
+            return;
+        }
+
+        $today = (new DateTimeImmutable('now', new DateTimeZone('Asia/Kolkata')))->format('Y-m-d');
+        // Why: only allow deleting scheduled (future) hikes — past rates are payroll history.
+        if ((string)$row['effective_from'] <= $today) {
+            $count = $this->conn->prepare(
+                'SELECT COUNT(*) FROM user_hourly_rates WHERE user_id = ?'
+            );
+            $count->execute([(string)$row['user_id']]);
+            if ((int)$count->fetchColumn() <= 1) {
+                $this->sendJsonResponse(422, 'Cannot delete the only rate for this user');
+                return;
+            }
+            if ((string)$row['effective_from'] < $today) {
+                $this->sendJsonResponse(422, 'Past salary rates cannot be deleted — add a new hike instead');
+                return;
+            }
+        }
+
+        $this->conn->prepare('DELETE FROM user_hourly_rates WHERE id = ?')->execute([$id]);
+        $userId = (string)$row['user_id'];
+        $this->sendJsonResponse(200, 'Rate entry removed', [
+            'id' => $id,
+            'user_id' => $userId,
+            'rate_info' => br_pay_verify_rate_snapshot($this->conn, $userId, $today),
+            'history' => br_pay_verify_rate_history($this->conn, $userId),
         ]);
     }
 
@@ -772,12 +893,16 @@ class PayVerifyController extends BaseAPI
         $rates = [];
         foreach ($users as $u) {
             $uid = (string)$u['id'];
+            $snap = br_pay_verify_rate_snapshot($this->conn, $uid, $asOf);
             $rates[] = [
                 'user_id' => $uid,
                 'username' => $u['username'] ?? '',
                 'name' => $u['name'] ?? '',
                 'role_bucket' => $u['role_bucket'] ?? '',
-                'hourly_rate' => br_pay_verify_rate_for_user($this->conn, $uid, $asOf),
+                'hourly_rate' => $snap['current_rate'],
+                'effective_from' => $snap['effective_from'],
+                'previous_rate' => $snap['previous_rate'],
+                'previous_from' => $snap['previous_from'],
             ];
         }
         $this->sendJsonResponse(200, 'OK', ['as_of' => $asOf, 'rates' => $rates]);
