@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS `user_hourly_rates` (
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uniq_user_hourly_rates_user_from` (`user_id`, `effective_from`),
-  KEY `idx_user_hourly_rates_user_from` (`user_id`, `effective_from` DESC)
+  KEY `idx_user_hourly_rates_user_from` (`user_id`, `effective_from`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `attendance_week_verifications` (
@@ -96,5 +96,5 @@ CREATE TABLE IF NOT EXISTS `attendance_month_adjustments` (
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_att_adj_month` (`month_verification_id`),
-  KEY `idx_att_adj_created` (`created_at` DESC)
+  KEY `idx_att_adj_created` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
