@@ -834,7 +834,8 @@ function br_pay_verify_month_adjustments(PDO $conn, string $monthVerificationId)
 }
 
 /**
- * Why: Incentive picker must only offer projects this employee is actually assigned to.
+ * Why: Project incentives are only for finished work — list completed projects
+ * this employee is assigned to (active / in-progress stay out of the picker).
  *
  * @return list<array{id:string,name:string,status:?string,member_role:?string}>
  */
@@ -845,9 +846,8 @@ function br_pay_verify_user_projects(PDO $conn, string $userId): array
          FROM project_members pm
          INNER JOIN projects p ON p.id = pm.project_id
          WHERE pm.user_id = ?
-         ORDER BY
-           CASE WHEN LOWER(COALESCE(p.status, \'\')) IN (\'active\', \'in_progress\', \'ongoing\') THEN 0 ELSE 1 END,
-           p.name ASC'
+           AND LOWER(TRIM(COALESCE(p.status, \'\'))) = \'completed\'
+         ORDER BY p.name ASC'
     );
     $stmt->execute([$userId]);
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
@@ -864,15 +864,17 @@ function br_pay_verify_user_projects(PDO $conn, string $userId): array
 }
 
 /**
- * @return array{id:string,name:string}|null
+ * Why: Reject incentives unless the employee is on the project AND it is completed.
+ *
+ * @return array{ok:true,id:string,name:string}|array{ok:false,error:string}
  */
-function br_pay_verify_assert_user_project(PDO $conn, string $userId, string $projectId): ?array
+function br_pay_verify_assert_incentive_project(PDO $conn, string $userId, string $projectId): array
 {
     if ($userId === '' || $projectId === '') {
-        return null;
+        return ['ok' => false, 'error' => 'Select a project for this incentive'];
     }
     $stmt = $conn->prepare(
-        'SELECT p.id, p.name
+        'SELECT p.id, p.name, p.status
          FROM project_members pm
          INNER JOIN projects p ON p.id = pm.project_id
          WHERE pm.user_id = ? AND p.id = ?
@@ -881,11 +883,35 @@ function br_pay_verify_assert_user_project(PDO $conn, string $userId, string $pr
     $stmt->execute([$userId, $projectId]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$row) {
+        return ['ok' => false, 'error' => 'That project is not assigned to this employee'];
+    }
+    $status = strtolower(trim((string)($row['status'] ?? '')));
+    if ($status !== 'completed') {
+        return [
+            'ok' => false,
+            'error' => 'Incentives are only allowed on completed projects',
+        ];
+    }
+    return [
+        'ok' => true,
+        'id' => (string)$row['id'],
+        'name' => (string)($row['name'] ?? ''),
+    ];
+}
+
+/**
+ * @deprecated Prefer br_pay_verify_assert_incentive_project for clear errors.
+ * @return array{id:string,name:string}|null
+ */
+function br_pay_verify_assert_user_project(PDO $conn, string $userId, string $projectId): ?array
+{
+    $res = br_pay_verify_assert_incentive_project($conn, $userId, $projectId);
+    if (empty($res['ok'])) {
         return null;
     }
     return [
-        'id' => (string)$row['id'],
-        'name' => (string)($row['name'] ?? ''),
+        'id' => (string)$res['id'],
+        'name' => (string)$res['name'],
     ];
 }
 

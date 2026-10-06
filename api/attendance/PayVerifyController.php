@@ -1163,14 +1163,18 @@ class PayVerifyController extends BaseAPI
                 $this->sendJsonResponse(422, 'Select a project for this incentive');
                 return;
             }
-            $project = br_pay_verify_assert_user_project($this->conn, $userId, $projectId);
-            if (!$project) {
+            $asserted = br_pay_verify_assert_incentive_project($this->conn, $userId, $projectId);
+            if (empty($asserted['ok'])) {
                 $this->sendJsonResponse(
                     422,
-                    'That project is not assigned to this employee'
+                    (string)($asserted['error'] ?? 'Invalid project for incentive')
                 );
                 return;
             }
+            $project = [
+                'id' => (string)$asserted['id'],
+                'name' => (string)$asserted['name'],
+            ];
             // Why: Keep audit trail clear — always name the project; optional note appends.
             $projectLabel = trim($project['name']) !== '' ? $project['name'] : 'Project';
             if ($reason === '') {
