@@ -420,19 +420,21 @@ class PayVerifyController extends BaseAPI
             return;
         }
 
+        $adminStatusSql = $status === 'correction_needed'
+            ? "admin_status = 'pending',"
+            : '';
         $upd = $this->conn->prepare(
-            'UPDATE attendance_week_verifications SET
+            "UPDATE attendance_week_verifications SET
                 employee_status = ?,
                 employee_note = ?,
                 employee_verified_at = NOW(),
-                admin_status = CASE WHEN ? = \'correction_needed\' THEN \'pending\' ELSE admin_status END,
+                {$adminStatusSql}
                 updated_at = CURRENT_TIMESTAMP
-             WHERE id = ?'
+             WHERE id = ?"
         );
         $upd->execute([
             $status,
             $note !== '' ? mb_substr($note, 0, 2000) : null,
-            $status,
             $row['id'],
         ]);
 
@@ -759,8 +761,8 @@ class PayVerifyController extends BaseAPI
             "UPDATE attendance_week_verifications SET
                 snapshot_locked = 1,
                 admin_status = 'approved',
-                admin_id = COALESCE(admin_id, ?),
-                admin_verified_at = COALESCE(admin_verified_at, NOW())
+                admin_id = ?,
+                admin_verified_at = IFNULL(admin_verified_at, NOW())
              WHERE user_id = ? AND `year_month` = ?"
         )->execute([(string)$decoded->user_id, $userId, $yearMonth]);
 
