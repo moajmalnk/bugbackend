@@ -7,8 +7,8 @@ require_once __DIR__ . '/../../utils/workforce_access.php';
 
 class ProjectComplianceController extends BaseAPI
 {
-    private const DEV_RULE_COUNT = 64;
-    private const QA_RULE_COUNT = 35;
+    private const DEV_RULE_COUNT = 68;
+    private const QA_RULE_COUNT = 36;
 
     private static $DEV_RULE_KEYS = [
         'dev_rule_1', 'dev_rule_2', 'dev_rule_3', 'dev_rule_4', 'dev_rule_5',
@@ -24,6 +24,7 @@ class ProjectComplianceController extends BaseAPI
         'dev_rule_55', 'dev_rule_56', 'dev_rule_57', 'dev_rule_58', 'dev_rule_59',
         'dev_rule_60', 'dev_rule_61', 'dev_rule_62', 'dev_rule_63', 'dev_rule_64',
         'dev_rule_65', 'dev_rule_66', 'dev_rule_67', 'dev_rule_68',
+        'dev_rule_69', 'dev_rule_70', 'dev_rule_71', 'dev_rule_72',
     ];
 
     private static $QA_RULE_KEYS = [
@@ -62,6 +63,7 @@ class ProjectComplianceController extends BaseAPI
         'qa_responsive_matrix',
         'qa_release_acceptance',
         'qa_in_app_payment_upi',
+        'qa_googlebot_html',
     ];
 
     private static $BUILTIN_RULE_TITLES = [
@@ -129,6 +131,10 @@ class ProjectComplianceController extends BaseAPI
         'dev_rule_66' => 'Root Cause Over Workarounds',
         'dev_rule_67' => 'Release Readiness',
         'dev_rule_68' => 'Embedded WebView Payment Gateway & Intent Scheme Interception',
+        'dev_rule_69' => 'Bot-Visible Unique Content (SPA Crawlability)',
+        'dev_rule_70' => 'Trailing Slash URL Standardization',
+        'dev_rule_71' => 'Unique Per-Page Metadata & Schema Isolation',
+        'dev_rule_72' => 'Sitemap Canonical Hygiene',
         'qa_apple_sandbox' => 'The Apple Ecosystem Sandbox',
         'qa_click_attack' => 'The Click Attack Safeguard',
         'qa_theme_interruption' => 'The Theme Interruption Matrix',
@@ -164,6 +170,7 @@ class ProjectComplianceController extends BaseAPI
         'qa_responsive_matrix' => 'Responsive Device Matrix',
         'qa_release_acceptance' => 'Final Release Acceptance',
         'qa_in_app_payment_upi' => 'In-App Payment Gateway & UPI App Switch Drill',
+        'qa_googlebot_html' => 'Googlebot HTML Uniqueness Drill',
     ];
 
     private static $CLOSED_STATUSES = ['completed', 'release_ready', 'archived'];
