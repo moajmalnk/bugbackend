@@ -11,6 +11,7 @@ require_once __DIR__ . '/../../config/cors.php';
 
 require_once __DIR__ . '/../../config/database.php';
 require_once __DIR__ . '/../../config/utils.php';
+require_once __DIR__ . '/../../utils/magic_links.php';
 
 try {
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -21,42 +22,52 @@ try {
     
     $input = json_decode(file_get_contents('php://input'), true);
     
-    if (!isset($input['token']) || empty($input['token'])) {
+    $token = isset($input['token']) && is_string($input['token']) ? trim($input['token']) : '';
+    if ($token === '') {
         http_response_code(400);
         echo json_encode(['success' => false, 'message' => 'Magic link token is required']);
         exit();
     }
-    
-    $token = filter_var($input['token'], FILTER_SANITIZE_STRING);
+    // Tokens are bin2hex(random_bytes(32)); anything else can never match.
+    if (!preg_match('/^[a-f0-9]{64}$/', $token)) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Invalid or expired magic link']);
+        exit();
+    }
     
     // Get database connection
     $db = getDBConnection();
     if (!$db) {
         throw new Exception("Database connection failed");
     }
+
+    br_ensure_magic_links_schema($db);
     
-    // Verify magic link token
     $stmt = $db->prepare("
-        SELECT ml.*, u.id, u.username, u.email, u.role 
-        FROM magic_links ml 
-        JOIN users u ON ml.user_id = u.id 
-        WHERE ml.token = ? AND ml.expires_at > NOW() AND ml.used_at IS NULL
+        SELECT user_id FROM magic_links
+        WHERE token = ? AND expires_at > NOW() AND used_at IS NULL
+        LIMIT 1
     ");
     $stmt->execute([$token]);
-    $result = $stmt->fetch(PDO::FETCH_ASSOC);
+    $magic_link = $stmt->fetch(PDO::FETCH_ASSOC);
     
-    if (!$result) {
+    if (!$magic_link) {
         http_response_code(400);
         echo json_encode(['success' => false, 'message' => 'Invalid or expired magic link']);
         exit();
     }
-    
-    $magic_link = $result;
 
+    $userId = (string) $magic_link['user_id'];
     $userStmt = $db->prepare("SELECT * FROM users WHERE id = ? LIMIT 1");
-    $userStmt->execute([$magic_link['user_id']]);
+    $userStmt->execute([$userId]);
     $userRow = $userStmt->fetch(PDO::FETCH_ASSOC);
-    if (!$userRow || !Utils::userRowIsAllowedLogin($userRow)) {
+    if (!$userRow) {
+        // Links issued before the UUID fix point at no user; ask for a fresh one.
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'This magic link is no longer valid. Please request a new one.']);
+        exit();
+    }
+    if (!Utils::userRowIsAllowedLogin($userRow)) {
         http_response_code(403);
         echo json_encode([
             'success' => false,
@@ -66,32 +77,35 @@ try {
         exit();
     }
     
-    // Mark magic link as used
-    $update_stmt = $db->prepare("UPDATE magic_links SET used_at = NOW() WHERE token = ?");
+    // Claim atomically so a double-click or a replayed link signs in only once.
+    $update_stmt = $db->prepare("UPDATE magic_links SET used_at = NOW() WHERE token = ? AND used_at IS NULL");
     $update_stmt->execute([$token]);
+    if ($update_stmt->rowCount() !== 1) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Invalid or expired magic link']);
+        exit();
+    }
     
-    // Generate JWT token for the user using the proper Utils class
-    $jwt_token = Utils::generateJWT($magic_link['user_id'], $magic_link['username'], $magic_link['role']);
+    $jwt_token = Utils::generateJWT($userRow['id'], $userRow['username'], $userRow['role']);
     
-    // Log successful magic link authentication
-    logActivity($magic_link['user_id'], 'magic_link_login', 'User signed in with magic link');
+    logActivity($userRow['id'], 'magic_link_login', 'User signed in with magic link');
     
     echo json_encode([
         'success' => true,
         'message' => 'Magic link verified successfully',
         'token' => $jwt_token,
         'user' => [
-            'id' => $magic_link['id'],
-            'username' => $magic_link['username'],
-            'email' => $magic_link['email'],
-            'role' => $magic_link['role']
+            'id' => $userRow['id'],
+            'username' => $userRow['username'],
+            'email' => $userRow['email'],
+            'role' => $userRow['role']
         ]
     ]);
     
 } catch (Exception $e) {
     error_log("Magic link verification error: " . $e->getMessage());
     http_response_code(500);
-    echo json_encode(['success' => false, 'message' => 'Internal server error: ' . $e->getMessage()]);
+    echo json_encode(['success' => false, 'message' => 'Could not verify the magic link. Please try again.']);
 }
 
 

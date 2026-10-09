@@ -12,6 +12,7 @@ require_once __DIR__ . '/../../config/cors.php';
 require_once __DIR__ . '/../../config/database.php';
 require_once __DIR__ . '/../../config/utils.php';
 require_once __DIR__ . '/../../utils/email.php';
+require_once __DIR__ . '/../../utils/magic_links.php';
 
 try {
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -52,6 +53,10 @@ try {
     }
     
     $user = $result;
+
+    if (!br_ensure_magic_links_schema($db)) {
+        throw new Exception('magic_links schema is not ready (run migration 129)');
+    }
     
     // Generate magic link token
     $token = bin2hex(random_bytes(32));
@@ -60,7 +65,7 @@ try {
     // Store magic link in database
     // First, delete any existing magic links for this user to prevent duplicates
     $delete_stmt = $db->prepare("DELETE FROM magic_links WHERE user_id = ?");
-    $delete_stmt->execute([(int)$user['id']]);
+    $delete_stmt->execute([(string) $user['id']]);
     
     // Insert new magic link
     $stmt = $db->prepare("
@@ -68,7 +73,7 @@ try {
         VALUES (?, ?, ?, ?, NOW())
     ");
     
-    if (!$stmt->execute([(int)$user['id'], $token, $email, $expires_at])) {
+    if (!$stmt->execute([(string) $user['id'], $token, $email, $expires_at])) {
         throw new Exception("Failed to store magic link token");
     }
     
@@ -126,6 +131,6 @@ try {
 } catch (Exception $e) {
     error_log("Magic link error: " . $e->getMessage());
     http_response_code(500);
-    echo json_encode(['success' => false, 'message' => 'Internal server error: ' . $e->getMessage()]);
+    echo json_encode(['success' => false, 'message' => 'Could not send the magic link. Please try again.']);
 }
 ?>

@@ -114,7 +114,7 @@ try {
         throw new Exception("Failed to prepare delete statement");
     }
     
-    $delete_stmt->execute([(int)$user['id']]);
+    $delete_stmt->execute([(string) $user['id']]);
     error_log("Magic Link Debug: Existing magic links deleted");
     
     // Insert new magic link
@@ -128,7 +128,7 @@ try {
         throw new Exception("Failed to prepare insert statement");
     }
     
-    if (!$stmt->execute([(int)$user['id'], $token, $email, $expires_at])) {
+    if (!$stmt->execute([(string) $user['id'], $token, $email, $expires_at])) {
         error_log("Magic Link Debug: Failed to execute insert");
         throw new Exception("Failed to store magic link token");
     }

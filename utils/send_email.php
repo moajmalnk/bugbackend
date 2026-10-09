@@ -157,25 +157,12 @@ function sendWelcomeEmailHtml($to, $subject, $body) {
 }
 
 function sendOtpEmail($to, $otp) {
-    try {
-        $mail = new PHPMailer(true);
-        $mail->isSMTP();
-        $mail->Host = 'smtp.gmail.com';
-        $mail->SMTPAuth = true;
-        $mail->Username = 'codo.bugricer@gmail.com';
-        $mail->Password = 'gwgh vtlm fzkx rdkj';
-        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-        $mail->Port = 587;
-        configurePhpMailerUtf8($mail);
-        $mail->setFrom('codo.bugricer@gmail.com', 'BugRicer');
-        $mail->addAddress($to);
-        $mail->isHTML(true);
-        $mail->Subject = 'Your BugRicer OTP';
-        $mail->Body = "<b>Your OTP is: $otp</b><br>This OTP is valid for 5 minutes.<br><br>🐞 _Sent from BugRicer_";
-        $mail->send();
-        return true;
-    } catch (Exception $e) {
-        error_log("OTP mail error: " . $mail->ErrorInfo);
-        return false;
-    }
+    require_once __DIR__ . '/email.php';
+    $safeOtp = htmlspecialchars((string) $otp, ENT_QUOTES, 'UTF-8');
+    return sendEmail(
+        $to,
+        'Your BugRicer OTP',
+        "<b>Your OTP is: $safeOtp</b><br>This OTP is valid for 5 minutes.<br><br>🐞 Sent from BugRicer",
+        "Your BugRicer OTP is: $otp. This OTP is valid for 5 minutes."
+    );
 }

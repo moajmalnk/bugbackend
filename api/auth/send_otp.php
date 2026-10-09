@@ -7,12 +7,9 @@ ini_set('log_errors', 1);
 require_once __DIR__ . '/../../config/cors.php';
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../config/database.php';
-require_once __DIR__ . '/../../utils/send_email.php';
+require_once __DIR__ . '/../../utils/email.php';
+require_once __DIR__ . '/../../utils/whatsapp.php';
 require_once __DIR__ . '/../../config/utils.php';
-require_once __DIR__ . '/../../config/composer_autoload.php';
-
-use PHPMailer\PHPMailer\PHPMailer;
-use PHPMailer\PHPMailer\Exception;
 
 try {
     header('Content-Type: application/json');
@@ -65,10 +62,12 @@ try {
     $msg .= "⚠️ *Do not share this code with anyone.*\n";
     $msg .= "If you did not request this, please ignore this message.\n\n";
     $msg .= "🐞 _Sent from BugRicer_";
-    $apikey = "dfedcb5f0d514809f40f26b078eba6b8";
-    $url = "https://notifyapi.bugricer.com/wapp/api/send?apikey=$apikey&number=$phone&msg=" . urlencode($msg);
-    $response = file_get_contents($url);
-    error_log('WhatsApp API response: ' . $response);
+    $url = WHATSAPP_API_URL . '?apikey=' . urlencode(WHATSAPP_API_KEY)
+        . '&number=' . urlencode($phone) . '&msg=' . urlencode($msg);
+    $response = @file_get_contents($url);
+    if ($response === false) {
+        error_log('send_otp.php: WhatsApp OTP request failed for ' . $phone);
+    }
         echo json_encode([
             'success' => true, 
             'message' => 'OTP sent via WhatsApp',
@@ -93,7 +92,6 @@ try {
         $stmt = $pdo->prepare("INSERT INTO user_otps (email, otp, expires_at) VALUES (?, ?, ?)");
         $stmt->execute([$email, $otp, $expires_at]);
         
-        // Use the existing sendOtpEmail function but with better HTML formatting
         $html_body = '<div style="font-family:Segoe UI,Arial,sans-serif;max-width:480px;margin:0 auto;background:#fff;border-radius:8px;box-shadow:0 2px 8px #e2e8f0;overflow:hidden;">
   <div style="background:#2563eb;color:#fff;padding:24px 0;text-align:center;">
     <h1 style="margin:0;font-size:28px;letter-spacing:1px;">BugRicer Login OTP</h1>
@@ -110,41 +108,25 @@ try {
   </div>
 </div>';
         
-        $mail = new PHPMailer(true);
-        try {
-            $mail->isSMTP();
-            // $mail->SMTPDebug = 2; // Enable verbose debug output
-            $mail->Host = 'smtp.gmail.com';
-            $mail->SMTPAuth = true;
-            $mail->Username = 'codo.bugricer@gmail.com';
-            $mail->Password = 'ieka afeu uhds qkam';  // New app password
-            $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-            $mail->Port = 587;
-            $mail->Debugoutput = function($str, $level) {
-                error_log("PHPMailer SMTP Debug: $str");
-            };
-            $mail->setFrom('codo.bugricer@gmail.com', 'BugRicer');
-            $mail->addAddress($email);
-            $mail->Subject = 'Your BugRicer OTP';
-            $mail->isHTML(true);
-            $mail->Body = $html_body;
-            $mail->AltBody = 'Your BugRicer OTP is: ' . $otp . '. This OTP is valid for 5 minutes. Do not share this code with anyone.';
-            $mail->send();
-            echo json_encode([
-                'success' => true, 
-                'message' => 'OTP sent via Email',
-                'email' => $email
-            ]);
-        } catch (Exception $e) {
-            error_log("OTP mail error: " . $mail->ErrorInfo);
-            error_log("OTP mail exception: " . $e->getMessage());
+        $text_body = 'Your BugRicer OTP is: ' . $otp . '. This OTP is valid for 5 minutes. Do not share this code with anyone.';
+
+        // Same .env SMTP path as magic links; the old hardcoded Gmail app password was revoked.
+        if (!sendEmail($user['email'], 'Your BugRicer OTP', $html_body, $text_body)) {
+            $cleanup = $pdo->prepare("DELETE FROM user_otps WHERE email = ? AND otp = ?");
+            $cleanup->execute([$email, $otp]);
             http_response_code(500);
-            echo json_encode(['success' => false, 'message' => 'Failed to send OTP email']);
+            echo json_encode(['success' => false, 'message' => 'Failed to send OTP email. Please try again or use the magic link.']);
+            exit;
         }
+
+        echo json_encode([
+            'success' => true,
+            'message' => 'OTP sent via Email',
+            'email' => $email
+        ]);
     }
-} catch (Exception $e) {
+} catch (Throwable $e) {
     error_log("send_otp.php fatal error: " . $e->getMessage());
-    error_log("send_otp.php trace: " . $e->getTraceAsString());
     http_response_code(500);
-    echo json_encode(['success' => false, 'message' => 'Internal server error: ' . $e->getMessage()]);
+    echo json_encode(['success' => false, 'message' => 'Could not send the OTP. Please try again.']);
 }
