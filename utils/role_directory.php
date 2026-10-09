@@ -23,6 +23,10 @@ function br_role_directory(BaseAPI $api, string $role, string $cacheKey, int $tt
     if (in_array('job_title', $cols, true)) {
         $select[] = 'job_title';
     }
+    // Why: clients need it to tell CODO testers from client testers (e.g. Poster Studio picks).
+    if (in_array('tester_type', $cols, true)) {
+        $select[] = 'tester_type';
+    }
     if (in_array('account_active', $cols, true) && !in_array('account_active', $select, true)) {
         $select[] = 'account_active';
     }
