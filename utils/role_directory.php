@@ -36,7 +36,7 @@ function br_role_directory(BaseAPI $api, string $role, string $cacheKey, int $tt
          WHERE role = ? {$activeClause} {$deletedClause}
          ORDER BY username ASC",
         [$role],
-        $cacheKey,
+        $cacheKey . '_v2',
         $ttl
     );
 
