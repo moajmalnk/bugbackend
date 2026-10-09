@@ -1394,7 +1394,8 @@ class BugDatesController extends BaseAPI
         $from = $this->sanitizeDate($_GET['from'] ?? null);
         $to = $this->sanitizeDate($_GET['to'] ?? null);
         try {
-            $sql = "SELECT s.*, u.username AS host_name, e.title AS event_title
+            $hostSelect = $this->sessionHostSelectSql();
+            $sql = "SELECT s.*, {$hostSelect}, e.title AS event_title
                     FROM growth_program_sessions s
                     LEFT JOIN users u
                       ON s.host_user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
@@ -1422,22 +1423,7 @@ class BugDatesController extends BaseAPI
             $this->sendJsonResponse(200, 'OK', []);
             return;
         }
-        $out = array_map(static function (array $row) {
-            return [
-                'id' => (int)$row['id'],
-                'event_id' => (int)$row['event_id'],
-                'event_title' => $row['event_title'] ?? null,
-                'session_date' => $row['session_date'],
-                'host_user_id' => $row['host_user_id'] ?? null,
-                'host_name' => $row['host_name'] ?? null,
-                'agenda_topic' => $row['agenda_topic'] ?? null,
-                'summary_notes' => $row['summary_notes'] ?? null,
-                'recording_or_drive_link' => $row['recording_or_drive_link'] ?? null,
-                'weekly_report_task_id' => $row['weekly_report_task_id'] ?? null,
-                'created_at' => $row['created_at'] ?? null,
-                'updated_at' => $row['updated_at'] ?? null,
-            ];
-        }, $rows);
+        $out = array_map(fn (array $row) => $this->formatSessionRow($row), $rows);
         $this->sendJsonResponse(200, 'OK', $out);
     }
 
@@ -1509,8 +1495,9 @@ class BugDatesController extends BaseAPI
             );
         }
 
+        $hostSelect = $this->sessionHostSelectSql();
         $stmt = $this->conn->prepare(
-            "SELECT s.*, u.username AS host_name, e.title AS event_title
+            "SELECT s.*, {$hostSelect}, e.title AS event_title
              FROM growth_program_sessions s
              LEFT JOIN users u
                ON s.host_user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
@@ -1519,18 +1506,60 @@ class BugDatesController extends BaseAPI
         );
         $stmt->execute([$sessionId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        $this->sendJsonResponse(200, 'Session saved', [
+        $this->sendJsonResponse(200, 'Session saved', $this->formatSessionRow($row ?: []));
+    }
+
+    /**
+     * Why: Poster Studio needs the host's real BugRicer photo + job title, not
+     * only username, so Growth Glimpse / Speaker Session can prefill genuinely.
+     */
+    private function sessionHostSelectSql(): string
+    {
+        $userCols = [];
+        try {
+            foreach ($this->conn->query('DESCRIBE users') as $c) {
+                $userCols[] = $c['Field'];
+            }
+        } catch (Throwable $e) {
+            return 'u.username AS host_name';
+        }
+        $parts = ['u.username AS host_name'];
+        if (in_array('job_title', $userCols, true)) {
+            $parts[] = 'u.job_title AS host_job_title';
+        }
+        foreach (br_user_avatar_select_cols([], $userCols) as $col) {
+            $parts[] = "u.`{$col}`";
+        }
+        return implode(', ', $parts);
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    private function formatSessionRow(array $row): array
+    {
+        if ($row === []) {
+            return [];
+        }
+        $resolved = br_user_with_resolved_avatar($row);
+        $jobTitle = trim((string)($resolved['host_job_title'] ?? $resolved['job_title'] ?? ''));
+        return [
             'id' => (int)$row['id'],
             'event_id' => (int)$row['event_id'],
             'event_title' => $row['event_title'] ?? null,
             'session_date' => $row['session_date'],
             'host_user_id' => $row['host_user_id'] ?? null,
             'host_name' => $row['host_name'] ?? null,
+            'host_job_title' => $jobTitle !== '' ? $jobTitle : null,
+            'host_avatar' => $resolved['avatar'] ?? null,
             'agenda_topic' => $row['agenda_topic'] ?? null,
             'summary_notes' => $row['summary_notes'] ?? null,
             'recording_or_drive_link' => $row['recording_or_drive_link'] ?? null,
             'weekly_report_task_id' => $row['weekly_report_task_id'] ?? null,
-        ]);
+            'created_at' => $row['created_at'] ?? null,
+            'updated_at' => $row['updated_at'] ?? null,
+        ];
     }
 
     public function generateCreative($data = null)
