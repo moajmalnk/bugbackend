@@ -36,7 +36,11 @@ try {
         $admin_id = $userData->admin_id;
     }
     
-    $googleAccountUserId = $docsController->resolveGoogleAccountUserId($userData);
+    // Why: Docs/Sheets actions while impersonating run on the admin's Google token, but the
+    // Profile page must show the profile owner's own link. `?owner=1` reports the token
+    // subject's (impersonated user's) connection instead of the account used for API calls.
+    $ownerMode = isset($_GET['owner']) && $_GET['owner'] === '1';
+    $googleAccountUserId = $ownerMode ? (string) $userId : $docsController->resolveGoogleAccountUserId($userData);
     
     error_log("Checking connection for user: " . $userId . ", googleAccountUserId: " . $googleAccountUserId . ", impersonated: " . ($is_impersonated ? 'yes' : 'no'));
     
@@ -72,7 +76,17 @@ try {
     $stmt->execute([$googleAccountUserId]);
     $dbCount = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
     error_log("Direct DB check for user $googleAccountUserId: $dbCount tokens found");
-    
+
+    $connectedAt = null;
+    if ($hasAccount) {
+        $stmt = $conn->prepare(
+            "SELECT created_at FROM google_tokens WHERE bugricer_user_id = ? ORDER BY created_at DESC LIMIT 1"
+        );
+        $stmt->execute([$googleAccountUserId]);
+        $connectedAt = $stmt->fetchColumn() ?: null;
+    }
+
+    header('Cache-Control: private, no-cache');
     echo json_encode([
         'success' => true,
         'data' => [
@@ -80,6 +94,8 @@ try {
             'email' => $connectedEmail,
             'scopes_ok' => $hasAccount ? $scopesOk : false,
             'needs_reauth' => $hasAccount ? $needsReauth : false,
+            'connected_at' => $connectedAt,
+            'impersonated' => $is_impersonated,
         ],
         'debug' => [
             'user_id' => $userId,

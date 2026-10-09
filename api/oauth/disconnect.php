@@ -22,6 +22,19 @@ try {
         throw new Exception('User not authenticated');
     }
     
+    // Why: an admin impersonating someone must never revoke that person's Google link.
+    $isImpersonated = (isset($userData->impersonated)
+            && ($userData->impersonated === true || $userData->impersonated === 'true' || $userData->impersonated === 1))
+        || (!empty($userData->admin_id) && (string) $userData->admin_id !== (string) $userData->user_id);
+    if ($isImpersonated) {
+        http_response_code(403);
+        echo json_encode([
+            'success' => false,
+            'message' => 'Only the account owner can disconnect their Google account.',
+        ]);
+        exit();
+    }
+
     $userId = $userData->user_id;
     error_log("Disconnecting Google account for user: " . $userId);
     
