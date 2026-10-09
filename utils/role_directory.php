@@ -20,11 +20,20 @@ function br_role_directory(BaseAPI $api, string $role, string $cacheKey, int $tt
     $cols = array_map(static fn($r) => (string) ($r['Field'] ?? ''), $columnRows ?: []);
 
     $select = br_user_avatar_select_cols(['id', 'username', 'email', 'phone', 'role'], $cols);
+    if (in_array('job_title', $cols, true)) {
+        $select[] = 'job_title';
+    }
+    if (in_array('account_active', $cols, true) && !in_array('account_active', $select, true)) {
+        $select[] = 'account_active';
+    }
     $selectSql = implode(', ', array_map(static fn($c) => '`' . $c . '`', $select));
+
+    $activeClause = in_array('account_active', $cols, true) ? 'AND account_active = 1' : '';
+    $deletedClause = in_array('deleted_at', $cols, true) ? 'AND deleted_at IS NULL' : '';
 
     $rows = $api->fetchCached(
         "SELECT {$selectSql} FROM users
-         WHERE role = ? AND account_active = 1
+         WHERE role = ? {$activeClause} {$deletedClause}
          ORDER BY username ASC",
         [$role],
         $cacheKey,
