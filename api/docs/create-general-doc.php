@@ -106,7 +106,7 @@ try {
     echo json_encode([
         'success' => false,
         'message' => $isScope
-            ? 'Your Google account needs Docs permission. Disconnect and reconnect, then allow Google Docs access.'
+            ? 'Your Google account needs Drive file permission. Disconnect and reconnect, then allow access to files created with BugRicer.'
             : $e->getMessage(),
         'error_code' => $isScope ? 'GOOGLE_SCOPE_INSUFFICIENT' : null,
     ]);

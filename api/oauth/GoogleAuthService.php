@@ -14,9 +14,15 @@ class GoogleAuthService {
     private $conn;
     private $googleClient;
 
-    /** Why: BugDocs create/edit requires Docs API — drive.file alone is not enough. */
+    /**
+     * Why: Google verification requires drive.file (non-sensitive). Docs/Sheets API
+     * create/edit of app-created files works with drive.file; older tokens may still
+     * carry documents/spreadsheets and remain valid.
+     */
     private const REQUIRED_DOC_SCOPES = [
+        'https://www.googleapis.com/auth/drive.file',
         'https://www.googleapis.com/auth/documents',
+        'https://www.googleapis.com/auth/spreadsheets',
     ];
     
     // OAuth configuration - loaded from environment
@@ -139,7 +145,7 @@ class GoogleAuthService {
 
             if (!$this->accessTokenHasDocsScope($accessToken)) {
                 throw new Exception(
-                    'GOOGLE_SCOPE_INSUFFICIENT: Your Google account is missing Docs permission. Disconnect and reconnect, then allow Google Docs access.'
+                    'GOOGLE_SCOPE_INSUFFICIENT: Your Google account is missing Drive file permission. Disconnect and reconnect, then allow access to files created with BugRicer.'
                 );
             }
             
@@ -157,7 +163,7 @@ class GoogleAuthService {
     }
     
     /**
-     * Why: Tokens saved before Docs scope was added still show as "connected" but fail on create.
+     * Why: Tokens without drive.file (or legacy documents) still show as "connected" but fail on create.
      */
     public function userHasDocsScope($bugricerUserId) {
         try {
@@ -216,7 +222,9 @@ class GoogleAuthService {
                 return true;
             }
         }
-        return strpos($scopeStr, 'auth/documents') !== false;
+        return strpos($scopeStr, 'auth/drive.file') !== false
+            || strpos($scopeStr, 'auth/documents') !== false
+            || strpos($scopeStr, 'auth/spreadsheets') !== false;
     }
 
     /**

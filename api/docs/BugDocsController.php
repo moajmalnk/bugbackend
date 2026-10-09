@@ -449,7 +449,7 @@ class BugDocsController extends BaseAPI {
     private function mapGoogleApiException(Exception $e) {
         if ($this->authService->isScopeInsufficientMessage($e->getMessage())) {
             return new Exception(
-                'GOOGLE_SCOPE_INSUFFICIENT: Your Google account is missing Docs permission. Disconnect and reconnect, then allow Google Docs access.'
+                'GOOGLE_SCOPE_INSUFFICIENT: Your Google account is missing Drive file permission. Disconnect and reconnect, then allow access to files created with BugRicer.'
             );
         }
         return $e;

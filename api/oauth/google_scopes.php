@@ -8,9 +8,9 @@
  */
 const BR_GOOGLE_OAUTH_SCOPES = [
     'https://www.googleapis.com/auth/userinfo.email',
+    // BugDocs / BugSheets: create/edit only files created or opened with BugRicer.
+    // Why: Google verification requires minimum scopes; Docs/Sheets APIs accept drive.file.
     'https://www.googleapis.com/auth/drive.file',
-    'https://www.googleapis.com/auth/documents',
-    'https://www.googleapis.com/auth/spreadsheets',
     // BugMeet only inserts/reads/deletes events on the primary calendar.
     'https://www.googleapis.com/auth/calendar.events',
 ];
