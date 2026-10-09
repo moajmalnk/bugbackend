@@ -5,6 +5,7 @@ require_once __DIR__ . '/../../utils/work_period.php';
 require_once __DIR__ . '/../../utils/leave_attendance.php';
 require_once __DIR__ . '/../../utils/bug_dates_recurrence.php';
 require_once __DIR__ . '/../../utils/workforce_access.php';
+require_once __DIR__ . '/../../utils/leave_activity.php';
 
 class LeaveController extends BaseAPI
 {
@@ -74,17 +75,44 @@ class LeaveController extends BaseAPI
             'status' => $row['status'],
             'reviewed_by' => $row['reviewed_by'] ?? null,
             'reviewed_at' => $row['reviewed_at'] ?? null,
+            'reviewer_username' => $row['reviewer_username'] ?? null,
             'admin_note' => $row['admin_note'] ?? null,
             'created_at' => $row['created_at'] ?? null,
             'updated_at' => $row['updated_at'] ?? null,
         ];
     }
 
+    /**
+     * @param array<int, array<string, mixed>> $rows
+     * @return list<array<string, mixed>>
+     */
+    private function formatRowsWithActivity(array $rows): array
+    {
+        $activity = br_leave_activity_for_rows($this->conn, $rows);
+        $out = [];
+        foreach ($rows as $row) {
+            $formatted = $this->formatRequestRow($row);
+            $formatted['activity'] = $activity[(int)$row['id']] ?? [];
+            $out[] = $formatted;
+        }
+        return $out;
+    }
+
+    private function fetchFormattedById(int $id): ?array
+    {
+        $fetch = $this->conn->prepare($this->selectSql() . ' WHERE lr.id = ? LIMIT 1');
+        $fetch->execute([$id]);
+        $row = $fetch->fetch(PDO::FETCH_ASSOC);
+        return $row ? ($this->formatRowsWithActivity([$row])[0] ?? null) : null;
+    }
+
     private function selectSql(): string
     {
-        return "SELECT lr.*, u.username, u.role, lt.code AS leave_type_code, lt.name AS leave_type_name
+        return "SELECT lr.*, u.username, u.role, lt.code AS leave_type_code, lt.name AS leave_type_name,
+                       rv.username AS reviewer_username
                 FROM leave_requests lr
                 LEFT JOIN users u ON u.id = lr.user_id
+                LEFT JOIN users rv ON rv.id = lr.reviewed_by
                 LEFT JOIN leave_types lt ON lt.id = lr.leave_type_id";
     }
 
@@ -135,7 +163,7 @@ class LeaveController extends BaseAPI
         $stmt = $this->conn->prepare($sql);
         $stmt->execute($params);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
-        $this->sendJsonResponse(200, 'OK', array_map([$this, 'formatRequestRow'], $rows));
+        $this->sendJsonResponse(200, 'OK', $this->formatRowsWithActivity($rows));
     }
 
     public function listAll()
@@ -175,7 +203,7 @@ class LeaveController extends BaseAPI
         $stmt = $this->conn->prepare($sql);
         $stmt->execute($params);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
-        $this->sendJsonResponse(200, 'OK', array_map([$this, 'formatRequestRow'], $rows));
+        $this->sendJsonResponse(200, 'OK', $this->formatRowsWithActivity($rows));
     }
 
     public function request($payload)
@@ -487,11 +515,20 @@ class LeaveController extends BaseAPI
                 ? 'Leave request submitted — split as ' . implode(' + ', $summaryParts) . ' (balance exceeded, extra days marked Unpaid Leave).'
                 : 'Leave request submitted';
 
+            br_leave_log_events(
+                $this->conn,
+                $createdIds,
+                'requested',
+                $userId,
+                null,
+                br_leave_impersonator_id($decoded)
+            );
+
             $placeholders = implode(',', array_fill(0, count($createdIds), '?'));
             $fetch = $this->conn->prepare($this->selectSql() . " WHERE lr.id IN ({$placeholders}) ORDER BY lr.start_date ASC");
             $fetch->execute($createdIds);
             $rows = $fetch->fetchAll(PDO::FETCH_ASSOC) ?: [];
-            $formatted = array_map([$this, 'formatRequestRow'], $rows);
+            $formatted = $this->formatRowsWithActivity($rows);
             $primary = $formatted[0] ?? ['id' => $createdIds[0]];
             $primary['requests'] = $formatted;
             $this->sendJsonThen(
@@ -547,12 +584,12 @@ class LeaveController extends BaseAPI
             $this->sendJsonResponse(400, 'Only pending leave requests can be cancelled');
             return;
         }
-        $upd = $this->conn->prepare("UPDATE leave_requests SET status = 'cancelled' WHERE id = ?");
+        $upd = $this->conn->prepare("UPDATE leave_requests SET status = 'cancelled' WHERE id = ? AND status = 'pending'");
         $upd->execute([$id]);
-        $fetch = $this->conn->prepare($this->selectSql() . ' WHERE lr.id = ? LIMIT 1');
-        $fetch->execute([$id]);
-        $out = $fetch->fetch(PDO::FETCH_ASSOC);
-        $this->sendJsonResponse(200, 'Leave request cancelled', $out ? $this->formatRequestRow($out) : null);
+        if ($upd->rowCount() === 1) {
+            br_leave_log_events($this->conn, [$id], 'cancelled', $userId, null, br_leave_impersonator_id($decoded));
+        }
+        $this->sendJsonResponse(200, 'Leave request cancelled', $this->fetchFormattedById($id));
     }
 
     public function review($payload)
@@ -616,7 +653,7 @@ class LeaveController extends BaseAPI
         $upd = $this->conn->prepare(
             "UPDATE leave_requests
              SET status = ?, reviewed_by = ?, reviewed_at = NOW(), admin_note = ?
-             WHERE id = ?"
+             WHERE id = ? AND status = 'pending'"
         );
         $upd->execute([
             $newStatus,
@@ -624,11 +661,20 @@ class LeaveController extends BaseAPI
             $adminNote !== '' ? $adminNote : null,
             $id,
         ]);
+        if ($upd->rowCount() !== 1) {
+            $this->sendJsonResponse(409, 'This leave request was already reviewed. Refresh to see the latest status.');
+            return;
+        }
+        br_leave_log_events(
+            $this->conn,
+            [$id],
+            $newStatus,
+            (string)$decoded->user_id,
+            $adminNote !== '' ? $adminNote : null,
+            br_leave_impersonator_id($decoded)
+        );
 
-        $fetch = $this->conn->prepare($this->selectSql() . ' WHERE lr.id = ? LIMIT 1');
-        $fetch->execute([$id]);
-        $out = $fetch->fetch(PDO::FETCH_ASSOC);
-        $formatted = $out ? $this->formatRequestRow($out) : null;
+        $formatted = $this->fetchFormattedById($id);
         $reviewUserId = (string)$row['user_id'];
         $reviewStart = (string)$row['start_date'];
         $reviewEnd = (string)$row['end_date'];
@@ -871,6 +917,7 @@ class LeaveController extends BaseAPI
                         ]);
                     }
                     $newId = (int)$this->conn->lastInsertId();
+                    br_leave_log_events($this->conn, [$newId], 'granted', $adminId, $adminNote, br_leave_impersonator_id($decoded));
                     $created += 1;
                     $createdRows[] = [
                         'id' => $newId,
@@ -1043,7 +1090,7 @@ class LeaveController extends BaseAPI
             $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
             $this->sendJsonResponse(200, 'OK', [
-                'items' => array_map([$this, 'formatRequestRow'], $rows),
+                'items' => $this->formatRowsWithActivity($rows),
                 'total' => $total,
                 'page' => $page,
                 'limit' => $limit,
@@ -1319,14 +1366,23 @@ class LeaveController extends BaseAPI
                 ]);
             }
 
-            $fetch = $this->conn->prepare($this->selectSql() . ' WHERE lr.id = ? LIMIT 1');
-            $fetch->execute([$id]);
-            $out = $fetch->fetch(PDO::FETCH_ASSOC);
-            $this->sendJsonResponse(
-                200,
-                'Official Leave updated',
-                $out ? $this->formatRequestRow($out) : null
+            $changes = [];
+            if ((string)$row['start_date'] !== $startDate || (string)$row['end_date'] !== $endDate) {
+                $changes[] = "Dates {$row['start_date']} → {$row['end_date']} changed to {$startDate} → {$endDate}";
+            }
+            if (trim((string)($row['reason'] ?? '')) !== $title) {
+                $changes[] = "Title changed to \"{$title}\"";
+            }
+            br_leave_log_events(
+                $this->conn,
+                [$id],
+                'updated',
+                $adminId,
+                $changes !== [] ? implode('; ', $changes) : null,
+                br_leave_impersonator_id($decoded)
             );
+
+            $this->sendJsonResponse(200, 'Official Leave updated', $this->fetchFormattedById($id));
         } catch (Throwable $e) {
             error_log('adminUpdateOfficialLeave: ' . $e->getMessage());
             $this->sendJsonResponse(500, 'Failed to update Official Leave');
@@ -1416,6 +1472,7 @@ class LeaveController extends BaseAPI
                     $rid,
                 ]);
                 if ($upd->rowCount() > 0) {
+                    br_leave_log_events($this->conn, [$rid], 'cancelled', $adminId, $note, br_leave_impersonator_id($decoded));
                     $cancelled += 1;
                 } else {
                     $skipped[] = ['id' => $rid, 'reason' => 'unchanged'];
