@@ -8,8 +8,8 @@ require_once __DIR__ . '/workforce_access.php';
  * Why: admins decide per person whether the CODO standards are mandatory
  * (forced acknowledgement gate), merely readable, or hidden. A NULL column
  * means "role default" so existing accounts keep their behaviour until an
- * admin changes them. Admins always read (optional); client testers and
- * roles outside the CODO team never see the standards (hidden).
+ * admin changes them. Admins always read (optional); client testers default
+ * to hidden but an admin may enable them; other roles never see the standards.
  */
 
 const BR_STANDARDS_REQUIRED = 'required';
@@ -37,15 +37,12 @@ function br_standards_column(string $feature): string
 }
 
 /**
- * Developers, creators and CODO testers are the only roles an admin can configure.
+ * Developers, creators and testers (CODO and client) are the roles an admin can configure.
  */
 function br_standards_configurable(string $role, ?string $testerType): bool
 {
     $role = strtolower(trim($role));
-    if ($role === 'developer' || $role === 'creator') {
-        return true;
-    }
-    return $role === 'tester' && $testerType === BR_TESTER_TYPE_CODO;
+    return $role === 'developer' || $role === 'creator' || $role === 'tester';
 }
 
 /**
@@ -58,6 +55,10 @@ function br_standards_default_mode(string $role, ?string $testerType, string $fe
         return BR_STANDARDS_OPTIONAL;
     }
     if (!br_standards_configurable($role, $testerType)) {
+        return BR_STANDARDS_HIDDEN;
+    }
+    // Why: client testers are external — standards stay off until an admin opts them in.
+    if ($role === 'tester' && $testerType !== BR_TESTER_TYPE_CODO) {
         return BR_STANDARDS_HIDDEN;
     }
     if ($feature === 'codo' && $role !== 'creator') {
@@ -192,7 +193,11 @@ function br_standards_required_sql(string $alias, string $feature, PDO $conn): s
     }
     $col = $p . br_standards_column($feature);
     if ($feature === 'codo') {
-        return "(COALESCE({$col}, CASE WHEN {$p}role = 'creator' THEN 'optional' ELSE 'required' END) = 'required')";
+        $clientTester = br_ensure_tester_type_schema($conn)
+            ? "{$p}role = 'tester' AND ({$p}tester_type IS NULL OR {$p}tester_type <> 'codo')"
+            : "{$p}role = 'tester'";
+        return "(COALESCE({$col}, CASE WHEN {$p}role = 'creator' THEN 'optional'"
+            . " WHEN {$clientTester} THEN 'hidden' ELSE 'required' END) = 'required')";
     }
     return "({$col} = 'required')";
 }

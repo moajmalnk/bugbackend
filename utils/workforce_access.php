@@ -159,8 +159,9 @@ function br_require_workforce($api, PDO $conn, $decoded): bool
  * client testers only report and verify bugs, so they are excluded exactly
  * like the workforce features — same fail-closed tester_type check.
  *
- * When $feature is 'codo' or 'cursor_tips', an admin-set "hidden" mode for
- * that user also denies access (see utils/standards_access.php).
+ * When $feature is 'codo' or 'cursor_tips', access follows the per-user mode
+ * (see utils/standards_access.php): "hidden" denies. Client testers default to
+ * hidden, so they only get in when an admin has enabled that feature for them.
  *
  * @param BaseAPI $api Endpoint instance used to emit the JSON response.
  * @param string|null $feature null = workforce check only (project Compliance).
@@ -168,12 +169,12 @@ function br_require_workforce($api, PDO $conn, $decoded): bool
 function br_require_codo_standards_access($api, PDO $conn, $decoded, ?string $feature = null): bool
 {
     $userId = (string) ($decoded->user_id ?? '');
-    if (!br_user_is_workforce($conn, $userId)) {
+    if ($feature === null) {
+        if (br_user_is_workforce($conn, $userId)) {
+            return true;
+        }
         $api->sendJsonResponse(403, BR_CODO_STANDARDS_FORBIDDEN_MESSAGE, ['reason' => BR_WORKFORCE_FORBIDDEN_REASON]);
         return false;
-    }
-    if ($feature === null) {
-        return true;
     }
     require_once __DIR__ . '/standards_access.php';
     if (br_standards_mode($conn, $userId, $feature) !== BR_STANDARDS_HIDDEN) {

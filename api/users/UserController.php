@@ -1166,8 +1166,17 @@ class UserController extends BaseAPI {
             return $updates;
         }
 
+        $currentType = strtolower((string) $current['role']) === 'tester'
+            ? (br_normalize_tester_type($current['tester_type'] ?? null) ?? BR_TESTER_TYPE_CLIENT)
+            : null;
+        $audienceChanged = $finalRole !== strtolower((string) $current['role']) || $finalType !== $currentType;
+
         foreach (['codo_rules_mode', 'cursor_tips_mode'] as $col) {
             if (!array_key_exists($col, $data)) {
+                // Why: a CODO tester's "required" must not silently follow them to Client Tester.
+                if ($audienceChanged && ($current[$col] ?? null) !== null) {
+                    $updates[$col] = null;
+                }
                 continue;
             }
             $mode = br_normalize_standards_mode($data[$col]);

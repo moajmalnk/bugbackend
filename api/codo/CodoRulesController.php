@@ -112,8 +112,8 @@ class CodoRulesController extends BaseAPI
             return [];
         }
         $placeholders = implode(',', array_fill(0, count($roles), '?'));
+        // Client testers are excluded by their "hidden" default unless an admin made CODO required.
         $sql = "SELECT id, username, role FROM users WHERE role IN ($placeholders)"
-            . ' AND ' . br_workforce_tester_sql('', $this->conn)
             . ' AND ' . br_standards_required_sql('', 'codo', $this->conn);
         $params = $roles;
         if ($this->usersHasAccountActive()) {
