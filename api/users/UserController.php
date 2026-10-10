@@ -7,6 +7,7 @@ require_once __DIR__ . '/../../utils/user_avatar.php';
 require_once __DIR__ . '/../../utils/employee_id.php';
 require_once __DIR__ . '/../../utils/workforce_access.php';
 require_once __DIR__ . '/../../utils/standards_access.php';
+require_once __DIR__ . '/../../utils/user_onboarding.php';
 
 class UserController extends BaseAPI {
     public function getUsers() {
@@ -28,6 +29,7 @@ class UserController extends BaseAPI {
 
             br_ensure_tester_type_schema($this->conn);
             br_ensure_standards_schema($this->conn);
+            br_ensure_onboarding_mode_schema($this->conn);
 
             // Check which columns exist (phone, last_active_at)
             $cols = [];
@@ -54,6 +56,7 @@ class UserController extends BaseAPI {
             if (in_array('tester_type', $cols, true)) $select[] = 'tester_type';
             if (in_array('codo_rules_mode', $cols, true)) $select[] = 'codo_rules_mode';
             if (in_array('cursor_tips_mode', $cols, true)) $select[] = 'cursor_tips_mode';
+            if (in_array('onboarding_mode', $cols, true)) $select[] = 'onboarding_mode';
             if ($hasPhone) $select[] = 'phone';
             if ($hasAccountActive) $select[] = 'account_active';
             if ($hasJoiningDate) $select[] = 'joining_date';
@@ -103,7 +106,10 @@ class UserController extends BaseAPI {
                 return;
             }
 
-            $users = array_map('br_user_row_with_standards', $stmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
+            $users = array_map(
+                static fn (array $row): array => br_user_row_with_onboarding_mode(br_user_row_with_standards($row)),
+                $stmt->fetchAll(PDO::FETCH_ASSOC) ?: []
+            );
 
             // Optional ?date=YYYY-MM-DD lets the Users "Active" tab review any past day's
             // office / WFH attendance; omitted keeps the original "today" behaviour.
@@ -251,6 +257,7 @@ class UserController extends BaseAPI {
 
             br_ensure_tester_type_schema($this->conn);
             br_ensure_standards_schema($this->conn);
+            br_ensure_onboarding_mode_schema($this->conn);
             $cols = [];
             $res = $this->conn->query("SHOW COLUMNS FROM users");
             if ($res) {
@@ -262,7 +269,7 @@ class UserController extends BaseAPI {
             if (in_array('tester_type', $cols, true)) {
                 $select[] = 'tester_type';
             }
-            foreach (['codo_rules_mode', 'cursor_tips_mode'] as $modeCol) {
+            foreach (['codo_rules_mode', 'cursor_tips_mode', 'onboarding_mode'] as $modeCol) {
                 if (in_array($modeCol, $cols, true)) {
                     $select[] = $modeCol;
                 }
@@ -339,7 +346,7 @@ class UserController extends BaseAPI {
                 }
             }
 
-            $user = br_user_row_with_standards($user);
+            $user = br_user_row_with_onboarding_mode(br_user_row_with_standards($user));
             $user = br_user_with_resolved_avatar($user);
             $user = br_user_with_reports_to_name($this->conn, $user);
             $this->sendJsonResponse(200, "User retrieved successfully", $user);
@@ -858,12 +865,27 @@ class UserController extends BaseAPI {
              * and choose a password. Client testers/admins/creators get emailed credentials.
              */
             require_once __DIR__ . '/../../utils/user_onboarding.php';
-            $requiresOnboarding = br_role_requires_onboarding($role, $roleId, $testerType);
+            $onboardingModeOverride = null;
+            if (br_onboarding_configurable($role, $roleId)
+                && array_key_exists('onboarding_mode', $data)
+                && $data['onboarding_mode'] !== null
+                && $data['onboarding_mode'] !== '') {
+                $onboardingModeOverride = br_normalize_onboarding_mode($data['onboarding_mode']);
+                if ($onboardingModeOverride === null) {
+                    $this->sendJsonResponse(422, 'Choose Required, Optional or Off for onboarding.', [
+                        'errors' => ['onboarding_mode' => ['Invalid onboarding mode.']],
+                    ]);
+                    return;
+                }
+            }
+            $onboardingMode = br_onboarding_resolve_mode($role, $roleId, $testerType, $onboardingModeOverride);
+            $requiresOnboarding = $onboardingMode === BR_ONBOARDING_REQUIRED;
             $mustSetPassword = $requiresOnboarding;
 
             // Insert user
             br_ensure_tester_type_schema($this->conn);
             br_ensure_standards_schema($this->conn);
+            br_ensure_onboarding_mode_schema($this->conn);
             $userCols = [];
             $ucRes = $this->conn->query("SHOW COLUMNS FROM users");
             if ($ucRes) {
@@ -890,6 +912,10 @@ class UserController extends BaseAPI {
                     $insertCols[] = $modeKey;
                     $insertVals[] = $modeValue;
                 }
+            }
+            if ($onboardingModeOverride !== null && in_array('onboarding_mode', $userCols, true)) {
+                $insertCols[] = 'onboarding_mode';
+                $insertVals[] = $onboardingModeOverride;
             }
             if ($hasMustSetPasswordCol) {
                 $insertCols[] = 'must_set_password';
@@ -935,6 +961,8 @@ class UserController extends BaseAPI {
                 "tester_type" => $testerType,
                 "codo_rules_mode" => br_standards_resolve($role, $testerType, $standardsModes['codo_rules_mode'], 'codo'),
                 "cursor_tips_mode" => br_standards_resolve($role, $testerType, $standardsModes['cursor_tips_mode'], 'cursor_tips'),
+                "onboarding_mode" => $onboardingMode,
+                "onboarding_completed" => $requiresOnboarding ? 0 : 1,
                 "joining_date" => $joiningDate,
                 "email_status" => "queued",
                 "whatsapp_status" => $hasPhone ? "queued" : "skipped",
@@ -952,7 +980,8 @@ class UserController extends BaseAPI {
              * can re-share access via "Generate dashboard link" on the user's page.
              */
             $this->sendJsonThen(function () use (
-                $utilsDir, $id, $username, $email, $phone, $password, $role, $testerType, $actorId, $hasPhone
+                $utilsDir, $id, $username, $email, $phone, $password, $role, $testerType, $actorId, $hasPhone,
+                $standardsModes, $onboardingMode, $requiresOnboarding
             ) {
                 $startedAt = microtime(true);
 
@@ -969,6 +998,7 @@ class UserController extends BaseAPI {
                             'phone' => $phone,
                             'codo_rules_mode' => $standardsModes['codo_rules_mode'],
                             'cursor_tips_mode' => $standardsModes['cursor_tips_mode'],
+                            'onboarding_mode' => $onboardingMode,
                         ]
                     );
                 } catch (Throwable $e) {
@@ -993,7 +1023,7 @@ class UserController extends BaseAPI {
                 $emailSent = false;
                 try {
                     require_once $utilsDir . '/email.php';
-                    $emailSent = (bool) sendWelcomeEmail($email, $username, $password, $role, $loginLink, $testerType);
+                    $emailSent = (bool) sendWelcomeEmail($email, $username, $password, $role, $loginLink, $testerType, $requiresOnboarding);
                 } catch (Throwable $e) {
                     error_log("Failed to send welcome email: " . $e->getMessage());
                 }
@@ -1009,7 +1039,8 @@ class UserController extends BaseAPI {
                             $email,
                             $password,
                             $role,
-                            $testerType
+                            $testerType,
+                            $requiresOnboarding
                         );
                     } catch (Throwable $e) {
                         $whatsappSent = false;
@@ -1092,39 +1123,113 @@ class UserController extends BaseAPI {
     }
 
     /**
-     * Why: Users created in a role without onboarding (e.g. a Client tester) were
-     * stored with onboarding_completed = 1. When an admin moves them into an
-     * employee role (Developer, CODO Tester) they must go through the same
-     * onboarding wizard — unless they already submitted it once before.
+     * Why: Onboarding follows the role unless an admin overrides it (Required /
+     * Optional / Off). A role or tester-type change drops a stale override back
+     * to the new role's default. The dashboard lock (onboarding_completed) moves
+     * with the effective mode: Required locks only people who never submitted;
+     * Optional / Off release anyone waiting in the wizard.
      *
      * @param string|null $newRole Normalised role from this request, or null if unchanged.
      * @param int|null $newRoleId Role id from this request, or null if unchanged.
      * @param string|null|false $newTesterType New tester type, or false if unchanged.
+     * @return array<string, mixed>|false Column => value updates, false when a response was sent.
      */
-    private function shouldStartOnboarding(PDO $conn, string $userId, ?string $newRole, ?int $newRoleId, $newTesterType): bool
-    {
-        require_once __DIR__ . '/../../utils/user_onboarding.php';
+    private function resolveOnboardingModeUpdate(
+        PDO $conn,
+        string $userId,
+        ?string $newRole,
+        ?int $newRoleId,
+        $newTesterType,
+        array $data
+    ) {
         $hasTesterType = br_ensure_tester_type_schema($conn);
+        $hasModeCol = br_ensure_onboarding_mode_schema($conn);
+        $cols = [];
+        $res = $conn->query('SHOW COLUMNS FROM users');
+        if ($res) {
+            while ($row = $res->fetch(PDO::FETCH_ASSOC)) {
+                $cols[] = $row['Field'];
+            }
+        }
+        if (!in_array('onboarding_completed', $cols, true)) {
+            return [];
+        }
+        $hasCompletedAt = in_array('onboarding_completed_at', $cols, true);
         $stmt = $conn->prepare(
-            'SELECT role, role_id, onboarding_completed, onboarding_completed_at'
+            'SELECT role, role_id, onboarding_completed'
+            . ($hasCompletedAt ? ', onboarding_completed_at' : '')
             . ($hasTesterType ? ', tester_type' : '')
+            . ($hasModeCol ? ', onboarding_mode' : '')
             . ' FROM users WHERE id = ? LIMIT 1'
         );
         $stmt->execute([$userId]);
         $current = $stmt->fetch(PDO::FETCH_ASSOC);
-        if (!$current || !empty($current['onboarding_completed_at'])) {
-            return false;
-        }
-        if ((int) ($current['onboarding_completed'] ?? 0) === 0) {
-            return false;
+        if (!$current) {
+            return [];
         }
 
+        $currentType = strtolower((string) $current['role']) === 'tester'
+            ? (br_normalize_tester_type($current['tester_type'] ?? null) ?? BR_TESTER_TYPE_CLIENT)
+            : null;
         $after = [
             'role' => $newRole ?? $current['role'],
             'role_id' => $newRoleId ?? $current['role_id'],
-            'tester_type' => $newTesterType !== false ? $newTesterType : ($current['tester_type'] ?? null),
+            'tester_type' => $newTesterType !== false ? $newTesterType : $currentType,
+            'onboarding_mode' => $current['onboarding_mode'] ?? null,
         ];
-        return !br_user_requires_onboarding($current) && br_user_requires_onboarding($after);
+        if (strtolower((string) $after['role']) !== 'tester') {
+            $after['tester_type'] = null;
+        }
+        $audienceChanged = strtolower((string) $after['role']) !== strtolower((string) $current['role'])
+            || $after['tester_type'] !== $currentType;
+
+        $updates = [];
+        if (array_key_exists('onboarding_mode', $data) && $data['onboarding_mode'] !== null && $data['onboarding_mode'] !== '') {
+            $requested = br_normalize_onboarding_mode($data['onboarding_mode']);
+            if ($requested === null) {
+                $this->sendJsonResponse(422, 'Choose Required, Optional or Off for onboarding.', [
+                    'errors' => ['onboarding_mode' => ['Invalid onboarding mode.']],
+                ]);
+                return false;
+            }
+            $after['onboarding_mode'] = br_onboarding_configurable($after['role'], $after['role_id'])
+                ? $requested
+                : null;
+        } elseif ($audienceChanged) {
+            $after['onboarding_mode'] = null;
+        }
+        if ($hasModeCol && ($after['onboarding_mode'] ?? null) !== ($current['onboarding_mode'] ?? null)) {
+            $updates['onboarding_mode'] = $after['onboarding_mode'];
+        }
+
+        $previousMode = br_user_onboarding_mode(array_merge($current, ['tester_type' => $currentType]));
+        $nextMode = br_user_onboarding_mode($after);
+        if ($previousMode === $nextMode) {
+            return $updates;
+        }
+        $submittedAt = $hasCompletedAt ? ($current['onboarding_completed_at'] ?? null) : null;
+        if (empty($submittedAt) && $nextMode === BR_ONBOARDING_REQUIRED) {
+            // Why: records saved before completed_at was stamped still count as submitted.
+            try {
+                $detailsStmt = $conn->prepare('SELECT 1 FROM user_onboarding_details WHERE user_id = ? LIMIT 1');
+                $detailsStmt->execute([$userId]);
+                if ($detailsStmt->fetchColumn()) {
+                    $submittedAt = 'details-on-file';
+                }
+            } catch (Throwable $e) {
+                // Table missing on old installs — treat as never submitted.
+            }
+        }
+        $nextCompleted = br_onboarding_completed_after_mode_change(
+            $previousMode,
+            $nextMode,
+            (int) ($current['onboarding_completed'] ?? 0),
+            $submittedAt
+        );
+        if ($nextCompleted !== null) {
+            $updates['onboarding_completed'] = $nextCompleted;
+        }
+        return $updates;
     }
 
     /**
@@ -1302,19 +1407,20 @@ class UserController extends BaseAPI {
                 $params[] = $modeValue;
             }
 
-            if (
-                (isset($data['role']) || isset($data['role_id']) || $testerTypeChanged)
-                && in_array('onboarding_completed', $userCols, true)
-                && in_array('onboarding_completed_at', $userCols, true)
-                && $this->shouldStartOnboarding(
-                    $conn,
-                    (string) $id,
-                    isset($data['role']) ? (string) $role : null,
-                    isset($roleId) && $roleId ? (int) $roleId : null,
-                    $testerTypeChanged ? $testerTypeResult['value'] : false
-                )
-            ) {
-                $fields[] = 'onboarding_completed = 0';
+            $onboardingUpdates = $this->resolveOnboardingModeUpdate(
+                $conn,
+                (string) $id,
+                isset($data['role']) ? (string) $role : null,
+                isset($roleId) && $roleId ? (int) $roleId : null,
+                $testerTypeChanged ? $testerTypeResult['value'] : false,
+                $data
+            );
+            if ($onboardingUpdates === false) {
+                return;
+            }
+            foreach ($onboardingUpdates as $onboardingCol => $onboardingValue) {
+                $fields[] = "{$onboardingCol} = ?";
+                $params[] = $onboardingValue;
             }
 
             if (isset($data['phone'])) {
@@ -1669,6 +1775,12 @@ class UserController extends BaseAPI {
                     $selectParts[] = 'codo_rules_mode';
                     $selectParts[] = 'cursor_tips_mode';
                 }
+                if (br_ensure_onboarding_mode_schema($conn)) {
+                    $selectParts[] = 'onboarding_mode';
+                }
+                if (in_array('onboarding_completed', $userCols, true)) {
+                    $selectParts[] = 'onboarding_completed';
+                }
                 $selectParts = br_user_avatar_select_cols($selectParts, $userCols);
                 $selectParts = br_user_hr_select_cols($selectParts, $userCols);
                 $selectSql = implode(",\n                        ", $selectParts) . ",
@@ -1686,7 +1798,10 @@ class UserController extends BaseAPI {
                 $updatedUser = $fetchStmt->fetch(PDO::FETCH_ASSOC);
                 
                 if ($updatedUser) {
-                    $updatedUser = br_user_row_with_standards($updatedUser);
+                    $updatedUser = br_user_row_with_onboarding_mode(br_user_row_with_standards($updatedUser));
+                    if (array_key_exists('onboarding_completed', $updatedUser)) {
+                        $updatedUser['onboarding_completed'] = (int) $updatedUser['onboarding_completed'];
+                    }
                     $updatedUser = br_user_with_resolved_avatar($updatedUser);
                     $updatedUser = br_user_with_reports_to_name($conn, $updatedUser);
                     $this->sendJsonResponse(

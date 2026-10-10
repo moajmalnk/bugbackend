@@ -370,9 +370,11 @@ class SubmitOnboardingAPI extends BaseAPI
                 $updateSql .= ', privacy_accepted_at = ?';
                 $updateParams[] = $privacyAt;
             }
-            // Keep original completion time on edits; only stamp on first submit.
-            if (!$isUpdate && in_array('onboarding_completed_at', $cols, true)) {
-                $updateSql .= ', onboarding_completed_at = NOW()';
+            // Keep original completion time on edits; stamp the first real submit. Optional-mode
+            // users are already unlocked (onboarding_completed = 1), so COALESCE stamps them too —
+            // switching them to Required later must not push them back into the wizard.
+            if (in_array('onboarding_completed_at', $cols, true)) {
+                $updateSql .= ', onboarding_completed_at = COALESCE(onboarding_completed_at, NOW())';
             }
             // Why: Admin fill/edit is HR-attested — no separate verification queue.
             // Employee self-submit/update still lands in pending for Review & decide.

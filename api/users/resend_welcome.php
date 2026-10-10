@@ -61,14 +61,20 @@ try {
     $hasTesterType = false;
 }
 
+require_once __DIR__ . '/../../utils/user_onboarding.php';
+$hasOnboardingMode = br_ensure_onboarding_mode_schema($conn);
 $stmt = $conn->prepare(
-    'SELECT id, username, email, phone, role' . ($hasTesterType ? ', tester_type' : '') . ' FROM users WHERE id = ? LIMIT 1'
+    'SELECT id, username, email, phone, role, role_id'
+    . ($hasTesterType ? ', tester_type' : '')
+    . ($hasOnboardingMode ? ', onboarding_mode' : '')
+    . ' FROM users WHERE id = ? LIMIT 1'
 );
 $stmt->execute([$userId]);
 $user = $stmt->fetch(PDO::FETCH_ASSOC);
 if (!$user) {
     $api->sendJsonResponse(404, 'User not found');
 }
+$needsOnboarding = br_user_requires_onboarding($user);
 
 $email = trim((string) ($user['email'] ?? ''));
 $phone = trim((string) ($user['phone'] ?? ''));
@@ -111,7 +117,7 @@ if (in_array('email', $channels, true)) {
     $error = null;
     try {
         require_once __DIR__ . '/../../utils/email.php';
-        $sent = (bool) sendWelcomeEmail($email, (string) $user['username'], null, (string) $user['role'], $loginLink, $user['tester_type'] ?? null);
+        $sent = (bool) sendWelcomeEmail($email, (string) $user['username'], null, (string) $user['role'], $loginLink, $user['tester_type'] ?? null, $needsOnboarding);
     } catch (Throwable $e) {
         $error = $e->getMessage();
     }
@@ -126,7 +132,7 @@ if (in_array('whatsapp', $channels, true)) {
     $error = null;
     try {
         require_once __DIR__ . '/../../utils/whatsapp.php';
-        $sent = (bool) sendWelcomeWhatsApp($phone, (string) $user['username'], $loginLink, $email ?: null, null, (string) $user['role'], $user['tester_type'] ?? null);
+        $sent = (bool) sendWelcomeWhatsApp($phone, (string) $user['username'], $loginLink, $email ?: null, null, (string) $user['role'], $user['tester_type'] ?? null, $needsOnboarding);
     } catch (Throwable $e) {
         $error = $e->getMessage();
     }

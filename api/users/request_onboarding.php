@@ -11,6 +11,7 @@
  */
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../utils/workforce_access.php';
+require_once __DIR__ . '/../../utils/user_onboarding.php';
 
 header('Content-Type: application/json');
 header('Cache-Control: private, no-store');
@@ -69,7 +70,7 @@ if ((function_exists('mb_strlen') ? mb_strlen($note) : strlen($note)) > 300) {
 $conn = $api->getConnection();
 $cols = $conn->query('SHOW COLUMNS FROM users')->fetchAll(PDO::FETCH_COLUMN);
 $select = ['id', 'username', 'email', 'phone', 'role'];
-foreach (['account_active', 'onboarding_completed', 'onboarding_verification_status'] as $c) {
+foreach (['role_id', 'account_active', 'onboarding_completed', 'onboarding_verification_status', 'onboarding_mode'] as $c) {
     if (in_array($c, $cols, true)) {
         $select[] = $c;
     }
@@ -86,9 +87,15 @@ if (isset($user['account_active']) && (int) $user['account_active'] === 0) {
 
 $role = strtolower((string) ($user['role'] ?? ''));
 $testerType = $role === 'tester' ? br_user_tester_type($conn, (string) $user['id']) : null;
-$eligible = $role === 'developer' || $role === 'creator' || ($role === 'tester' && $testerType === 'codo');
+$onboardingMode = br_user_onboarding_mode(array_merge($user, ['tester_type' => $testerType]));
+// Why: creators could always be asked for records; an explicit "Off" from an admin wins.
+$eligible = $onboardingMode !== BR_ONBOARDING_OFF
+    || ($role === 'creator' && empty($user['onboarding_mode']));
 if (!$eligible) {
-    $api->sendJsonResponse(422, 'Onboarding applies to developers, CODO testers and creators only.');
+    $api->sendJsonResponse(
+        422,
+        'Onboarding is off for this user. Set it to Required or Optional in Edit User first.'
+    );
 }
 
 $email = trim((string) ($user['email'] ?? ''));
