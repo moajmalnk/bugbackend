@@ -46,6 +46,82 @@ function brResolveUploadFile(string $uploadsDir, string $relative): ?string
     return $real;
 }
 
+/**
+ * Why: A video player stays at 0:00 until the browser can fetch the start
+ * (and the mp4 header at the end) in small pieces. Sending the whole file
+ * makes large recordings feel stuck. Open-ended Range requests are capped
+ * so the first response returns immediately and the player asks for the rest.
+ */
+function brStreamMedia(string $filePath, int $fileSize): void
+{
+    $maxChunk = 512 * 1024;
+    $start = 0;
+    $end = $fileSize - 1;
+    $partial = false;
+    $rangeHeader = (string) ($_SERVER['HTTP_RANGE'] ?? '');
+
+    if ($rangeHeader === '') {
+        header('Content-Length: ' . $fileSize);
+        header('Accept-Ranges: bytes');
+        readfile($filePath);
+        exit;
+    }
+
+    if (preg_match('/bytes=(\d*)-(\d*)/', $rangeHeader, $matches)) {
+        if ($matches[1] === '' && $matches[2] !== '') {
+            $suffix = (int) $matches[2];
+            $start = max(0, $fileSize - max(1, $suffix));
+            $end = $fileSize - 1;
+        } else {
+            $start = $matches[1] !== '' ? (int) $matches[1] : 0;
+            $end = $matches[2] !== '' ? (int) $matches[2] : ($fileSize - 1);
+        }
+        if ($start < 0 || $start >= $fileSize || $start > $end) {
+            http_response_code(416);
+            header('Content-Range: bytes */' . $fileSize);
+            exit;
+        }
+        $end = min($end, $fileSize - 1);
+        $partial = true;
+    }
+
+    if (($end - $start + 1) > $maxChunk) {
+        $end = $start + $maxChunk - 1;
+        $partial = true;
+    }
+
+    $length = $end - $start + 1;
+    if ($partial) {
+        http_response_code(206);
+        header('Content-Range: bytes ' . $start . '-' . $end . '/' . $fileSize);
+    }
+    header('Content-Length: ' . $length);
+    header('Accept-Ranges: bytes');
+
+    $fp = fopen($filePath, 'rb');
+    if ($fp === false) {
+        http_response_code(500);
+        exit;
+    }
+    if ($start > 0) {
+        fseek($fp, $start);
+    }
+    $remaining = $length;
+    while ($remaining > 0 && !feof($fp)) {
+        $chunk = fread($fp, min(65536, $remaining));
+        if ($chunk === false || $chunk === '') {
+            break;
+        }
+        echo $chunk;
+        $remaining -= strlen($chunk);
+        if (function_exists('flush')) {
+            flush();
+        }
+    }
+    fclose($fp);
+    exit;
+}
+
 $filePath = null;
 $displayName = '';
 
@@ -154,9 +230,6 @@ if ($filePath === null) {
 
 $finfo = finfo_open(FILEINFO_MIME_TYPE);
 $mimeType = $finfo ? finfo_file($finfo, $filePath) : false;
-if ($finfo) {
-    finfo_close($finfo);
-}
 if (!is_string($mimeType) || $mimeType === '') {
     $mimeType = 'application/octet-stream';
 }
@@ -167,11 +240,32 @@ if ($safeName === '') {
     $safeName = 'download';
 }
 
-$isVideo = str_starts_with($mimeType, 'video/')
-    || (bool) preg_match('/\.(mp4|webm|mov|m4v|mkv|avi)$/i', $safeName);
-$isAudio = str_starts_with($mimeType, 'audio/')
-    || $mimeType === 'video/webm'
-    || (bool) preg_match('/\.(webm|wav|mp3|m4a|ogg)$/i', $safeName);
+$ext = strtolower((string) pathinfo($filePath, PATHINFO_EXTENSION));
+$knownMedia = [
+    'mp4' => 'video/mp4',
+    'm4v' => 'video/mp4',
+    'mov' => 'video/quicktime',
+    'mkv' => 'video/x-matroska',
+    'avi' => 'video/x-msvideo',
+    'webm' => 'video/webm',
+    'mp3' => 'audio/mpeg',
+    'wav' => 'audio/wav',
+    'm4a' => 'audio/mp4',
+    'ogg' => 'audio/ogg',
+];
+if (isset($knownMedia[$ext]) && !str_starts_with($mimeType, 'audio/')) {
+    $mimeType = $knownMedia[$ext];
+}
+
+$isVideo = str_starts_with($mimeType, 'video/');
+$isAudio = str_starts_with($mimeType, 'audio/');
+$fileSize = filesize($filePath);
+if ($fileSize === false) {
+    http_response_code(500);
+    header('Content-Type: application/json');
+    echo json_encode(['success' => false, 'message' => 'Unable to read file']);
+    exit;
+}
 
 if ($forceDownload) {
     header('Content-Type: application/octet-stream');
@@ -184,18 +278,25 @@ if ($forceDownload) {
         'Content-Disposition: inline; filename="' . $safeName . '"; filename*=UTF-8\'\'' . rawurlencode($safeName)
     );
 }
-header('Content-Length: ' . filesize($filePath));
 header('X-Content-Type-Options: nosniff');
 header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: GET, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Impersonate-User, X-User-Id');
-if (($isAudio || $isVideo) && !$forceDownload) {
-    header('Accept-Ranges: bytes');
+header('Access-Control-Allow-Methods: GET, HEAD, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Impersonate-User, X-User-Id, Range');
+header('Access-Control-Expose-Headers: Content-Length, Content-Range, Accept-Ranges, Content-Type');
+header('Cache-Control: private, max-age=3600');
+
+if (($isAudio || $isVideo) && !$forceDownload && $fileSize > 0) {
+    @ini_set('zlib.output_compression', '0');
+    while (ob_get_level() > 0) {
+        ob_end_clean();
+    }
+    brStreamMedia($filePath, $fileSize);
 }
 
-if (ob_get_level()) {
+header('Content-Length: ' . $fileSize);
+header('Accept-Ranges: none');
+while (ob_get_level() > 0) {
     ob_end_clean();
 }
-
 readfile($filePath);
 exit;
