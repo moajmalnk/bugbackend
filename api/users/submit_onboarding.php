@@ -171,6 +171,15 @@ class SubmitOnboardingAPI extends BaseAPI
                 }
             }
             $missing = $this->validateRequired($fields, $detailColsEarly);
+            // Why: An impossible DOB is sanitized to null, so it used to read as "missing".
+            $rawDob = trim((string) ($_POST['date_of_birth'] ?? ''));
+            if ($rawDob !== '' && ($fields['date_of_birth'] === null || $fields['date_of_birth'] === '')) {
+                $missing = array_values(array_filter(
+                    $missing,
+                    static fn ($item) => $item !== 'date_of_birth'
+                ));
+                $missing[] = 'date_of_birth (use a real past date; age must be 14–100)';
+            }
             if (!empty($missing)) {
                 $this->sendJsonResponse(400, 'Missing required fields: ' . implode(', ', $missing));
                 return;
