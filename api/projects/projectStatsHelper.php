@@ -1,8 +1,22 @@
 <?php
 
-/**
- * Exclude recycle-bin bugs from project stat badges when soft-delete column exists.
- */
+/** Fixed bugs with no tester result yet. False when the column is not migrated. */
+function projectStatsHasRetestColumn(PDO $conn): bool
+{
+    static $has = null;
+    if ($has !== null) {
+        return $has;
+    }
+    try {
+        $st = $conn->query("SHOW COLUMNS FROM bugs LIKE 'tester_retested'");
+        $has = $st && $st->rowCount() > 0;
+    } catch (Throwable $e) {
+        $has = false;
+    }
+    return $has;
+}
+
+/** Exclude recycle-bin bugs from project stat badges when the soft-delete column exists. */
 function projectStatsBugLiveFilter(PDO $conn): string
 {
     static $filter = null;
@@ -70,11 +84,15 @@ function attachProjectListStats(PDO $conn, array &$projects): void
     $bugStatsByProject = [];
     try {
         $bugLive = projectStatsBugLiveFilter($conn);
+        $retestSelect = projectStatsHasRetestColumn($conn)
+            ? ", SUM(CASE WHEN status = 'fixed' AND tester_retested IS NULL THEN 1 ELSE 0 END) AS retest_count"
+            : '';
         $bugStmt = $conn->prepare(
             "SELECT project_id,
                     COUNT(*) AS total,
                     SUM(CASE WHEN status IN ('pending', 'in_progress') THEN 1 ELSE 0 END) AS open_count,
                     SUM(CASE WHEN status = 'fixed' THEN 1 ELSE 0 END) AS fixed_count
+                    {$retestSelect}
              FROM bugs
              WHERE project_id IN ($placeholders){$bugLive}
              GROUP BY project_id"
@@ -87,6 +105,9 @@ function attachProjectListStats(PDO $conn, array &$projects): void
                 'open' => (int) $row['open_count'],
                 'fixed' => (int) $row['fixed_count'],
             ];
+            if (array_key_exists('retest_count', $row)) {
+                $bugStatsByProject[$pid]['retests'] = (int) $row['retest_count'];
+            }
         }
     } catch (Throwable $e) {
         error_log('attachProjectListStats bug_stats: ' . $e->getMessage());
@@ -218,11 +239,15 @@ function buildProjectStatsBundle(PDO $conn, array $projectIds, int $user_id, boo
     $placeholders = implode(',', array_fill(0, count($projectIds), '?'));
     $bugLive = projectStatsBugLiveFilter($conn);
 
+    $retestSelect = projectStatsHasRetestColumn($conn)
+        ? ", SUM(CASE WHEN status = 'fixed' AND tester_retested IS NULL THEN 1 ELSE 0 END) AS retest_count"
+        : '';
     $bugStmt = $conn->prepare(
         "SELECT project_id,
                 COUNT(*) AS total,
                 SUM(CASE WHEN status IN ('pending', 'in_progress') THEN 1 ELSE 0 END) AS open_count,
                 SUM(CASE WHEN status = 'fixed' THEN 1 ELSE 0 END) AS fixed_count
+                {$retestSelect}
          FROM bugs
          WHERE project_id IN ($placeholders){$bugLive}
          GROUP BY project_id"
@@ -235,6 +260,9 @@ function buildProjectStatsBundle(PDO $conn, array $projectIds, int $user_id, boo
             'open' => (int) $row['open_count'],
             'fixed' => (int) $row['fixed_count'],
         ];
+        if (array_key_exists('retest_count', $row)) {
+            $stats['bugs'][$pid]['retests'] = (int) $row['retest_count'];
+        }
     }
 
     $memberStmt = $conn->prepare(

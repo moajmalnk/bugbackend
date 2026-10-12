@@ -538,6 +538,17 @@ class ProjectAnalyticsController extends BaseAPI
             $memberCountStmt->execute([$projectId]);
             $memberCount = (int) ($memberCountStmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
 
+            $retestsPending = null;
+            if (in_array('tester_retested', $bugCols, true)) {
+                $retestLive = in_array('deleted_at', $bugCols, true) ? ' AND deleted_at IS NULL' : '';
+                $retestStmt = $this->conn->prepare(
+                    "SELECT COUNT(*) AS total FROM bugs
+                     WHERE project_id = ? AND status = 'fixed' AND tester_retested IS NULL{$retestLive}"
+                );
+                $retestStmt->execute([$projectId]);
+                $retestsPending = (int) ($retestStmt->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
+            }
+
             $this->sendJsonResponse(200, 'Project analytics retrieved successfully', [
                 'project' => [
                     'id' => (string) $projectRow['id'],
@@ -565,6 +576,7 @@ class ProjectAnalyticsController extends BaseAPI
                     'avg_rise_duration_label' => $riseCount > 0 ? $formatDuration((int) round($riseSum / $riseCount)) : null,
                     'avg_fix_duration_seconds' => $fixCount > 0 ? (int) round($fixSum / $fixCount) : null,
                     'avg_fix_duration_label' => $fixCount > 0 ? $formatDuration((int) round($fixSum / $fixCount)) : null,
+                    'retests' => $retestsPending,
                 ],
                 'bugs' => $bugs,
                 'fixes' => $fixes,
