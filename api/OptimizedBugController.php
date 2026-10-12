@@ -446,7 +446,7 @@ class OptimizedBugController extends OptimizedBaseAPI {
             return ['valid' => false, 'message' => 'Invalid priority'];
         }
         
-        if (isset($data['status']) && !in_array($data['status'], ['pending', 'in_progress', 'fixed', 'declined', 'rejected'])) {
+        if (isset($data['status']) && !in_array($data['status'], ['pending', 'in_progress', 'fixed', 'declined', 'rejected', 'duplicate'])) {
             return ['valid' => false, 'message' => 'Invalid status'];
         }
         

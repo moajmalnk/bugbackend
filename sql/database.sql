@@ -67,8 +67,10 @@ CREATE TABLE `bugs` (
     'in_progress',
     'fixed',
     'declined',
-    'rejected'
+    'rejected',
+    'duplicate'
   ) DEFAULT 'pending',
+  `duplicate_of` varchar(36) DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
   `fixed_by` varchar(255) DEFAULT NULL,

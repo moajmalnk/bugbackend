@@ -2538,13 +2538,13 @@ class UserController extends BaseAPI {
                         $inProgressAt = $step['entered_at'] ?? null;
                         $inProgressTs = $enteredTs;
                     }
-                    if (in_array($status, ['fixed', 'approved', 'completed', 'declined', 'rejected'], true)) {
+                    if (in_array($status, ['fixed', 'approved', 'completed', 'declined', 'rejected', 'duplicate'], true)) {
                         $fixedAt = $step['entered_at'] ?? null;
                         $fixedTs = $enteredTs;
                     }
                 }
 
-                $isClosed = in_array(strtolower((string)$currentStatus), ['fixed', 'approved', 'completed', 'declined', 'rejected'], true);
+                $isClosed = in_array(strtolower((string)$currentStatus), ['fixed', 'approved', 'completed', 'declined', 'rejected', 'duplicate'], true);
                 $endTs = $fixedTs ?: ($isClosed ? $parseTs($timeline[count($timeline) - 1]['entered_at'] ?? null) : $nowTs);
 
                 $riseSeconds = ($raisedTs !== null && $endTs !== null) ? max(0, $endTs - $raisedTs) : null;

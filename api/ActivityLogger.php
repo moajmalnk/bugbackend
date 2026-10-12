@@ -120,14 +120,33 @@ class ActivityLogger extends BaseAPI {
     }
 
     public function logBugStatusChanged($userId, $projectId, $bugId, $bugTitle, $fromStatus, $toStatus, $metadata = []) {
+        $fromLabel = $this->bugStatusLabel($fromStatus);
+        $toLabel = $this->bugStatusLabel($toStatus);
         return $this->logActivity(
             $userId, 
             $projectId, 
             'bug_status_changed', 
-            "Bug status changed from {$fromStatus} to {$toStatus}: {$bugTitle}", 
+            "Bug status changed from {$fromLabel} to {$toLabel}: {$bugTitle}", 
             $bugId, 
             array_merge($metadata, ['action' => 'status_change', 'from' => $fromStatus, 'to' => $toStatus])
         );
+    }
+
+    /**
+     * Why: Activity text and status mail should say Duplicate, not the raw code.
+     */
+    private function bugStatusLabel($status): string
+    {
+        $map = [
+            'pending' => 'Pending',
+            'in_progress' => 'In Progress',
+            'fixed' => 'Fixed',
+            'declined' => 'Declined',
+            'rejected' => 'Rejected',
+            'duplicate' => 'Duplicate',
+        ];
+        $key = strtolower((string) $status);
+        return $map[$key] ?? (string) $status;
     }
 
     /**

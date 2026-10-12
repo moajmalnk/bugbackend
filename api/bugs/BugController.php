@@ -153,6 +153,126 @@ class BugController extends BaseAPI {
         return $cached;
     }
 
+    private function bugsTableHasDuplicateOfColumn(): bool
+    {
+        static $cached = null;
+        if ($cached !== null) {
+            return $cached;
+        }
+        try {
+            $st = $this->conn->query("SHOW COLUMNS FROM bugs LIKE 'duplicate_of'");
+            $cached = $st && $st->rowCount() > 0;
+        } catch (Exception $e) {
+            $cached = false;
+        }
+        return $cached;
+    }
+
+    /**
+     * Why: Duplicate leaves the open queue the same way Declined and Rejected do.
+     * @return string[]
+     */
+    private function closedBugStatuses(): array
+    {
+        return ['fixed', 'declined', 'rejected', 'duplicate'];
+    }
+
+    /**
+     * Why: A duplicate must point at a different bug in the same project.
+     * Any other status clears that link.
+     * @return array{ok:bool,error?:string,duplicate_of:?string}
+     */
+    private function resolveDuplicateLink(string $bugId, string $status, $duplicateOf): array
+    {
+        if ($status !== 'duplicate') {
+            return ['ok' => true, 'duplicate_of' => null];
+        }
+        if (!$this->bugsTableHasDuplicateOfColumn()) {
+            return [
+                'ok' => false,
+                'error' => 'Duplicate status is not available yet. Run the latest database migration.',
+            ];
+        }
+        $originalId = trim((string) ($duplicateOf ?? ''));
+        if ($originalId === '') {
+            return ['ok' => false, 'error' => 'Choose the original bug this duplicates.'];
+        }
+        if ($originalId === $bugId) {
+            return ['ok' => false, 'error' => 'A bug cannot be a duplicate of itself.'];
+        }
+        $stmt = $this->conn->prepare('SELECT id, project_id FROM bugs WHERE id = ? LIMIT 1');
+        $stmt->execute([$originalId]);
+        $original = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$original) {
+            return ['ok' => false, 'error' => 'Original bug was not found.'];
+        }
+        $bugStmt = $this->conn->prepare('SELECT project_id FROM bugs WHERE id = ? LIMIT 1');
+        $bugStmt->execute([$bugId]);
+        $bug = $bugStmt->fetch(PDO::FETCH_ASSOC);
+        if (!$bug || (string) $bug['project_id'] !== (string) $original['project_id']) {
+            return ['ok' => false, 'error' => 'The original bug must be in the same project.'];
+        }
+        return ['ok' => true, 'duplicate_of' => $originalId];
+    }
+
+    /**
+     * Why: Invalid status must roll back the open update transaction before the JSON response exits.
+     */
+    private function failBugUpdate(int $status, string $message): void
+    {
+        if ($this->conn->inTransaction()) {
+            $this->conn->rollBack();
+        }
+        $this->sendJsonResponse($status, $message);
+    }
+
+    /**
+     * @param array<int, string> $updateFields
+     * @param array<int, mixed> $params
+     */
+    private function appendStatusUpdate(array &$updateFields, array &$params, array $data): void
+    {
+        if (!isset($data['status'])) {
+            return;
+        }
+        $status = (string) $data['status'];
+        $allowed = ['pending', 'in_progress', 'fixed', 'declined', 'rejected', 'duplicate'];
+        if (!in_array($status, $allowed, true)) {
+            $this->failBugUpdate(400, 'Invalid status');
+        }
+        $bugId = (string) ($data['id'] ?? '');
+        $link = $this->resolveDuplicateLink($bugId, $status, $data['duplicate_of'] ?? null);
+        if (!$link['ok']) {
+            $this->failBugUpdate(400, (string) ($link['error'] ?? 'Invalid duplicate link'));
+        }
+        $updateFields[] = 'status = ?';
+        $params[] = $status;
+        if ($this->bugsTableHasDuplicateOfColumn()) {
+            $updateFields[] = 'duplicate_of = ?';
+            $params[] = $link['duplicate_of'];
+        }
+    }
+
+    private function attachDuplicateOfTitle(array &$bug): void
+    {
+        if (!array_key_exists('duplicate_of', $bug)) {
+            return;
+        }
+        $bug['duplicate_of_title'] = null;
+        $originalId = trim((string) ($bug['duplicate_of'] ?? ''));
+        if ($originalId === '') {
+            return;
+        }
+        try {
+            $stmt = $this->conn->prepare('SELECT title FROM bugs WHERE id = ? LIMIT 1');
+            $stmt->execute([$originalId]);
+            $title = $stmt->fetchColumn();
+            $bug['duplicate_of_title'] = $title !== false ? (string) $title : null;
+        } catch (Exception $e) {
+            $bug['duplicate_of_title'] = null;
+        }
+    }
+
     private function parseAlreadyRaisedFlag($value): int
     {
         if ($value === null || $value === '') {
@@ -1394,6 +1514,8 @@ class BugController extends BaseAPI {
                 return;
             }
 
+            $this->attachDuplicateOfTitle($bug);
+
             // Get attachments - use CAST to handle type mismatches
             $this->ensureTesterRetestColumns();
             $durationSelect = $this->bugAttachmentsHasDurationColumn() ? ', duration' : '';
@@ -1750,7 +1872,7 @@ class BugController extends BaseAPI {
                 $eventLabel = 'status_changed';
                 $fromNorm = strtolower((string) ($fromStatus ?: $lastStatus));
                 $toNorm = strtolower($toStatus);
-                $closedStatuses = ['fixed', 'declined', 'rejected'];
+                $closedStatuses = $this->closedBugStatuses();
                 if (in_array($fromNorm, $closedStatuses, true) && in_array($toNorm, ['pending', 'in_progress'], true)) {
                     $eventLabel = 'reopened';
                 } elseif ($toNorm === 'fixed') {
@@ -1780,7 +1902,7 @@ class BugController extends BaseAPI {
                 if ($updatedTs !== null) {
                     $fromNorm = strtolower($lastStatus);
                     $toNorm = strtolower($status);
-                    $closedStatuses = ['fixed', 'declined', 'rejected'];
+                    $closedStatuses = $this->closedBugStatuses();
                     $inferredLabel = 'status_changed';
                     if (in_array($fromNorm, $closedStatuses, true) && in_array($toNorm, ['pending', 'in_progress'], true)) {
                         $inferredLabel = 'reopened';
@@ -1876,7 +1998,7 @@ class BugController extends BaseAPI {
                 ];
             }
 
-            $closed = ['fixed', 'declined', 'rejected'];
+            $closed = $this->closedBugStatuses();
             $isOpen = !in_array(strtolower($status), $closed, true);
 
             $resolvedAt = null;
@@ -2328,8 +2450,8 @@ class BugController extends BaseAPI {
             }
             
             if (isset($data['status'])) {
-                $updateFields[] = "status = ?";
-                $values[] = $data['status'];
+                $data['id'] = $id;
+                $this->appendStatusUpdate($updateFields, $values, $data);
             }
             
             if (isset($data['fix_description'])) {
@@ -2577,6 +2699,7 @@ class BugController extends BaseAPI {
                     SUM(CASE WHEN b.status = 'fixed' THEN 1 ELSE 0 END) AS fixed,
                     SUM(CASE WHEN b.status = 'declined' THEN 1 ELSE 0 END) AS declined,
                     SUM(CASE WHEN b.status = 'rejected' THEN 1 ELSE 0 END) AS rejected,
+                    SUM(CASE WHEN b.status = 'duplicate' THEN 1 ELSE 0 END) AS duplicate,
                     SUM(CASE WHEN b.status IN ('pending', 'in_progress') THEN 1 ELSE 0 END) AS open_count,
                     SUM(CASE WHEN b.status IN ('fixed', 'rejected') THEN 1 ELSE 0 END) AS resolved,
                     SUM(CASE WHEN b.status IN ('pending', 'in_progress') AND b.priority = 'high' THEN 1 ELSE 0 END) AS open_high,
@@ -2595,6 +2718,7 @@ class BugController extends BaseAPI {
             $fixed = (int) ($row['fixed'] ?? 0);
             $declined = (int) ($row['declined'] ?? 0);
             $rejected = (int) ($row['rejected'] ?? 0);
+            $duplicate = (int) ($row['duplicate'] ?? 0);
             $open = (int) ($row['open_count'] ?? ($pending + $inProgress));
 
             $fixedScope = null;
@@ -2664,11 +2788,12 @@ class BugController extends BaseAPI {
                 'fixed' => $fixed,
                 'declined' => $declined,
                 'rejected' => $rejected,
+                'duplicate' => $duplicate,
                 'open' => $open,
                 'resolved' => $fixedScope ? ($fixed + $rejected) : (int) ($row['resolved'] ?? ($fixed + $rejected)),
                 'total' => $fixedScope
-                    ? ($pending + $inProgress + $fixed + $declined + $rejected)
-                    : (int) ($row['total'] ?? ($pending + $inProgress + $fixed + $declined + $rejected)),
+                    ? ($pending + $inProgress + $fixed + $declined + $rejected + $duplicate)
+                    : (int) ($row['total'] ?? ($pending + $inProgress + $fixed + $declined + $rejected + $duplicate)),
                 'open_priority' => [
                     'high' => (int) ($row['open_high'] ?? 0),
                     'medium' => (int) ($row['open_medium'] ?? 0),
@@ -2721,7 +2846,7 @@ class BugController extends BaseAPI {
             $accessUserId = isset($filters['access_user_id']) ? $filters['access_user_id'] : null;
             $facetUserId = isset($filters['facet_user_id']) ? $filters['facet_user_id'] : null;
 
-            $allowedStatuses = ['pending', 'in_progress', 'fixed', 'declined', 'rejected'];
+            $allowedStatuses = ['pending', 'in_progress', 'fixed', 'declined', 'rejected', 'duplicate'];
             $statusList = [];
             if ($status !== null && $status !== '') {
                 foreach (explode(',', (string) $status) as $part) {
@@ -3258,10 +3383,7 @@ class BugController extends BaseAPI {
                 $updateFields[] = "project_id = ?";
                 $params[] = $data['project_id'];
             }
-            if (isset($data['status'])) {
-                $updateFields[] = "status = ?";
-                $params[] = $data['status'];
-            }
+            $this->appendStatusUpdate($updateFields, $params, $data);
             if ($this->bugsTableHasAlreadyRaisedColumn() && array_key_exists('already_raised', $data)) {
                 $updateFields[] = "already_raised = ?";
                 $params[] = $this->parseAlreadyRaisedFlag($data['already_raised']);
@@ -3377,6 +3499,7 @@ class BugController extends BaseAPI {
             $updatedBug['bug_types'] = $syncedBugTypes !== null
                 ? $syncedBugTypes
                 : $this->getBugTypesForBug((string) $data['id']);
+            $this->attachDuplicateOfTitle($updatedBug);
 
             $this->conn->commit();
 
@@ -3525,10 +3648,7 @@ class BugController extends BaseAPI {
                 $updateFields[] = "project_id = ?";
                 $params[] = $data['project_id'];
             }
-            if (isset($data['status'])) {
-                $updateFields[] = "status = ?";
-                $params[] = $data['status'];
-            }
+            $this->appendStatusUpdate($updateFields, $params, $data);
             if ($this->bugsTableHasAlreadyRaisedColumn() && array_key_exists('already_raised', $data)) {
                 $updateFields[] = "already_raised = ?";
                 $params[] = $this->parseAlreadyRaisedFlag($data['already_raised']);
@@ -3826,6 +3946,7 @@ class BugController extends BaseAPI {
             } else {
                 $updatedBug['bug_types'] = $this->getBugTypesForBug((string) $data['id']);
             }
+            $this->attachDuplicateOfTitle($updatedBug);
 
             // Log activity (non-blocking, but synchronous for now)
             try {
@@ -4049,6 +4170,7 @@ class BugController extends BaseAPI {
             $fixedByMonth = [];
             $declinedByMonth = [];
             $rejectedByMonth = [];
+            $duplicateByMonth = [];
             $highCreatedByMonth = [];
             $updatesByMonth = [];
             $updatesCompletedByMonth = [];
@@ -4077,10 +4199,11 @@ class BugController extends BaseAPI {
                 SELECT DATE_FORMAT(updated_at, '%Y-%m') AS ym,
                        SUM(CASE WHEN status = 'fixed' THEN 1 ELSE 0 END) AS fixed_cnt,
                        SUM(CASE WHEN status = 'declined' THEN 1 ELSE 0 END) AS declined_cnt,
-                       SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected_cnt
+                       SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected_cnt,
+                       SUM(CASE WHEN status = 'duplicate' THEN 1 ELSE 0 END) AS duplicate_cnt
                 FROM bugs
                 WHERE updated_at IS NOT NULL
-                  AND status IN ('fixed', 'declined', 'rejected')
+                  AND status IN ('fixed', 'declined', 'rejected', 'duplicate')
                   AND updated_at >= ?
                   AND updated_at < ?
                   {$projectScopeSql}
@@ -4094,6 +4217,7 @@ class BugController extends BaseAPI {
                 $fixedByMonth[$ym] = (int)$row['fixed_cnt'];
                 $declinedByMonth[$ym] = (int)$row['declined_cnt'];
                 $rejectedByMonth[$ym] = (int)$row['rejected_cnt'];
+                $duplicateByMonth[$ym] = (int)$row['duplicate_cnt'];
             }
 
             $updSql = "
@@ -4224,10 +4348,11 @@ class BugController extends BaseAPI {
                 $fixed = $fixedByMonth[$ym] ?? 0;
                 $declined = $declinedByMonth[$ym] ?? 0;
                 $rejected = $rejectedByMonth[$ym] ?? 0;
+                $duplicate = $duplicateByMonth[$ym] ?? 0;
                 $updates = $updatesByMonth[$ym] ?? 0;
                 $updatesCompleted = $updatesCompletedByMonth[$ym] ?? 0;
                 $high = $highCreatedByMonth[$ym] ?? 0;
-                $closed = $fixed + $declined + $rejected;
+                $closed = $fixed + $declined + $rejected + $duplicate;
                 $activity = $created + $fixed + $updates;
 
                 $fixRate = $created > 0 ? round(($fixed / $created) * 100, 1) : null;
@@ -4262,6 +4387,7 @@ class BugController extends BaseAPI {
                     'bugs_fixed' => $fixed,
                     'bugs_declined' => $declined,
                     'bugs_rejected' => $rejected,
+                    'bugs_duplicate' => $duplicate,
                     'bugs_closed' => $closed,
                     'bugs_high_created' => $high,
                     'updates_created' => $updates,
@@ -4286,6 +4412,7 @@ class BugController extends BaseAPI {
                 'bugs_fixed' => 0,
                 'bugs_declined' => 0,
                 'bugs_rejected' => 0,
+                'bugs_duplicate' => 0,
                 'updates_created' => 0,
                 'updates_completed' => 0,
                 'bugs_high_created' => 0,
@@ -4298,6 +4425,7 @@ class BugController extends BaseAPI {
                 $totals['bugs_fixed'] += $m['bugs_fixed'];
                 $totals['bugs_declined'] += $m['bugs_declined'];
                 $totals['bugs_rejected'] += $m['bugs_rejected'];
+                $totals['bugs_duplicate'] += $m['bugs_duplicate'];
                 $totals['updates_created'] += $m['updates_created'];
                 $totals['updates_completed'] += $m['updates_completed'];
                 $totals['bugs_high_created'] += $m['bugs_high_created'];
