@@ -17,6 +17,58 @@ class CursorTipsController extends BaseAPI
         parent::__construct();
     }
 
+    /**
+     * Why: Small-fix usage habits live in an idempotent SQL upsert. Apply it
+     * once the sentinel tip is missing so a deploy updates the catalog without
+     * a manual mysql session.
+     */
+    private function ensureSmallFixUsageTips(): void
+    {
+        if (!$this->tablesReady()) {
+            return;
+        }
+        try {
+            $sentinel = $this->conn->prepare(
+                'SELECT 1 FROM cursor_tips WHERE tip_key = ? LIMIT 1'
+            );
+            $sentinel->execute(['cursor_wf_weekly_usage']);
+            $present = (bool) $sentinel->fetch(PDO::FETCH_NUM);
+            $sentinel->closeCursor();
+            if ($present) {
+                return;
+            }
+            $path = __DIR__ . '/../../migrations/132_cursor_tips_small_fix_usage.sql';
+            if (!is_file($path)) {
+                return;
+            }
+            $sql = file_get_contents($path);
+            if ($sql === false) {
+                return;
+            }
+            $parts = preg_split('/;\s*(?:\r?\n|$)/', $sql) ?: [];
+            foreach ($parts as $statement) {
+                $lines = preg_split('/\r?\n/', $statement) ?: [];
+                $kept = [];
+                foreach ($lines as $line) {
+                    if (preg_match('/^\s*--/', $line)) {
+                        continue;
+                    }
+                    $kept[] = $line;
+                }
+                $statement = trim(implode("\n", $kept));
+                if ($statement === '') {
+                    continue;
+                }
+                $this->conn->exec($statement);
+            }
+        } catch (Throwable $e) {
+            error_log(json_encode([
+                'event' => 'cursor_tip.seed_small_fix_usage.failed',
+                'error' => $e->getMessage(),
+            ]));
+        }
+    }
+
     private function requireTeamAuth()
     {
         try {
@@ -149,6 +201,7 @@ class CursorTipsController extends BaseAPI
             ]);
             return;
         }
+        $this->ensureSmallFixUsageTips();
 
         try {
             $stmt = $this->conn->prepare(
@@ -245,6 +298,7 @@ class CursorTipsController extends BaseAPI
             $this->sendJsonResponse(503, 'Cursor Tips is not set up. Run migration 103_cursor_tips.sql.');
             return;
         }
+        $this->ensureSmallFixUsageTips();
 
         $phase = isset($_GET['phase']) ? strtolower(trim((string)$_GET['phase'])) : '';
         $search = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
