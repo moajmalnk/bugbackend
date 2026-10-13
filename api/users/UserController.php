@@ -1315,6 +1315,7 @@ class UserController extends BaseAPI {
             $fields = [];
             $params = [];
             $deactivatingAccount = false;
+            $reactivatingAccount = false;
             $testerTypeChanged = false;
             $testerTypeResult = null;
             if (isset($data['username'])) {
@@ -1446,7 +1447,7 @@ class UserController extends BaseAPI {
                     $this->sendJsonResponse(400, "You cannot change your own account status from here");
                     return;
                 }
-                $targetStmt = $conn->prepare("SELECT role FROM users WHERE id = ? LIMIT 1");
+                $targetStmt = $conn->prepare("SELECT role, account_active FROM users WHERE id = ? LIMIT 1");
                 $targetStmt->execute([$id]);
                 $targetRow = $targetStmt->fetch(PDO::FETCH_ASSOC);
                 if (!$targetRow) {
@@ -1459,10 +1460,15 @@ class UserController extends BaseAPI {
                     $this->sendJsonResponse(403, "Cannot deactivate administrator accounts");
                     return;
                 }
+                $wasActive = !array_key_exists('account_active', $targetRow)
+                    || $targetRow['account_active'] === null
+                    || (int) $targetRow['account_active'] === 1;
                 $fields[] = "account_active = ?";
                 $params[] = $activeVal;
-                if ($activeVal === 0) {
+                if ($activeVal === 0 && $wasActive) {
                     $deactivatingAccount = true;
+                } elseif ($activeVal === 1 && !$wasActive) {
+                    $reactivatingAccount = true;
                 }
                 if (in_array('employment_status', $userCols, true) && !array_key_exists('employment_status', $data)) {
                     $fields[] = 'employment_status = ?';
@@ -1627,10 +1633,17 @@ class UserController extends BaseAPI {
                 $fields[] = 'employment_status = ?';
                 $params[] = $es;
                 if ($hasAccountActiveCol && !array_key_exists('account_active', $data)) {
+                    $nextActive = $es === 'active' ? 1 : 0;
+                    $prevActiveStmt = $conn->prepare('SELECT account_active FROM users WHERE id = ? LIMIT 1');
+                    $prevActiveStmt->execute([$id]);
+                    $prevActive = $prevActiveStmt->fetchColumn();
+                    $wasActive = $prevActive === false || $prevActive === null || (int) $prevActive === 1;
                     $fields[] = 'account_active = ?';
-                    $params[] = $es === 'active' ? 1 : 0;
-                    if ($es === 'inactive') {
+                    $params[] = $nextActive;
+                    if ($nextActive === 0 && $wasActive && $prevActive !== false) {
                         $deactivatingAccount = true;
+                    } elseif ($nextActive === 1 && $prevActive !== false && (int) $prevActive !== 1) {
+                        $reactivatingAccount = true;
                     }
                 }
             }
@@ -1672,6 +1685,13 @@ class UserController extends BaseAPI {
                     $this->sendJsonResponse(500, "Failed to update user");
                     return;
                 }
+                if ($deactivatingAccount) {
+                    require_once __DIR__ . '/../../utils/inactive_account_channels.php';
+                    br_revoke_channels_for_inactive_user($conn, (string) $id);
+                } elseif ($reactivatingAccount) {
+                    require_once __DIR__ . '/../../utils/inactive_account_channels.php';
+                    br_restore_push_after_reactivation($conn, (string) $id);
+                }
             }
 
             if ($shouldRegenerate && in_array('employee_code', $userCols, true)) {
@@ -1694,31 +1714,6 @@ class UserController extends BaseAPI {
             }
 
             {
-                // Revoke push tokens so deactivated users cannot receive FCM
-                if ($deactivatingAccount) {
-                    try {
-                        $fcmCols = [];
-                        $fcmColRes = $conn->query("SHOW COLUMNS FROM user_fcm_tokens");
-                        if ($fcmColRes) {
-                            while ($row = $fcmColRes->fetch(PDO::FETCH_ASSOC)) {
-                                $fcmCols[] = $row['Field'];
-                            }
-                        }
-                        if (in_array('is_active', $fcmCols, true)) {
-                            $fcmStmt = $conn->prepare("UPDATE user_fcm_tokens SET is_active = 0 WHERE user_id = ?");
-                            $fcmStmt->execute([$id]);
-                        } else {
-                            $fcmStmt = $conn->prepare("DELETE FROM user_fcm_tokens WHERE user_id = ?");
-                            $fcmStmt->execute([$id]);
-                        }
-                        if (in_array('fcm_token', $userCols, true)) {
-                            $legacyStmt = $conn->prepare("UPDATE users SET fcm_token = NULL WHERE id = ?");
-                            $legacyStmt->execute([$id]);
-                        }
-                    } catch (Exception $e) {
-                        error_log("Failed to deactivate FCM tokens for user {$id}: " . $e->getMessage());
-                    }
-                }
 
                 // Log user update activity
                 try {

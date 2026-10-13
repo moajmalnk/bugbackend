@@ -87,8 +87,14 @@ The BugRicer Team
 
 function sendEmail($to, $subject, $html_body, $text_body = '') {
     require_once __DIR__ . '/notification_delivery_log.php';
+    require_once __DIR__ . '/inactive_account_channels.php';
 
     try {
+        if (br_email_blocked_for_inactive_account((string) $to)) {
+            br_log_notification_delivery('email', 'failed', (string) $to, 'account_inactive', (string) $subject);
+            return false;
+        }
+
         error_log("📧 sendEmail called - To: $to, Subject: $subject");
 
         $smtpUser = Environment::get('SMTP_USER');
@@ -166,6 +172,11 @@ function sendEmailWithAttachment(
     $text_body = ''
 ) {
     try {
+        require_once __DIR__ . '/inactive_account_channels.php';
+        if (br_email_blocked_for_inactive_account((string) $to)) {
+            error_log('sendEmailWithAttachment skipped for an inactive account');
+            return false;
+        }
         if (!is_file($attachmentPath)) {
             error_log("❌ sendEmailWithAttachment: file not found: $attachmentPath");
             return false;

@@ -15,8 +15,27 @@ function configurePhpMailerUtf8(PHPMailer $mail): void {
 }
 
 function sendBugNotification($to, $subject, $body, $attachments = []) {
-    // Log function call
-    error_log("Sending bug notification to: " . (is_array($to) ? implode(',', $to) : $to));
+    require_once __DIR__ . '/notification_delivery_log.php';
+    require_once __DIR__ . '/inactive_account_channels.php';
+
+    $recipients = is_array($to) ? $to : [$to];
+    $allowed = [];
+    foreach ($recipients as $recipient) {
+        $recipient = trim((string) $recipient);
+        if ($recipient === '') {
+            continue;
+        }
+        if (br_email_blocked_for_inactive_account($recipient)) {
+            br_log_notification_delivery('email', 'failed', $recipient, 'account_inactive', (string) $subject);
+            continue;
+        }
+        $allowed[] = $recipient;
+    }
+    if ($allowed === []) {
+        return false;
+    }
+
+    error_log('Sending bug notification to: ' . implode(',', $allowed));
     
     try {
         $mail = new PHPMailer(true);
@@ -38,11 +57,11 @@ function sendBugNotification($to, $subject, $body, $attachments = []) {
         // Add recipients
         $mail->addAddress('noreply@codoacademy.com', 'BugRicer'); // Main recipient (not shown to others)
         if (is_array($to)) {
-            foreach ($to as $recipient) {
+            foreach ($allowed as $recipient) {
                 $mail->addBCC($recipient);
             }
         } else {
-            $mail->addBCC($to);
+            $mail->addBCC($allowed[0]);
         }
         
         // Content
@@ -71,23 +90,13 @@ function sendBugNotification($to, $subject, $body, $attachments = []) {
         
         // Send email
         $mail->send();
-        require_once __DIR__ . '/notification_delivery_log.php';
-        $recipients = is_array($to) ? $to : [$to];
-        foreach ($recipients as $recipient) {
-            if (trim((string)$recipient) === '') {
-                continue;
-            }
+        foreach ($allowed as $recipient) {
             br_log_notification_delivery('email', 'sent', (string)$recipient, null, (string)$subject);
         }
         return true;
     } catch (Exception $e) {
         error_log("Mail error: " . $e->getMessage());
-        require_once __DIR__ . '/notification_delivery_log.php';
-        $recipients = is_array($to) ? $to : [$to];
-        foreach ($recipients as $recipient) {
-            if (trim((string)$recipient) === '') {
-                continue;
-            }
+        foreach ($allowed as $recipient) {
             br_log_notification_delivery('email', 'failed', (string)$recipient, $e->getMessage(), (string)$subject);
         }
         return false;

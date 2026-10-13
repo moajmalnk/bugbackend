@@ -312,6 +312,20 @@ function br_whatsapp_error_is_campaign_busy(?string $error): bool
  */
 function sendWhatsAppMessage($mobile, $message) {
     require_once __DIR__ . '/notification_delivery_log.php';
+    require_once __DIR__ . '/inactive_account_channels.php';
+
+    if (br_phone_blocked_for_inactive_account((string) $mobile)) {
+        br_log_notification_delivery(
+            'whatsapp',
+            'failed',
+            (string) $mobile,
+            'account_inactive',
+            null,
+            null,
+            br_whatsapp_message_meta((string) $message)
+        );
+        return false;
+    }
 
     $formats = getPhoneFormatsForWhatsApp($mobile);
     if ($formats === []) {

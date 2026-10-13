@@ -80,9 +80,6 @@ function br_log_notification_delivery(
 }
 
 /**
- * Resolve user_id from email or phone when possible.
- */
-/**
  * Why: The message body has to survive in meta so a failed WhatsApp row can be
  * resent later. TEXT holds it; a short cap used to drop the body entirely.
  */
@@ -119,6 +116,9 @@ function br_public_delivery_log_row(array $row): array
     return $row;
 }
 
+/**
+ * Resolve user_id from email or phone when possible.
+ */
 function br_lookup_user_id_by_recipient(PDO $conn, string $channel, string $recipient): ?string
 {
     try {
