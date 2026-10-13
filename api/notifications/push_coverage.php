@@ -439,6 +439,8 @@ try {
         'mail_failed_7d' => 0,
         'whatsapp_sent_7d' => 0,
         'whatsapp_failed_7d' => 0,
+        'google_connected' => 0,
+        'google_not_connected' => 0,
     ];
 
     try {
@@ -588,6 +590,85 @@ try {
         error_log('push_coverage channel coverage: ' . $e->getMessage());
     }
 
+    $googleConnectedUsers = [];
+    $googleMissingUsers = [];
+    if (tableExists($conn, 'google_tokens')) {
+        $connectedAtExpr = tableHasColumn($conn, 'google_tokens', 'updated_at')
+            ? 'MAX(g.updated_at)'
+            : 'MAX(g.created_at)';
+        $loadGoogleAccounts = static function (PDO $conn, string $userMatch, string $connectedAtExpr) use (&$googleConnectedUsers, &$googleMissingUsers, &$channelSummary): void {
+            $connectedStmt = $conn->query(
+                "SELECT u.id, u.username, u.email,
+                        MAX(g.email) AS google_email,
+                        {$connectedAtExpr} AS google_connected_at
+                 FROM users u
+                 INNER JOIN google_tokens g ON {$userMatch}
+                 WHERE u.account_active = 1
+                   AND g.refresh_token IS NOT NULL
+                   AND TRIM(g.refresh_token) <> ''
+                 GROUP BY u.id, u.username, u.email
+                 ORDER BY u.username
+                 LIMIT 200"
+            );
+            $googleConnectedUsers = $connectedStmt ? $connectedStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+
+            $missingGoogleStmt = $conn->query(
+                "SELECT u.id, u.username, u.email
+                 FROM users u
+                 WHERE u.account_active = 1
+                   AND NOT EXISTS (
+                     SELECT 1 FROM google_tokens g
+                     WHERE {$userMatch}
+                       AND g.refresh_token IS NOT NULL
+                       AND TRIM(g.refresh_token) <> ''
+                   )
+                 ORDER BY u.username
+                 LIMIT 200"
+            );
+            $googleMissingUsers = $missingGoogleStmt ? $missingGoogleStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+
+            $cGoogle = $conn->query(
+                "SELECT COUNT(DISTINCT g.bugricer_user_id)
+                 FROM google_tokens g
+                 INNER JOIN users u ON {$userMatch}
+                 WHERE u.account_active = 1
+                   AND g.refresh_token IS NOT NULL
+                   AND TRIM(g.refresh_token) <> ''"
+            );
+            $cGoogleMissing = $conn->query(
+                "SELECT COUNT(*)
+                 FROM users u
+                 WHERE u.account_active = 1
+                   AND NOT EXISTS (
+                     SELECT 1 FROM google_tokens g
+                     WHERE {$userMatch}
+                       AND g.refresh_token IS NOT NULL
+                       AND TRIM(g.refresh_token) <> ''
+                   )"
+            );
+            if ($cGoogle) {
+                $channelSummary['google_connected'] = (int) $cGoogle->fetchColumn();
+            }
+            if ($cGoogleMissing) {
+                $channelSummary['google_not_connected'] = (int) $cGoogleMissing->fetchColumn();
+            }
+        };
+
+        try {
+            $loadGoogleAccounts(
+                $conn,
+                'g.bugricer_user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci',
+                $connectedAtExpr
+            );
+        } catch (Throwable $collationErr) {
+            try {
+                $loadGoogleAccounts($conn, 'g.bugricer_user_id = u.id', $connectedAtExpr);
+            } catch (Throwable $e) {
+                error_log('push_coverage google accounts: ' . $e->getMessage());
+            }
+        }
+    }
+
     $summary = array_merge($summary, $channelSummary);
 
     echo json_encode([
@@ -608,6 +689,8 @@ try {
             'mail_recent_errors' => $mailRecentErrors,
             'whatsapp_recent_sent' => $whatsappRecentSent,
             'whatsapp_recent_errors' => $whatsappRecentErrors,
+            'google_connected_users' => $googleConnectedUsers,
+            'google_missing_users' => $googleMissingUsers,
         ],
     ]);
 } catch (Throwable $e) {
