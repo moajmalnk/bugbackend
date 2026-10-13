@@ -282,11 +282,33 @@ function sendWhatsAppMessageSingle($mobile, $message) {
 }
 
 /**
- * Send WhatsApp message using the API (single canonical number — no format spam).
+ * Why: Resend must replay the same text. The body stays in the delivery log,
+ * capped so a huge payload cannot blow the TEXT column.
+ */
+function br_whatsapp_message_meta(string $message, array $extra = []): array
+{
+    $max = 12000;
+    $length = mb_strlen($message);
+    return array_merge($extra, [
+        'body' => mb_substr($message, 0, $max),
+        'body_truncated' => $length > $max,
+        'body_hash' => substr(hash('sha256', $message), 0, 24),
+    ]);
+}
+
+function br_whatsapp_error_is_campaign_busy(?string $error): bool
+{
+    $text = strtolower((string) $error);
+    return strpos($text, 'already sending') !== false
+        || strpos($text, 'wait until it finishes') !== false;
+}
+
+/**
+ * Send one WhatsApp message and log the outcome, including the text needed for a later resend.
  *
  * @param string $mobile Phone number
  * @param string $message The message to send
- * @return bool Success status (true if Notify accepted: Finished or Pending)
+ * @return bool True when Notify accepted the message (Finished or Pending)
  */
 function sendWhatsAppMessage($mobile, $message) {
     require_once __DIR__ . '/notification_delivery_log.php';
@@ -294,7 +316,15 @@ function sendWhatsAppMessage($mobile, $message) {
     $formats = getPhoneFormatsForWhatsApp($mobile);
     if ($formats === []) {
         error_log("❌ Invalid WhatsApp phone number: $mobile");
-        br_log_notification_delivery('whatsapp', 'failed', (string) $mobile, 'invalid_phone');
+        br_log_notification_delivery(
+            'whatsapp',
+            'failed',
+            (string) $mobile,
+            'invalid_phone',
+            null,
+            null,
+            br_whatsapp_message_meta((string) $message)
+        );
         return false;
     }
 
@@ -313,20 +343,262 @@ function sendWhatsAppMessage($mobile, $message) {
             !empty($result['pending']) ? 'notify_status_pending' : null,
             null,
             null,
-            [
+            br_whatsapp_message_meta((string) $message, [
                 'format' => $format,
                 'httpCode' => $result['httpCode'] ?? null,
                 'notify_status' => $result['notify_status'] ?? null,
                 'pending' => !empty($result['pending']),
-            ]
+            ])
         );
         return true;
     }
 
     $lastError = substr((string) ($result['error'] ?? $result['response'] ?? 'failed'), 0, 200);
     error_log("❌ WhatsApp send failed for $mobile (HTTP " . ($result['httpCode'] ?? 0) . "): $lastError");
-    br_log_notification_delivery('whatsapp', 'failed', (string) $mobile, $lastError);
+    br_log_notification_delivery(
+        'whatsapp',
+        'failed',
+        (string) $mobile,
+        $lastError,
+        null,
+        null,
+        br_whatsapp_message_meta((string) $message, [
+            'format' => $format,
+            'httpCode' => $result['httpCode'] ?? null,
+        ])
+    );
     return false;
+}
+
+/**
+ * Why: Retrying a failed row in place stops a second click from queuing another
+ * campaign, and skips the send when a later success already covered that text.
+ *
+ * @return array{http:int,payload:array<string,mixed>}
+ */
+function br_resend_failed_whatsapp(PDO $conn, int $logId): array
+{
+    require_once __DIR__ . '/notification_delivery_log.php';
+    br_ensure_notification_delivery_log($conn);
+
+    if ($logId <= 0) {
+        return ['http' => 400, 'payload' => ['success' => false, 'message' => 'log_id is required']];
+    }
+
+    $conn->beginTransaction();
+    try {
+        $stmt = $conn->prepare(
+            'SELECT id, channel, status, recipient, error_message, meta, created_at
+             FROM notification_delivery_log WHERE id = ? LIMIT 1 FOR UPDATE'
+        );
+        $stmt->execute([$logId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            $conn->rollBack();
+            return ['http' => 404, 'payload' => ['success' => false, 'message' => 'Delivery log not found']];
+        }
+        if (($row['channel'] ?? '') !== 'whatsapp' || ($row['status'] ?? '') !== 'failed') {
+            $conn->rollBack();
+            return [
+                'http' => 409,
+                'payload' => ['success' => false, 'message' => 'Only a failed WhatsApp message can be resent'],
+            ];
+        }
+
+        $meta = json_decode((string) ($row['meta'] ?? ''), true);
+        if (!is_array($meta)) {
+            $meta = [];
+        }
+        $lockUntil = (int) ($meta['retry_lock'] ?? 0);
+        if ($lockUntil > time()) {
+            $conn->rollBack();
+            return [
+                'http' => 409,
+                'payload' => [
+                    'success' => false,
+                    'code' => 'in_progress',
+                    'message' => 'A resend for this message is already running.',
+                ],
+            ];
+        }
+
+        $body = (string) ($meta['body'] ?? '');
+        if (trim($body) === '' || !empty($meta['body_truncated'])) {
+            $conn->rollBack();
+            return [
+                'http' => 422,
+                'payload' => [
+                    'success' => false,
+                    'code' => 'missing_body',
+                    'message' => 'This failure was logged without the full message text, so it cannot be resent.',
+                ],
+            ];
+        }
+
+        $lastAttempt = (int) ($meta['last_attempt_at'] ?? 0);
+        if ($lastAttempt <= 0) {
+            $created = strtotime((string) ($row['created_at'] ?? ''));
+            $lastAttempt = $created ?: 0;
+        }
+        if (
+            br_whatsapp_error_is_campaign_busy($row['error_message'] ?? null)
+            && $lastAttempt > 0
+            && (time() - $lastAttempt) < 45
+        ) {
+            $conn->rollBack();
+            return [
+                'http' => 409,
+                'payload' => [
+                    'success' => false,
+                    'code' => 'campaign_busy',
+                    'message' => 'A WhatsApp campaign is still sending. Wait until it finishes, then resend.',
+                ],
+            ];
+        }
+
+        $hash = (string) ($meta['body_hash'] ?? '');
+        $coveredBy = $hash !== '' ? br_whatsapp_later_delivery_id($conn, $row, $hash) : null;
+        if ($coveredBy) {
+            $meta['resolved_reason'] = 'later_delivery';
+            $meta['resolved_by'] = $coveredBy;
+            $meta['retry_lock'] = 0;
+            br_write_whatsapp_delivery_state($conn, $logId, 'sent', null, $meta);
+            $conn->commit();
+            return [
+                'http' => 200,
+                'payload' => [
+                    'success' => true,
+                    'message' => 'Already delivered in a later send. Marked as sent.',
+                    'data' => ['id' => $logId, 'status' => 'sent', 'already_delivered' => true],
+                ],
+            ];
+        }
+
+        $meta['retry_lock'] = time() + 90;
+        br_write_whatsapp_delivery_state(
+            $conn,
+            $logId,
+            'failed',
+            (string) ($row['error_message'] ?? ''),
+            $meta
+        );
+        $conn->commit();
+    } catch (Throwable $e) {
+        if ($conn->inTransaction()) {
+            $conn->rollBack();
+        }
+        throw $e;
+    }
+
+    try {
+        $formats = getPhoneFormatsForWhatsApp((string) $row['recipient']);
+        if ($formats === []) {
+            br_finish_whatsapp_resend($conn, $logId, false, 'invalid_phone');
+            return [
+                'http' => 422,
+                'payload' => ['success' => false, 'message' => 'Phone number is not valid for WhatsApp.'],
+            ];
+        }
+
+        $result = sendWhatsAppMessageSingle($formats[0], $body);
+        $ok = !empty($result['success']);
+        $error = $ok
+            ? null
+            : substr((string) ($result['error'] ?? $result['response'] ?? 'failed'), 0, 200);
+        br_finish_whatsapp_resend($conn, $logId, $ok, $error, [
+            'format' => $formats[0],
+            'httpCode' => $result['httpCode'] ?? null,
+            'notify_status' => $result['notify_status'] ?? null,
+            'pending' => !empty($result['pending']),
+        ]);
+
+        if ($ok) {
+            return [
+                'http' => 200,
+                'payload' => [
+                    'success' => true,
+                    'message' => !empty($result['pending'])
+                        ? 'WhatsApp accepted the message and is still delivering it.'
+                        : 'WhatsApp message resent.',
+                    'data' => ['id' => $logId, 'status' => 'sent', 'already_delivered' => false],
+                ],
+            ];
+        }
+
+        $busy = br_whatsapp_error_is_campaign_busy($error);
+        return [
+            'http' => $busy ? 409 : 502,
+            'payload' => [
+                'success' => false,
+                'code' => $busy ? 'campaign_busy' : 'send_failed',
+                'message' => $busy
+                    ? 'A WhatsApp campaign is still sending. Wait until it finishes, then resend.'
+                    : ('WhatsApp did not accept the resend.' . ($error ? ' ' . $error : '')),
+            ],
+        ];
+    } catch (Throwable $e) {
+        br_finish_whatsapp_resend($conn, $logId, false, 'resend_exception');
+        throw $e;
+    }
+}
+
+function br_whatsapp_later_delivery_id(PDO $conn, array $failedRow, string $hash): ?int
+{
+    $stmt = $conn->prepare(
+        "SELECT id, recipient, meta
+         FROM notification_delivery_log
+         WHERE channel = 'whatsapp' AND status = 'sent' AND id <> ? AND created_at >= ?
+         ORDER BY id DESC
+         LIMIT 200"
+    );
+    $stmt->execute([(int) $failedRow['id'], $failedRow['created_at']]);
+    $digits = preg_replace('/\D/', '', (string) ($failedRow['recipient'] ?? ''));
+    while ($sent = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $sentDigits = preg_replace('/\D/', '', (string) ($sent['recipient'] ?? ''));
+        if ($digits === '' || $sentDigits !== $digits) {
+            continue;
+        }
+        $sentMeta = json_decode((string) ($sent['meta'] ?? ''), true);
+        if (is_array($sentMeta) && (string) ($sentMeta['body_hash'] ?? '') === $hash) {
+            return (int) $sent['id'];
+        }
+    }
+    return null;
+}
+
+function br_write_whatsapp_delivery_state(PDO $conn, int $id, string $status, ?string $error, array $meta): void
+{
+    require_once __DIR__ . '/notification_delivery_log.php';
+    $status = $status === 'sent' ? 'sent' : 'failed';
+    $stmt = $conn->prepare(
+        'UPDATE notification_delivery_log SET status = ?, error_message = ?, meta = ? WHERE id = ?'
+    );
+    $stmt->execute([
+        $status,
+        $status === 'sent' ? null : ($error !== null ? mb_substr($error, 0, 500) : null),
+        br_notification_delivery_meta_json($meta),
+        $id,
+    ]);
+}
+
+function br_finish_whatsapp_resend(PDO $conn, int $logId, bool $ok, ?string $error, array $extra = []): void
+{
+    $stmt = $conn->prepare('SELECT meta FROM notification_delivery_log WHERE id = ? LIMIT 1');
+    $stmt->execute([$logId]);
+    $meta = json_decode((string) $stmt->fetchColumn(), true);
+    if (!is_array($meta)) {
+        $meta = [];
+    }
+    $meta['retry_lock'] = 0;
+    $meta['last_attempt_at'] = time();
+    $meta['retry_count'] = (int) ($meta['retry_count'] ?? 0) + 1;
+    if ($ok) {
+        $meta['resent_at'] = time();
+    }
+    foreach ($extra as $key => $value) {
+        $meta[$key] = $value;
+    }
+    br_write_whatsapp_delivery_state($conn, $logId, $ok ? 'sent' : 'failed', $ok ? null : $error, $meta);
 }
 
 /**

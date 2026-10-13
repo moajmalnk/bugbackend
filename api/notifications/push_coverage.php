@@ -552,7 +552,7 @@ try {
         $fetchLog = static function (PDO $conn, string $channel, string $status) {
             $stmt = $conn->prepare(
                 "SELECT l.id, l.channel, l.status, l.user_id, l.recipient, l.subject,
-                        l.error_message, l.created_at, u.username
+                        l.error_message, l.meta, l.created_at, u.username
                  FROM notification_delivery_log l
                  LEFT JOIN users u ON u.id COLLATE utf8mb4_unicode_ci = l.user_id COLLATE utf8mb4_unicode_ci
                  WHERE l.channel = ? AND l.status = ?
@@ -572,7 +572,7 @@ try {
         } catch (Throwable $joinErr) {
             $fetchLogSimple = static function (PDO $conn, string $channel, string $status) {
                 $stmt = $conn->prepare(
-                    "SELECT id, channel, status, user_id, recipient, subject, error_message, created_at
+                    "SELECT id, channel, status, user_id, recipient, subject, error_message, meta, created_at
                      FROM notification_delivery_log
                      WHERE channel = ? AND status = ?
                      ORDER BY created_at DESC
@@ -586,6 +586,10 @@ try {
             $whatsappRecentSent = $fetchLogSimple($conn, 'whatsapp', 'sent');
             $whatsappRecentErrors = $fetchLogSimple($conn, 'whatsapp', 'failed');
         }
+        $mailRecentSent = array_map('br_public_delivery_log_row', $mailRecentSent);
+        $mailRecentErrors = array_map('br_public_delivery_log_row', $mailRecentErrors);
+        $whatsappRecentSent = array_map('br_public_delivery_log_row', $whatsappRecentSent);
+        $whatsappRecentErrors = array_map('br_public_delivery_log_row', $whatsappRecentErrors);
     } catch (Throwable $e) {
         error_log('push_coverage channel coverage: ' . $e->getMessage());
     }

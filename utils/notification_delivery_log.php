@@ -72,7 +72,7 @@ function br_log_notification_delivery(
             mb_substr($recipient, 0, 255),
             $subject !== null ? mb_substr($subject, 0, 255) : null,
             $errorMessage !== null ? mb_substr($errorMessage, 0, 500) : null,
-            $meta ? mb_substr(json_encode($meta), 0, 4000) : null,
+            $meta ? br_notification_delivery_meta_json($meta) : null,
         ]);
     } catch (Throwable $e) {
         error_log('br_log_notification_delivery: ' . $e->getMessage());
@@ -82,6 +82,43 @@ function br_log_notification_delivery(
 /**
  * Resolve user_id from email or phone when possible.
  */
+/**
+ * Why: The message body has to survive in meta so a failed WhatsApp row can be
+ * resent later. TEXT holds it; a short cap used to drop the body entirely.
+ */
+function br_notification_delivery_meta_json(array $meta): ?string
+{
+    $json = json_encode($meta, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+    if ($json === false) {
+        return null;
+    }
+    if (strlen($json) > 60000 && isset($meta['body'])) {
+        unset($meta['body']);
+        $meta['body_truncated'] = true;
+        $json = json_encode($meta, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        if ($json === false) {
+            return null;
+        }
+    }
+    return strlen($json) > 60000 ? null : $json;
+}
+
+/**
+ * Coverage lists need a resend flag without shipping the message body to the browser.
+ */
+function br_public_delivery_log_row(array $row): array
+{
+    $meta = json_decode((string) ($row['meta'] ?? ''), true);
+    $body = is_array($meta) ? trim((string) ($meta['body'] ?? '')) : '';
+    $truncated = is_array($meta) && !empty($meta['body_truncated']);
+    unset($row['meta']);
+    $row['can_resend'] = ($row['channel'] ?? '') === 'whatsapp'
+        && ($row['status'] ?? '') === 'failed'
+        && $body !== ''
+        && !$truncated;
+    return $row;
+}
+
 function br_lookup_user_id_by_recipient(PDO $conn, string $channel, string $recipient): ?string
 {
     try {
