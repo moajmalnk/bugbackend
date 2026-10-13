@@ -592,13 +592,39 @@ try {
 
     $googleConnectedUsers = [];
     $googleMissingUsers = [];
+    $googleByRole = [
+        'admin' => ['connected' => 0, 'not_connected' => 0],
+        'developer' => ['connected' => 0, 'not_connected' => 0],
+        'codo_tester' => ['connected' => 0, 'not_connected' => 0],
+        'client_tester' => ['connected' => 0, 'not_connected' => 0],
+        'creator' => ['connected' => 0, 'not_connected' => 0],
+    ];
     if (tableExists($conn, 'google_tokens')) {
         $connectedAtExpr = tableHasColumn($conn, 'google_tokens', 'updated_at')
             ? 'MAX(g.updated_at)'
             : 'MAX(g.created_at)';
-        $loadGoogleAccounts = static function (PDO $conn, string $userMatch, string $connectedAtExpr) use (&$googleConnectedUsers, &$googleMissingUsers, &$channelSummary): void {
+        $hasTesterType = tableHasColumn($conn, 'users', 'tester_type');
+        $testerSql = $hasTesterType ? 'u.tester_type' : 'NULL';
+        $groupBy = 'u.id, u.username, u.email, u.role' . ($hasTesterType ? ', u.tester_type' : '');
+        $audienceExpr = $hasTesterType
+            ? "CASE
+                 WHEN u.role = 'admin' THEN 'admin'
+                 WHEN u.role = 'developer' THEN 'developer'
+                 WHEN u.role = 'creator' THEN 'creator'
+                 WHEN u.role = 'tester' AND u.tester_type = 'codo' THEN 'codo_tester'
+                 WHEN u.role = 'tester' THEN 'client_tester'
+                 ELSE 'other'
+               END"
+            : "CASE
+                 WHEN u.role = 'admin' THEN 'admin'
+                 WHEN u.role = 'developer' THEN 'developer'
+                 WHEN u.role = 'creator' THEN 'creator'
+                 WHEN u.role = 'tester' THEN 'client_tester'
+                 ELSE 'other'
+               END";
+        $loadGoogleAccounts = static function (PDO $conn, string $userMatch, string $connectedAtExpr) use (&$googleConnectedUsers, &$googleMissingUsers, &$channelSummary, &$googleByRole, $testerSql, $groupBy, $audienceExpr): void {
             $connectedStmt = $conn->query(
-                "SELECT u.id, u.username, u.email,
+                "SELECT u.id, u.username, u.email, u.role, {$testerSql} AS tester_type,
                         MAX(g.email) AS google_email,
                         {$connectedAtExpr} AS google_connected_at
                  FROM users u
@@ -606,14 +632,14 @@ try {
                  WHERE u.account_active = 1
                    AND g.refresh_token IS NOT NULL
                    AND TRIM(g.refresh_token) <> ''
-                 GROUP BY u.id, u.username, u.email
+                 GROUP BY {$groupBy}
                  ORDER BY u.username
                  LIMIT 200"
             );
             $googleConnectedUsers = $connectedStmt ? $connectedStmt->fetchAll(PDO::FETCH_ASSOC) : [];
 
             $missingGoogleStmt = $conn->query(
-                "SELECT u.id, u.username, u.email
+                "SELECT u.id, u.username, u.email, u.role, {$testerSql} AS tester_type
                  FROM users u
                  WHERE u.account_active = 1
                    AND NOT EXISTS (
@@ -651,6 +677,31 @@ try {
             }
             if ($cGoogleMissing) {
                 $channelSummary['google_not_connected'] = (int) $cGoogleMissing->fetchColumn();
+            }
+
+            $tokenMatch = str_replace('g.bugricer_user_id', 'tok.bugricer_user_id', $userMatch);
+            $byRoleStmt = $conn->query(
+                "SELECT {$audienceExpr} AS audience,
+                        SUM(tok.bugricer_user_id IS NOT NULL) AS connected,
+                        SUM(tok.bugricer_user_id IS NULL) AS not_connected
+                 FROM users u
+                 LEFT JOIN (
+                   SELECT DISTINCT bugricer_user_id
+                   FROM google_tokens
+                   WHERE refresh_token IS NOT NULL AND TRIM(refresh_token) <> ''
+                 ) tok ON {$tokenMatch}
+                 WHERE u.account_active = 1
+                 GROUP BY 1"
+            );
+            foreach (($byRoleStmt ? $byRoleStmt->fetchAll(PDO::FETCH_ASSOC) : []) as $row) {
+                $audience = (string) ($row['audience'] ?? '');
+                if (!isset($googleByRole[$audience])) {
+                    continue;
+                }
+                $googleByRole[$audience] = [
+                    'connected' => (int) ($row['connected'] ?? 0),
+                    'not_connected' => (int) ($row['not_connected'] ?? 0),
+                ];
             }
         };
 
@@ -691,6 +742,7 @@ try {
             'whatsapp_recent_errors' => $whatsappRecentErrors,
             'google_connected_users' => $googleConnectedUsers,
             'google_missing_users' => $googleMissingUsers,
+            'google_by_role' => $googleByRole,
         ],
     ]);
 } catch (Throwable $e) {
