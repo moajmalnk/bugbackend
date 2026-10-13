@@ -603,8 +603,12 @@ try {
         $connectedAtExpr = tableHasColumn($conn, 'google_tokens', 'updated_at')
             ? 'MAX(g.updated_at)'
             : 'MAX(g.created_at)';
+        require_once __DIR__ . '/../../utils/google_connect_gate.php';
         $hasTesterType = tableHasColumn($conn, 'users', 'tester_type');
         $testerSql = $hasTesterType ? 'u.tester_type' : 'NULL';
+        $requiredSql = br_ensure_google_connect_required($conn)
+            ? 'COALESCE(u.google_connect_required, 0)'
+            : '0';
         $groupBy = 'u.id, u.username, u.email, u.role' . ($hasTesterType ? ', u.tester_type' : '');
         $audienceExpr = $hasTesterType
             ? "CASE
@@ -622,7 +626,7 @@ try {
                  WHEN u.role = 'tester' THEN 'client_tester'
                  ELSE 'other'
                END";
-        $loadGoogleAccounts = static function (PDO $conn, string $userMatch, string $connectedAtExpr) use (&$googleConnectedUsers, &$googleMissingUsers, &$channelSummary, &$googleByRole, $testerSql, $groupBy, $audienceExpr): void {
+        $loadGoogleAccounts = static function (PDO $conn, string $userMatch, string $connectedAtExpr) use (&$googleConnectedUsers, &$googleMissingUsers, &$channelSummary, &$googleByRole, $testerSql, $groupBy, $audienceExpr, $requiredSql): void {
             $connectedStmt = $conn->query(
                 "SELECT u.id, u.username, u.email, u.role, {$testerSql} AS tester_type,
                         MAX(g.email) AS google_email,
@@ -639,7 +643,8 @@ try {
             $googleConnectedUsers = $connectedStmt ? $connectedStmt->fetchAll(PDO::FETCH_ASSOC) : [];
 
             $missingGoogleStmt = $conn->query(
-                "SELECT u.id, u.username, u.email, u.role, {$testerSql} AS tester_type
+                "SELECT u.id, u.username, u.email, u.role, {$testerSql} AS tester_type,
+                        {$requiredSql} AS google_connect_required
                  FROM users u
                  WHERE u.account_active = 1
                    AND NOT EXISTS (

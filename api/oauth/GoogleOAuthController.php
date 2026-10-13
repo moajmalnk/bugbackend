@@ -210,6 +210,14 @@ class GoogleOAuthController extends BaseAPI {
             
             // Clear any cached token data
             $this->clearCache('google_token_' . $bugricerUserId);
+
+            // Why: a saved refresh token is the proof the admin's connect request is done.
+            try {
+                require_once __DIR__ . '/../../utils/google_connect_gate.php';
+                br_clear_google_connect_requirement($this->conn, (string) $bugricerUserId);
+            } catch (Throwable $clearError) {
+                error_log('clear google connect requirement: ' . $clearError->getMessage());
+            }
             
             return true;
         } catch (Exception $e) {
