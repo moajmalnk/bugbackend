@@ -236,7 +236,7 @@ class UserController extends BaseAPI {
         try {
             // Validate token first
             try {
-                $this->validateToken();
+                $decoded = $this->validateToken();
             } catch (Exception $e) {
                 error_log("Token validation failed: " . $e->getMessage());
                 $this->sendJsonResponse(401, "Authentication failed");
@@ -349,6 +349,12 @@ class UserController extends BaseAPI {
             $user = br_user_row_with_onboarding_mode(br_user_row_with_standards($user));
             $user = br_user_with_resolved_avatar($user);
             $user = br_user_with_reports_to_name($this->conn, $user);
+            // Why: Admin Edit User needs DOB without a second onboarding fetch; hide from other roles.
+            $actorRole = strtolower((string) ($decoded->role ?? ''));
+            $actorId = (string) ($decoded->user_id ?? '');
+            if ($actorRole === 'admin' || $actorId === (string) $userId) {
+                $user['date_of_birth'] = $this->fetchUserDateOfBirth($this->conn, (string) $userId);
+            }
             $this->sendJsonResponse(200, "User retrieved successfully", $user);
         } catch (PDOException $e) {
             error_log("Database error in getUser: " . $e->getMessage());
@@ -1298,6 +1304,91 @@ class UserController extends BaseAPI {
         return $updates;
     }
 
+    /**
+     * Why: DOB lives on user_onboarding_details (not users). Admins set it from Edit User
+     * so Employee ID + BugDates birthdays work without forcing the onboarding wizard.
+     */
+    private function fetchUserDateOfBirth(PDO $conn, string $userId): ?string
+    {
+        try {
+            $t = $conn->query("SHOW TABLES LIKE 'user_onboarding_details'");
+            if (!$t || !$t->fetch(PDO::FETCH_NUM)) {
+                return null;
+            }
+            $c = $conn->query("SHOW COLUMNS FROM user_onboarding_details LIKE 'date_of_birth'");
+            if (!$c || !$c->fetch(PDO::FETCH_ASSOC)) {
+                return null;
+            }
+            $stmt = $conn->prepare(
+                'SELECT date_of_birth FROM user_onboarding_details WHERE user_id = ? LIMIT 1'
+            );
+            $stmt->execute([$userId]);
+            $dob = $stmt->fetchColumn();
+            if (!$dob) {
+                return null;
+            }
+            $dob = substr((string) $dob, 0, 10);
+            return preg_match('/^\d{4}-\d{2}-\d{2}$/', $dob) ? $dob : null;
+        } catch (Throwable $e) {
+            return null;
+        }
+    }
+
+    /**
+     * @return string|null Canonical YYYY-MM-DD, or null when clearing / empty
+     */
+    private function sanitizeAdminDateOfBirth($raw): ?string
+    {
+        if ($raw === null || $raw === '') {
+            return null;
+        }
+        $value = trim((string) $raw);
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $value)) {
+            throw new InvalidArgumentException('date_of_birth must be YYYY-MM-DD');
+        }
+        $parts = explode('-', $value);
+        if (!checkdate((int) $parts[1], (int) $parts[2], (int) $parts[0])) {
+            throw new InvalidArgumentException('date_of_birth is not a valid calendar date');
+        }
+        $ts = strtotime($value . ' 12:00:00');
+        if ($ts === false) {
+            throw new InvalidArgumentException('date_of_birth is not a valid calendar date');
+        }
+        $age = (int) floor((time() - $ts) / (365.25 * 24 * 60 * 60));
+        if ($age < 14 || $age > 100) {
+            throw new InvalidArgumentException('Date of birth must be a real past date (age 14–100)');
+        }
+        return $value;
+    }
+
+    /**
+     * Upsert date_of_birth on user_onboarding_details (creates a minimal row when needed).
+     */
+    private function upsertUserDateOfBirth(PDO $conn, string $userId, ?string $dob): void
+    {
+        $t = $conn->query("SHOW TABLES LIKE 'user_onboarding_details'");
+        if (!$t || !$t->fetch(PDO::FETCH_NUM)) {
+            throw new RuntimeException('Onboarding details table is not available');
+        }
+        $c = $conn->query("SHOW COLUMNS FROM user_onboarding_details LIKE 'date_of_birth'");
+        if (!$c || !$c->fetch(PDO::FETCH_ASSOC)) {
+            throw new RuntimeException('date_of_birth column is not available');
+        }
+        $exists = $conn->prepare('SELECT 1 FROM user_onboarding_details WHERE user_id = ? LIMIT 1');
+        $exists->execute([$userId]);
+        if ($exists->fetchColumn()) {
+            $stmt = $conn->prepare(
+                'UPDATE user_onboarding_details SET date_of_birth = ? WHERE user_id = ?'
+            );
+            $stmt->execute([$dob, $userId]);
+            return;
+        }
+        $stmt = $conn->prepare(
+            'INSERT INTO user_onboarding_details (user_id, date_of_birth) VALUES (?, ?)'
+        );
+        $stmt->execute([$userId, $dob]);
+    }
+
     public function updateUser($id, $data) {
         try {
             $conn = $this->getConnection();
@@ -1318,6 +1409,8 @@ class UserController extends BaseAPI {
             $reactivatingAccount = false;
             $testerTypeChanged = false;
             $testerTypeResult = null;
+            $dobUpdated = false;
+            $savedDateOfBirth = null;
             if (isset($data['username'])) {
                 $fields[] = "username = ?";
                 $params[] = $data['username'];
@@ -1510,6 +1603,7 @@ class UserController extends BaseAPI {
                 'probation_end_date',
                 'employment_status',
                 'regenerate_employee_code',
+                'date_of_birth',
             ];
             $wantsHr = false;
             foreach ($hrKeys as $hk) {
@@ -1527,6 +1621,22 @@ class UserController extends BaseAPI {
                     && !$pm->hasPermissionOrAdmin($actor->user_id ?? '', 'USERS_EDIT', $actor->role ?? null)
                 ) {
                     $this->sendJsonResponse(403, "USERS_EDIT permission required to update HR fields");
+                    return;
+                }
+            }
+
+            // Why: Persist DOB before employee_code ensure/regenerate so cipher can use it.
+            if (array_key_exists('date_of_birth', $data)) {
+                try {
+                    $savedDateOfBirth = $this->sanitizeAdminDateOfBirth($data['date_of_birth']);
+                    $this->upsertUserDateOfBirth($conn, (string) $id, $savedDateOfBirth);
+                    $dobUpdated = true;
+                } catch (InvalidArgumentException $e) {
+                    $this->sendJsonResponse(400, $e->getMessage());
+                    return;
+                } catch (Throwable $e) {
+                    error_log('updateUser date_of_birth: ' . $e->getMessage());
+                    $this->sendJsonResponse(500, 'Failed to save date of birth');
                     return;
                 }
             }
@@ -1672,7 +1782,7 @@ class UserController extends BaseAPI {
 
             $shouldRegenerate = !empty($data['regenerate_employee_code']);
 
-            if (empty($fields) && !$shouldRegenerate) {
+            if (empty($fields) && !$shouldRegenerate && !$dobUpdated) {
                 $this->sendJsonResponse(400, "No fields to update");
                 return;
             }
@@ -1799,6 +1909,10 @@ class UserController extends BaseAPI {
                     }
                     $updatedUser = br_user_with_resolved_avatar($updatedUser);
                     $updatedUser = br_user_with_reports_to_name($conn, $updatedUser);
+                    // Why: Admins edit DOB here — echo it back so the dialog + User Details stay in sync.
+                    $updatedUser['date_of_birth'] = $dobUpdated
+                        ? $savedDateOfBirth
+                        : $this->fetchUserDateOfBirth($conn, (string) $id);
                     $this->sendJsonResponse(
                         200,
                         "User updated successfully",
