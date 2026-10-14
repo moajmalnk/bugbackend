@@ -36,13 +36,18 @@ class TokenRefreshController extends BaseAPI {
 
             error_log("Token refreshed for user: " . $user['username'] . " (ID: " . $user['id'] . ", Role: " . $user['role'] . ")");
 
+            $refreshUser = [
+                "id" => $user['id'],
+                "username" => $user['username'],
+                "role" => $user['role'],
+            ];
+            if (array_key_exists('is_super_admin', $user)) {
+                $refreshUser['is_super_admin'] = (int) $user['is_super_admin'];
+            }
+
             $this->sendJsonResponse(200, "Token refreshed successfully", [
                 "token" => $newToken,
-                "user" => [
-                    "id" => $user['id'],
-                    "username" => $user['username'],
-                    "role" => $user['role']
-                ]
+                "user" => $refreshUser,
             ]);
 
         } catch (Exception $e) {

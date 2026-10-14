@@ -6,7 +6,7 @@
 -- JWT role stays `admin` for both so /admin routes are unchanged.
 --
 -- - Adds users.is_super_admin TINYINT(1)
--- - Seeds bugricer as Super Admin + official profile fields
+-- - Seeds bugricer as Super Admin + official profile fields (when columns exist)
 -- - Removes SUPER_ADMIN from Admin role_permissions (role_id = 1)
 -- - Grants SUPER_ADMIN via user_permissions only for is_super_admin = 1
 -- Safe to re-run (information_schema guards / NOT EXISTS).
@@ -38,18 +38,59 @@ SET @sql := IF(
 );
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
--- 3. Official Super Admin account (bugricer)
+-- 3. Official Super Admin flag + role + member-since date
 UPDATE `users`
 SET
   `is_super_admin` = 1,
   `role` = 'admin',
-  `created_at` = '2024-06-05 00:00:00',
-  `joining_date` = COALESCE(`joining_date`, '2024-06-05'),
-  `job_title` = COALESCE(NULLIF(TRIM(`job_title`), ''), 'Platform Owner'),
-  `job_level` = COALESCE(NULLIF(TRIM(`job_level`), ''), 'Founder'),
-  `department` = COALESCE(NULLIF(TRIM(`department`), ''), 'BugRicer')
+  `created_at` = '2024-06-05 00:00:00'
 WHERE `id` = 'e17b6fcf-04f7-4ad5-a9f0-3c8c910a8efc'
    OR LOWER(`username`) = 'bugricer';
+
+-- 3b. Optional HR polish (skip silently when columns are missing)
+SET @has_joining := (
+  SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'users' AND COLUMN_NAME = 'joining_date'
+);
+SET @sql := IF(
+  @has_joining > 0,
+  'UPDATE `users` SET `joining_date` = COALESCE(`joining_date`, ''2024-06-05'') WHERE `id` = ''e17b6fcf-04f7-4ad5-a9f0-3c8c910a8efc'' OR LOWER(`username`) = ''bugricer''',
+  'SELECT 1'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @has_title := (
+  SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'users' AND COLUMN_NAME = 'job_title'
+);
+SET @sql := IF(
+  @has_title > 0,
+  'UPDATE `users` SET `job_title` = COALESCE(NULLIF(TRIM(`job_title`), ''''), ''Platform Owner'') WHERE `id` = ''e17b6fcf-04f7-4ad5-a9f0-3c8c910a8efc'' OR LOWER(`username`) = ''bugricer''',
+  'SELECT 1'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @has_level := (
+  SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'users' AND COLUMN_NAME = 'job_level'
+);
+SET @sql := IF(
+  @has_level > 0,
+  'UPDATE `users` SET `job_level` = COALESCE(NULLIF(TRIM(`job_level`), ''''), ''Founder'') WHERE `id` = ''e17b6fcf-04f7-4ad5-a9f0-3c8c910a8efc'' OR LOWER(`username`) = ''bugricer''',
+  'SELECT 1'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @has_dept := (
+  SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = @db AND TABLE_NAME = 'users' AND COLUMN_NAME = 'department'
+);
+SET @sql := IF(
+  @has_dept > 0,
+  'UPDATE `users` SET `department` = COALESCE(NULLIF(TRIM(`department`), ''''), ''BugRicer'') WHERE `id` = ''e17b6fcf-04f7-4ad5-a9f0-3c8c910a8efc'' OR LOWER(`username`) = ''bugricer''',
+  'SELECT 1'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- 4. Remove SUPER_ADMIN from Admin role (role_id = 1)
 DELETE rp FROM `role_permissions` rp

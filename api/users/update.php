@@ -37,7 +37,8 @@ try {
         || array_key_exists('tester_type', $data)
         || array_key_exists('codo_rules_mode', $data)
         || array_key_exists('cursor_tips_mode', $data)
-        || array_key_exists('onboarding_mode', $data);
+        || array_key_exists('onboarding_mode', $data)
+        || array_key_exists('is_super_admin', $data);
     $isOtherUser = (string) $data['id'] !== (string) $actor->user_id;
     if (
         !$isAdmin

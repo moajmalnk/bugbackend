@@ -152,6 +152,9 @@ class AuthController extends BaseAPI {
             }
             if (password_verify(trim($password), $user['password'])) {
                 unset($user['password']);
+                if (array_key_exists('is_super_admin', $user)) {
+                    $user['is_super_admin'] = (int) $user['is_super_admin'];
+                }
                 $user = br_user_with_resolved_avatar($user);
                 $token = Utils::generateJWT($user['id'], $username, $user['role']);
                 return [

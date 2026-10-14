@@ -96,6 +96,9 @@ function br_google_build_auth_response(PDO $conn, array $user): array {
     $token = Utils::generateJWT($user['id'], $user['username'], $user['role']);
 
     unset($user['password']);
+    if (array_key_exists('is_super_admin', $user)) {
+        $user['is_super_admin'] = (int) $user['is_super_admin'];
+    }
     $user = br_user_with_resolved_avatar($user);
 
     return [

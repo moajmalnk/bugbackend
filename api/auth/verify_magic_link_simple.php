@@ -90,16 +90,21 @@ try {
     
     logActivity($userRow['id'], 'magic_link_login', 'User signed in with magic link');
     
+    $magicUser = [
+        'id' => $userRow['id'],
+        'username' => $userRow['username'],
+        'email' => $userRow['email'],
+        'role' => $userRow['role'],
+    ];
+    if (array_key_exists('is_super_admin', $userRow)) {
+        $magicUser['is_super_admin'] = (int) $userRow['is_super_admin'];
+    }
+
     echo json_encode([
         'success' => true,
         'message' => 'Magic link verified successfully',
         'token' => $jwt_token,
-        'user' => [
-            'id' => $userRow['id'],
-            'username' => $userRow['username'],
-            'email' => $userRow['email'],
-            'role' => $userRow['role']
-        ]
+        'user' => $magicUser,
     ]);
     
 } catch (Exception $e) {

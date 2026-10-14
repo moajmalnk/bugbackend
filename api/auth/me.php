@@ -72,6 +72,10 @@ class MeController extends BaseAPI {
             if (in_array('onboarding_mode', $cols, true)) {
                 $select[] = 'onboarding_mode';
             }
+            // Why: Super Admin hierarchy flag — required for UI gates and premium badge.
+            if (in_array('is_super_admin', $cols, true)) {
+                $select[] = 'is_super_admin';
+            }
             $stmt = $this->conn->prepare(
                 'SELECT ' . implode(', ', $select) . ' FROM users WHERE id = ?'
             );
@@ -84,6 +88,9 @@ class MeController extends BaseAPI {
                     return;
                 }
                 unset($user['account_active']);
+                if (array_key_exists('is_super_admin', $user)) {
+                    $user['is_super_admin'] = (int) $user['is_super_admin'];
+                }
                 $user['tester_type'] = br_user_tester_type($this->conn, (string) $user['id']);
                 $standardsModes = br_user_standards_modes($this->conn, (string) $user['id']);
                 $user['codo_rules_mode'] = $standardsModes['codo'];
