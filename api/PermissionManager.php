@@ -123,27 +123,20 @@ class PermissionManager {
      */
     private function hasSuperAdmin($userId) {
         try {
-            // Check if user has SUPER_ADMIN permission directly via user_permissions
+            // Why: Flag is the hierarchy source of truth after migration 135.
+            require_once __DIR__ . '/../utils/super_admin.php';
+            if (br_user_is_super_admin($this->conn, (string) $userId)) {
+                return true;
+            }
+
+            // Direct user_permissions grant (synced with is_super_admin).
             $stmt = $this->conn->prepare(
                 "SELECT 1 FROM user_permissions up 
                  INNER JOIN permissions p ON up.permission_id = p.id 
                  WHERE up.user_id = ? AND p.permission_key = 'SUPER_ADMIN' AND up.granted = 1"
             );
             $stmt->execute([$userId]);
-            if ($stmt->rowCount() > 0) {
-                return true;
-            }
-            
-            // Check if user's role has SUPER_ADMIN permission
-            $stmt = $this->conn->prepare(
-                "SELECT 1 FROM role_permissions rp
-                 INNER JOIN permissions p ON rp.permission_id = p.id
-                 INNER JOIN users u ON rp.role_id = u.role_id
-                 WHERE u.id = ? AND p.permission_key = 'SUPER_ADMIN'"
-            );
-            $stmt->execute([$userId]);
             return $stmt->rowCount() > 0;
-            
         } catch (Exception $e) {
             error_log("Super admin check error: " . $e->getMessage());
             return false;

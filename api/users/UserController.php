@@ -8,6 +8,7 @@ require_once __DIR__ . '/../../utils/employee_id.php';
 require_once __DIR__ . '/../../utils/workforce_access.php';
 require_once __DIR__ . '/../../utils/standards_access.php';
 require_once __DIR__ . '/../../utils/user_onboarding.php';
+require_once __DIR__ . '/../../utils/super_admin.php';
 
 class UserController extends BaseAPI {
     public function getUsers() {
@@ -59,6 +60,7 @@ class UserController extends BaseAPI {
             if (in_array('onboarding_mode', $cols, true)) $select[] = 'onboarding_mode';
             if ($hasPhone) $select[] = 'phone';
             if ($hasAccountActive) $select[] = 'account_active';
+            if (in_array('is_super_admin', $cols, true)) $select[] = 'is_super_admin';
             if ($hasJoiningDate) $select[] = 'joining_date';
             if ($hasOnboardingCompleted) $select[] = 'onboarding_completed';
             if ($hasOnboardingVerification) $select[] = 'onboarding_verification_status';
@@ -107,7 +109,13 @@ class UserController extends BaseAPI {
             }
 
             $users = array_map(
-                static fn (array $row): array => br_user_row_with_onboarding_mode(br_user_row_with_standards($row)),
+                static function (array $row): array {
+                    $row = br_user_row_with_onboarding_mode(br_user_row_with_standards($row));
+                    if (array_key_exists('is_super_admin', $row)) {
+                        $row['is_super_admin'] = (int) $row['is_super_admin'];
+                    }
+                    return $row;
+                },
                 $stmt->fetchAll(PDO::FETCH_ASSOC) ?: []
             );
 
@@ -277,6 +285,9 @@ class UserController extends BaseAPI {
             if (in_array('account_active', $cols, true)) {
                 $select[] = 'account_active';
             }
+            if (in_array('is_super_admin', $cols, true)) {
+                $select[] = 'is_super_admin';
+            }
             if (in_array('joining_date', $cols, true)) {
                 $select[] = 'joining_date';
             }
@@ -349,6 +360,9 @@ class UserController extends BaseAPI {
             $user = br_user_row_with_onboarding_mode(br_user_row_with_standards($user));
             $user = br_user_with_resolved_avatar($user);
             $user = br_user_with_reports_to_name($this->conn, $user);
+            if (array_key_exists('is_super_admin', $user)) {
+                $user['is_super_admin'] = (int) $user['is_super_admin'];
+            }
             // Why: Admin Edit User needs DOB without a second onboarding fetch; hide from other roles.
             $actorRole = strtolower((string) ($decoded->role ?? ''));
             $actorId = (string) ($decoded->user_id ?? '');
@@ -547,6 +561,27 @@ class UserController extends BaseAPI {
             }
 
             $decoded = $this->validateToken();
+            $targetFlags = br_fetch_user_admin_flags($this->conn, (string) $userId);
+            if (!$targetFlags) {
+                $this->sendJsonResponse(404, "User not found");
+                return;
+            }
+            $targetIsAdmin = br_role_is_admin_enum($targetFlags['role'] ?? null);
+            $targetIsSuper = (int) ($targetFlags['is_super_admin'] ?? 0) === 1;
+            $actorIsSuper = br_actor_is_super_admin($this->conn, $decoded);
+            if ($targetIsSuper) {
+                if (!$actorIsSuper) {
+                    $this->sendJsonResponse(403, 'Only a Super Admin can delete Super Admin accounts');
+                    return;
+                }
+                if (br_count_super_admins($this->conn) <= 1) {
+                    $this->sendJsonResponse(403, 'Cannot delete the last Super Admin');
+                    return;
+                }
+            } elseif ($targetIsAdmin && !$actorIsSuper) {
+                $this->sendJsonResponse(403, 'Only a Super Admin can delete Admin accounts');
+                return;
+            }
 
             // Normal delete → recycle bin. Force delete → permanent removal.
             if (!$permanent && !$force) {
@@ -834,6 +869,25 @@ class UserController extends BaseAPI {
                 }
             }
 
+            // Why: Only Super Admin may create Admin accounts; new admins are never Super Admin.
+            $actor = $this->validateToken();
+            $wantSuper = !empty($data['is_super_admin'])
+                && ($data['is_super_admin'] === true
+                    || $data['is_super_admin'] === 1
+                    || $data['is_super_admin'] === '1');
+            $hierarchyErr = br_hierarchy_assign_role_error(
+                $this->conn,
+                $actor,
+                (string) $role,
+                $wantSuper
+            );
+            if ($hierarchyErr !== null) {
+                $this->sendJsonResponse(403, $hierarchyErr);
+                return;
+            }
+            // New accounts never inherit Super Admin on create — promote explicitly later.
+            $wantSuper = false;
+
             // Why: Testers must be classified at creation — CODO (in-house workforce)
             // or Client (external, bug reporting only). Other roles never carry a type.
             $testerType = null;
@@ -902,9 +956,14 @@ class UserController extends BaseAPI {
             $hasJoiningDateCol = in_array('joining_date', $userCols, true);
             $hasMustSetPasswordCol = in_array('must_set_password', $userCols, true);
             $hasOnboardingCompletedCol = in_array('onboarding_completed', $userCols, true);
+            $hasSuperAdminCol = in_array('is_super_admin', $userCols, true);
 
             $insertCols = ['id', 'username', 'email', 'phone', 'password', 'role', 'role_id'];
             $insertVals = [$id, $username, $email, $phone, $hashedPassword, $role, $roleId];
+            if ($hasSuperAdminCol) {
+                $insertCols[] = 'is_super_admin';
+                $insertVals[] = 0;
+            }
             if (in_array('tester_type', $userCols, true)) {
                 $insertCols[] = 'tester_type';
                 $insertVals[] = $testerType;
@@ -1402,6 +1461,26 @@ class UserController extends BaseAPI {
             }
             $hasAccountActiveCol = in_array('account_active', $userCols, true);
             $hasJoiningDateCol = in_array('joining_date', $userCols, true);
+            $hasSuperAdminCol = in_array('is_super_admin', $userCols, true);
+            $actor = $this->validateToken();
+            $touchingPrivileges = array_key_exists('role', $data)
+                || array_key_exists('role_id', $data)
+                || array_key_exists('tester_type', $data)
+                || array_key_exists('codo_rules_mode', $data)
+                || array_key_exists('cursor_tips_mode', $data)
+                || array_key_exists('onboarding_mode', $data)
+                || array_key_exists('is_super_admin', $data)
+                || array_key_exists('account_active', $data);
+            $manageErr = br_hierarchy_manage_admin_target_error(
+                $conn,
+                $actor,
+                (string) $id,
+                $touchingPrivileges
+            );
+            if ($manageErr !== null) {
+                $this->sendJsonResponse(403, $manageErr);
+                return;
+            }
 
             $fields = [];
             $params = [];
@@ -1411,6 +1490,8 @@ class UserController extends BaseAPI {
             $testerTypeResult = null;
             $dobUpdated = false;
             $savedDateOfBirth = null;
+            $superAdminFlagChanged = false;
+            $nextSuperAdminFlag = null;
             if (isset($data['username'])) {
                 $fields[] = "username = ?";
                 $params[] = $data['username'];
@@ -1451,6 +1532,32 @@ class UserController extends BaseAPI {
                         }
                     }
                 }
+
+                $wantSuperOnRole = array_key_exists('is_super_admin', $data)
+                    ? (!empty($data['is_super_admin'])
+                        && ($data['is_super_admin'] === true
+                            || $data['is_super_admin'] === 1
+                            || $data['is_super_admin'] === '1'))
+                    : br_user_is_super_admin($conn, (string) $id);
+                $assignErr = br_hierarchy_assign_role_error(
+                    $conn,
+                    $actor,
+                    (string) $role,
+                    $wantSuperOnRole && br_role_is_admin_enum($role)
+                );
+                if ($assignErr !== null) {
+                    $this->sendJsonResponse(403, $assignErr);
+                    return;
+                }
+                // Demoting the last Super Admin is never allowed.
+                if (
+                    !br_role_is_admin_enum($role)
+                    && br_user_is_super_admin($conn, (string) $id)
+                    && br_count_super_admins($conn) <= 1
+                ) {
+                    $this->sendJsonResponse(403, 'Cannot demote the last Super Admin');
+                    return;
+                }
                 
                 $fields[] = "role = ?";
                 $params[] = $role;
@@ -1460,6 +1567,13 @@ class UserController extends BaseAPI {
                     $fields[] = "role_id = ?";
                     $params[] = $roleId;
                 }
+                // Clearing admin role clears Super Admin flag.
+                if ($hasSuperAdminCol && !br_role_is_admin_enum($role) && !array_key_exists('is_super_admin', $data)) {
+                    $fields[] = 'is_super_admin = ?';
+                    $params[] = 0;
+                    $superAdminFlagChanged = true;
+                    $nextSuperAdminFlag = false;
+                }
             } else if (isset($data['role_id'])) {
                 // If only role_id is provided
                 $roleId = $data['role_id'];
@@ -1467,6 +1581,34 @@ class UserController extends BaseAPI {
                     $fields[] = "role_id = ?";
                     $params[] = $roleId;
                 }
+            }
+
+            if ($hasSuperAdminCol && array_key_exists('is_super_admin', $data)) {
+                if (!br_actor_is_super_admin($conn, $actor)) {
+                    $this->sendJsonResponse(403, 'Only a Super Admin can change Super Admin status');
+                    return;
+                }
+                $v = $data['is_super_admin'];
+                $nextFlag = ($v === true || $v === 1 || $v === '1' || $v === 'true') ? 1 : 0;
+                $wasSuper = br_user_is_super_admin($conn, (string) $id);
+                if ($nextFlag === 0 && $wasSuper && br_count_super_admins($conn) <= 1) {
+                    $this->sendJsonResponse(403, 'Cannot remove the last Super Admin');
+                    return;
+                }
+                if ($nextFlag === 1) {
+                    $targetFlags = br_fetch_user_admin_flags($conn, (string) $id);
+                    $effectiveRole = isset($data['role'])
+                        ? strtolower((string) $role)
+                        : ($targetFlags['role'] ?? null);
+                    if (!br_role_is_admin_enum($effectiveRole)) {
+                        $this->sendJsonResponse(400, 'Super Admin requires the Admin role');
+                        return;
+                    }
+                }
+                $fields[] = 'is_super_admin = ?';
+                $params[] = $nextFlag;
+                $superAdminFlagChanged = true;
+                $nextSuperAdminFlag = $nextFlag === 1;
             }
 
             if (in_array('tester_type', $userCols, true)) {
@@ -1530,7 +1672,6 @@ class UserController extends BaseAPI {
             }
 
             if (array_key_exists('account_active', $data) && $hasAccountActiveCol) {
-                $actor = $this->validateToken();
                 $pm = PermissionManager::getInstance();
                 if (!$pm->hasPermissionOrAdmin($actor->user_id ?? '', 'USERS_EDIT', $actor->role ?? null)) {
                     $this->sendJsonResponse(403, "USERS_EDIT permission required to change account status");
@@ -1540,7 +1681,10 @@ class UserController extends BaseAPI {
                     $this->sendJsonResponse(400, "You cannot change your own account status from here");
                     return;
                 }
-                $targetStmt = $conn->prepare("SELECT role, account_active FROM users WHERE id = ? LIMIT 1");
+                $targetSelect = $hasSuperAdminCol
+                    ? 'SELECT role, account_active, is_super_admin FROM users WHERE id = ? LIMIT 1'
+                    : 'SELECT role, account_active, 0 AS is_super_admin FROM users WHERE id = ? LIMIT 1';
+                $targetStmt = $conn->prepare($targetSelect);
                 $targetStmt->execute([$id]);
                 $targetRow = $targetStmt->fetch(PDO::FETCH_ASSOC);
                 if (!$targetRow) {
@@ -1549,8 +1693,15 @@ class UserController extends BaseAPI {
                 }
                 $v = $data['account_active'];
                 $activeVal = ($v === true || $v === 1 || $v === '1' || $v === 'true') ? 1 : 0;
-                if ($activeVal === 0 && isset($targetRow['role']) && $targetRow['role'] === 'admin') {
-                    $this->sendJsonResponse(403, "Cannot deactivate administrator accounts");
+                $targetIsAdmin = isset($targetRow['role']) && strtolower((string) $targetRow['role']) === 'admin';
+                $targetIsSuper = (int) ($targetRow['is_super_admin'] ?? 0) === 1;
+                $actorIsSuper = br_actor_is_super_admin($conn, $actor);
+                if ($activeVal === 0 && $targetIsSuper) {
+                    $this->sendJsonResponse(403, 'Cannot deactivate Super Admin accounts');
+                    return;
+                }
+                if ($activeVal === 0 && $targetIsAdmin && !$actorIsSuper) {
+                    $this->sendJsonResponse(403, 'Only a Super Admin can deactivate Admin accounts');
                     return;
                 }
                 $wasActive = !array_key_exists('account_active', $targetRow)
@@ -1804,6 +1955,10 @@ class UserController extends BaseAPI {
                 }
             }
 
+            if ($superAdminFlagChanged && $nextSuperAdminFlag !== null) {
+                br_sync_super_admin_permission($conn, (string) $id, (bool) $nextSuperAdminFlag);
+            }
+
             if ($shouldRegenerate && in_array('employee_code', $userCols, true)) {
                 $newCode = br_regenerate_employee_code($conn, $id);
                 if ($newCode === null) {
@@ -1870,6 +2025,9 @@ class UserController extends BaseAPI {
                 if ($hasAccountActiveCol) {
                     $selectParts[] = 'account_active';
                 }
+                if ($hasSuperAdminCol) {
+                    $selectParts[] = 'is_super_admin';
+                }
                 if ($hasJoiningDateCol) {
                     $selectParts[] = 'joining_date';
                 }
@@ -1906,6 +2064,9 @@ class UserController extends BaseAPI {
                     $updatedUser = br_user_row_with_onboarding_mode(br_user_row_with_standards($updatedUser));
                     if (array_key_exists('onboarding_completed', $updatedUser)) {
                         $updatedUser['onboarding_completed'] = (int) $updatedUser['onboarding_completed'];
+                    }
+                    if (array_key_exists('is_super_admin', $updatedUser)) {
+                        $updatedUser['is_super_admin'] = (int) $updatedUser['is_super_admin'];
                     }
                     $updatedUser = br_user_with_resolved_avatar($updatedUser);
                     $updatedUser = br_user_with_reports_to_name($conn, $updatedUser);
