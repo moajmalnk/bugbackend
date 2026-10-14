@@ -65,6 +65,47 @@ class BugDatesController extends BaseAPI
         return BaseAPI::hasGlobalDataScope($decoded);
     }
 
+    /**
+     * Why: Inactive / deactivated teammates must never appear on BugDates — birthdays,
+     * anniversaries, leave, WFH, or day-drawer attendance. Matches Users list rules:
+     * account_active defaults to 1; employment_status inactive is excluded.
+     */
+    private function activeUserWhere(string $alias = 'u'): string
+    {
+        static $cache = [];
+        $key = $alias;
+        if (isset($cache[$key])) {
+            return $cache[$key];
+        }
+        $cols = [];
+        try {
+            $res = $this->conn->query('SHOW COLUMNS FROM users');
+            while ($res && ($row = $res->fetch(PDO::FETCH_ASSOC))) {
+                $cols[] = $row['Field'];
+            }
+        } catch (Throwable $e) {
+            $cols = [];
+        }
+        $a = preg_replace('/[^a-zA-Z0-9_]/', '', $alias) ?: 'u';
+        $parts = [];
+        if (in_array('deleted_at', $cols, true)) {
+            $parts[] = "{$a}.deleted_at IS NULL";
+        }
+        if (in_array('account_active', $cols, true)) {
+            $parts[] = "COALESCE({$a}.account_active, 1) = 1";
+        }
+        if (in_array('employment_status', $cols, true)) {
+            $parts[] = "(
+                {$a}.employment_status IS NULL
+                OR TRIM({$a}.employment_status) = ''
+                OR LOWER(TRIM({$a}.employment_status)) = 'active'
+            )";
+        }
+        $sql = $parts ? ' AND ' . implode(' AND ', $parts) : '';
+        $cache[$key] = $sql;
+        return $sql;
+    }
+
     private function ensureReady(): bool
     {
         if (!br_bug_dates_tables_ready($this->conn)) {
@@ -372,17 +413,18 @@ class BugDatesController extends BaseAPI
 
             $halfCols = $hasHalf ? ', lr.is_half_day, lr.half_day_type' : '';
             $hoursCol = br_leave_has_hours_per_day_col($this->conn) ? ', lr.hours_per_day' : '';
+            $activeWhere = $this->activeUserWhere('u');
             $stmt = $this->conn->prepare(
                 "SELECT lr.id, lr.user_id, lr.start_date, lr.end_date, lr.days_count, lr.reason, lr.status,
                         lt.code AS leave_type_code, lt.name AS leave_type_name, u.username
                         {$halfCols}{$hoursCol}
                  FROM leave_requests lr
                  LEFT JOIN leave_types lt ON lt.id = lr.leave_type_id
-                 LEFT JOIN users u
+                 INNER JOIN users u
                    ON lr.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
                  WHERE lr.status IN ('pending', 'approved')
                    AND lr.start_date <= ?
-                   AND lr.end_date >= ?
+                   AND lr.end_date >= ?{$activeWhere}
                  ORDER BY lr.start_date ASC"
             );
             $stmt->execute([$to, $from]);
@@ -472,13 +514,14 @@ class BugDatesController extends BaseAPI
         }
 
         try {
+            $activeWhere = $this->activeUserWhere('u');
             $stmt = $this->conn->prepare(
                 "SELECT w.id, w.user_id, w.request_date, w.status, w.user_note, u.username
                  FROM attendance_wfh_requests w
-                 LEFT JOIN users u
+                 INNER JOIN users u
                    ON w.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
                  WHERE w.status IN ('pending', 'approved')
-                   AND w.request_date BETWEEN ? AND ?
+                   AND w.request_date BETWEEN ? AND ?{$activeWhere}
                  ORDER BY w.request_date ASC"
             );
             $stmt->execute([$from, $to]);
@@ -542,12 +585,13 @@ class BugDatesController extends BaseAPI
                         $extra[] = 'u.' . $col;
                     }
                     $extraSql = $extra ? ', ' . implode(', ', $extra) : '';
+                    $activeWhere = $this->activeUserWhere('u');
                     $stmt = $this->conn->query(
                         "SELECT u.id, u.username{$extraSql}, d.date_of_birth
                          FROM users u
                          INNER JOIN user_onboarding_details d
                            ON d.user_id COLLATE utf8mb4_unicode_ci = u.id COLLATE utf8mb4_unicode_ci
-                         WHERE d.date_of_birth IS NOT NULL
+                         WHERE d.date_of_birth IS NOT NULL{$activeWhere}
                          ORDER BY u.username ASC"
                     );
                     $rows = $stmt ? ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
@@ -588,11 +632,12 @@ class BugDatesController extends BaseAPI
             try {
                 $hasJoining = br_users_has_joining_date($this->conn);
                 if ($hasJoining) {
+                    $activeWhere = $this->activeUserWhere('u');
                     $stmt = $this->conn->query(
-                        "SELECT id, username, joining_date
-                         FROM users
-                         WHERE joining_date IS NOT NULL
-                         ORDER BY username ASC"
+                        "SELECT u.id, u.username, u.joining_date
+                         FROM users u
+                         WHERE u.joining_date IS NOT NULL{$activeWhere}
+                         ORDER BY u.username ASC"
                     );
                     $rows = $stmt ? ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
                     foreach ($rows as $row) {
@@ -770,7 +815,8 @@ class BugDatesController extends BaseAPI
             $avatarSelect = $avatarCols
                 ? ', ' . implode(', ', array_map(static fn ($c) => "u.`{$c}`", $avatarCols))
                 : '';
-            $activeWhere = in_array('deleted_at', $userCols, true) ? ' AND u.deleted_at IS NULL' : '';
+            // Why: Day drawer must omit inactive users from office/WFH/leave/weekly report.
+            $activeWhere = $this->activeUserWhere('u');
 
             $wsCols = [];
             $res = $this->conn->query('SHOW COLUMNS FROM work_submissions');
