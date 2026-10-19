@@ -9,6 +9,7 @@ require_once __DIR__ . '/../../utils/workforce_access.php';
 require_once __DIR__ . '/../../utils/standards_access.php';
 require_once __DIR__ . '/../../utils/user_onboarding.php';
 require_once __DIR__ . '/../../utils/super_admin.php';
+require_once __DIR__ . '/../../utils/leave_attendance.php';
 
 class UserController extends BaseAPI {
     public function getUsers() {
@@ -210,6 +211,23 @@ class UserController extends BaseAPI {
             } catch (Exception $e) {
                 error_log('getUsers check-in lookup skipped: ' . $e->getMessage());
             }
+
+            // Why: Dashboard / Users Active must show "On Casual Leave" instead of
+            // "Not checked in" when approved leave covers the work date.
+            $leaveByUser = [];
+            try {
+                $leaveDate = $workDate
+                    ?? (new DateTime('now', new DateTimeZone('Asia/Kolkata')))->format('Y-m-d');
+                $userIds = array_map(static fn($u) => (string)($u['id'] ?? ''), $users);
+                $maps = br_leave_day_maps_for_users($this->conn, $userIds, $leaveDate, $leaveDate);
+                foreach ($maps as $uid => $byDate) {
+                    if (!empty($byDate[$leaveDate])) {
+                        $leaveByUser[$uid] = $byDate[$leaveDate];
+                    }
+                }
+            } catch (Exception $e) {
+                error_log('getUsers leave lookup skipped: ' . $e->getMessage());
+            }
             
             // Add name field and ensure phone field exists
             foreach ($users as &$user) {
@@ -227,6 +245,11 @@ class UserController extends BaseAPI {
                 $user['work_mode'] = $todayWork['work_mode'] ?? null;
                 $user['is_late'] = !empty($todayWork['is_late']);
                 $user['work_date'] = $workDate;
+                $leaveInfo = $leaveByUser[(string)$user['id']] ?? null;
+                $user['on_leave_today'] = $leaveInfo !== null;
+                $user['today_leave_type_name'] = $leaveInfo['leave_type_name'] ?? null;
+                $user['today_leave_type_code'] = $leaveInfo['leave_type_code'] ?? null;
+                $user['today_leave_reason'] = $leaveInfo['leave_reason'] ?? null;
             }
             unset($user);
 
