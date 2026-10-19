@@ -1931,6 +1931,32 @@ class UserController extends BaseAPI {
                 }
             }
 
+            // Why: Admin Edit User uploads a cropped photo; update.php stores the file
+            // and passes a relative uploads/ path — never accept absolute / remote URLs.
+            if (array_key_exists('avatar', $data) && is_string($data['avatar'])) {
+                $avatarPath = trim($data['avatar']);
+                if ($avatarPath === '') {
+                    $this->sendJsonResponse(400, 'avatar path is empty');
+                    return;
+                }
+                if (!preg_match('#^uploads/profile_pictures/[A-Za-z0-9._-]+$#', $avatarPath)) {
+                    $this->sendJsonResponse(400, 'Invalid avatar path');
+                    return;
+                }
+                $writeCols = br_user_avatar_write_cols($userCols);
+                if (count($writeCols) === 0) {
+                    $this->sendJsonResponse(
+                        500,
+                        'Avatar column missing — run migration 064_users_avatar.sql'
+                    );
+                    return;
+                }
+                foreach ($writeCols as $col) {
+                    $fields[] = "`{$col}` = ?";
+                    $params[] = $avatarPath;
+                }
+            }
+
             $shouldRegenerate = !empty($data['regenerate_employee_code']);
 
             if (empty($fields) && !$shouldRegenerate && !$dobUpdated) {
