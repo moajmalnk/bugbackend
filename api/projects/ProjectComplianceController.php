@@ -7,8 +7,8 @@ require_once __DIR__ . '/../../utils/workforce_access.php';
 
 class ProjectComplianceController extends BaseAPI
 {
-    private const DEV_RULE_COUNT = 68;
-    private const QA_RULE_COUNT = 36;
+    private const DEV_RULE_COUNT = 80;
+    private const QA_RULE_COUNT = 44;
 
     private static $DEV_RULE_KEYS = [
         'dev_rule_1', 'dev_rule_2', 'dev_rule_3', 'dev_rule_4', 'dev_rule_5',
@@ -25,6 +25,9 @@ class ProjectComplianceController extends BaseAPI
         'dev_rule_60', 'dev_rule_61', 'dev_rule_62', 'dev_rule_63', 'dev_rule_64',
         'dev_rule_65', 'dev_rule_66', 'dev_rule_67', 'dev_rule_68',
         'dev_rule_69', 'dev_rule_70', 'dev_rule_71', 'dev_rule_72',
+        'dev_rule_73', 'dev_rule_74', 'dev_rule_75', 'dev_rule_76', 'dev_rule_77',
+        'dev_rule_78', 'dev_rule_79', 'dev_rule_80', 'dev_rule_81', 'dev_rule_82',
+        'dev_rule_83', 'dev_rule_84',
     ];
 
     private static $QA_RULE_KEYS = [
@@ -64,6 +67,14 @@ class ProjectComplianceController extends BaseAPI
         'qa_release_acceptance',
         'qa_in_app_payment_upi',
         'qa_googlebot_html',
+        'qa_webview_download_print',
+        'qa_webview_external_links',
+        'qa_webview_clipboard_zoom',
+        'qa_webview_permissions',
+        'qa_app_persistent_login',
+        'qa_forced_app_update',
+        'qa_webview_keyboard_pickers',
+        'qa_fcm_push_routing',
     ];
 
     private static $BUILTIN_RULE_TITLES = [
@@ -135,6 +146,18 @@ class ProjectComplianceController extends BaseAPI
         'dev_rule_70' => 'Trailing Slash URL Standardization',
         'dev_rule_71' => 'Unique Per-Page Metadata & Schema Isolation',
         'dev_rule_72' => 'Sitemap Canonical Hygiene',
+        'dev_rule_73' => 'Approved WebView Integration',
+        'dev_rule_74' => 'WebView Navigation and External Links',
+        'dev_rule_75' => 'Download, Print, and Document Preview',
+        'dev_rule_76' => 'WebView Clipboard, Zoom, and Text Interaction',
+        'dev_rule_77' => 'WebView Permission Bridge',
+        'dev_rule_78' => 'FCM Push for URL-Based Apps',
+        'dev_rule_79' => 'Secure Persistent App Login',
+        'dev_rule_80' => 'WebView Network Errors and No Blank Screens',
+        'dev_rule_81' => 'Keyboard, Pickers, and Responsive Shell Contract',
+        'dev_rule_82' => 'Required App Update Flow',
+        'dev_rule_83' => 'App Lifecycle and WebView Process Recovery',
+        'dev_rule_84' => 'Native / Web / Backend Responsibility Contract',
         'qa_apple_sandbox' => 'The Apple Ecosystem Sandbox',
         'qa_click_attack' => 'The Click Attack Safeguard',
         'qa_theme_interruption' => 'The Theme Interruption Matrix',
@@ -171,6 +194,14 @@ class ProjectComplianceController extends BaseAPI
         'qa_release_acceptance' => 'Final Release Acceptance',
         'qa_in_app_payment_upi' => 'In-App Payment Gateway & UPI App Switch Drill',
         'qa_googlebot_html' => 'Googlebot HTML Uniqueness Drill',
+        'qa_webview_download_print' => 'WebView Download, Print and Document Matrix',
+        'qa_webview_external_links' => 'WebView External Link and Scheme Drill',
+        'qa_webview_clipboard_zoom' => 'WebView Clipboard and Zoom Drill',
+        'qa_webview_permissions' => 'WebView Native Permission Bridge Drill',
+        'qa_app_persistent_login' => 'App Persistent Login and Secure Storage Drill',
+        'qa_forced_app_update' => 'Forced / Optional App Update Drill',
+        'qa_webview_keyboard_pickers' => 'WebView Keyboard and Picker Compatibility Drill',
+        'qa_fcm_push_routing' => 'FCM Push Permission and Deep-Link Routing Drill',
     ];
 
     private static $CLOSED_STATUSES = ['completed', 'release_ready', 'archived'];
