@@ -6,6 +6,7 @@ require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../utils/pay_verify.php';
 require_once __DIR__ . '/../../utils/workforce_access.php';
 require_once __DIR__ . '/../../utils/pay_verify_notifications.php';
+require_once __DIR__ . '/../../utils/super_admin.php';
 
 class PayVerifyController extends BaseAPI
 {
@@ -27,38 +28,55 @@ class PayVerifyController extends BaseAPI
         $this->sendJsonThen($afterResponse, $statusCode, $message, $data);
     }
 
-    private function isAdmin($decoded): bool
+    /** JWT role admin (Super Admin and regular Admin share this role). */
+    private function isAdminRole($decoded): bool
     {
         return strtolower(trim((string)($decoded->role ?? ''))) === 'admin';
     }
 
-    private function requireAdmin($decoded)
+    /**
+     * Why: Full team payment data (rates, adjustments, roster totals) is Super Admin
+     * only. Regular Admins must not see or mutate other users' pay.
+     */
+    private function isPayManager($decoded): bool
     {
-        if (!$this->isAdmin($decoded)) {
-            $pm = PermissionManager::getInstance();
-            if (!$pm->hasPermissionOrAdmin(
-                $decoded->user_id,
-                'USERS_VIEW',
-                $decoded->role ?? null
-            )) {
-                $this->sendJsonResponse(403, 'Admin access required');
-                return false;
-            }
+        return br_actor_is_super_admin($this->conn, $decoded);
+    }
+
+    /** @deprecated Use isPayManager — kept as alias for call-site clarity during review. */
+    private function isAdmin($decoded): bool
+    {
+        return $this->isPayManager($decoded);
+    }
+
+    private function requirePayManager($decoded): bool
+    {
+        if (!$this->isPayManager($decoded)) {
+            $this->sendJsonResponse(
+                403,
+                'Full payment access is Super Admin only'
+            );
+            return false;
         }
         return true;
     }
 
+    /** @deprecated Use requirePayManager */
+    private function requireAdmin($decoded)
+    {
+        return $this->requirePayManager($decoded);
+    }
+
+    /**
+     * Self: always. Other users' payment records: Super Admin only.
+     * Regular Admins and USERS_VIEW alone are not enough (CODO Rule 60).
+     */
     private function canAccessUser($decoded, string $targetUserId): bool
     {
         if ((string)$decoded->user_id === $targetUserId) {
             return true;
         }
-        return $this->isAdmin($decoded)
-            || PermissionManager::getInstance()->hasPermissionOrAdmin(
-                $decoded->user_id,
-                'USERS_VIEW',
-                $decoded->role ?? null
-            );
+        return $this->isPayManager($decoded);
     }
 
     public function pendingCounts(): void
@@ -67,21 +85,30 @@ class PayVerifyController extends BaseAPI
         if (!$decoded) {
             return;
         }
-        if (!$this->isAdmin($decoded) && !br_require_workforce($this, $this->conn, $decoded)) {
+        $isPayManager = $this->isPayManager($decoded);
+        // Why: Regular Admins have no payment product surface — no counts, no nag.
+        if ($this->isAdminRole($decoded) && !$isPayManager) {
+            $this->sendJsonResponse(200, 'OK', [
+                'mine' => 0,
+                'admin' => 0,
+                'total' => 0,
+            ]);
+            return;
+        }
+        if (!$isPayManager && !br_require_workforce($this, $this->conn, $decoded)) {
             return;
         }
         br_pay_verify_ensure_schema($this->conn);
         $counts = br_pay_verify_pending_counts(
             $this->conn,
             (string)$decoded->user_id,
-            $this->isAdmin($decoded)
+            $isPayManager
         );
-        $isAdmin = $this->isAdmin($decoded);
-        // Why: Admins manage Pay Verify but are not required to verify hours — no nag totals.
+        // Why: Super Admins manage team pay but are not required to verify own hours.
         $this->sendJsonResponse(200, 'OK', [
-            'mine' => $isAdmin ? 0 : (int)$counts['mine'],
+            'mine' => $isPayManager ? 0 : (int)$counts['mine'],
             'admin' => 0,
-            'total' => $isAdmin ? 0 : (int)$counts['mine'],
+            'total' => $isPayManager ? 0 : (int)$counts['mine'],
         ]);
     }
 
@@ -101,8 +128,13 @@ class PayVerifyController extends BaseAPI
         if (!$decoded) {
             return;
         }
-        $isAdmin = $this->isAdmin($decoded);
-        if (!$isAdmin && !br_require_workforce($this, $this->conn, $decoded)) {
+        $isPayManager = $this->isPayManager($decoded);
+        // Why: Regular Admins must not open the team payroll roster or self pay UI here.
+        if ($this->isAdminRole($decoded) && !$isPayManager) {
+            $this->sendJsonResponse(403, 'Full payment access is Super Admin only');
+            return;
+        }
+        if (!$isPayManager && !br_require_workforce($this, $this->conn, $decoded)) {
             return;
         }
 
@@ -116,7 +148,7 @@ class PayVerifyController extends BaseAPI
             $role = 'all';
         }
 
-        $scopeMine = $role === 'mine' || (!$isAdmin && $role === 'all');
+        $scopeMine = $role === 'mine' || (!$isPayManager && $role === 'all');
         $roleFilter = $scopeMine ? 'all' : $role;
 
         br_pay_verify_ensure_schema($this->conn);
@@ -258,7 +290,7 @@ class PayVerifyController extends BaseAPI
             'weeks_meta' => $weeksMeta,
             'roster' => $roster,
             'totals' => $totals,
-            'is_admin' => $isAdmin,
+            'is_admin' => $isPayManager,
             'month_bounds' => [
                 'min' => $monthNav['min'],
                 'max' => $monthNav['max'],
@@ -285,8 +317,13 @@ class PayVerifyController extends BaseAPI
                 $this->sendJsonResponse(403, 'Forbidden');
                 return;
             }
+            // Why: Regular Admins have no payment product surface (self or others).
+            if ($this->isAdminRole($decoded) && !$this->isPayManager($decoded)) {
+                $this->sendJsonResponse(403, 'Full payment access is Super Admin only');
+                return;
+            }
             if ((string)$decoded->user_id === $userId
-                && !$this->isAdmin($decoded)
+                && !$this->isPayManager($decoded)
                 && !br_require_workforce($this, $this->conn, $decoded)) {
                 return;
             }
