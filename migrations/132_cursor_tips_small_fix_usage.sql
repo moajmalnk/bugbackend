@@ -29,12 +29,12 @@ VALUES
  'Prompt', 3, 1),
 
 ('workflow', 'cursor_wf_premium_models', 'Composer 2.5 for small field bugs', 'Workflow 7',
- 'For a simple field bug use Composer 2.5 with Fast off. If you use Auto, choose Cost. Do not use Grok, Fast, Claude, or GPT for a simple field bug. Save stronger models for hard design and debugging.\n\nMalayalam: ലളിതമായ ഫീൽഡ് ബഗിന് Composer 2.5. Fast ഓഫ്. Auto വേണമെങ്കിൽ Cost. Grok, Fast, Claude, GPT എന്നിവ ലളിതമായ ഫീൽഡ് ബഗിന് ഉപയോഗിക്കരുത്. കഠിനമായ ഡിസൈനിനും ഡീബഗ്ഗിംഗിനും മാത്രം ശക്തമായ മോഡൽ.',
+ 'For a simple field bug use Composer 2.5 with Fast off. Do not pick Auto expecting a cheap flat rate—from 24 Aug 2026 Auto bills the rate of whichever model it routes to, and most requests cost more than the old flat Auto rate. Do not use Grok, Fast, Claude, or GPT for a simple field bug. Save stronger models (and Auto on hard work) for architecture and tricky debugging.\n\nMalayalam: ലളിതമായ ഫീൽഡ് ബഗിന് Composer 2.5. Fast ഓഫ്. 2026 Aug 24 മുതൽ Auto flat rate അല്ല—റൂട്ട് ചെയ്യുന്ന മോഡലിന്റെ നിരക്ക്; മിക്ക അഭ്യർത്ഥനകളും പഴയ Auto-യെക്കാൾ ചെലവേറിയതാണ്. Grok, Fast, Claude, GPT ലളിത ബഗിന് വേണ്ട. ശക്തമായ മോഡൽ/Auto കഠിന ഡിസൈൻ-ഡീബഗ്ഗിന് മാത്രം.',
  'Sending the senior architect to change one form label.',
  'ഒരു ഫോം ലേബൽ മാറ്റാൻ സീനിയർ ആർക്കിടെക്റ്റിനെ അയക്കുന്നത് പോലെ.',
  'One-field validation, copy, and other small scoped fixes.',
  'Architecture, ambiguous multi-file plans, and bugs you cannot locate.',
- 'Claude or GPT to reject numbers in one name field',
+ 'Auto or Claude for a one-field name validation expecting flat cheap Auto',
  'Composer 2.5, Fast off. “In ContactForm, the name field accepts letters only and rejects numbers.”',
  'Prompt', 7, 1),
 

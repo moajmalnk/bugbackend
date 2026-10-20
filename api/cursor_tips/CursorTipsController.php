@@ -69,6 +69,58 @@ class CursorTipsController extends BaseAPI
         }
     }
 
+    /**
+     * Why: Aug 2026 Auto left flat-rate billing. Seed the pricing tip (and refresh
+     * Workflow 7) when the sentinel is missing so deploys update Tips without a
+     * manual mysql session.
+     */
+    private function ensureAutoPricingTips(): void
+    {
+        if (!$this->tablesReady()) {
+            return;
+        }
+        try {
+            $sentinel = $this->conn->prepare(
+                'SELECT 1 FROM cursor_tips WHERE tip_key = ? LIMIT 1'
+            );
+            $sentinel->execute(['cursor_wf_auto_pricing']);
+            $present = (bool) $sentinel->fetch(PDO::FETCH_NUM);
+            $sentinel->closeCursor();
+            if ($present) {
+                return;
+            }
+            $path = __DIR__ . '/../../migrations/139_cursor_tips_auto_pricing.sql';
+            if (!is_file($path)) {
+                return;
+            }
+            $sql = file_get_contents($path);
+            if ($sql === false) {
+                return;
+            }
+            $parts = preg_split('/;\s*(?:\r?\n|$)/', $sql) ?: [];
+            foreach ($parts as $statement) {
+                $lines = preg_split('/\r?\n/', $statement) ?: [];
+                $kept = [];
+                foreach ($lines as $line) {
+                    if (preg_match('/^\s*--/', $line)) {
+                        continue;
+                    }
+                    $kept[] = $line;
+                }
+                $statement = trim(implode("\n", $kept));
+                if ($statement === '') {
+                    continue;
+                }
+                $this->conn->exec($statement);
+            }
+        } catch (Throwable $e) {
+            error_log(json_encode([
+                'event' => 'cursor_tip.seed_auto_pricing.failed',
+                'error' => $e->getMessage(),
+            ]));
+        }
+    }
+
     private function requireTeamAuth()
     {
         try {
@@ -202,6 +254,7 @@ class CursorTipsController extends BaseAPI
             return;
         }
         $this->ensureSmallFixUsageTips();
+        $this->ensureAutoPricingTips();
 
         try {
             $stmt = $this->conn->prepare(
@@ -299,6 +352,7 @@ class CursorTipsController extends BaseAPI
             return;
         }
         $this->ensureSmallFixUsageTips();
+        $this->ensureAutoPricingTips();
 
         $phase = isset($_GET['phase']) ? strtolower(trim((string)$_GET['phase'])) : '';
         $search = isset($_GET['q']) ? trim((string)$_GET['q']) : '';
