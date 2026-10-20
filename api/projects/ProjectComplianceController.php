@@ -7,8 +7,8 @@ require_once __DIR__ . '/../../utils/workforce_access.php';
 
 class ProjectComplianceController extends BaseAPI
 {
-    private const DEV_RULE_COUNT = 80;
-    private const QA_RULE_COUNT = 44;
+    private const DEV_RULE_COUNT = 83;
+    private const QA_RULE_COUNT = 46;
 
     private static $DEV_RULE_KEYS = [
         'dev_rule_1', 'dev_rule_2', 'dev_rule_3', 'dev_rule_4', 'dev_rule_5',
@@ -27,7 +27,7 @@ class ProjectComplianceController extends BaseAPI
         'dev_rule_69', 'dev_rule_70', 'dev_rule_71', 'dev_rule_72',
         'dev_rule_73', 'dev_rule_74', 'dev_rule_75', 'dev_rule_76', 'dev_rule_77',
         'dev_rule_78', 'dev_rule_79', 'dev_rule_80', 'dev_rule_81', 'dev_rule_82',
-        'dev_rule_83', 'dev_rule_84',
+        'dev_rule_83', 'dev_rule_84', 'dev_rule_85', 'dev_rule_86', 'dev_rule_87',
     ];
 
     private static $QA_RULE_KEYS = [
@@ -75,6 +75,8 @@ class ProjectComplianceController extends BaseAPI
         'qa_forced_app_update',
         'qa_webview_keyboard_pickers',
         'qa_fcm_push_routing',
+        'qa_webview_session_isolation',
+        'qa_webview_performance_stability',
     ];
 
     private static $BUILTIN_RULE_TITLES = [
@@ -158,6 +160,9 @@ class ProjectComplianceController extends BaseAPI
         'dev_rule_82' => 'Required App Update Flow',
         'dev_rule_83' => 'App Lifecycle and WebView Process Recovery',
         'dev_rule_84' => 'Native / Web / Backend Responsibility Contract',
+        'dev_rule_85' => 'WebView Origin Allowlist and Native Bridge Security',
+        'dev_rule_86' => 'App Session and WebView Data Isolation',
+        'dev_rule_87' => 'WebView Performance and Stability',
         'qa_apple_sandbox' => 'The Apple Ecosystem Sandbox',
         'qa_click_attack' => 'The Click Attack Safeguard',
         'qa_theme_interruption' => 'The Theme Interruption Matrix',
@@ -202,6 +207,8 @@ class ProjectComplianceController extends BaseAPI
         'qa_forced_app_update' => 'Forced / Optional App Update Drill',
         'qa_webview_keyboard_pickers' => 'WebView Keyboard and Picker Compatibility Drill',
         'qa_fcm_push_routing' => 'FCM Push Permission and Deep-Link Routing Drill',
+        'qa_webview_session_isolation' => 'App Session and WebView Data Isolation Drill',
+        'qa_webview_performance_stability' => 'WebView Performance and Stability Drill',
     ];
 
     private static $CLOSED_STATUSES = ['completed', 'release_ready', 'archived'];

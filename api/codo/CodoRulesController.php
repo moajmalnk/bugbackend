@@ -726,14 +726,15 @@ class CodoRulesController extends BaseAPI
         'dev_rule_68' => '122_codo_webview_payment_rules.sql',
         'dev_rule_69' => '127_codo_spa_seo_crawlability_rules.sql',
         'dev_rule_73' => '137_codo_flutter_webview_shell_rules.sql',
+        'dev_rule_85' => '138_codo_flutter_webview_gap_rules.sql',
     ];
 
     /**
-     * Why: Rules 44–50, 51–67, 68–72, and 73–84 (plus matching QA Stress rows) were
-     * added in SQL files that are not auto-applied. The acknowledgement gate must
-     * see them on the next check, including an already-open developer session.
-     * Each file is idempotent (INSERT IGNORE + guarded UPDATEs), so a partial
-     * earlier run is safe.
+     * Why: Rules 44–50, 51–67, 68–72, 73–84, and 85–87 (plus matching QA Stress
+     * rows) were added in SQL files that are not auto-applied. The acknowledgement
+     * gate must see them on the next check, including an already-open developer
+     * session. Each file is idempotent (INSERT IGNORE + guarded UPDATEs), so a
+     * partial earlier run is safe.
      */
     private function ensureOnDemandRuleMigrations(): void
     {
