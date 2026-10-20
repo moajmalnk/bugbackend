@@ -234,7 +234,8 @@ class PayVerifyController extends BaseAPI
                     $bounds['start'],
                     $bounds['end']
                 );
-                unset($weekRow['attendance_days']);
+                // Why: Keep day rows so verify popup + week detail cards can show the same times.
+                // Team roster payloads stay bounded (≈5 weeks × 6 days per person).
                 $weeks[] = $weekRow;
                 $emp = (string)($weekRow['employee_status'] ?? 'pending');
                 if ($emp === 'verified') {
