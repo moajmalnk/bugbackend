@@ -222,3 +222,43 @@ function br_hierarchy_manage_admin_target_error(
 
     return null;
 }
+
+/**
+ * Why: Dashboard / header impersonation must never enter a Super Admin account.
+ * Regular Admins also cannot open another Admin's session.
+ *
+ * @return string|null Error message when denied, null when allowed
+ */
+function br_impersonation_target_error(
+    PDO $conn,
+    ?object $actor,
+    string $targetUserId
+): ?string {
+    $targetUserId = trim($targetUserId);
+    if ($targetUserId === '') {
+        return 'Target user is required';
+    }
+    $target = br_fetch_user_admin_flags($conn, $targetUserId);
+    if (!$target) {
+        return 'Target user not found';
+    }
+    $actorId = trim((string) ($actor->user_id ?? ''));
+    if ($actorId !== '' && $actorId === $targetUserId) {
+        return 'Cannot impersonate your own account';
+    }
+
+    // Hard rule: Super Admin accounts are never impersonated (any actor).
+    if ((int) $target['is_super_admin'] === 1) {
+        return 'Super Admin accounts cannot be impersonated';
+    }
+
+    // Regular Admins may only open workforce sessions — not other Admins.
+    if (
+        br_role_is_admin_enum($target['role'])
+        && !br_actor_is_super_admin($conn, $actor)
+    ) {
+        return 'Only a Super Admin can open an Admin dashboard session';
+    }
+
+    return null;
+}

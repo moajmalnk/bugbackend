@@ -5,6 +5,7 @@ require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../config/utils.php';
 require_once __DIR__ . '/../config/cors.php';
 require_once __DIR__ . '/PermissionManager.php';
+require_once __DIR__ . '/../utils/super_admin.php';
 
 class BaseAPI {
     protected $conn;
@@ -354,6 +355,22 @@ class BaseAPI {
                 try {
                     error_log("🔍 BaseAPI::validateToken - Processing impersonation token - Original user_id: " . $result->user_id . ", Admin ID: " . $result->admin_id);
 
+                    // Why: Re-check hierarchy on every request so old links to Super Admin die.
+                    $actorProbe = (object) [
+                        'user_id' => (string) $result->admin_id,
+                        'role' => 'admin',
+                    ];
+                    $denyImpersonate = br_impersonation_target_error(
+                        $this->conn,
+                        $actorProbe,
+                        (string) $result->user_id
+                    );
+                    if ($denyImpersonate !== null) {
+                        error_log('❌ Impersonation token rejected: ' . $denyImpersonate);
+                        $this->sendJsonResponse(403, $denyImpersonate);
+                        return false;
+                    }
+
                     // Why: JWT `role` is the *target* user (e.g. tester). Never copy it into
                     // admin_role — that made `$isAdmin` false and project checks 403 while
                     // impersonating. Prefer JWT admin_role, else look up the issuing admin.
@@ -389,6 +406,16 @@ class BaseAPI {
                 try {
                     if (isset($result->role) && $result->role === 'admin') {
                         error_log("🔑 Manual admin impersonation attempt - Target user ID: " . $impersonateId);
+                        $denyManual = br_impersonation_target_error(
+                            $this->conn,
+                            $result,
+                            (string) $impersonateId
+                        );
+                        if ($denyManual !== null) {
+                            error_log('❌ Manual impersonation denied: ' . $denyManual);
+                            $this->sendJsonResponse(403, $denyManual);
+                            return false;
+                        }
                         // Verify the target user exists and fetch username and role
                         $stmt = $this->conn->prepare("SELECT id, username, role FROM users WHERE id = ? LIMIT 1");
                         $stmt->execute([$impersonateId]);

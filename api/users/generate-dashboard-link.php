@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../../api/BaseAPI.php';
 require_once __DIR__ . '/../../config/utils.php';
+require_once __DIR__ . '/../../utils/super_admin.php';
 use Firebase\JWT\JWT;
 
 // Handle CORS preflight
@@ -45,6 +46,14 @@ try {
     if (!$targetUser) {
         http_response_code(404);
         echo json_encode(['success' => false, 'message' => 'Target user not found']);
+        exit();
+    }
+
+    // Why: Super Admin accounts must never be entered via dashboard impersonation.
+    $deny = br_impersonation_target_error($api->getConnection(), $decoded, (string) $targetUserId);
+    if ($deny !== null) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => $deny]);
         exit();
     }
     
