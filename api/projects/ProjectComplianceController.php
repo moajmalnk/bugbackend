@@ -7,8 +7,8 @@ require_once __DIR__ . '/../../utils/workforce_access.php';
 
 class ProjectComplianceController extends BaseAPI
 {
-    private const DEV_RULE_COUNT = 83;
-    private const QA_RULE_COUNT = 46;
+    private const DEV_RULE_COUNT = 88;
+    private const QA_RULE_COUNT = 47;
 
     private static $DEV_RULE_KEYS = [
         'dev_rule_1', 'dev_rule_2', 'dev_rule_3', 'dev_rule_4', 'dev_rule_5',
@@ -28,6 +28,7 @@ class ProjectComplianceController extends BaseAPI
         'dev_rule_73', 'dev_rule_74', 'dev_rule_75', 'dev_rule_76', 'dev_rule_77',
         'dev_rule_78', 'dev_rule_79', 'dev_rule_80', 'dev_rule_81', 'dev_rule_82',
         'dev_rule_83', 'dev_rule_84', 'dev_rule_85', 'dev_rule_86', 'dev_rule_87',
+        'dev_rule_88', 'dev_rule_89', 'dev_rule_90', 'dev_rule_91', 'dev_rule_92',
     ];
 
     private static $QA_RULE_KEYS = [
@@ -77,6 +78,7 @@ class ProjectComplianceController extends BaseAPI
         'qa_fcm_push_routing',
         'qa_webview_session_isolation',
         'qa_webview_performance_stability',
+        'qa_webview_upi_js_checkout',
     ];
 
     private static $BUILTIN_RULE_TITLES = [
@@ -163,6 +165,11 @@ class ProjectComplianceController extends BaseAPI
         'dev_rule_85' => 'WebView Origin Allowlist and Native Bridge Security',
         'dev_rule_86' => 'App Session and WebView Data Isolation',
         'dev_rule_87' => 'WebView Performance and Stability',
+        'dev_rule_88' => 'Hosted Checkout UPI JS Bridge (Android + iOS)',
+        'dev_rule_89' => 'Android UPI App Discovery and Package Visibility',
+        'dev_rule_90' => 'iOS UPI Scheme Queries for Checkout App List',
+        'dev_rule_91' => 'Payment WebView User-Agent and Subframe Scheme Cancel',
+        'dev_rule_92' => 'Merchant UPI Intent Flag After Native Bridge Ready',
         'qa_apple_sandbox' => 'The Apple Ecosystem Sandbox',
         'qa_click_attack' => 'The Click Attack Safeguard',
         'qa_theme_interruption' => 'The Theme Interruption Matrix',
@@ -209,6 +216,7 @@ class ProjectComplianceController extends BaseAPI
         'qa_fcm_push_routing' => 'FCM Push Permission and Deep-Link Routing Drill',
         'qa_webview_session_isolation' => 'App Session and WebView Data Isolation Drill',
         'qa_webview_performance_stability' => 'WebView Performance and Stability Drill',
+        'qa_webview_upi_js_checkout' => 'Hosted Checkout UPI App-List & Intent DoD',
     ];
 
     private static $CLOSED_STATUSES = ['completed', 'release_ready', 'archived'];
