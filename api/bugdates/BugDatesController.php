@@ -136,8 +136,9 @@ class BugDatesController extends BaseAPI
     }
 
     /**
-     * Why: Kerala Piravi (1 Nov) was missing from production BugDates while other
-     * November observances existed — Design Poster had no event. Idempotent seed.
+     * Why: Kerala Piravi (1 Nov) was missing / invisible on production BugDates —
+     * existing rows with end_date set or a future start_date never expand onto
+     * 2026-11-01. Upsert + normalise so Design Poster always has an observance.
      */
     private function ensureCriticalObservances(): void
     {
@@ -147,15 +148,36 @@ class BugDatesController extends BaseAPI
         }
         $done = true;
         try {
-            $exists = $this->conn->query(
-                "SELECT id FROM bug_dates_events
+            $desc = '[High] Kerala Formation Day (1 Nov 1956). Content angle: bilingual Malayalam greeting, CODO built-in-Kerala pride post. Templates: Malayalam Message, Heritage Hero.';
+            $hooks = json_encode(['creative' => true]);
+
+            $row = $this->conn->query(
+                "SELECT id, recurrence_type, start_date, end_date, status, category
+                 FROM bug_dates_events
                  WHERE title = 'Kerala Piravi'
-                   AND (recurrence_type = 'yearly' OR start_date = '2026-11-01')
+                 ORDER BY id ASC
                  LIMIT 1"
-            );
-            if ($exists && $exists->fetch(PDO::FETCH_ASSOC)) {
+            )->fetch(PDO::FETCH_ASSOC);
+
+            if ($row) {
+                $needsFix = strtolower((string)($row['recurrence_type'] ?? '')) !== 'yearly'
+                    || substr((string)($row['start_date'] ?? ''), 0, 10) !== '2026-11-01'
+                    || ($row['end_date'] !== null && trim((string)$row['end_date']) !== '')
+                    || strtolower((string)($row['status'] ?? '')) !== 'approved'
+                    || strtolower((string)($row['category'] ?? '')) !== 'observance';
+                if ($needsFix) {
+                    $stmt = $this->conn->prepare(
+                        "UPDATE bug_dates_events SET
+                            description = ?, category = 'observance', recurrence_type = 'yearly',
+                            start_date = '2026-11-01', end_date = NULL, is_office_closed = 0,
+                            auto_hooks = ?, visibility = 'company', status = 'approved'
+                         WHERE id = ?"
+                    );
+                    $stmt->execute([$desc, $hooks, (int)$row['id']]);
+                }
                 return;
             }
+
             $seedUser = $this->conn->query(
                 "SELECT id FROM users WHERE role = 'admin' ORDER BY created_at ASC LIMIT 1"
             )->fetchColumn();
@@ -169,16 +191,11 @@ class BugDatesController extends BaseAPI
             }
             $stmt = $this->conn->prepare(
                 "INSERT INTO bug_dates_events (
-                    title, description, category, recurrence_type, start_date,
+                    title, description, category, recurrence_type, start_date, end_date,
                     is_office_closed, auto_hooks, visibility, status, created_by
-                 ) VALUES (?, ?, 'observance', 'yearly', '2026-11-01', 0, ?, 'company', 'approved', ?)"
+                 ) VALUES (?, ?, 'observance', 'yearly', '2026-11-01', NULL, 0, ?, 'company', 'approved', ?)"
             );
-            $stmt->execute([
-                'Kerala Piravi',
-                '[High] Kerala Formation Day (1 Nov 1956). Content angle: bilingual Malayalam greeting, CODO built-in-Kerala pride post. Templates: Malayalam Message, Heritage Hero.',
-                json_encode(['creative' => true]),
-                (string)$seedUser,
-            ]);
+            $stmt->execute([$desc, $hooks, (string)$seedUser]);
         } catch (Throwable $e) {
             error_log(json_encode([
                 'event' => 'bugdates.ensure_critical_observances.failed',
