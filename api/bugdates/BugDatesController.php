@@ -1754,6 +1754,17 @@ class BugDatesController extends BaseAPI
             return;
         }
 
+        $folderId = null;
+        $hasFolderCol = $this->creativeAssetsHasFolderColumn();
+        if ($hasFolderCol && array_key_exists('folder_id', $data)) {
+            try {
+                $folderId = $this->resolveCreativeFolderId($data['folder_id']);
+            } catch (InvalidArgumentException $e) {
+                $this->sendJsonResponse(400, $e->getMessage());
+                return;
+            }
+        }
+
         // Dedupe: one creative card per event occurrence. A new poster export replaces the draft's image.
         $existing = $this->findHook($eventId, $occurrence, 'creative_card');
         $existingAsset = null;
@@ -1773,7 +1784,17 @@ class BugDatesController extends BaseAPI
             return;
         }
         if ($existingAsset && $filePath !== null) {
-            $this->replaceCreativePoster($decoded, $existingAsset, $data, $filePath, $thumbPath, $templateKey, $event);
+            $this->replaceCreativePoster(
+                $decoded,
+                $existingAsset,
+                $data,
+                $filePath,
+                $thumbPath,
+                $templateKey,
+                $event,
+                $hasFolderCol ? $folderId : null,
+                $hasFolderCol && array_key_exists('folder_id', $data)
+            );
             return;
         }
 
@@ -1801,24 +1822,46 @@ class BugDatesController extends BaseAPI
 
         $this->conn->beginTransaction();
         try {
-            $stmt = $this->conn->prepare(
-                "INSERT INTO creative_assets (
-                    id, project_id, creator_id, title, material_type, platform,
-                    hook_content, asset_source, drive_link, uploaded_file_path,
-                    preview_thumbnail_url, status, scheduled_date, published_date
-                 ) VALUES (?, NULL, ?, ?, ?, 'Insta', ?, ?, NULL, ?, ?, 'Draft', ?, NULL)"
-            );
-            $stmt->execute([
-                $assetId,
-                (string)$decoded->user_id,
-                $title,
-                $material,
-                $hookContent,
-                $filePath !== null ? 'upload' : 'link',
-                $filePath,
-                $thumbPath,
-                $occurrence,
-            ]);
+            if ($hasFolderCol) {
+                $stmt = $this->conn->prepare(
+                    "INSERT INTO creative_assets (
+                        id, project_id, folder_id, creator_id, title, material_type, platform,
+                        hook_content, asset_source, drive_link, uploaded_file_path,
+                        preview_thumbnail_url, status, scheduled_date, published_date
+                     ) VALUES (?, NULL, ?, ?, ?, ?, 'Insta', ?, ?, NULL, ?, ?, 'Draft', ?, NULL)"
+                );
+                $stmt->execute([
+                    $assetId,
+                    $folderId,
+                    (string)$decoded->user_id,
+                    $title,
+                    $material,
+                    $hookContent,
+                    $filePath !== null ? 'upload' : 'link',
+                    $filePath,
+                    $thumbPath,
+                    $occurrence,
+                ]);
+            } else {
+                $stmt = $this->conn->prepare(
+                    "INSERT INTO creative_assets (
+                        id, project_id, creator_id, title, material_type, platform,
+                        hook_content, asset_source, drive_link, uploaded_file_path,
+                        preview_thumbnail_url, status, scheduled_date, published_date
+                     ) VALUES (?, NULL, ?, ?, ?, 'Insta', ?, ?, NULL, ?, ?, 'Draft', ?, NULL)"
+                );
+                $stmt->execute([
+                    $assetId,
+                    (string)$decoded->user_id,
+                    $title,
+                    $material,
+                    $hookContent,
+                    $filePath !== null ? 'upload' : 'link',
+                    $filePath,
+                    $thumbPath,
+                    $occurrence,
+                ]);
+            }
 
             $this->recordHook(
                 $eventId,
@@ -1846,9 +1889,46 @@ class BugDatesController extends BaseAPI
             'title' => $title,
             'scheduled_date' => $occurrence,
             'status' => 'Draft',
+            'folder_id' => $folderId,
             'already_exists' => false,
             'updated' => false,
         ]);
+    }
+
+    /**
+     * Why: Poster Studio asks for a BugCreative folder at save time; null = All files (root).
+     * @throws InvalidArgumentException when folder_id is not a valid UUID or missing row
+     */
+    private function resolveCreativeFolderId($raw): ?string
+    {
+        if ($raw === null || $raw === '' || $raw === 'root') {
+            return null;
+        }
+        $id = trim((string)$raw);
+        if (!Utils::isValidUUID($id)) {
+            throw new InvalidArgumentException('Valid folder_id is required');
+        }
+        $stmt = $this->conn->prepare('SELECT id FROM creative_folders WHERE id = ? LIMIT 1');
+        $stmt->execute([$id]);
+        if (!$stmt->fetch(PDO::FETCH_ASSOC)) {
+            throw new InvalidArgumentException('Folder not found');
+        }
+        return $id;
+    }
+
+    private function creativeAssetsHasFolderColumn(): bool
+    {
+        static $ready = null;
+        if ($ready !== null) {
+            return $ready;
+        }
+        try {
+            $stmt = $this->conn->query("SHOW COLUMNS FROM creative_assets LIKE 'folder_id'");
+            $ready = (bool)$stmt->fetch(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) {
+            $ready = false;
+        }
+        return $ready;
     }
 
     /**
@@ -1878,7 +1958,9 @@ class BugDatesController extends BaseAPI
         string $filePath,
         ?string $thumbPath,
         ?string $templateKey,
-        array $event
+        array $event,
+        ?string $folderId = null,
+        bool $updateFolder = false
     ): void {
         $userId = (string)$decoded->user_id;
         $isOwner = (string)($asset['creator_id'] ?? '') === $userId;
@@ -1899,13 +1981,30 @@ class BugDatesController extends BaseAPI
 
         $this->conn->beginTransaction();
         try {
-            $stmt = $this->conn->prepare(
-                "UPDATE creative_assets
-                 SET uploaded_file_path = ?, preview_thumbnail_url = ?, asset_source = 'upload',
-                     title = ?, hook_content = COALESCE(?, hook_content)
-                 WHERE id = ? AND status NOT IN ('Published', 'Completed')"
-            );
-            $stmt->execute([$filePath, $thumbPath ?? $filePath, $title, $hookContent, $asset['id']]);
+            if ($updateFolder) {
+                $stmt = $this->conn->prepare(
+                    "UPDATE creative_assets
+                     SET uploaded_file_path = ?, preview_thumbnail_url = ?, asset_source = 'upload',
+                         title = ?, hook_content = COALESCE(?, hook_content), folder_id = ?
+                     WHERE id = ? AND status NOT IN ('Published', 'Completed')"
+                );
+                $stmt->execute([
+                    $filePath,
+                    $thumbPath ?? $filePath,
+                    $title,
+                    $hookContent,
+                    $folderId,
+                    $asset['id'],
+                ]);
+            } else {
+                $stmt = $this->conn->prepare(
+                    "UPDATE creative_assets
+                     SET uploaded_file_path = ?, preview_thumbnail_url = ?, asset_source = 'upload',
+                         title = ?, hook_content = COALESCE(?, hook_content)
+                     WHERE id = ? AND status NOT IN ('Published', 'Completed')"
+                );
+                $stmt->execute([$filePath, $thumbPath ?? $filePath, $title, $hookContent, $asset['id']]);
+            }
             if ($stmt->rowCount() === 0) {
                 $this->conn->rollBack();
                 $this->sendJsonResponse(409, 'Creative card changed while saving — reload and try again');
@@ -1928,6 +2027,7 @@ class BugDatesController extends BaseAPI
         $this->sendJsonResponse(200, 'Creative card updated with new poster', [
             'asset_id' => $asset['id'],
             'title' => $title,
+            'folder_id' => $updateFolder ? $folderId : null,
             'already_exists' => true,
             'updated' => true,
         ]);
