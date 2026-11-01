@@ -272,14 +272,14 @@ class CreativeAssetsController extends BaseAPI
     }
 
     /**
-     * Why: Creators only see their own work; reviewers/managers see the full queue.
+     * Why: BugCreative is a shared Drive-style library. Anyone with CREATIVE_VIEW
+     * can open any asset; edit/delete/review stay gated separately. Previously
+     * creators were limited to creator_id = self, so folders appeared empty
+     * while admins saw the full library.
      */
-    private function canSeeAsset(object $decoded, array $row): bool
+    private function canSeeAsset(object $decoded, array $_row): bool
     {
-        if ($this->isAdmin($decoded) || $this->can($decoded, 'CREATIVE_MANAGE') || $this->can($decoded, 'CREATIVE_REVIEW')) {
-            return true;
-        }
-        return (string)$row['creator_id'] === (string)$decoded->user_id;
+        return $this->isAdmin($decoded) || $this->can($decoded, 'CREATIVE_VIEW');
     }
 
     private function canEditAsset(object $decoded, array $row): bool
@@ -297,7 +297,12 @@ class CreativeAssetsController extends BaseAPI
         return in_array($row['status'], self::STATUSES, true);
     }
 
-    private function applyOwnerScope(object $decoded, array &$where, array &$params): void
+    /**
+     * Why: Creator dashboard "my drafts / in review" stays personal so teammates'
+     * queue does not inflate another creator's workload cards. List/stats do not
+     * use this — BugCreative is a shared library for anyone with CREATIVE_VIEW.
+     */
+    private function applyPersonalCreatorScope(object $decoded, array &$where, array &$params): void
     {
         if ($this->isAdmin($decoded) || $this->can($decoded, 'CREATIVE_MANAGE') || $this->can($decoded, 'CREATIVE_REVIEW')) {
             return;
@@ -400,7 +405,7 @@ class CreativeAssetsController extends BaseAPI
         array &$params,
         array $opts
     ): bool {
-        $this->applyOwnerScope($decoded, $where, $params);
+        // Why: Shared library — CREATIVE_VIEW lists every asset; edit stays owner-gated.
         $this->applyCreatedPeriod(
             $opts['from'] ?? null,
             $opts['to'] ?? null,
@@ -1138,8 +1143,8 @@ class CreativeAssetsController extends BaseAPI
      * Why: Pipeline cards (Draft / In Review / due / total) describe the current state of
      * work and must not shrink when the period changes — an asset created in March that is
      * still a Draft is still a Draft today. Only output metrics are period-bound:
-     * published (by published_date) and created (by created_at). Scope matches the
-     * BugCreative library via applyOwnerScope.
+     * published (by published_date) and created (by created_at). Creators see their
+     * own pipeline; managers/reviewers/admins see the team queue.
      */
     public function dashboardSummary(): void
     {
@@ -1161,7 +1166,7 @@ class CreativeAssetsController extends BaseAPI
 
         $where = ['1=1'];
         $params = [];
-        $this->applyOwnerScope($decoded, $where, $params);
+        $this->applyPersonalCreatorScope($decoded, $where, $params);
         $scopeSql = implode(' AND ', $where);
 
         try {
