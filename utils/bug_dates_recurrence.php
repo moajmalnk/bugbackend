@@ -40,15 +40,18 @@ function br_bug_dates_expand_occurrences(array $event, string $from, string $to)
     }
 
     $tz = new DateTimeZone('Asia/Kolkata');
-    $rangeStart = DateTimeImmutable::createFromFormat('Y-m-d', $from, $tz);
-    $rangeEnd = DateTimeImmutable::createFromFormat('Y-m-d', $to, $tz);
-    $anchor = DateTimeImmutable::createFromFormat('Y-m-d', $startDate, $tz);
+    // Why: without `!`, createFromFormat keeps "now" as the time-of-day. Yearly/monthly
+    // comparisons then fail on the event's own calendar day after midnight (e.g. Kerala
+    // Piravi on 1 Nov vanished every afternoon because 00:00 < anchor@19:xx).
+    $rangeStart = DateTimeImmutable::createFromFormat('!Y-m-d', $from, $tz);
+    $rangeEnd = DateTimeImmutable::createFromFormat('!Y-m-d', $to, $tz);
+    $anchor = DateTimeImmutable::createFromFormat('!Y-m-d', $startDate, $tz);
     if (!$rangeStart || !$rangeEnd || !$anchor) {
         return [];
     }
 
     $hardEnd = $endDate !== ''
-        ? DateTimeImmutable::createFromFormat('Y-m-d', $endDate, $tz)
+        ? DateTimeImmutable::createFromFormat('!Y-m-d', $endDate, $tz)
         : null;
 
     $out = [];
@@ -135,15 +138,15 @@ function br_bug_dates_expand_occurrences(array $event, string $from, string $to)
         $startYear = (int)$rangeStart->format('Y');
         $endYear = (int)$rangeEnd->format('Y');
         for ($year = $startYear; $year <= $endYear; $year++) {
+            // Zero-pad + `!` so month/day never inherit wall-clock time.
             $candidate = DateTimeImmutable::createFromFormat(
-                'Y-n-j',
-                sprintf('%d-%d-%d', $year, $month, $day),
+                '!Y-m-d',
+                sprintf('%04d-%02d-%02d', $year, $month, $day),
                 $tz
             );
             if (!$candidate) {
                 continue;
             }
-            $candidate = $candidate->setTime(0, 0, 0);
             if ($candidate >= $rangeStart
                 && $candidate <= $rangeEnd
                 && $candidate >= $anchor
@@ -234,8 +237,8 @@ function br_bug_dates_closed_dates(PDO $conn, string $from, string $to, bool $in
 {
     $closed = [];
     $tz = new DateTimeZone('Asia/Kolkata');
-    $fromDt = DateTimeImmutable::createFromFormat('Y-m-d', $from, $tz);
-    $toDt = DateTimeImmutable::createFromFormat('Y-m-d', $to, $tz);
+    $fromDt = DateTimeImmutable::createFromFormat('!Y-m-d', $from, $tz);
+    $toDt = DateTimeImmutable::createFromFormat('!Y-m-d', $to, $tz);
     if (!$fromDt || !$toDt) {
         return [];
     }
@@ -291,7 +294,7 @@ function br_is_office_closed(string $date, ?PDO $conn = null): bool
     }
 
     $tz = new DateTimeZone('Asia/Kolkata');
-    $dt = DateTime::createFromFormat('Y-m-d', $date, $tz);
+    $dt = DateTime::createFromFormat('!Y-m-d', $date, $tz);
     if ($dt && (int)$dt->format('N') === 7) {
         return true;
     }
