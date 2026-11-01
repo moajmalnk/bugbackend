@@ -18,7 +18,11 @@ class BugDatesController extends BaseAPI
     private const RECURRENCE = ['none', 'daily', 'weekly', 'monthly', 'yearly'];
     private const VISIBILITY = ['company', 'hr_only', 'admins'];
     private const STATUSES = ['approved', 'pending_approval', 'rejected'];
-    /** Must mirror PosterTemplateKey (frontend types.ts + modern/modernKeys.ts); unknown keys are stored as null. */
+    /**
+     * Signature + modern keys must stay listed.
+     * Studio Library keys (`studio_{layout}_{treatment}`) are accepted by pattern —
+     * the frontend expands 20 layouts × 13 treatments (~260) without a PHP mirror.
+     */
     private const POSTER_TEMPLATES = [
         'growth_glimpse', 'team_session', 'speaker_session', 'heritage_hero', 'product_hero',
         'typographic_quote', 'regional_message', 'brand_logo', 'birthday',
@@ -33,6 +37,18 @@ class BugDatesController extends BaseAPI
         'modern_quote_card', 'modern_social_post', 'modern_chat', 'modern_sticky_note',
         'modern_celebration', 'modern_achievement',
     ];
+
+    /** Why: Studio Library is generated client-side; whitelist by prefix so new packs need no PHP edit. */
+    private function isAllowedPosterTemplate(?string $key): bool
+    {
+        if ($key === null || $key === '') {
+            return false;
+        }
+        if (in_array($key, self::POSTER_TEMPLATES, true)) {
+            return true;
+        }
+        return (bool) preg_match('/^studio_[a-z0-9_]{1,64}$/', $key);
+    }
 
     private function requireAuth()
     {
@@ -1656,8 +1672,8 @@ class BugDatesController extends BaseAPI
         if (!empty($data['preview_thumbnail_url'])) {
             $thumbPath = $this->validatedCreativeUploadPath((string)$data['preview_thumbnail_url']) ?? $filePath;
         }
-        $templateKey = $this->sanitizeText($data['template_key'] ?? null, 40);
-        if ($templateKey !== null && !in_array($templateKey, self::POSTER_TEMPLATES, true)) {
+        $templateKey = $this->sanitizeText($data['template_key'] ?? null, 72);
+        if ($templateKey !== null && !$this->isAllowedPosterTemplate($templateKey)) {
             $templateKey = null;
         }
 
@@ -1876,8 +1892,8 @@ class BugDatesController extends BaseAPI
             $this->sendJsonResponse(404, 'Event not found');
             return;
         }
-        $templateKey = $this->sanitizeText($data['template_key'] ?? null, 40);
-        if ($templateKey !== null && !in_array($templateKey, self::POSTER_TEMPLATES, true)) {
+        $templateKey = $this->sanitizeText($data['template_key'] ?? null, 72);
+        if ($templateKey !== null && !$this->isAllowedPosterTemplate($templateKey)) {
             $templateKey = null;
         }
         $agenda = $this->sanitizeText($data['agenda_topic'] ?? null, 255);

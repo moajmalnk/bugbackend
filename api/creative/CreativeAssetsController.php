@@ -5,9 +5,12 @@
  */
 require_once __DIR__ . '/../BaseAPI.php';
 require_once __DIR__ . '/../../config/utils.php';
+require_once __DIR__ . '/../../services/CreativeSearchIndexer.php';
 
 class CreativeAssetsController extends BaseAPI
 {
+    private ?CreativeSearchIndexer $searchIndexer = null;
+
     private const STATUSES = ['Draft', 'In Review', 'Completed', 'Published', 'Rejected'];
     private const MATERIAL_TYPES = [
         'Poster', 'Reel', 'Carousel', 'Mockup Web', 'Mockup App',
@@ -129,7 +132,93 @@ class CreativeAssetsController extends BaseAPI
             return false;
         }
         $this->ensureFoldersSchema();
+        $this->searchIndexer()->ensureSchema();
         return true;
+    }
+
+    private function searchIndexer(): CreativeSearchIndexer
+    {
+        if ($this->searchIndexer === null) {
+            $this->searchIndexer = new CreativeSearchIndexer($this->conn);
+        }
+        return $this->searchIndexer;
+    }
+
+    /**
+     * Why: Keep search_text in sync after create/update without blocking on OCR.
+     * Media OCR is filled by reindex / getOne / search warm-up.
+     */
+    private function refreshSearchIndex(string $assetId, bool $extractMedia = false): void
+    {
+        try {
+            $this->searchIndexer()->indexAsset($assetId, null, $extractMedia);
+        } catch (Throwable $e) {
+            error_log('CreativeAssetsController::refreshSearchIndex: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Why: Global search covers title, hook, creator, project, folder, material,
+     * platform, filenames, drive links, and OCR/PDF body in search_text.
+     */
+    private function applySearchQuery(string $q, array &$where, array &$params): void
+    {
+        $q = trim($q);
+        if ($q === '') {
+            return;
+        }
+
+        $like = '%' . $q . '%';
+        $parts = [
+            'a.title LIKE ?',
+            'a.hook_content LIKE ?',
+            'a.material_type LIKE ?',
+            'a.platform LIKE ?',
+            'a.status LIKE ?',
+            'a.drive_link LIKE ?',
+            'a.uploaded_file_path LIKE ?',
+            'a.preview_thumbnail_url LIKE ?',
+            'u.username LIKE ?',
+            'p.name LIKE ?',
+        ];
+        $bind = array_fill(0, 10, $like);
+
+        $indexer = $this->searchIndexer();
+        if ($indexer->schemaReady()) {
+            $parts[] = 'a.search_text LIKE ?';
+            $bind[] = $like;
+        }
+        if ($this->foldersColumnReady()) {
+            $parts[] = 'cf.name LIKE ?';
+            $bind[] = $like;
+        }
+
+        if ($indexer->schemaReady() && $indexer->fulltextReady()) {
+            $boolean = $this->toBooleanFulltext($q);
+            if ($boolean !== '') {
+                $parts[] = 'MATCH(a.title, a.hook_content, a.search_text) AGAINST (? IN BOOLEAN MODE)';
+                $bind[] = $boolean;
+            }
+        }
+
+        $where[] = '(' . implode(' OR ', $parts) . ')';
+        foreach ($bind as $b) {
+            $params[] = $b;
+        }
+    }
+
+    private function toBooleanFulltext(string $q): string
+    {
+        $tokens = preg_split('/\s+/u', $q) ?: [];
+        $out = [];
+        foreach ($tokens as $token) {
+            $clean = preg_replace('/[^\p{L}\p{N}_-]+/u', '', $token);
+            if ($clean === null || $clean === '' || mb_strlen($clean) < 2) {
+                continue;
+            }
+            $out[] = '+' . $clean . '*';
+        }
+        return implode(' ', $out);
     }
 
     /**
@@ -416,9 +505,7 @@ class CreativeAssetsController extends BaseAPI
         $q = isset($opts['q']) ? trim((string)$opts['q']) : '';
         $folderRaw = array_key_exists('folder_id', $opts) ? $opts['folder_id'] : null;
         if ($q !== '') {
-            $where[] = '(a.title LIKE ? OR a.hook_content LIKE ? OR u.username LIKE ? OR p.name LIKE ?)';
-            $like = '%' . $q . '%';
-            array_push($params, $like, $like, $like, $like);
+            $this->applySearchQuery($q, $where, $params);
         } elseif ($folderRaw !== null) {
             if (!$this->applyFolderFilter($folderRaw, $where, $params, $opts['folder_mode'] ?? 'list')) {
                 return false;
@@ -588,6 +675,16 @@ class CreativeAssetsController extends BaseAPI
         $limit = min(100, max(1, (int)($_GET['limit'] ?? 20)));
         $offset = ($page - 1) * $limit;
 
+        // Why: Warm metadata index for never-indexed rows so LIKE/FULLTEXT find them.
+        // Heavy OCR runs via reindex.php / opening an asset — not on every keystroke search.
+        if ($q !== '') {
+            try {
+                $this->searchIndexer()->indexPending(20, false);
+            } catch (Throwable $e) {
+                error_log('CreativeAssetsController::listAll warm index: ' . $e->getMessage());
+            }
+        }
+
         $where = ['1=1'];
         $params = [];
         if (!$this->applyListFilters($decoded, $where, $params, [
@@ -657,6 +754,14 @@ class CreativeAssetsController extends BaseAPI
         if (!$row || !$this->canSeeAsset($decoded, $row)) {
             $this->sendJsonResponse(404, 'Asset not found');
             return;
+        }
+
+        // Why: Opening an asset is a natural moment to OCR its image/PDF into search_text.
+        if ($this->searchIndexer()->needsReindex($row)) {
+            $hasMedia = trim((string)($row['uploaded_file_path'] ?? '')) !== ''
+                || trim((string)($row['preview_thumbnail_url'] ?? '')) !== '';
+            $this->refreshSearchIndex($id, $hasMedia);
+            $row = $this->fetchAsset($id) ?: $row;
         }
 
         $this->sendJsonResponse(200, 'OK', $this->formatAsset($row, $this->loadReviews($id)));
@@ -748,6 +853,9 @@ class CreativeAssetsController extends BaseAPI
                 $payload['published_date'],
             ]);
         }
+
+        // Why: Metadata index is sync; Gemini OCR runs in background reindex / on open.
+        $this->refreshSearchIndex($id, false);
 
         $row = $this->fetchAsset($id);
         $this->sendJsonResponse(201, 'Asset created', $this->formatAsset($row, []));
@@ -877,6 +985,22 @@ class CreativeAssetsController extends BaseAPI
             $payload['published_date'],
             $id,
         ]);
+
+        // Why: Drop prior OCR marker when media changes so background/open reindex re-extracts.
+        $mediaChanged = (string)($existing['uploaded_file_path'] ?? '') !== (string)($payload['uploaded_file_path'] ?? '')
+            || (string)($existing['preview_thumbnail_url'] ?? '') !== (string)($payload['preview_thumbnail_url'] ?? '');
+        if ($mediaChanged && $this->searchIndexer()->schemaReady()) {
+            try {
+                $this->conn->prepare(
+                    'UPDATE creative_assets
+                     SET search_text = NULL, search_index_hash = NULL, search_indexed_at = NULL
+                     WHERE id = ?'
+                )->execute([$id]);
+            } catch (Throwable $e) {
+                // ignore — refreshSearchIndex still updates metadata
+            }
+        }
+        $this->refreshSearchIndex($id, false);
 
         $row = $this->fetchAsset($id);
         $this->sendJsonResponse(200, 'Asset updated', $this->formatAsset($row, $this->loadReviews($id)));
@@ -1453,6 +1577,7 @@ class CreativeAssetsController extends BaseAPI
 
         $items = [];
         foreach ($created as $newId) {
+            $this->refreshSearchIndex($newId, false);
             $row = $this->fetchAsset($newId);
             if ($row) {
                 $items[] = $this->formatAsset($row, []);
@@ -1463,6 +1588,69 @@ class CreativeAssetsController extends BaseAPI
             'items' => $items,
             'copied' => count($items),
             'folder_id' => $folderId,
+        ]);
+    }
+
+    /**
+     * Backfill search_text (metadata + optional Gemini OCR/PDF extract).
+     * POST body: { limit?: 1-25, extract_media?: bool }
+     */
+    public function reindex()
+    {
+        $decoded = $this->requireAuth();
+        if (!$decoded || !$this->ensureReady()) {
+            return;
+        }
+        if (
+            !$this->can($decoded, 'CREATIVE_VIEW')
+            && !$this->can($decoded, 'CREATIVE_CREATE')
+            && !$this->can($decoded, 'CREATIVE_MANAGE')
+        ) {
+            $this->sendJsonResponse(403, 'Access denied');
+            return;
+        }
+
+        $data = $this->getRequestData() ?: [];
+        $limit = isset($data['limit']) ? (int)$data['limit'] : 5;
+        $extract = array_key_exists('extract_media', $data)
+            ? filter_var($data['extract_media'], FILTER_VALIDATE_BOOLEAN)
+            : true;
+
+        // Why: OCR is slower — creators can warm a few; managers may batch larger.
+        if (!$this->isAdmin($decoded) && !$this->can($decoded, 'CREATIVE_MANAGE')) {
+            $limit = min($limit, 5);
+        }
+
+        $result = $this->searchIndexer()->indexPending($limit, $extract);
+        $pendingStmt = null;
+        $pending = 0;
+        try {
+            if ($this->searchIndexer()->schemaReady()) {
+                $pendingStmt = $this->conn->query(
+                    "SELECT COUNT(*) FROM creative_assets
+                     WHERE search_indexed_at IS NULL
+                        OR search_index_hash IS NULL
+                        OR search_index_hash = ''
+                        OR (
+                          (
+                            (uploaded_file_path IS NOT NULL AND uploaded_file_path != '')
+                            OR (preview_thumbnail_url IS NOT NULL AND preview_thumbnail_url != '')
+                          )
+                          AND (search_text IS NULL OR search_text NOT LIKE '%---OCR---%')
+                        )"
+                );
+                $pending = (int)$pendingStmt->fetchColumn();
+            }
+        } catch (Throwable $e) {
+            $pending = 0;
+        }
+
+        $this->sendJsonResponse(200, 'Search index updated', [
+            'indexed' => $result['indexed'],
+            'errors' => $result['errors'],
+            'extract_media' => $extract,
+            'pending' => $pending,
+            'gemini_configured' => $this->searchIndexer()->geminiConfigured(),
         ]);
     }
 }
