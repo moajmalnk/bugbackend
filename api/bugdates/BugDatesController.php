@@ -131,7 +131,60 @@ class BugDatesController extends BaseAPI
             );
             return false;
         }
+        $this->ensureCriticalObservances();
         return true;
+    }
+
+    /**
+     * Why: Kerala Piravi (1 Nov) was missing from production BugDates while other
+     * November observances existed — Design Poster had no event. Idempotent seed.
+     */
+    private function ensureCriticalObservances(): void
+    {
+        static $done = false;
+        if ($done) {
+            return;
+        }
+        $done = true;
+        try {
+            $exists = $this->conn->query(
+                "SELECT id FROM bug_dates_events
+                 WHERE title = 'Kerala Piravi'
+                   AND (recurrence_type = 'yearly' OR start_date = '2026-11-01')
+                 LIMIT 1"
+            );
+            if ($exists && $exists->fetch(PDO::FETCH_ASSOC)) {
+                return;
+            }
+            $seedUser = $this->conn->query(
+                "SELECT id FROM users WHERE role = 'admin' ORDER BY created_at ASC LIMIT 1"
+            )->fetchColumn();
+            if (!$seedUser) {
+                $seedUser = $this->conn->query(
+                    'SELECT id FROM users ORDER BY created_at ASC LIMIT 1'
+                )->fetchColumn();
+            }
+            if (!$seedUser) {
+                return;
+            }
+            $stmt = $this->conn->prepare(
+                "INSERT INTO bug_dates_events (
+                    title, description, category, recurrence_type, start_date,
+                    is_office_closed, auto_hooks, visibility, status, created_by
+                 ) VALUES (?, ?, 'observance', 'yearly', '2026-11-01', 0, ?, 'company', 'approved', ?)"
+            );
+            $stmt->execute([
+                'Kerala Piravi',
+                '[High] Kerala Formation Day (1 Nov 1956). Content angle: bilingual Malayalam greeting, CODO built-in-Kerala pride post. Templates: Malayalam Message, Heritage Hero.',
+                json_encode(['creative' => true]),
+                (string)$seedUser,
+            ]);
+        } catch (Throwable $e) {
+            error_log(json_encode([
+                'event' => 'bugdates.ensure_critical_observances.failed',
+                'error' => $e->getMessage(),
+            ]));
+        }
     }
 
     private function sanitizeText(?string $value, int $maxLen): ?string
