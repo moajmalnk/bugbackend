@@ -20,11 +20,16 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 try {
     $api = new BaseAPI();
     
-    // Validate token and check admin access
+    // Validate token — Super Admin only (regular Admins must not impersonate).
     $decoded = $api->validateToken();
     if ($decoded->role !== 'admin') {
         http_response_code(403);
         echo json_encode(['success' => false, 'message' => 'Only admins can generate dashboard links']);
+        exit();
+    }
+    if (!br_actor_is_super_admin($api->getConnection(), $decoded)) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Only a Super Admin can impersonate users']);
         exit();
     }
     
