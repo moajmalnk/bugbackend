@@ -331,7 +331,9 @@ function br_pay_verify_range_attendance(
         $ot = (float)($day['overtime_hours'] ?? 0);
         if ($status === 'worked') {
             $summary['days_worked'] += 1;
-            $summary['total_hours'] += $hours;
+            // Why: approved OT is part of the paid hour total (same as credited leave),
+            // so the month matches daily submissions (e.g. 208 + 2 = 210).
+            $summary['total_hours'] += $hours + $ot;
             $summary['break_minutes'] += (int)($day['break_minutes'] ?? 0);
             $summary['overtime_hours'] += $ot;
             if (!empty($day['check_in'])) {
@@ -969,9 +971,9 @@ function br_pay_verify_ensure_month(
     $attendance = br_pay_verify_range_attendance($conn, $userId, $monthStart, $monthEnd);
     $s = $attendance['summary'];
     $rate = br_pay_verify_rate_for_user($conn, $userId, $monthEnd);
-    // Why: approved OT is paid like credited leave — pending/rejected stay at 0 upstream.
+    // total_hours already includes approved OT (pending/rejected are 0 upstream).
     $includeOt = ((float)$s['overtime_hours'] > 0) || $includeOtDefault;
-    $billable = (float)$s['total_hours'] + (float)$s['overtime_hours'];
+    $billable = (float)$s['total_hours'];
     $billable = round($billable, 2);
     $gross = $rate !== null ? round($billable * $rate, 2) : 0.0;
 
