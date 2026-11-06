@@ -995,6 +995,74 @@ function br_pay_verify_adjustments_signed_total(array $adjustments): float
 }
 
 /**
+ * Why: Replace live hours inside an admin-approved week with the frozen week total.
+ *
+ * @param array<string,float|int> $summary
+ * @return array<string,float|int>
+ */
+function br_pay_verify_apply_locked_weeks(
+    PDO $conn,
+    string $userId,
+    string $monthStart,
+    string $monthEnd,
+    array $summary
+): array {
+    $weeks = br_pay_verify_weeks_overlapping_month($monthStart, $monthEnd);
+    if ($weeks === []) {
+        return $summary;
+    }
+
+    $starts = [];
+    foreach ($weeks as $week) {
+        $starts[] = $week['week_start'];
+    }
+    $placeholders = implode(',', array_fill(0, count($starts), '?'));
+    $stmt = $conn->prepare(
+        "SELECT * FROM attendance_week_verifications
+         WHERE user_id = ? AND week_start IN ({$placeholders})"
+    );
+    $stmt->execute(array_merge([$userId], $starts));
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+    foreach ($rows as $row) {
+        $locked = (int)($row['snapshot_locked'] ?? 0) === 1
+            || ($row['admin_status'] ?? '') === 'approved';
+        if (!$locked) {
+            continue;
+        }
+        $clipStart = max((string)$row['week_start'], $monthStart);
+        $clipEnd = min((string)$row['week_end'], $monthEnd);
+        if ($clipStart > $clipEnd) {
+            continue;
+        }
+        $live = br_pay_verify_range_attendance($conn, $userId, $clipStart, $clipEnd)['summary'];
+        $pairs = [
+            'total_hours' => [(float)($row['worked_hours'] ?? 0), (float)($live['total_hours'] ?? 0)],
+            'leave_hours' => [(float)($row['leave_hours'] ?? 0), (float)($live['leave_hours'] ?? 0)],
+            'leave_days' => [(float)($row['leave_days'] ?? 0), (float)($live['leave_days'] ?? 0)],
+            'overtime_hours' => [(float)($row['ot_hours'] ?? 0), (float)($live['overtime_hours'] ?? 0)],
+            'days_worked' => [(float)($row['days_worked'] ?? 0), (float)($live['days_worked'] ?? 0)],
+            'check_ins' => [(float)($row['check_in_days'] ?? 0), (float)($live['check_ins'] ?? 0)],
+        ];
+        foreach ($pairs as $key => $pair) {
+            $summary[$key] = (float)($summary[$key] ?? 0) + $pair[0] - $pair[1];
+            if ($summary[$key] < 0) {
+                $summary[$key] = 0;
+            }
+        }
+    }
+
+    $summary['total_hours'] = round((float)$summary['total_hours'], 2);
+    $summary['leave_hours'] = round((float)$summary['leave_hours'], 2);
+    $summary['leave_days'] = round((float)$summary['leave_days'], 2);
+    $summary['overtime_hours'] = round((float)$summary['overtime_hours'], 2);
+    $summary['days_worked'] = (int)round((float)$summary['days_worked']);
+    $summary['check_ins'] = (int)round((float)$summary['check_ins']);
+
+    return $summary;
+}
+
+/**
  * @return array<string,mixed>
  */
 function br_pay_verify_ensure_month(
@@ -1017,6 +1085,10 @@ function br_pay_verify_ensure_month(
 
     $attendance = br_pay_verify_range_attendance($conn, $userId, $monthStart, $monthEnd);
     $s = $attendance['summary'];
+    // Why: An approved week keeps the hours that were attested. The month total must
+    // use that snapshot, or a later edit makes the headline (216h) disagree with the
+    // week chips (8+48+48+48+48 = 200).
+    $s = br_pay_verify_apply_locked_weeks($conn, $userId, $monthStart, $monthEnd, $s);
     $rate = br_pay_verify_rate_for_user($conn, $userId, $monthEnd);
     // total_hours already includes approved OT (pending/rejected are 0 upstream).
     $includeOt = ((float)$s['overtime_hours'] > 0) || $includeOtDefault;
