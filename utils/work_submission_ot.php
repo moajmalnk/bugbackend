@@ -152,6 +152,10 @@ function br_effective_overtime_hours_for_stats(array $s): float
         return 0.0;
     }
     if ($st === 'approved' || $st === 'changed') {
+        // Why: payroll pays the approved amount (admin may change the requested hours).
+        if (array_key_exists('extra_hours_approved_amount', $s) && $s['extra_hours_approved_amount'] !== null && $s['extra_hours_approved_amount'] !== '') {
+            return max(0.0, (float)$s['extra_hours_approved_amount']);
+        }
         return $ot;
     }
     if ($st === 'none') {

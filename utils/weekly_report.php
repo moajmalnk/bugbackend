@@ -298,13 +298,15 @@ function br_weekly_attendance_summary(PDO $conn, string $userId, string $weekSta
     $weekDates = br_weekly_report_week_dates($weekStart, $weekEnd);
     $leaveMap = br_leave_day_map($conn, $userId, $weekStart, $weekEnd);
     $submissionsByDate = [];
+    br_ensure_work_submission_ot_columns($conn);
 
     try {
         $live = br_work_submission_live_and($conn);
         $stmt = $conn->prepare(
             'SELECT submission_date, check_in_time, hours_today, total_break_minutes, break_entries,
                     work_mode, is_late, overtime_hours, requested_extra_hours,
-                    extra_hours_approval_status, extra_hours_approved_amount, approval_reason
+                    extra_hours_approval_status, extra_hours_approved_amount, approval_reason,
+                    extra_hours_admin_note
              FROM work_submissions
              WHERE user_id = ? AND submission_date >= ? AND submission_date <= ?
              ' . $live . '
@@ -394,6 +396,11 @@ function br_weekly_attendance_summary(PDO $conn, string $userId, string $weekSta
             'leave_type_name' => $leave['leave_type_name'] ?? null,
             'leave_type_code' => $leave['leave_type_code'] ?? null,
             'overtime_hours' => round($overtimeHours, 2),
+            'ot_status' => $submission
+                ? strtolower(trim((string)($submission['extra_hours_approval_status'] ?? '')))
+                : '',
+            'ot_reason' => $submission ? trim((string)($submission['approval_reason'] ?? '')) : '',
+            'ot_admin_note' => $submission ? trim((string)($submission['extra_hours_admin_note'] ?? '')) : '',
         ];
     }
 

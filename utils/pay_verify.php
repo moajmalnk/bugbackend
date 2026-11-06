@@ -965,17 +965,13 @@ function br_pay_verify_ensure_month(
     $existing = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
 
     $locked = $existing && ($existing['admin_status'] ?? '') === 'approved';
-    $includeOt = $existing
-        ? ((int)($existing['include_ot'] ?? 0) === 1)
-        : $includeOtDefault;
 
     $attendance = br_pay_verify_range_attendance($conn, $userId, $monthStart, $monthEnd);
     $s = $attendance['summary'];
     $rate = br_pay_verify_rate_for_user($conn, $userId, $monthEnd);
-    $billable = (float)$s['total_hours'];
-    if ($includeOt) {
-        $billable += (float)$s['overtime_hours'];
-    }
+    // Why: approved OT is paid like credited leave — pending/rejected stay at 0 upstream.
+    $includeOt = ((float)$s['overtime_hours'] > 0) || $includeOtDefault;
+    $billable = (float)$s['total_hours'] + (float)$s['overtime_hours'];
     $billable = round($billable, 2);
     $gross = $rate !== null ? round($billable * $rate, 2) : 0.0;
 
