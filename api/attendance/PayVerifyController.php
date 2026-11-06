@@ -210,6 +210,12 @@ class PayVerifyController extends BaseAPI
         }
 
         $weeksMeta = br_pay_verify_weeks_overlapping_month($bounds['start'], $bounds['end']);
+        $joiningDates = br_pay_verify_joining_dates_for_users(
+            $this->conn,
+            array_map(static function ($u) {
+                return (string)($u['id'] ?? '');
+            }, $users)
+        );
 
         $roster = [];
         $totals = [
@@ -224,8 +230,17 @@ class PayVerifyController extends BaseAPI
 
         foreach ($users as $user) {
             $uid = (string)$user['id'];
+            $joinedOn = $joiningDates[$uid] ?? null;
+            // Months that closed before the joining date are not this person's salary period.
+            if (!br_pay_verify_employed_by($joinedOn, $bounds['end'])) {
+                continue;
+            }
             $weeks = [];
             foreach ($weeksMeta as $w) {
+                $clipEnd = min((string)$w['week_end'], $bounds['end']);
+                if (!br_pay_verify_employed_by($joinedOn, $clipEnd)) {
+                    continue;
+                }
                 $weekRow = br_pay_verify_ensure_week(
                     $this->conn,
                     $uid,
@@ -350,8 +365,14 @@ class PayVerifyController extends BaseAPI
 
             br_pay_verify_ensure_schema($this->conn);
             $weeksMeta = br_pay_verify_weeks_overlapping_month($bounds['start'], $bounds['end']);
+            $joiningDates = br_pay_verify_joining_dates_for_users($this->conn, [$userId]);
+            $joinedOn = $joiningDates[$userId] ?? null;
             $weeks = [];
             foreach ($weeksMeta as $w) {
+                $clipEnd = min((string)$w['week_end'], $bounds['end']);
+                if (!br_pay_verify_employed_by($joinedOn, $clipEnd)) {
+                    continue;
+                }
                 $weekRow = br_pay_verify_ensure_week(
                     $this->conn,
                     $userId,

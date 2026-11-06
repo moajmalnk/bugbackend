@@ -655,6 +655,53 @@ function br_pay_verify_clamp_ym(string $yearMonth, array $bounds): string
 }
 
 /**
+ * Why: Payroll must not list someone for a month that ended before they joined.
+ *
+ * @param list<string> $userIds
+ * @return array<string, string> user id => YYYY-MM-DD
+ */
+function br_pay_verify_joining_dates_for_users(PDO $conn, array $userIds): array
+{
+    $ids = [];
+    foreach ($userIds as $id) {
+        $id = trim((string)$id);
+        if ($id !== '') {
+            $ids[$id] = $id;
+        }
+    }
+    $ids = array_values($ids);
+    if ($ids === []) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+    $hasJoining = br_users_has_joining_date($conn);
+    $sql = $hasJoining
+        ? "SELECT id, joining_date FROM users WHERE id IN ({$placeholders})"
+        : "SELECT id, NULL AS joining_date FROM users WHERE id IN ({$placeholders})";
+    $stmt = $conn->prepare($sql);
+    $stmt->execute($ids);
+
+    $out = [];
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $joining = substr(trim((string)($row['joining_date'] ?? '')), 0, 10);
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $joining)) {
+            $out[(string)$row['id']] = $joining;
+        }
+    }
+    return $out;
+}
+
+/** True when this person had already joined on or before the period end. */
+function br_pay_verify_employed_by(?string $joiningDate, string $periodEnd): bool
+{
+    if ($joiningDate === null || $joiningDate === '') {
+        return true;
+    }
+    return $joiningDate <= $periodEnd;
+}
+
+/**
  * @return list<array<string,mixed>>
  */
 function br_pay_verify_roster_users(PDO $conn, string $roleFilter = 'all'): array
