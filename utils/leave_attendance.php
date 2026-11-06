@@ -258,8 +258,9 @@ function br_leave_day_map(PDO $conn, string $userId, string $from, string $to): 
 
 /**
  * Hours credited toward work stats for an approved leave day.
- * Why: Casual/Paid (paid), legacy Personal, and admin Official Leave (corporate)
+ * Why: Casual (paid), Sick, legacy Personal, and admin Official Leave (corporate)
  * each count as a full workday (8h) unless hours_per_day is set on the request.
+ * Unpaid leave credits nothing.
  *
  * @param mixed $hoursPerDayOverride null = use type default
  */
@@ -276,7 +277,7 @@ function br_leave_credited_hours(?string $leaveTypeCode, $hoursPerDayOverride = 
         return $h;
     }
     $code = strtolower(trim((string)$leaveTypeCode));
-    return in_array($code, ['paid', 'personal', 'corporate'], true) ? 8.0 : 0.0;
+    return in_array($code, ['paid', 'sick', 'personal', 'corporate'], true) ? 8.0 : 0.0;
 }
 
 /**
