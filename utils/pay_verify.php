@@ -747,9 +747,8 @@ function br_pay_verify_roster_users(PDO $conn, string $roleFilter = 'all'): arra
 
     $out = [];
     foreach ($users as $u) {
-        if ($hasActive && (int)($u['account_active'] ?? 1) === 0) {
-            continue;
-        }
+        // Why: Keep inactive accounts in Pay Verify so Paid months still list
+        // people who were paid then deactivated — UI shows Active vs Inactive.
         $role = strtolower(trim((string)($u['role'] ?? '')));
         $testerType = strtolower(trim((string)($u['tester_type'] ?? '')));
         $bucket = 'developer';
@@ -768,9 +767,65 @@ function br_pay_verify_roster_users(PDO $conn, string $roleFilter = 'all'): arra
         }
 
         $u['role_bucket'] = $bucket;
+        $u['account_active'] = (int)($u['account_active'] ?? 1) === 0 ? 0 : 1;
         $out[] = $u;
     }
     return $out;
+}
+
+/**
+ * Why: Inactive people should only appear in a month when they already have
+ * payroll footprint (paid / hours / leave) — avoid empty cards for every past hire.
+ */
+function br_pay_verify_inactive_has_month_activity(
+    PDO $conn,
+    string $userId,
+    string $yearMonth,
+    string $periodStart,
+    string $periodEnd
+): bool {
+    try {
+        $stmt = $conn->prepare(
+            'SELECT admin_status, employee_status, total_hours, leave_days
+             FROM attendance_month_verifications
+             WHERE user_id = ? AND `year_month` = ?
+             LIMIT 1'
+        );
+        $stmt->execute([$userId, $yearMonth]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($row) {
+            if (($row['admin_status'] ?? '') === 'approved') {
+                return true;
+            }
+            if ((float)($row['total_hours'] ?? 0) > 0) {
+                return true;
+            }
+            if ((float)($row['leave_days'] ?? 0) > 0) {
+                return true;
+            }
+            $emp = (string)($row['employee_status'] ?? 'pending');
+            if ($emp !== '' && $emp !== 'pending') {
+                return true;
+            }
+        }
+    } catch (Throwable $e) {
+        error_log('br_pay_verify_inactive_has_month_activity month: ' . $e->getMessage());
+    }
+
+    try {
+        $att = br_pay_verify_range_attendance($conn, $userId, $periodStart, $periodEnd);
+        $summary = $att['summary'] ?? [];
+        if ((float)($summary['total_hours'] ?? 0) > 0) {
+            return true;
+        }
+        if ((float)($summary['leave_days'] ?? 0) > 0) {
+            return true;
+        }
+    } catch (Throwable $e) {
+        error_log('br_pay_verify_inactive_has_month_activity attendance: ' . $e->getMessage());
+    }
+
+    return false;
 }
 
 /**

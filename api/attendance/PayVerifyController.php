@@ -235,6 +235,21 @@ class PayVerifyController extends BaseAPI
             if (!br_pay_verify_employed_by($joinedOn, $bounds['end'])) {
                 continue;
             }
+            $accountActive = (int)($user['account_active'] ?? 1) !== 0;
+            // Why: Deactivated staff only appear when this month already has pay/hours —
+            // so Paid can show Active vs Inactive without empty inactive cards.
+            if (
+                !$accountActive
+                && !br_pay_verify_inactive_has_month_activity(
+                    $this->conn,
+                    $uid,
+                    $yearMonth,
+                    $bounds['start'],
+                    $bounds['end']
+                )
+            ) {
+                continue;
+            }
             $weeks = [];
             foreach ($weeksMeta as $w) {
                 $clipEnd = min((string)$w['week_end'], $bounds['end']);
@@ -285,6 +300,7 @@ class PayVerifyController extends BaseAPI
                     'role' => (string)($user['role'] ?? ''),
                     'role_bucket' => (string)($user['role_bucket'] ?? 'developer'),
                     'tester_type' => $user['tester_type'] ?? null,
+                    'account_active' => $accountActive ? 1 : 0,
                 ],
                 'weeks' => $weeks,
                 'month' => $monthRow,
