@@ -14,6 +14,13 @@
   RewriteRule ^v1/integrations/finbro/hours/?$ v1/integrations/finbro/index.php?finbro_route=hours [L,QSA]
 </IfModule>
 
+# CODO AI Innovations Profile Photo API (M2M, read-only)
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteRule ^v1/users/avatars/?$ v1/integrations/codo-ai/index.php?codo_route=avatars [L,QSA]
+  RewriteRule ^v1/users/([^/]+)/avatar/?$ v1/integrations/codo-ai/index.php?codo_route=user-avatar&codo_key=$1 [L,QSA]
+</IfModule>
+
 # CORS fallback on LiteSpeed responses (including 403 pages). If PHP already
 # set CORS headers (via backend/config/cors.php), do not overwrite them.
 <IfModule mod_headers.c>
