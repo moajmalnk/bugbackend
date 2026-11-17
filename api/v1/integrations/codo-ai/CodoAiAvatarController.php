@@ -76,13 +76,20 @@ class CodoAiAvatarController
         $email = isset($_GET['email']) ? trim((string)$_GET['email']) : '';
         $username = isset($_GET['username']) ? trim((string)$_GET['username']) : '';
 
-        $employeeCode = $pathKey;
-        // If path looks like an email, treat as email lookup.
-        if ($employeeCode !== '' && str_contains($employeeCode, '@')) {
-            if ($email === '') {
-                $email = $employeeCode;
+        $employeeCode = '';
+        // Classify path key: email → email, CODO-* → employee_code, else → username.
+        if ($pathKey !== '' && $pathKey !== '_') {
+            if (str_contains($pathKey, '@')) {
+                if ($email === '') {
+                    $email = $pathKey;
+                }
+            } elseif (br_codo_ai_looks_like_employee_code($pathKey)) {
+                $employeeCode = $pathKey;
+            } else {
+                if ($username === '') {
+                    $username = $pathKey;
+                }
             }
-            $employeeCode = '';
         }
 
         if ($employeeCode === '' && $email === '' && $username === '') {

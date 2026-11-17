@@ -215,7 +215,11 @@ function br_codo_ai_users_columns(PDO $conn): array
 }
 
 /**
- * Active CODO staff filter (account_active + employment_status + soft-delete).
+ * Active staff filter for avatar API.
+ *
+ * Why: Admin UI "Account active" is driven by users.account_active only.
+ * Requiring employment_status='active' 404'd recently-activated users when HR
+ * status lagged behind account_active (e.g. theshrifa / CODO-TSLP-TKTM).
  */
 function br_codo_ai_active_user_where(PDO $conn, string $alias = 'u'): string
 {
@@ -228,14 +232,15 @@ function br_codo_ai_active_user_where(PDO $conn, string $alias = 'u'): string
     if (in_array('account_active', $cols, true)) {
         $parts[] = "COALESCE({$a}.account_active, 1) = 1";
     }
-    if (in_array('employment_status', $cols, true)) {
-        $parts[] = "(
-            {$a}.employment_status IS NULL
-            OR TRIM({$a}.employment_status) = ''
-            OR LOWER(TRIM({$a}.employment_status)) = 'active'
-        )";
-    }
     return $parts ? (' AND ' . implode(' AND ', $parts)) : '';
+}
+
+/**
+ * True when key looks like a CODO employee_code (CODO-XXXX-XXXX…).
+ */
+function br_codo_ai_looks_like_employee_code(string $key): bool
+{
+    return (bool)preg_match('/^CODO-[A-Z0-9]{4}-[A-Z0-9]{4}(-[A-Z])?$/i', trim($key));
 }
 
 /**
@@ -424,7 +429,7 @@ function br_codo_ai_select_sql(PDO $conn): array
 }
 
 /**
- * Find one active user by employee_code, email, or username.
+ * Find one active user by employee_code, email, username, or onboarding contact_email.
  *
  * @return array<string,mixed>|null
  */
@@ -441,7 +446,18 @@ function br_codo_ai_find_user(
     $email = $email !== null ? trim($email) : '';
     $username = $username !== null ? trim($username) : '';
 
-    if ($employeeCode !== '' && $hasEmployeeCode) {
+    // Safety net: non-CODO path keys passed as employeeCode → also try username.
+    if (
+        $employeeCode !== ''
+        && $username === ''
+        && !br_codo_ai_looks_like_employee_code($employeeCode)
+        && !str_contains($employeeCode, '@')
+    ) {
+        $username = $employeeCode;
+        $employeeCode = '';
+    }
+
+    if ($employeeCode !== '' && $hasEmployeeCode && br_codo_ai_looks_like_employee_code($employeeCode)) {
         $sql = "SELECT {$selectSql} FROM users u
                 WHERE UPPER(TRIM(u.employee_code)) = UPPER(?) {$active}
                 LIMIT 1";
@@ -462,6 +478,30 @@ function br_codo_ai_find_user(
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         if ($row) {
             return $row;
+        }
+
+        // Fallback: onboarding contact_email (personal) when login email differs.
+        try {
+            $odCols = [];
+            $odRes = $conn->query('SHOW COLUMNS FROM user_onboarding_details');
+            while ($odRes && ($odRow = $odRes->fetch(PDO::FETCH_ASSOC))) {
+                $odCols[] = (string)($odRow['Field'] ?? '');
+            }
+            if (in_array('contact_email', $odCols, true) && in_array('user_id', $odCols, true)) {
+                $sql = "SELECT {$selectSql}
+                        FROM users u
+                        INNER JOIN user_onboarding_details od ON od.user_id = u.id
+                        WHERE LOWER(TRIM(od.contact_email)) = LOWER(?) {$active}
+                        LIMIT 1";
+                $stmt = $conn->prepare($sql);
+                $stmt->execute([$email]);
+                $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                if ($row) {
+                    return $row;
+                }
+            }
+        } catch (Throwable $e) {
+            error_log('codo_ai contact_email lookup: ' . $e->getMessage());
         }
     }
 
