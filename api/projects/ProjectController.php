@@ -667,6 +667,11 @@ class ProjectController extends BaseAPI
 
         try {
             $decoded = $this->validateToken();
+            // Why: Project setup (domains, repos, assets, stack) is Admin / Super Admin only.
+            if (!$this->isRealAdmin($decoded)) {
+                $this->sendJsonResponse(403, 'Only admins can create projects');
+                return;
+            }
             $data = $this->getRequestData();
 
             if (!isset($data['name']) || !isset($data['description'])) {
@@ -785,6 +790,11 @@ class ProjectController extends BaseAPI
 
         try {
             $decoded = $this->validateToken();
+            // Why: Domains, platforms, GitHub, stack, and category assets must not be mutated by non-admins.
+            if (!$this->isRealAdmin($decoded)) {
+                $this->sendJsonResponse(403, 'Only admins can update projects');
+                return;
+            }
             $data = $this->getRequestData();
             $this->ensureComplianceCompleteColumns();
             ProjectTimelineHistoryHelper::ensureTable($this->conn);
