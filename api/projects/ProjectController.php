@@ -21,6 +21,7 @@ class ProjectController extends BaseAPI
         'platforms',
         'project_categories',
         'app_publisher_meta',
+        'app_publishing_form',
         'category_asset_links',
         'app_url_ios',
         'app_url_android',
@@ -55,6 +56,7 @@ class ProjectController extends BaseAPI
         'platforms',
         'project_categories',
         'app_publisher_meta',
+        'app_publishing_form',
         'category_asset_links',
         'app_url_ios',
         'app_url_android',
@@ -105,6 +107,12 @@ class ProjectController extends BaseAPI
             if (!in_array('category_asset_links', $cols, true)) {
                 $this->conn->exec(
                     "ALTER TABLE projects ADD COLUMN category_asset_links TEXT DEFAULT NULL AFTER app_publisher_meta"
+                );
+            }
+            // Why: Client-facing Mobile App Publishing Information Form (JSON).
+            if (!in_array('app_publishing_form', $cols, true)) {
+                $this->conn->exec(
+                    "ALTER TABLE projects ADD COLUMN app_publishing_form LONGTEXT DEFAULT NULL AFTER app_publisher_meta"
                 );
             }
 
@@ -260,6 +268,15 @@ class ProjectController extends BaseAPI
         }
         if ($this->isHoursField($field)) {
             return $this->normalizeHoursField($value);
+        }
+        if (in_array($field, ['app_publisher_meta', 'app_publishing_form', 'category_asset_links'], true)) {
+            if ($value === null || $value === '') {
+                return null;
+            }
+            if (is_array($value) || is_object($value)) {
+                return json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            }
+            return (string) $value;
         }
         return $this->isDateTimeField($field)
             ? $this->normalizeDateTimeField($value)
