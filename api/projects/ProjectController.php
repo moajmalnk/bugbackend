@@ -42,6 +42,28 @@ class ProjectController extends BaseAPI
         'developer_hours_taken',
     ];
 
+    /**
+     * Why: Assigned CODO developers/testers may update delivery setup only —
+     * not client, team, status, timeline, or compliance gates.
+     */
+    private static $SETUP_FIELDS = [
+        'technology_stack',
+        'reference_sites_or_themes',
+        'frontend_domain',
+        'backend_domain',
+        'vercel_domain',
+        'platforms',
+        'project_categories',
+        'app_publisher_meta',
+        'category_asset_links',
+        'app_url_ios',
+        'app_url_android',
+        'testflight_url',
+        'github_frontend',
+        'github_backend',
+        'github_app',
+    ];
+
     public function __construct()
     {
         parent::__construct();
@@ -790,12 +812,31 @@ class ProjectController extends BaseAPI
 
         try {
             $decoded = $this->validateToken();
-            // Why: Domains, platforms, GitHub, stack, and category assets must not be mutated by non-admins.
-            if (!$this->isRealAdmin($decoded)) {
-                $this->sendJsonResponse(403, 'Only admins can update projects');
+            $isAdmin = $this->isRealAdmin($decoded);
+            $canSetup = !$isAdmin && $this->userIsAssignedDevOrTester($decoded, (string) $id);
+            if (!$isAdmin && !$canSetup) {
+                $this->sendJsonResponse(
+                    403,
+                    'Only admins or assigned developers/testers can update project setup'
+                );
                 return;
             }
+
             $data = $this->getRequestData();
+            if (!is_array($data)) {
+                $data = [];
+            }
+
+            // Why: Non-admins may only mutate delivery setup fields on assigned projects.
+            if ($canSetup) {
+                $allowed = array_flip(self::$SETUP_FIELDS);
+                $data = array_intersect_key($data, $allowed);
+                if (empty($data)) {
+                    $this->sendJsonResponse(400, 'No setup fields to update');
+                    return;
+                }
+            }
+
             $this->ensureComplianceCompleteColumns();
             ProjectTimelineHistoryHelper::ensureTable($this->conn);
 
@@ -816,17 +857,17 @@ class ProjectController extends BaseAPI
             $afterTimeline = [];
             $shouldAutoVerifyRetests = false;
 
-            if (isset($data['name'])) {
+            if ($isAdmin && isset($data['name'])) {
                 $updateFields[] = "name = ?";
                 $values[] = $data['name'];
             }
 
-            if (isset($data['description'])) {
+            if ($isAdmin && isset($data['description'])) {
                 $updateFields[] = "description = ?";
                 $values[] = $data['description'];
             }
 
-            if (isset($data['status'])) {
+            if ($isAdmin && isset($data['status'])) {
                 $newStatus = $data['status'];
                 $closedStatuses = ['completed', 'release_ready', 'archived'];
                 $currentStmt = $this->conn->prepare("SELECT status FROM projects WHERE id = ?");
@@ -878,24 +919,25 @@ class ProjectController extends BaseAPI
             }
 
             $projectCols = $this->listProjectColumns();
-            foreach (self::$EXTENDED_FIELDS as $field) {
+            $extendedAllow = $canSetup ? self::$SETUP_FIELDS : self::$EXTENDED_FIELDS;
+            foreach ($extendedAllow as $field) {
                 if (!array_key_exists($field, $data) || !in_array($field, $projectCols, true)) {
                     continue;
                 }
                 $normalized = $this->normalizeExtendedField($field, $data[$field]);
                 $updateFields[] = "$field = ?";
                 $values[] = $normalized;
-                if (isset(ProjectTimelineHistoryHelper::FIELD_LABELS[$field])) {
+                if ($isAdmin && isset(ProjectTimelineHistoryHelper::FIELD_LABELS[$field])) {
                     $afterTimeline[$field] = $normalized;
                 }
             }
 
-            if (array_key_exists('client_id', $data)) {
+            if ($isAdmin && array_key_exists('client_id', $data)) {
                 $updateFields[] = 'client_id = ?';
                 $values[] = $data['client_id'] ?: null;
             }
 
-            if (isset($data['members']) && is_array($data['members'])) {
+            if ($isAdmin && isset($data['members']) && is_array($data['members'])) {
                 $deleteStmt = $this->conn->prepare("DELETE FROM project_members WHERE project_id = ?");
                 $deleteStmt->execute([$id]);
                 $this->addMembersFromPayload($id, $data['members']);
@@ -1113,6 +1155,25 @@ class ProjectController extends BaseAPI
 
         if (BaseAPI::hasGlobalDataScope($decoded)) {
             return true;
+        }
+
+        $stmt = $this->conn->prepare(
+            "SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ? LIMIT 1"
+        );
+        $stmt->execute([$projectId, $userId]);
+        return (bool) $stmt->fetch();
+    }
+
+    /** Assigned developer or tester on this project (JWT role + project_members row). */
+    private function userIsAssignedDevOrTester($decoded, string $projectId): bool
+    {
+        $role = strtolower(trim((string) ($decoded->role ?? '')));
+        if (!in_array($role, ['developer', 'tester'], true)) {
+            return false;
+        }
+        $userId = $decoded->user_id ?? null;
+        if (!$userId) {
+            return false;
         }
 
         $stmt = $this->conn->prepare(

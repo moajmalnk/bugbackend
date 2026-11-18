@@ -12,11 +12,6 @@ try {
     $api = new BaseAPI();
     $decoded = $api->validateToken();
 
-    if ($decoded->role !== 'admin') {
-        $api->sendJsonResponse(403, 'Only admins can upload project attachments');
-        exit;
-    }
-
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
         $api->sendJsonResponse(405, 'Method not allowed');
         exit;
@@ -48,6 +43,24 @@ try {
     if (!$projectId) {
         $api->sendJsonResponse(400, 'Missing project_id');
         exit;
+    }
+
+    // Why: Admins always; assigned developer/tester may upload setup assets on their projects.
+    $role = strtolower(trim((string) ($decoded->role ?? '')));
+    $isAdmin = BaseAPI::hasGlobalDataScope($decoded);
+    if (!$isAdmin) {
+        if (!in_array($role, ['developer', 'tester'], true)) {
+            $api->sendJsonResponse(403, 'Only admins or assigned developers/testers can upload project attachments');
+            exit;
+        }
+        $memberStmt = $conn->prepare(
+            'SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ? LIMIT 1'
+        );
+        $memberStmt->execute([$projectId, $decoded->user_id ?? '']);
+        if (!$memberStmt->fetch()) {
+            $api->sendJsonResponse(403, 'You can only upload attachments on projects you are assigned to');
+            exit;
+        }
     }
 
     $check = $conn->prepare('SELECT id FROM projects WHERE id = ?');
